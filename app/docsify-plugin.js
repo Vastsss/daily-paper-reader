@@ -2433,7 +2433,7 @@ window.$docsify = {
 
           a.innerHTML =
             `<div class="dpr-sidebar-title">${escapeHtml(title)}</div>` +
-            `<div class="dpr-sidebar-link-line">${escapeHtml(link || '-')}</div>` +
+            `<div class="dpr-sidebar-link-line">${escapeHtml('evidence')}</div>` +
             `<div class="dpr-sidebar-score-line">${scoreHtml}</div>` +
             `<div class="dpr-sidebar-tags">${tagsHtml || '<span class="dpr-sidebar-tag dpr-sidebar-tag-other">-</span>'}</div>`;
           a.dataset.sidebarStructuredHydrated = '1';
