@@ -1,0 +1,1382 @@
+Title: Adaptive Time Series Reasoning via Segment Selection
+
+URL Source: https://arxiv.org/pdf/2602.18645v1
+
+Published Time: Tue, 24 Feb 2026 01:12:26 GMT
+
+Number of Pages: 18
+
+Markdown Content:
+# Adaptive Time Series Reasoning via Segment Selection 
+
+Shvat Messica 1 Jiawen Zhang 2 Kevin Li 3 1 Theodoros Tsiligkaridis 4 Marinka Zitnik 1
+
+Abstract 
+
+Time series reasoning tasks often start with a natural language question and require targeted analysis of a time series. Evidence may span the full series or appear in a few short inter-vals, so the model must decide what to inspect. Most existing approaches encode the entire time series into a fixed representation before infer-ence, regardless of whether or not the entire sequence is relevant. We introduce ARTIST, which formulates time-series reasoning as a se-quential decision problem. ARTIST interleaves reasoning with adaptive temporal segment se-lection. It adopts a controller-reasoner archi-tecture and uses reinforcement learning to train the controller role to select informative seg-ments and the reasoner role to generate segment-conditioned reasoning traces and final answers. During inference, the model actively acquires task-relevant information instead of relying on a static summary of the full sequence. We use a novel hierarchical policy optimization ap-proach for post-training that allows the model to excel in both segment selection and question-answering behavior. We evaluate ARTIST on six time-series reasoning benchmarks and compare it with large language models, vision-language models, and prior time-series reasoning systems. ARTIST improves average accuracy by 6.46 ab-solute percentage points over the strongest base-line. The largest gains appear on rare event local-ization and multi-segment reasoning tasks. Su-pervised fine-tuning improves performance, and reinforcement learning provides additional gains by optimizing question-adaptive segment selec-tion. These results show that selective data use drives effective time-series reasoning. 
+
+> 1
+
+Department of Biomedical Informatics, Harvard Medical School, Boston, MA, USA 2The Hong Kong University of Sci-ence and Technology (Guangzhou) 3Massachusetts Institute of Technology 4MIT Lincoln Laboratory. Correspondence to: Shvat Messica and Marinka Zitnik <shvat.messica@fas.harvard.edu, marinka@hms.harvard.edu >.
+
+1. Introduction 
+
+Time-series modeling has long been shaped by tasks such as forecasting (Das et al., 2024; He et al., 2025a; Yang et al., 2025b; Wang et al., 2025c), classification (Liu et al., 2025e;d; Tran et al., 2025), and anomaly detection (Sun et al., 2025; Cai et al., 2025; Kim et al., 2025). Increas-ingly, however, real-world use cases begin with a natural-language question rather than a predefined label or predic-tion horizon. A clinician may ask why a patient’s vital signs deteriorated after a medication change, and an analyst may ask what triggered a regime shift in a market indicator. Answering these questions requires linking the question to patterns in the time series and grounding the answer in rele-vant segments. This emerging setting, known as time series reasoning (Chow et al., 2024b; Kong et al., 2025b), asks models to answer natural language questions by identify-ing and analyzing the task-relevant parts of a time series. Recent work has examined how to interface time series with large language models (LLMs). As in Figure 1a, approaches mainly differ in how they convert a time se-ries into an LLM input, including textual serialization (Al-negheimish et al., 2024; Luo et al., 2025; Liu et al., 2025f), rendered plots (Liu et al., 2025c; Zhang et al., 2025a), and learned embeddings (Xie et al., 2024; Lei et al., 2025; Langer et al., 2025). These designs improve modality alignment but keep inference static: the model receives a fixed view of the full time series and must answer from that view. This is limiting for multi-step reasoning, where intermediate conclusions should change what the model in-spects next. For example, a clinical deterioration query may first check for an abrupt spike, then shift to a different window or a narrower interval to test a hypothesis. More broadly, relevant temporal segments are query- and step-dependent. Figure 1b shows the desired behavior: reason-ing interleaved with temporal segment selection, stopping when the model is ready to answer. A key missing capability is question-adaptive information selection during inference. Time series inputs are long and temporally heterogeneous, and the same sequence can sup-port many different questions that require different regions and different resolutions. As a result, forcing the model to process a fixed view of the full series can dilute salient local structure and, in long sequences, can degrade per-1
+
+> arXiv:2602.18645v1 [cs.LG] 20 Feb 2026
+
+Adaptive Time Series Reasoning via Segment Selection Time  Series                                         
+
+> Reasoning Answer
+> (a) (b)
+> Time Series
+> segment 1
+> segment 2
+> Final Answer
+> Question
+> Question
+> Adaptive time series segmentation
+> Reasoning step 1
+> To address the query, Imust identify ...
+> Therefore, Ineed analyze segment 1.
+> Reasoning step 2
+> Segment 1suggests ... To
+> corroborate this, Ineed
+> examine segment 2.
+> Based on these findings, the answer is …
+> Reasoning step 3
+> Encoding
+> Inputs
+> TS -specific
+> Image -based
+> Text -based
+> Inputs
+
+Figure 1. (a) Time-series reasoning: answering a natural language question given a time series. (b) ARTIST alternates between reasoning and adaptive segment selection, choosing the next segment based on the question and intermediate outputs, and stopping once it can produce the final answer. 
+
+formance by mixing irrelevant context with task-relevant information. Related problems have been studied in text-vision reasoning, where models learn to search or zoom into regions conditioned on intermediate steps (Wang et al., 2025a; Zhang et al., 2025c; Li et al., 2025). However, an analogous mechanism for time-series reasoning remains underexplored, despite the strong need for adaptive local-ization in long time series. Two challenges make question-adaptive segment selection difficult in time series reasoning. First, unlike images, time series rarely include task-agnostic annotations that identify segments relevant to a given question. Relevant segments depend on the question, so the model must decide during inference which parts of time series to inspect. Second, many post-training methods use reinforcement learning to optimize sequential decision making at the level of output tokens (e.g., PPO (Schulman et al., 2017), GRPO (Shao et al., 2024b), DAPO (Yu et al., 2025a)). Token-level op-timization becomes difficult when a task requires multiple sub-tasks and the reasoning horizon is long. Credit assign-ment then becomes diffuse: key steps such as tool calls or information selection occupy only a small part of the token sequence, so their effect on final output is hard to isolate and optimize. Approaches that disentangle traces into com-ponents and optimize them with role-specific objectives can target these steps directly (Klissarov et al., 2025). This motivates our present work on separating temporal segment acquisition from time series answer generation. 
+
+Present work. ARTIST (Adaptive Reasoning for TIme-Series via Temporal Selection) is a time-series reasoning approach where an LLM is trained to treat time series as an active resource during inference (Figure 1). It interleaves reasoning with temporal segment selection by training a single policy to operate in two roles. A high-level con-troller selects the next segment and decides when to stop, conditioned on the question and intermediate outputs. Alow-level reasoner produces intermediate reasoning steps and the final answer conditioned on the selected segments. This separation explicitly decouples where to look from 
+
+how to reason . ARTIST is trained in two stages. First, we apply supervised fine-tuning (SFT) on curated traces that interleave segment selection with natural language rea-soning. Second, we use collaborative self-play reinforce-ment learning to jointly optimize both roles. The con-troller is trained with a reliability-based reward that mea-sures answer consistency under repeated sampling, and the reasoner is trained for correctness and format compliance conditioned on controller-selected segments. Across six benchmarks in clinical, financial, environmental, and gen-eral domain time series reasoning, ARTIST outperforms large language models, vision-language models, and prior time-series reasoning systems. It achieves an average ac-curacy improvement of 6.46 percentage points over the strongest comparator, with gains of up to 12.5 points on datasets requiring localized or multi-segment reasoning. Supervised fine-tuning alone yields an average accuracy in-crease of 5.65 points over baselines, while reinforcement learning provides additional gains by optimizing question-adaptive segment selection. Further, ARTIST typically uses only 30-70% of the input time series sample per query, showing that selective temporal analysis improves accuracy without requiring full time series consumption. 
+
+Contributions. (1) We present adaptive segment selection for time series reasoning. The model iteratively chooses temporal segments to inspect and updates its reasoning based on the retrieved segments. This setting does not as-sume pre-defined segment labels. (2) We introduce a hier-archical, collaborative self-play RL post-training method that separates segment selection from answer generation and trains each role with learning signals aligned to its role. (3) On six benchmarks, ARTIST outperforms seven strong baselines. It improves average accuracy by 6.46 absolute percentage points over the strongest comparator while us-ing a smaller fraction of the input time series. 2Adaptive Time Series Reasoning via Segment Selection 
+
+2. Related Work 
+
+Time Series Reasoning. Motivated by the need to solve real-world questions that require reasoning over evolving signals, as well as by advances in multimodal LLMs ca-pable of processing non-textual inputs, recent studies have begun to formalize time-series reasoning. Several bench-marks have been introduced to evaluate such capabilities by pairing time-series signals with natural-language queries, including ECG-QA (Oh et al., 2023), TSQA (Kong et al., 2025a), TRQA (Jing et al., 2025), RCW (Liu et al., 2025b), and related datasets (Merrill et al., 2024). These resources frame temporal reasoning as question answering, explana-tion, or diagnostic inference over real or synthetic data, providing standardized settings for assessing LLM-based approaches. In parallel with benchmark development, sev-eral modeling strategies have emerged to support time-series reasoning in LLMs. One line of work treats time-series values as textual inputs, allowing standard text-only LLMs to process temporal data without architectural mod-ification. A second line couples a time-series encoder with a language model, such as ChatTS (Xie et al., 2024), OpenTSLM (Langer et al., 2025), and ITFormer (Lei et al., 2025), mapping numerical observations into learned em-beddings that the LLM can condition on for reasoning. A third line of work encodes time series into visual rep-resentations. VL-Time (Liu et al., 2025c) and TimeMas-ter (Zhang et al., 2025a) render signals as plots and use vision-language models to interpret them. These methods improve performance on time-series reasoning tasks, but they mainly address representation and modality integra-tion, that is, how temporal signals are encoded and adapted for LLM processing. In contrast, the problem of select-ing and analyzing temporal information during reasoning remains underexplored. 
+
+Self-Play RL for Reasoning. Self-play originated in game theory and reinforcement learning as a mechanism for learning in adversarial multi-agent settings, where agents improve by interacting with copies of themselves or past versions of their policies rather than with a fixed opponent, and where outcomes depend directly on the evolving strate-gies of other agents, requiring continual adaptation instead of optimization against a static objective (Zhang et al., 2025b). More recently, this paradigm has been adapted to LLMs, where self-play is used to generate training signals and improve reasoning without relying on human-labeled data (Zhao et al., 2025; Fang et al., 2025; Liu et al., 2025a; Yang et al., 2025c; Huang et al., 2025; Chen et al., 2025; He et al., 2025b; Wang et al., 2025b; Yu et al., 2025b; Yue et al., 2026; Wang et al., 2026). In these studies, a sin-gle LLM assumes multiple roles within the same training loop, typically forming a difficulty-driven interaction. A
+
+proposer generates tasks that challenge the model’s current capabilities, while a solver attempts to solve them and is rewarded based on correctness. This alternation exploits the stateless nature of LLMs, allowing the same underlying model to perform distinct roles via prompting, thereby en-abling data- and memory-efficient training without main-taining multiple separate models. As a result, self-play provides a mechanism for refining model behavior through role-based interaction and outcome evaluation, rather than reliance on external human annotations. This is important for time-series reasoning and adaptive segment selection, where annotations specifying which temporal segments are relevant to a given question are difficult to obtain. In contrast to adversarial self-play, ARTIST uses collab-orative self-play to separate time-series reasoning into dis-tinct roles. ARTIST assigns adaptive segment selection to a controller and answer construction to a reasoner. The con-troller selects temporal segments. The reasoner produces intermediate reasoning steps and the final answer condi-tioned on the selected segments. This separation distin-guishes evidence acquisition from answer generation and supports role-specific learning signals. Existing self-play methods, including AZR (Zhao et al., 2025), SPICE (Liu et al., 2025a), and SPELL (Yang et al., 2025c), optimize each role with myopic objectives that reward the best im-mediate response within a single round. These objectives do not match temporal segment selection, where the model must build an informative set of segments across multiple rounds. ARTIST addresses this mismatch with hierarchi-cal optimization. The controller receives trajectory-level supervision with credit assigned across interaction rounds, while the reasoner is optimized at the final round condi-tioned on the selected segments. 
+
+3. ARTIST 
+
+3.1. Problem Setup and Notation 
+
+We study time-series reasoning for a natural-language question q paired with a time series T ∈ RH×V , where 
+
+H is the sequence length and V is the number of variables. A time-series large language model πθ generates a textual response Y :
+
+πθ (q, T ) → Y. (1) In this paper, we focus on the univariate setting ( V = 1 ). 
+
+Time Series Reasoning. We view reasoning as searching for a high-probability inference path that links (q, T ) to a correct answer. Concretely, we introduce a latent sequence of intermediate steps z = ( z1, . . . , z L) and write: 
+
+pθ (Y | q, T ) = X
+
+> z∈Z
+
+pθ (Y | z, q ) pθ (z | q, T ), (2) where z specifies how the model inspects and interprets the signal before producing Y .3Adaptive Time Series Reasoning via Segment Selection Reason trace 𝑎 1 
+
+> Answer ො𝑦 1
+
+A.  Interaction Trajectory Rollout  (Generation) 
+
+B.  Unified  Policy  Update  (Optimization)                     
+
+> Question 𝑞
+> segment 𝑠 1
+> Reasoner
+> 𝜋 𝜃
+> rsn (⋅|𝑞 ,𝒮 1)
+> 𝒮 1∪{𝑠 1}
+> Controller
+> 𝜋 𝜃
+> ctl ⋅𝑞 ,𝑇 ,𝒮 0,𝑎 0,ො𝑦 0Decision
+> 𝑖 =1
+> ACCEPT
+> CONT. Final answer ො𝑦
+> Segment list 𝒮
+
+𝜋 𝜃 
+
+Inputs   
+
+> Time Series 𝑇
+
+Inputs   
+
+> Trajectory 𝜏 (1)
+> Interaction Trajectory 𝜏
+> … …
+
+𝜏 (𝑔 ) =        
+
+> Trajectory 𝜏 (𝑔 )
+> Trajectory 𝜏 (𝐺 )
+> 𝑠 1,𝑎 1,ො𝑦 1𝑠 𝐿 ,𝑎 𝐿 ,ො𝑦 𝐿 …
+
+× 𝐺                                  
+
+> 𝑎 𝐿 ,1,ො𝑦 𝐿 ,1
+> 𝑁 Reasoner
+> rollouts
+> 𝑎 𝐿 ,𝑁 ,ො𝑦 𝐿 ,𝑁 …
+> Mean Reward 𝑟 𝜇
+> (𝑔 );Var. Reward 𝑟 𝜎
+> (𝑔 )
+> Joint Update
+> Controller Advantages
+> Reasoner Advantages
+> Variance -guided
+> Sampling
+> 𝑟 𝜇
+> (1),𝑟 𝜎
+> (1)
+> 𝑟 𝜇
+> (𝑔 ),𝑟 𝜎
+> (𝑔 )
+> 𝑟 𝜇
+> (𝐺 ),𝑟 𝜎
+> (𝐺 )
+> … …
+> 𝐺 Interaction Rollouts
+> 𝑁 Reasoner
+> Rollouts
+> Segment
+> List 𝒮 1
+> Reason trace 𝑎 2
+> Answer ො𝑦 2
+> Reasoner
+> 𝜋 𝜃
+> rsn (⋅|𝑞 ,𝒮 2)
+> 𝒮 2∪{𝑠 2}
+> Controller
+> 𝜋 𝜃
+> ctl ⋅𝑞 ,𝑇 ,𝒮 1,𝑎 1,ො𝑦 1Decision
+> ACCEPT
+> CONT.
+> Segment 𝑠 2
+
+…   
+
+> Segment
+> List 𝒮 2
+> 𝑖 =2
+
+…
+
+> Higher -level
+> Lower -level
+> Higher -level
+> Lower -level
+
+(a) Interaction Trajectory Rollout (Generation). Reason trace 𝑎 1 
+
+> Answer ො𝑦 1
+
+A.  Interaction Trajectory Rollout  (Generation) 
+
+B.  Unified  Policy  Update  (Optimization)                     
+
+> Question 𝑞
+> segment 𝑠 1
+> Reasoner
+> 𝜋 𝜃
+> rsn (⋅|𝑞 ,𝒮 1)
+> 𝒮 1∪{𝑠 1}
+> Controller
+> 𝜋 𝜃
+> ctl ⋅𝑞 ,𝑇 ,𝒮 0,𝑎 0,ො𝑦 0Decision
+> 𝑖 =1
+> ACCEPT
+> CONT. Final answer ො𝑦
+> Segment list 𝒮
+
+𝜋 𝜃 
+
+Inputs   
+
+> Time Series 𝑇
+
+Inputs   
+
+> Trajectory 𝜏 (1)
+> Interaction Trajectory 𝜏
+> … …
+
+𝜏 (𝑔 ) =        
+
+> Trajectory 𝜏 (𝑔 )
+> Trajectory 𝜏 (𝐺 )
+> 𝑠 1,𝑎 1,ො𝑦 1𝑠 𝐿 ,𝑎 𝐿 ,ො𝑦 𝐿 …
+
+× 𝐺                                  
+
+> 𝑎 𝐿 ,1,ො𝑦 𝐿 ,1
+> 𝑁 Reasoner
+> rollouts
+> 𝑎 𝐿 ,𝑁 ,ො𝑦 𝐿 ,𝑁 …
+> Mean Reward 𝑟 𝜇
+> (𝑔 );Var. Reward 𝑟 𝜎
+> (𝑔 )
+> Joint Update
+> Controller Advantages
+> Reasoner Advantages
+> Variance -guided
+> Sampling
+> 𝑟 𝜇
+> (1),𝑟 𝜎
+> (1)
+> 𝑟 𝜇
+> (𝑔 ),𝑟 𝜎
+> (𝑔 )
+> 𝑟 𝜇
+> (𝐺 ),𝑟 𝜎
+> (𝐺 )
+> … …
+> 𝐺 Interaction Rollouts
+> 𝑁 Reasoner
+> Rollouts
+> Segment
+> List 𝒮 1
+> Reason trace 𝑎 2
+> Answer ො𝑦 2
+> Reasoner
+> 𝜋 𝜃
+> rsn (⋅|𝑞 ,𝒮 2)
+> 𝒮 2∪{𝑠 2}
+> Controller
+> 𝜋 𝜃
+> ctl ⋅𝑞 ,𝑇 ,𝒮 1,𝑎 1,ො𝑦 1Decision
+> ACCEPT
+> CONT.
+> Segment 𝑠 2
+
+…   
+
+> Segment
+> List 𝒮 2
+> 𝑖 =2
+
+…
+
+> Higher -level
+> Lower -level
+> Higher -level
+> Lower -level
+
+(b) Unified Policy Update (Optimization). 
+
+Figure 2. Overview of ARTIST. (a) Given a question and a time series, a high-level controller iteratively selects informative temporal segments, while a low-level reasoner produces intermediate reasoning traces and answers conditioned on the accumulated segment set. The controller decides whether to continue selecting or accept it as a final answer and segment list. (b) For each training example, multiple reasoning rollouts are generated per controller trajectory. Reasoner rewards are group-normalized across reasoning rollouts, while controller rewards are computed using the associated reasoning outcomes and normalized across controller trajectories. Both signals are used for a joint policy update. 
+
+Segments. A segment is a contiguous slice of the time se-ries T , denoted s = Ttstart :tend with 0 ≤ tstart < t end ≤ H.We maintain an accumulated segment list S = [ s1, . . . , s K ]
+
+over multiple reasoning steps. 
+
+3.2. Controller-Reasoner Roles in ARTIST 
+
+ARTIST is a collaborative self-play model that equips a single policy model πθ with both adaptive segment local-ization and segment-conditioned reasoning . The same un-derlying model is invoked in two roles via role-specific prompting, yielding controller πctl 
+
+θ and reasoner πrsn 
+
+θ . The controller decides which temporal segments to inspect and when to terminate the interaction, while the reasoner gen-erates a reasoning trace and a final answer conditioned on the accumulated segments. Each training iteration consists of (i) generating rollouts through Controller-Reasoner interaction and (ii) comput-ing a joint policy update. Figure 2 illustrates the rollout and update structure, and Algorithm 1 summarizes the op-timization process. 
+
+3.3. Interaction Trajectory Rollout 
+
+For a given question-time series pair (q, T ), an interaction trajectory τ is a sequence of Controller-Reasoner interac-tion rounds indexed by i = 1 , 2, . . . , L , where L is the realized number of rounds until termination. 
+
+Controller Step. At round i, the Controller receives the current state: 
+
+xctl 
+
+i =  q, T, Si−1, a i−1, ˆyi−1
+
+, (3) where (S0, a 0, ˆy0) are empty at initialization. In all sub-sequent interaction rounds i > 1, ai−1 and ˆyi−1 are the reasoning trace and answer provided by the Reasoner in the previous round i − 1. The controller then out-puts a reasoning trace ui and a termination decision di ∈{CONTINUE , ACCEPT }. If di = CONTINUE , it addition-ally proposes a new segment si:
+
+(ui, d i, s i) ∼ πctl 
+
+θ (· | xctl 
+
+i ), (4) and we append the new segment to the segment list S(i) ←Si−1 ∪ { si}. If di = ACCEPT , the interaction terminates and the answer outputted by the Reasoner step in the previ-ous round, ˆyi−1, is accepted as the final answer. 
+
+Reasoner Step. If di = CONTINUE , the Reasoner is in-voked with the updated segment list Si and produces a rea-soning trace ai and answer ˆyi:
+
+(ai, ˆyi) ∼ πrsn 
+
+θ (· | q, Si). (5) Formally, we define an interaction trajectory as: 
+
+τ = (ui, s i, d i, a i, ˆyi) Li=1 , dL = ACCEPT . (6) We further define two sub-trajectories of an interaction tra-jectory: controller trajectory as τctl = {(ui, s i, d i)}Li=1 ,and the reasoner trajectory @ round i as τrsn, i = ( ai, ˆyi).
+
+3.4. Reward Functions 
+
+We define rewards for the two roles based on answer cor-rectness, reliability across repeated trials, and format com-pliance. 4Adaptive Time Series Reasoning via Segment Selection 
+
+Correctness Reward. Given a question q, gold answer y∗,and prediction ˆy, we define the correctness reward as: 
+
+C(q, y ∗, ˆy) = 1[ˆ y = y∗] . (7) 
+
+Reliability Reward. Given q and a segment list S, we de-fine reliability as the expected correctness of the Reasoner under repeated sampling conditioned on (q, S). In practice, we estimate it with N independent rollouts ˆy(n) ∼ πrsn  
+
+> θ
+
+(· | 
+
+q, S), n = 1 , . . . , N and then calculate: 
+
+D(q, S, y ∗) = 1
+
+N
+
+> N
+
+X
+
+> n=1
+
+1
+
+h
+
+ˆy(n) = y∗i
+
+= 1
+
+N
+
+> N
+
+X
+
+> n=1
+
+C(q, y ∗, ˆy(n)).
+
+(8) A higher reliability reward indicates that the selected seg-ments S make the Reasoner consistently produce the cor-rect answer under sampling noise, and we use it as the learning signal for the Controller. 
+
+Controller Format Score. Each controller step receives a per-step format score fi (see Appendix A.6). Given controller trajectory τctl = {(ui, d i, s i)}, and letting 
+
+Iviol (τctl ) ∈ { 0, 1} indicate whether τctl contains any crit-ical violation, we define: 
+
+Fctl (τctl ) =  1 − Iviol (τctl ) · 1
+
+L
+
+> L
+
+X
+
+> i=1
+
+fi − Iviol (τctl ). (9) 
+
+Controller Reward. The controller reward is defined as: 
+
+Rctl (τctl , D ) = 
+
+(−1 if Fctl (τctl ) < 0,wD D + wf Fctl (τctl ) otherwise ,
+
+(10) where wD , w f are tunable hyperparameters. 
+
+Reasoner Reward. Given a final-round reasoner trajectory 
+
+τrsn = ( a, ˆy) with correctness c = C(q, y ∗, ˆy),
+
+Rrsn (τrsn , c ) = wc c + we Frsn (τrsn ), (11) where Frsn scores format compliance (Appendix A.6) and 
+
+wc, w e are tunable hyperparameters. 
+
+3.5. Hierarchical Policy Optimization 
+
+As shown in Fig. 2b, we use nested rollouts to obtain sep-arate learning signals for the Controller and Reasoner be-havior, and combine them into a joint update. Decompos-ing the parameter update in this way enables more precise credit assignment, as advantage signals are propagated only to the relevant tokens for each role. 
+
+Nested Rollouts. For each training example (q, T, y ∗), we first sample G interaction trajectories {τ (g)}Gg=1 following Sec. 3.3. Let the terminating round of τ (g) be L(g), and let the final segment list be S(g) 
+
+> L(g)
+
+(A CCEPT does not add a new segment). For each interaction trajectory g, we then resam-ple the Reasoner N times conditioned on the same final segment list, and denote these final-round reasoner trajec-tories as τ (g,n ) 
+
+> rsn ,L (g)
+
+= ( a(g,n ) 
+
+> L(g)
+
+, ˆy(g,n ) 
+
+> L(g)
+
+), n = 1 , . . . , N .We then compute the mean and variance correctness re-wards for reasoner trajectories, i.e., r(g) 
+
+> μ
+
+and r(g) 
+
+> σ
+
+, where 
+
+r(g) 
+
+> μ
+
+equals the reliability reward in Eq. (8) for the final seg-ments S(g) 
+
+> L(g)
+
+produced in rollout g.
+
+Higher-Level Advantage Calculation for Controller. 
+
+The Controller is optimized as a high-level policy that iter-atively localizes segments across multiple interactions with the Reasoner and decides when the current information is sufficient. For each interaction rollout g ∈ { 1, . . . , G },we compute a Controller reward r(g) 
+
+> ctl
+
+= Rctl 
+
+ τ (g) 
+
+> ctl
+
+, r (g)
+
+> μ
+
+ for controller trajectory τ (g) 
+
+> ctl
+
+. We then form group-relative ad-vantages { ˆA(g) 
+
+> ctl
+
+}Gg=1 according to Appendix A.1. 
+
+Lower-Level Advantage Calculation for Reasoner. The Reasoner is optimized as a low-level policy that maximizes answer quality and formatting conditioned on the segments selected by the Controller. Unlike the Controller, the Rea-soner update optimizes only the final-round rollouts under a fixed segment list, disentangling the optimization of Rea-soner behavior from the variance in quality of the segments selected by the Controller. For each interaction rollout 
+
+g, we draw N independent final-round Reasoner rollouts 
+
+{τ (g,n ) 
+
+> rsn ,L (g)
+
+}Nn=1 under the same S.Using all G × N rollouts for every update can be memory-intensive, and many groups provide limited learning sig-nal when their rewards are nearly identical. We there-fore update the Reasoner using a single group g∗ selected by variance-guided sampling , which prioritizes interaction trajectory that induce diverse outcomes and thus yield a more informative within-group advantage signal: 
+
+p(g) ∝ r(g) 
+
+> σ
+
+, (12) where r(g) 
+
+> σ
+
+is the variance of correctness across the N roll-outs in group g. For the sampled group g∗, we compute a Reasoner reward for each trajectory τ (g∗,n ) 
+
+> rsn
+
+:
+
+r(g∗,n ) 
+
+> rsn
+
+= Rrsn 
+
+
+
+τ (g∗,n ) 
+
+> rsn ,L (g)
+
+, C  q, y ∗, ˆy(g∗,n )
+
+> L(g)
+
+
+
+, (13) and form group-relative advantages { ˆA(g∗,n ) 
+
+> rsn
+
+}Nn=1 accord-ing to Appendix A.3. 
+
+Joint Update. Finally, we aggregate the Controller advan-tages { ˆA(g) 
+
+> ctl
+
+}Gg=1 and the Reasoner advantages { ˆA(g∗,n ) 
+
+> rsn
+
+}
+
+into a joint update of the shared parameters θ of πθ that maximizes the objectives in Appendix A. Crucially, our 5Adaptive Time Series Reasoning via Segment Selection 
+
+Controller advantage signals are propagated across the Controller outputs from all rounds i ∈ {1, ..., L (g)} in each interaction trajectory τ (g), optimizing the role’s be-havior for incrementally choosing segments over multiple interactions that eventually result in the best segment set 
+
+long-term. In contrast, the Reasoner advantage signals are propagated only to the Reasoner outputs from the last round L(g) in each τ (g), optimizing the role’s behavior my-opically to encourage focused, granular reasoning during question-answering. This hierarchical optimization setup is advantageous compared to previous self-play approaches for reasoning-based post-training that optimize both roles myopically, which would not be compatible for iterative segment selection. 
+
+Algorithm 1 Hierarchical Policy Optimization 
+
+Require: initial policy model πθinit , question qπθ ← πθinit 
+
+for g = 1 , 2, ..., G do 
+
+τ (g) ← interaction rollout of length L(g) using πθ
+
+for n = 1 , 2, ..., N do 
+
+τ (g,n ) 
+
+> rsn,L (g)
+
+← (a(g,n ) 
+
+> L(g)
+
+, ˆy(g,n ) 
+
+> L(g)
+
+) (resampled reasoner rollout @ iter. L(g))
+
+r(g,n ) 
+
+> rsn
+
+← Rrsn 
+
+
+
+τ (g,n ) 
+
+> rsn
+
+, C  q, y, ˆy(g,n )
+
+end for 
+
+r(g) 
+
+> μ
+
+← Mean ({C q, y, ˆy(g,n )
+
+> L(g)
+
+
+
+}Nn=1 )
+
+r(g) 
+
+> σ
+
+← Var ({C q, y, ˆy(g,n )
+
+> L(g)
+
+
+
+}Nn=1 )
+
+r(g) 
+
+> ctl
+
+← Rctl 
+
+ τ (g) 
+
+> ctl
+
+, r (g)
+
+> μ
+
+
+
+end for 
+
+Calculate advantages ˆA(g) 
+
+> ctl
+
+using {r(g) 
+
+> μ
+
+}Gg=1 
+
+Sample g∗ ∼ { 1, 2, ..., G } : p(g) ∝ r(g)
+
+> σ
+
+Calculate advantages ˆA(g∗,n ) 
+
+> rsn
+
+using {r(g∗,n ) 
+
+> rsn
+
+}Nn=1 
+
+Joint update using ˆA(g) 
+
+> ctl
+
+and ˆA(g∗,n )
+
+> rsn
+
+4. Experiments 
+
+Datasets. We evaluate on six time-series reasoning bench-marks spanning diverse domains and question formats: TSQA (Kong et al., 2025a), RCW (Liu et al., 2025b), ECG-QA (Oh et al., 2023), Sleep-QA (Langer et al., 2025), TRQA (Jing et al., 2025), and Etiological Reason-ing (ETI) (Merrill et al., 2024). We follow each bench-mark’s standard evaluation protocol, applying only mi-nor restrictions for consistency (details in Appendix B). Dataset statistics are summarized in Table 4. 
+
+Baselines. We compare against three families of mod-els that support time-series reasoning. (1) Text-based LLMs include GPT-5 (Singh et al., 2025), LLaMA-3-8B (Grattafiori et al., 2024), Qwen-3-8B and Qwen-3-14B (Yang et al., 2025a), which take serialized time series as input. (2) Fine-tuned time-series reasoning models include ChatTS (Xie et al., 2024), OpenTSLM-Flamingo (Langer et al., 2025), and ITFormer (Lei et al., 2025), which pair a temporal encoder with an LLM back-bone. (3) Vision-based baselines include Qwen2.5-VL-3B (Bai et al., 2025), VL-Time (Liu et al., 2025c), and TimeMaster (Zhang et al., 2025a), which operate on plotted time series. We use Qwen2.5-VL-3B-Instruct as backbone for vision-based models. 
+
+Implementation & Evaluation. We demonstrate the ARTIST approach using a Qwen3-4B backbone and a 5-layer MLP that encodes patch-based time-series in-puts. Segment selection is facilitated through a tool-calling mechanism that enables the model to iteratively retrieve temporal segments. Training proceeds in two stages: (1) SFT, utilizing LoRA-based fine-tuning on struc-tured reasoning traces that interleave natural language with segment-selection calls (Appendix C); and (2) RL, employ-ing full-parameter fine-tuning via our collaborative self-play algorithm. Performance is measured using average Accuracy and F1 scores across 8 independent runs per dataset. For ARTIST, we maintain fixed temperatures for the reasoner ( 0.7) and controller ( 1.0). See Appendix E for comprehensive hyperparameter settings. 
+
+4.1. Benchmarking Results Comparison with general LLMs and time-series rea-soning models. Table 1 shows that ARTIST achieves the best overall performance across all benchmarks. Rela-tive to the strongest baseline on each dataset and metric, ARTIST improves average accuracy by 6.46%. RL fur-ther improves performance beyond SFT. Compared with SFT, adding RL increases average accuracy from 63.61% to 69.26%. Comparison with vision–language reason-ing models. Table 2 compares ARTIST with VLM base-lines that operate on plotted time series. ARTIST is best on five of six datasets (ETI, RCW, ECG-QA, TSQA, TRQA), while TimeMaster+RL performs substantially better on Sleep-QA. We also observe that on ECG- and EEG-based datasets (ECG-QA and Sleep-QA), even VLMs without task-specific fine-tuning can be highly competitive, which may reflect stronger prior exposure to similar biomedical plots during pretraining. 
+
+4.2. Analysis of Time Series Data Utilization 
+
+Figure 3 examines how much of the time series ARTIST uses under RL and how this relates to accuracy on three datasets. Across datasets, greater coverage does not con-sistently improve performance. Instead, accuracy is highest when the model concentrates on a limited set of question-relevant segments, and it drops for questions that trigger near-complete sequence usage. For Sleep-QA and TRQA, the best accuracy occurs when the model uses roughly 30– 50% of the signal, whereas questions that induce 90–100% 6Adaptive Time Series Reasoning via Segment Selection 
+
+Table 1. Accuracy (%) and F1-score (%) comparisons with general LLMs and TS-based encoder baselines. 
+
+Model ETI RCW ECG QA SLEEP QA TSQA TRQA Avg. 
+
+Acc F1 Acc F1 Acc F1 Acc F1 Acc F1 Acc F1 Acc F1 Random Guess 25.00 25.00 50.00 50.00 50.00 50.00 16.67 16.67 29.67 29.67 37.13 37.13 34.74 34.74 GPT-5 w/o statistics 29.50 27.90 34.07 34.88 51.98 51.78 0.49 1.77 30.92 27.22 21.50 21.67 28.08 27.54 w/ statistics 63.54 63.72 32.74 31.08 53.96 49.62 0.49 1.49 35.75 32.24 25.00 28.70 35.25 34.48 Llama-3 8B w/o statistics 25.50 25.96 43.97 40.41 50.00 48.45 31.99 14.09 48.97 46.75 57.69 53.88 43.02 38.26 w/ statistics 35.50 34.39 62.83 45.82 50.00 48.90 22.06 13.34 44.93 44.12 55.50 53.02 45.14 39.93 Qwen3-8B w/o statistics 25.25 24.61 0.00 1 0.00 1 50.62 48.46 4.90 6.71 11.35 11.02 14.63 15.2 17.88 17.87 w/ statistics 45.00 40.88 0.00 1 0.00 1 51.86 49.06 1.96 3.87 13.53 12.78 15.25 14.02 21.35 20.31 Qwen3-14B w/o statistics 32.00 30.66 33.19 27.40 50.99 50.42 3.43 5.73 24.15 22.50 33.00 29.54 29.46 27.08 w/ statistics 42.00 47.34 22.57 22.91 54.58 51.79 3.43 4.48 24.15 22.20 29.00 30.32 29.29 29.84 ChatTS-14B Base Model 31.00 21.87 69.91 30.24 48.02 32.07 17.65 13.19 43.48 30.72 57.50 42.12 44.59 28.37 + SFT 50.50 40.69 73.89 33.10 53.47 24.31 26.47 14.60 46.38 42.65 69.00 55.57 53.28 35.15 OpenTSLM-4B + SFT 82.69 82.66 65.49 38.29 69.50 41.00 35.37 18.99 47.50 35.81 76.25 69.36 62.80 47.68 ITFormer-4B + SFT 84.62 84.60 67.31 57.95 57.31 49.91 33.62 15.77 49.50 23.62 80.12 74.22 62.08 51.01 ARTIST + SFT 85.12 85.11 69.75 61.46 56.31 55.68 28.13 17.94 60.06 57.13 82.26 62.32 63.61 56.61 + SFT + RL 87.03 87.10 77.00 50.00 69.81 52.67 36.63 19.21 62.00 58.66 83.06 78.02 69.26 57.61 Improvement 2 +2.41 +2.50 +3.11 +3.51 +3.14 +3.89 +1.26 +0.22 +12.50 +11.91 +2.94 +3.80 +6.46 +6.60  
+
+> 1
+
+Model failed to produce the required answer template and often repeated the input prompt; scores are reported as 0.00.  
+
+> 2
+
+Improvement denotes the performance gain over the strongest baseline for each dataset and metric. 
+
+(a) TSQA.  (b) TRQA.  (c) SLEEP QA. 
+
+Figure 3. Performance and question distribution across time-series usage levels. Bars (left axis) show the percentage of questions falling into each usage-percentage bin, and the line (right axis) shows accuracy for questions in that bin. 
+
+utilization are substantially less accurate. TSQA exhibits a higher optimal range (about 70%), which is consistent with its shorter sequences and the need for proportionally broader coverage to capture relevant intervals. 
+
+4.3. Ablation Study 
+
+We conduct an ablation study to evaluate the core design choices of ARTIST, with results summarized in Table 3. 
+
+Efficacy of Adaptive Segment Selection. Removing the controller entirely, which processes the full time series as a static input, leads to a significant performance drop of 9.30% in average accuracy. This confirms that pro-cessing the entire sequence can be suboptimal, as irrele-vant temporal noise may obscure salient evidence. In con-trast, ARTIST’s adaptive selection directs attention to task-relevant regions, enabling more precise reasoning. 
+
+Joint Controller-Reasoner Optimization. Controller-only RL configuration, where the reasoner remains frozen, results in an 8.94% decrease in average accuracy compared to the full model. This degradation arises from a distri-bution shift: during RL, the reasoner is conditioned on a dynamically selected set of segments chosen by the con-troller, whereas in SFT it was trained under a different in-put regime, receiving the full time series followed by a 7Adaptive Time Series Reasoning via Segment Selection                                                             
+
+> Table 2. Accuracy (%) comparisons with vision models. Model ETI RCW ECG QA SLEEP QA TSQA TRQA
+> Base Model 27.00 50.33 53.54 49.44 52.51 66.09 VL-Time 28.50 57.52 58.91 22.06 44.93 53.50 + Few-shot 22.00 48.67 64.36 23.53 38.16 58.50 TimeMaster 26.00 67.70 52.59 47.51 58.30 68.45 + RL 49.00 76.99 69.31 72.55 61.22 72.08 ARTIST + SFT 85.12 69.75 56.31 28.13 60.06 82.26 + RL + SFT 87.03 77.00 69.81 36.63 62.00 83.34
+> Table 3. Ablation on ECG-QA and RCW accuracy (%). Method ECG RCW Avg.
+> ARTIST 69.81 77.00 73.41
+> Reasoner Only 65.33 62.88 64.11 Controller-only RL 60.81 68.13 64.47 w/o Reliability Reward 52.50 51.44 51.97 w/o Trajectory-based Objective 55.19 67.06 61.13 w/o Variance-guided Sampling 68.13 72.75 70.44
+
+small number of additional segments. Freezing the rea-soner therefore prevents it from adapting to the controller’s evolving selection policy. Jointly updating both roles miti-gates this mismatch and maintains alignment between seg-ment selection and downstream reasoning. 
+
+Reliability Reward. The most substantial performance de-cline (21.44% average drop) occurs when removing the Re-liability Reward . Relying on single-rollout accuracy is in-sufficient due to the inherent stochasticity of LLMs: a rea-soner may produce a correct answer by chance even when the selected segments are incomplete or irrelevant. In these cases, a single successful rollout can mislead the controller during learning. Our reliability metric uses nested rollouts to measure answer consistency across repeated samples. This estimate reflects whether the selected segment set re-liably supports correct reasoning, rather than producing an isolated correct outcome. 
+
+Hierarchical Policy Optimization and Variance-Guided Sampling. Replacing the trajectory-level objective with a myopic objective leads to a 12.28% performance drop. Here, the myopic objective refers to optimizing the con-troller based solely on the last interaction step, without propagating credit across the full interaction trajectory. With such an objective, the controller is encouraged to learn a greedy policy that is not optimized to make inter-mediate segment selections that lead to the best overarch-ing segment set after multiple interactions. In contrast, our hierarchical objective trains the controller to optimize a se-quence of segment selections that, together, forms an infor-mative segment set. Replacing Variance-guided Sampling 
+
+with standard stochastic sampling reduces average perfor-mance by 2.97%. 
+
+4.4. Illustration of Time Series Reasoning in ARTIST 
+
+Figure 4 illustrates how ARTIST addresses queries by se-lecting a targeted set of informative segments. In the apple sales case (Figure 4,left), the controller first retrieves an early segment to establish a baseline level. Guided by the initial hypothesis of a potential trend shift, it then queries a late-sequence segment to test whether the change per-sists. The retrieved segment reveals a sustained level in-crease with higher variability, allowing the model to con-firm a seasonal harvest uplift rather than a transient spike. In the bird count example (Figure 4,right), the model begins with a full-span segment to establish the sampling horizon and flag suspicious intervals. It then requests a higher-resolution segment around the anomaly to determine its duration and whether the signal recovers. This second seg-ment shows a contiguous dip on the scale of months fol-lowed by a return to the prior level, which supports a tem-porary external influence rather than a persistent regime change. Segment selection yields a verifiable evidence trail that ties the final answer to specific temporal segments. 
+
+5. Conclusion 
+
+ARTIST is an RL approach that trains models to select task-relevant temporal segments while they reason toward an answer. Unlike prior methods that encode the full time series into a fixed representation, ARTIST interleaves seg-ment selection with multi-step reasoning at inference time. On six benchmarks, ARTIST improves over strong LLMs, vision-language models, and time-series reasoning models. 
+
+Limitations. ARTIST incurs an additional inference cost due to iterative segment selection during reasoning. Fur-thermore, our evaluation focuses on univariate time-series tasks. Extending the framework to multivariate signals and irregular sampling remains an important direction for fu-ture work. 
+
+Impact Statement 
+
+This paper presents work whose goal is to advance the field of machine learning. There are many potential societal con-sequences of our work, none of which we feel must be specifically highlighted here. 
+
+Acknowledgments 
+
+We gratefully acknowledge the support by NSF CAREER Award 2339524, ARPA-H Biomedical Data Fabric (BDF) Toolbox Program, Amazon Faculty Research, Google Re-search Scholar Program, AstraZeneca Research, Glaxo-SmithKline Award, Roche Alliance with Distinguished Scientists (ROADS) Program, Sanofi iDEA-iTECH Award, Boehringer Ingelheim Award, Merck Award, Optum AI 8Adaptive Time Series Reasoning via Segment Selection Question : What  is  the  best  description  of  this  time  series  <TS> ?
+
+A)  Daily  hospital  admissions  for  respiratory  illnesses  in  a metropolitan  city  over  one  year, 
+
+with  a flu  epidemic  causing  a noticeable  increase  in  admissions .
+
+B)  Daily  apple  sales  at  a farmer’s  market  stall  over  one  year,  with  higher  sales  during  the 
+
+harvest  season  (August –November) .
+
+C)  Daily  counts  of  new  employees  joining  a technology  start -up  over  three  years,  with  a
+
+mid -period  recruitment  drive  leading  to  a sharp  increase .
+
+D)  Minute -by -minute  heart  rate  data  of  an  individual,  showing  a significant  spike  between 
+
+the  60 th  and  80 th  minute  due  to  a sudden  shock  while  watching  a horror  movie .
+
+Final  reasoner  trace :
+
+First,  to  solve  the  question,  I need  to  establish  a baseline  to  compare  against  later  periods 
+
+and  assess  whether  a sustained  change  occurs . For  this  purpose,  I‘m  choosing  segment 
+
+[0,199 ] because  it  is  required  to  provide  a reference  period  before  any  potential  mid -to -late -
+
+year  shift . From  segment  [0,199 ],  I conclude  that  the  series  is  steady  with  moderate 
+
+variability  and  values  mostly  between  about  85  and  110 , indicating  a stable  baseline  with  no 
+
+prolonged  elevation . Next,  I need  to  determine  whether  the  latter  part  of  the  year  shows  a
+
+sustained  change  relative  to  the  baseline . For  this  purpose,  I’m  choosing  segment  [200 ,300 ]
+
+because  it  is  required  to  examine  the  end -of -year  behavior  to  test  for  a persistent  increase .
+
+From  segment  [200 ,300 ],  I conclude  that  the  series  shifts  to  a higher  level  with  greater 
+
+variability,  staying  near  130 -180  for  an  extended  span  and  reaching  the  global  maximum 
+
+(~ 188 ),  revealing  a clear,  sustained  increase  in  the  final  months . The  time  series  has  365 
+
+daily  observations  and  exhibits  a pronounced  late -year  uplift  relative  to  the  earlier  baseline, 
+
+consistent  with  a yearly  external  factor  boosting  the  measured  quantity  in  the  final  months .
+
+Answer : B
+
+Question : What  is  the  best  description  of  this  time  series  <TS> ?
+
+A)  Weekly potato harvest levels from May –October on a small Idaho farm, tracked over 
+
+50 years (26 samples per year). External events such as unusually dry summers can 
+
+sharply reduce yields. 
+
+B)  Hourly counts of subjects tutored by an online tutoring service over one week, 
+
+influenced by events such as school exams or holidays. 
+
+C)  Daily bird counts in an urban park over one year to monitor population health, with a 
+
+conservation event in April affecting observations. 
+
+D)  Daily flu case counts at a busy city clinic over six months, with a new drug released at 
+
+month three to assess changes before and after treatment. 
+
+Final  reasoner  trace :
+
+First,  to  solve  the  question,  I need  to  determine  the  sampling  horizon  and  whether  a single 
+
+contiguous  change  occurs  within  the  year . For  this  purpose,  I‘m  choosing  segment  [0, 364 ]
+
+because  it  is  required  to  evaluate  the  entire  sequence  length  and  to  check  for  a continuous 
+
+month -long  deviation  across  the  full  span . From  this  segment,  I conclude  that  the  series 
+
+contains  365  points  (consistent  with  daily  sampling  over  one  year)  and  exhibits  one  sustained 
+
+shift  roughly  around  indices  85 –120 , after  which  the  series  returns  close  to  its  earlier  level .
+
+Next,  I need  to  verify  that  the  dip  is  truly  a single  contiguous  event  and  not  part  of  a broader 
+
+shift . For  this  purpose,  I select  segment  [80 ,115 ] centered  on  the  suspected  interval . From 
+
+segment  [80 ,115 ],  I confirm  a sustained  reduction  over  roughly  one  month  (about  40 
+
+consecutive  days),  followed  by  recovery . The  evidence  shows  a daily  series  spanning  a full 
+
+year  with  a single  month -long  contiguous  reduction,  indicating  a temporary  external  influence 
+
+during  part  of  the  year .
+
+Answer : C
+
+Segment  List : [ s1 : ( 0,364 ) , s2 : ( 80,115 ) ]
+
+Segment  List : [ s1 : ( 0,199 ) , s2 : (40,100)  , s3 : ( 20 0, 320 ) ]Question : What  is  the  best  description  of  this  time  series  <TS> ?
+
+A)  Daily  hospital  admissions  for  respiratory  illnesses  in  a metropolitan  city  over  one  year, 
+
+with  a flu  epidemic  causing  a noticeable  increase  in  admissions .
+
+B)  Daily  apple  sales  at  a farmer’s  market  stall  over  one  year,  with  higher  sales  during  the 
+
+harvest  season  (August –November) .
+
+C)  Daily  counts  of  new  employees  joining  a technology  start -up  over  three  years,  with  a
+
+mid -period  recruitment  drive  leading  to  a sharp  increase .
+
+D)  Minute -by -minute  heart  rate  data  of  an  individual,  showing  a significant  spike  between 
+
+the  60 th  and  80 th  minute  due  to  a sudden  shock  while  watching  a horror  movie .
+
+Final  reasoner  trace :
+
+First,  to  solve  the  question,  I need  to  establish  a baseline  to  compare  against  later  periods 
+
+and  assess  whether  a sustained  change  occurs . For  this  purpose,  I‘m  choosing  segment 
+
+[0,199 ] because  it  is  required  to  provide  a reference  period  before  any  potential  mid -to -late -
+
+year  shift . From  segment  [0,199 ],  I conclude  that  the  series  is  steady  with  moderate 
+
+variability  and  values  mostly  between  about  85  and  110 , indicating  a stable  baseline  with  no 
+
+prolonged  elevation . Next,  I need  to  determine  whether  the  latter  part  of  the  year  shows  a
+
+sustained  change  relative  to  the  baseline . For  this  purpose,  I’m  choosing  segment  [200 ,300 ]
+
+because  it  is  required  to  examine  the  end -of -year  behavior  to  test  for  a persistent  increase .
+
+From  segment  [200 ,300 ],  I conclude  that  the  series  shifts  to  a higher  level  with  greater 
+
+variability,  staying  near  130 -180  for  an  extended  span  and  reaching  the  global  maximum 
+
+(~ 188 ),  revealing  a clear,  sustained  increase  in  the  final  months . The  time  series  has  365 
+
+daily  observations  and  exhibits  a pronounced  late -year  uplift  relative  to  the  earlier  baseline, 
+
+consistent  with  a yearly  external  factor  boosting  the  measured  quantity  in  the  final  months .
+
+Answer : B
+
+Question : What  is  the  best  description  of  this  time  series  <TS> ?
+
+A)  Weekly potato harvest levels from May –October on a small Idaho farm, tracked over 
+
+50 years (26 samples per year). External events such as unusually dry summers can 
+
+sharply reduce yields. 
+
+B)  Hourly counts of subjects tutored by an online tutoring service over one week, 
+
+influenced by events such as school exams or holidays. 
+
+C)  Daily bird counts in an urban park over one year to monitor population health, with a 
+
+conservation event in April affecting observations. 
+
+D)  Daily flu case counts at a busy city clinic over six months, with a new drug released at 
+
+month three to assess changes before and after treatment. 
+
+Final  reasoner  trace :
+
+First,  to  solve  the  question,  I need  to  determine  the  sampling  horizon  and  whether  a single 
+
+contiguous  change  occurs  within  the  year . For  this  purpose,  I‘m  choosing  segment  [0, 364 ]
+
+because  it  is  required  to  evaluate  the  entire  sequence  length  and  to  check  for  a continuous 
+
+month -long  deviation  across  the  full  span . From  this  segment,  I conclude  that  the  series 
+
+contains  365  points  (consistent  with  daily  sampling  over  one  year)  and  exhibits  one  sustained 
+
+shift  roughly  around  indices  85 –120 , after  which  the  series  returns  close  to  its  earlier  level .
+
+Next,  I need  to  verify  that  the  dip  is  truly  a single  contiguous  event  and  not  part  of  a broader 
+
+shift . For  this  purpose,  I select  segment  [80 ,115 ] centered  on  the  suspected  interval . From 
+
+segment  [80 ,115 ],  I confirm  a sustained  reduction  over  roughly  one  month  (about  40 
+
+consecutive  days),  followed  by  recovery . The  evidence  shows  a daily  series  spanning  a full 
+
+year  with  a single  month -long  contiguous  reduction,  indicating  a temporary  external  influence 
+
+during  part  of  the  year .
+
+Answer : C
+
+Segment  List : [ s1 : ( 0,364 ) , s2 : ( 80,115 ) ]
+
+Segment  List : [ s1 : ( 0,199 ) , s2 : (40,100)  , s3 : ( 20 0, 320 ) ]
+
+Figure 4. Examples of using ARTIST for reasoning with time series. Source: Etiological time series reasoning bechmark. 
+
+Research Collaboration Award, Pfizer Research, Gates Foundation (INV-079038), Chan Zuckerberg Initiative, John and Virginia Kaneb Fellowship at Harvard Medical School, Biswas Computational Biology Initiative in part-nership with the Milken Institute, Harvard Medical School Dean’s Innovation Fund for the Use of Artificial Intelli-gence, and the Kempner Institute for the Study of Natural and Artificial Intelligence at Harvard University. DISTRIBUTION STATEMENT A. Approved for public release. Distribution is unlimited. This material is based upon work supported by the Under Secretary of War for Research and Engineering under Air Force Contract No. FA8702-15-D-0001 or FA8702-25-D-B002. Any opinions, findings, conclusions or recommendations expressed in this material are those of the author(s) and do not necessarily reflect the views of the Under Secretary of War for Research and Engineering. 
+
+References 
+
+Alnegheimish, S., Nguyen, L., Berti-Equille, L., and Veera-machaneni, K. Large language models can be zero-shot anomaly detectors for time series? arXiv preprint arXiv:2405.14755 , 2024. Bai, S., Chen, K., Liu, X., Wang, J., Ge, W., Song, S., Dang, K., Wang, P., Wang, S., Tang, J., et al. Qwen2. 5-vl technical report. arXiv preprint arXiv:2502.13923 ,2025. Cai, J., Xie, Y., Lim, G., Yin, Y., Zimmermann, R., and Ng, S.-K. Self-perturbed anomaly-aware graph dynam-ics for multivariate time-series anomaly detection. In 
+
+The Thirty-ninth Annual Conference on Neural Informa-tion Processing Systems , 2025. Chen, L., Prabhudesai, M., Fragkiadaki, K., Liu, H., and Pathak, D. Self-questioning language models. arXiv preprint arXiv:2508.03682 , 2025. Chow, W., Gardiner, L., Hallgr´ ımsson, H. T., Xu, M. A., and Ren, S. Y. Towards time series reasoning with llms. 
+
+arXiv preprint arXiv:2409.11376 , 2024b. Das, A., Kong, W., Sen, R., and Zhou, Y. A decoder-only foundation model for time-series forecasting. In 
+
+Forty-first International Conference on Machine Learn-ing , 2024. Fang, W., Liu, S., Zhou, Y., Zhang, K., Zheng, T., Chen, K., Song, M., and Tao, D. Serl: Self-play reinforce-ment learning for large language models with limited data. arXiv preprint arXiv:2505.20347 , 2025. Grattafiori, A. et al. The llama 3 herd of models, 2024. URL https://arxiv.org/abs/2407.21783. He, H., Yi, K., Ma, Y., Zhang, Q., Niu, Z., and Pang, G. Sempo: Lightweight foundation models for time series forecasting. arXiv preprint arXiv:2510.19710 , 2025a. He, Y., Huang, C., Li, Z., Huang, J., and Yang, Y. Vis-play: Self-evolving vision-language models from im-ages. arXiv preprint arXiv:2511.15661 , 2025b. Huang, C., Yu, W., Wang, X., Zhang, H., Li, Z., Li, R., Huang, J., Mi, H., and Yu, D. R-zero: Self-evolving reasoning llm from zero data. arXiv preprint arXiv:2508.05004 , 2025. 9Adaptive Time Series Reasoning via Segment Selection 
+
+Jing, B., Chen, S., Zheng, L., Liu, B., Li, Z., Zou, J., Wei, T., Liu, Z., Zeng, Z., Qiu, R., Lin, X., Yan, Y., Yu, Q., Fu, D., He, J., and Tong, H. Trqa: Time se-ries reasoning question and answering benchmark. https: //openreview.net/forum?id=ULQt51DRug, 2025. Open-Review dataset. Kim, H., Mok, J., Lee, D., Lew, J., Kim, S., and Yoon, S. Causality-aware contrastive learning for robust mul-tivariate time-series anomaly detection. In International Conference on Machine Learning , 2025. Klissarov, M., Bagaria, A., Luo, Z., Konidaris, G., Precup, D., and Machado, M. C. Discovering temporal struc-ture: An overview of hierarchical reinforcement learn-ing. arXiv preprint arXiv:2506.14045 , 2025. Kong, Y., Yang, Y., Hwang, Y., Du, W., Zohren, S., Wang, Z., Jin, M., and Wen, Q. Time-mqa: Time se-ries multi-task question answering with context enhance-ment. arXiv preprint arXiv:2503.01875 , 2025a. Kong, Y., Yang, Y., Wang, S., Liu, C., Liang, Y., Jin, M., Zohren, S., Pei, D., Liu, Y., and Wen, Q. Position: Em-powering time series reasoning with multimodal llms. 
+
+arXiv preprint arXiv:2502.01477 , 2025b. Langer, P., Kaar, T., Rosenblattl, M., Xu, M. A., Chow, W., Maritsch, M., Verma, A., Han, B., Kim, D. S., Chubb, H., et al. Opentslm: Time-series language models for reasoning over multivariate medical text-and time-series data. arXiv preprint arXiv:2510.02410 , 2025. Lei, P., Song, J., Hao, Y., Chen, T., Zhang, Y., JIA, L., Li, Y., et al. Itformer: Bridging time series and natu-ral language for multi-modal qa with large-scale multi-task dataset. In Forty-second International Conference on Machine Learning , 2025. Li, C., Wu, W., Zhang, H., Xia, Y., Mao, S., Dong, L., Vuli´ c, I., and Wei, F. Imagine while reasoning in space: Multimodal visualization-of-thought. arXiv preprint arXiv:2501.07542 , 2025. Liu, B., Jin, C., Kim, S., Yuan, W., Zhao, W., Kulikov, I., Li, X., Sukhbaatar, S., Lanchantin, J., and Weston, J. Spice: Self-play in corpus environments improves rea-soning. arXiv preprint arXiv:2510.24684 , 2025a. Liu, H., Liu, C., and Prakash, B. A. A picture is worth a thousand numbers: Enabling llms reason about time series via visualization. In Proceedings of the 2025 Con-ference of the Nations of the Americas Chapter of the Association for Computational Linguistics: Human Lan-guage Technologies (Volume 1: Long Papers) , pp. 7486– 7518, 2025b. Liu, H., Liu, C., and Prakash, B. A. A picture is worth a thousand numbers: Enabling llms reason about time series via visualization. In Proceedings of the 2025 Con-ference of the Nations of the Americas Chapter of the Association for Computational Linguistics: Human Lan-guage Technologies (Volume 1: Long Papers) , pp. 7486– 7518, 2025c. Liu, S., Wei, C., Zhou, X., and Chen, H. Spectral-aware reservoir computing for fast and accurate time series classification. In International Conference on Machine Learning , 2025d. Liu, Z., Luo, Y., Li, B., Eldele, E., Wu, M., and Ma, Q. Learning soft sparse shapes for efficient time-series clas-sification. In Proceedings of the 42nd International Con-ference on Machine Learning , pp. 39032–39059, 2025e. Liu, Z., Ni, J., Tang, X., Lau, M. S., Yin, W., and Jin, W. Can large language models adequately perform symbolic reasoning over time series? arXiv preprint arXiv:2508.03963 , 2025f. Luo, Y., Zhou, Y., Cheng, M., Wang, J., Wang, D., Pan, T., and Zhang, J. Time series forecasting as reasoning: A slow-thinking approach with reinforced llms. arXiv preprint arXiv:2506.10630 , 2025. Merrill, M. A., Tan, M., Gupta, V., Hartvigsen, T., and Al-thoff, T. Language models still struggle to zero-shot rea-son about time series. arXiv preprint arXiv:2404.11757 ,2024. Oh, J., Lee, G., Bae, S., Kwon, J.-m., and Choi, E. Ecg-qa: A comprehensive question answering dataset combined with electrocardiogram. Advances in Neural Information Processing Systems , 36:66277–66288, 2023. Pouliou, A., Papageorgiou, V. E., Petmezas, G., Pessoa, D., Paiva, R. P., Maglaveras, N., and Tsaklidis, G. A new approach for sleep stage identification combining hidden markov models and eeg signal processing. Journal of Medical and Biological Engineering , pp. 1–12, 2025. Schulman, J., Wolski, F., Dhariwal, P., Radford, A., and Klimov, O. Proximal policy optimization algorithms. 
+
+arXiv preprint arXiv:1707.06347 , 2017. Shao, Z., Wang, P., Zhu, Q., Xu, R., Song, J., Bi, X., Zhang, H., Zhang, M., Li, Y., Wu, Y., et al. Deepseekmath: Pushing the limits of mathematical reasoning in open language models. arXiv preprint arXiv:2402.03300 ,2024a. Shao, Z., Wang, P., Zhu, Q., Xu, R., Song, J., Bi, X., Zhang, H., Zhang, M., Li, Y., Wu, Y., et al. Deepseekmath: Pushing the limits of mathematical reasoning in open language models. arXiv preprint arXiv:2402.03300 ,2024b. 10 Adaptive Time Series Reasoning via Segment Selection 
+
+Singh, A., Fry, A., Perelman, A., Tart, A., Ganesh, A., El-Kishky, A., McLaughlin, A., Low, A., Ostrow, A., Ananthram, A., et al. Openai gpt-5 system card. arXiv preprint arXiv:2601.03267 , 2025. Sun, X., Zhou, H., and Li, C. Multivariate time series anomaly detection with idempotent reconstruction. In 
+
+The Thirty-ninth Annual Conference on Neural Informa-tion Processing Systems , 2025. Tran, V.-H., Doan, N. P., Zhang, Z., Pham, T. D., Nguyen, P. H., Nguyen, X. H., Vandierendonck, H., Assent, I., and Mai, S. T. Mix: A multi-view time-frequency inter-active explanation framework for time series classifica-tion. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. Wang, H., Su, A., Ren, W., Lin, F., and Chen, W. Pixel reasoner: Incentivizing pixel-space reasoning with curiosity-driven reinforcement learning. arXiv preprint arXiv:2505.15966 , 2025a. Wang, H., Yang, Y., Hu, J., Zhu, M., and Chen, W. V-zero: Self-improving multimodal reasoning with zero annota-tion. arXiv preprint arXiv:2601.10094 , 2026. Wang, Q., Liu, B., Zhou, T., Shi, J., Lin, Y., Chen, Y., Li, H. H., Wan, K., and Zhao, W. Vision-zero: Scalable vlm self-improvement via strategic gamified self-play. arXiv preprint arXiv:2509.25541 , 2025b. Wang, Y., Qiu, Y., Chen, P., Zhao, K., Shu, Y., Rao, Z., Pan, L., Yang, B., and Guo, C. Towards a general time series forecasting model with unified representation and adaptive transfer. In Proceedings of the 42nd Interna-tional Conference on Machine Learning , volume 267, pp. 64127–64151, 2025c. Xie, Z., Li, Z., He, X., Xu, L., Wen, X., Zhang, T., Chen, J., Shi, R., and Pei, D. Chatts: Aligning time series with llms via synthetic data for enhanced understanding and reasoning. arXiv preprint arXiv:2412.03104 , 2024. Yang, A., Li, A., Yang, B., Zhang, B., Hui, B., Zheng, B., Yu, B., Gao, C., Huang, C., Lv, C., et al. Qwen3 techni-cal report. arXiv preprint arXiv:2505.09388 , 2025a. Yang, Y., Zhang, D., Liang, Y., Lu, H., Chen, G., and Li, H. Not all data are good labels: On the self-supervised labeling for time series forecasting. arXiv preprint arXiv:2502.14704 , 2025b. Yang, Z., Shen, W., Li, C., Chen, R., Wan, F., Yan, M., Quan, X., and Huang, F. Spell: Self-play reinforce-ment learning for evolving long-context language mod-els. arXiv preprint arXiv:2509.23863 , 2025c. Yu, Q., Zhang, Z., Zhu, R., Yuan, Y., Zuo, X., Yue, Y., Dai, W., Fan, T., Liu, G., Liu, L., et al. Dapo: An open-source llm reinforcement learning system at scale. arXiv preprint arXiv:2503.14476 , 2025a. Yu, W., Liang, Z., Huang, C., Panaganti, K., Fang, T., Mi, H., and Yu, D. Guided self-evolving llms with minimal human supervision. arXiv preprint arXiv:2512.02472 ,2025b. Yue, Z., Upasani, K., Yang, X., Ge, S., Nie, S., Mao, Y., Liu, Z., and Wang, D. Dr. zero: Self-evolving search agents without training data. arXiv preprint arXiv:2601.07055 , 2026. Zhang, J., Feng, L., Guo, X., Wu, Y., Dong, Y., and Xu, D. Timemaster: Training time-series multimodal llms to reason via reinforcement learning. arXiv preprint arXiv:2506.13705 , 2025a. Zhang, R., Xu, Z., Ma, C., Yu, C., Tu, W.-W., Tang, W., Huang, S., Ye, D., Ding, W., Yang, Y., et al. A survey on self-play methods in reinforcement learning. arXiv preprint arXiv:2408.01072 , 2025b. Zhang, X., Gao, Z., Zhang, B., Li, P., Zhang, X., Liu, Y., Yuan, T., Wu, Y., Jia, Y., Zhu, S.-C., et al. Chain-of-focus: Adaptive visual search and zoom-ing for multimodal reasoning via rl. arXiv preprint arXiv:2505.15436 , 2025c. Zhao, A., Wu, Y., Yue, Y., Wu, T., Xu, Q., Lin, M., Wang, S., Wu, Q., Zheng, Z., and Huang, G. Absolute zero: Re-inforced self-play reasoning with zero data, 2025. URL https://arxiv. org/abs/2505.03335 , 2025. 11 Adaptive Time Series Reasoning via Segment Selection 
+
+A. Controller and Reasoner Objectives and Rewards 
+
+A.1. Controller Advantages 
+
+We form group-relative advantages (Shao et al., 2024a) { ˆA(g) 
+
+> ctl
+
+}Gg=1 as: 
+
+μctl = 1
+
+G
+
+> G
+
+X
+
+> g=1
+
+r(g) 
+
+> ctl
+
+, σctl =
+
+vuut 1
+
+G
+
+> G
+
+X
+
+> g=1
+
+(r(g) 
+
+> ctl
+
+− μctl )2, (14) 
+
+ˆA(g) 
+
+> ctl
+
+=
+
+
+
+0, σctl < ϵ, r(g) 
+
+> ctl
+
+− μctl 
+
+σctl + ϵ , otherwise, (15) where ϵ is a small constant for numerical stability. 
+
+A.2. Controller Objective 
+
+Let {o(g)
+
+> ctl ,i,t
+
+}T (g) 
+
+> i
+> t=1
+
+be the sequence of the T (g) 
+
+> i
+
+total tokens in the Controller output (u(g) 
+
+> i
+
+, d (g) 
+
+> i
+
+, s (g) 
+
+> i
+
+) at round i of interaction trajectory τ (g). For a batch of B questions, the Controller objective function is defined as 
+
+Jctl (θ) = 1
+
+B
+
+> B
+
+X
+
+> b=1
+
+1
+
+G
+
+> G
+
+X
+
+> g=1
+
+1
+
+L(g)
+
+> L(g)
+
+X
+
+> i=1
+
+1
+
+T (g) 
+
+> iT(g)
+> i
+
+X
+
+> t=1
+
+ˆA(g) 
+
+> ctl
+
+log πθ
+
+
+
+o(g) 
+
+> ctl ,i,t
+
+| qb, {o(g) 
+
+> ctl ,i,j
+
+}t−1
+
+> j=1
+
+
+
+(16) 
+
+A.3. Reasoner Advantages 
+
+We form group-relative advantages { ˆA(g∗,n ) 
+
+> rsn
+
+}Nn=1 as: 
+
+μrsn = 1
+
+N
+
+> N
+
+X
+
+> n=1
+
+r(g∗,n ) 
+
+> rsn
+
+, σrsn =
+
+vuut 1
+
+N
+
+> N
+
+X
+
+> n=1
+
+(r(g∗,n ) 
+
+> rsn
+
+− μrsn )2, (17) 
+
+ˆA(g∗,n ) 
+
+> rsn
+
+=
+
+
+
+0, σrsn < ϵ, r(g∗,n ) 
+
+> rsn
+
+− μrsn 
+
+σrsn + ϵ , otherwise. (18) 
+
+A.4. Reasoner Objective 
+
+Let {o(n)
+
+> rsn ,t
+
+}T (n) 
+
+> t=1
+
+be the sequence of the T (n) total tokens in the Reasoner output (a(g∗,n ) 
+
+> L(g∗)
+
+, ˆy(g∗,n ) 
+
+> L(g∗)
+
+) at round L(g∗) of Reasoner trajectory τ (g∗,n ) 
+
+> rsn
+
+. For a batch of B questions, the Reasoner objective function is defined as 
+
+Jrsn (θ) = 1
+
+B
+
+> B
+
+X
+
+> b=1
+
+1
+
+N
+
+> N
+
+X
+
+> n=1
+
+1
+
+T (n) 
+
+> T(n)
+
+X
+
+> t=1
+
+ˆA(n) 
+
+> rsn
+
+log πθ
+
+
+
+o(n) 
+
+> rsn ,t
+
+| qb, {o(n) 
+
+> rsn ,j
+
+}t−1
+
+> j=1
+
+
+
+− DKL (πθ || πref ) (19) where the reference policy πref is the reasoning model policy after SFT but before RL post-training. 
+
+A.5. Combined Objective 
+
+The two objectives above are aggregated into a joint objective, which is maximized via gradient ascent: 
+
+J = Jctl + Jrsn . (20) 12 Adaptive Time Series Reasoning via Segment Selection 
+
+A.6. Format Reward 
+
+We introduce a format reward to ensure that both the Controller and the Reasoner produce well-structured outputs that follow the required interaction protocol. The format reward penalizes malformed, ambiguous, or incomplete responses and assigns a hard failure to critical violations. 
+
+Reasoner Format Reward. Given a reasoner completion c, we compute a scalar format score between -1 and 1. The score starts from 1 and is reduced according to the following cases: • Reasoning block: The completion must contain exactly one <think> block. Missing or multiple reasoning blocks incur a penalty. • Answer block: The completion must contain exactly one non-empty <answer> block. Missing answers constitute a critical violation. • Separation: The <answer> block must not appear inside the <think> block; violations are penalized. If a critical violation occurs (for example, missing answer), the format score becomes negative, triggering a hard failure. 
+
+Controller Format Reward. Let the controller produce a sequence of responses where the final response must terminate the interaction. Each controller iteration receives a per-step format score. The trajectory level controller format score is computed by averaging the per iteration scores, unless a critical violation occurs. Specifically, the controller must satisfy the following rules: • Decision exclusivity: Each step must contain exactly one decision: either a segment selection or an acceptance. • Iteration structure: All non-final steps must issue a valid segment selection call, while the final step must accepts the reasoner’s answer as final. • segment selection validity: segment selections must be valid JSON and specify a time-series segment with valid bounds. If any step violates these constraints, a violation indicator is triggered and the controller format score is set to −1.
+
+Hard Format Failure. For both roles, any negative format score results in a hard penalty (-1). 
+
+B. Datasets 
+
+Table 4. Overview of datasets.                                                         
+
+> Dataset Task # Train # Val # Test TS Len. ( μ±σ)Domain
+> RCW Binary Choice 19,135 4,405 226 4000 ±0Nature ECG QA Binary Choice 16,663 1,999 202 1000 ±0ECG SLEEP QA Multi Choice 7,268 1,817 204 1500 ±0EEG TSQA Multi Choice 7,243 1,811 207 22 ±5Web/Nature/Healthcare/Energy TRQA Mixed (T/F, Multi Choice) 17,241 2,487 200 136 ±65 Web/Transport/Finance/Energy/Sales/Nature ETI Multi Choice 11,778 1,000 200 407 ±353 Sales/Energy/Entertainment/Tech/Transport/Health/Nature/Education
+
+We follow each benchmark’s standard evaluation protocol, with minor restrictions for consistency across datasets. 
+
+TSQA (Kong et al., 2025a) is a large-scale time-series question answering dataset composed of real and synthetic data, designed to evaluate models’ ability to understand and reason about temporal patterns beyond numeric prediction. We use its multiple-choice questions defined over univariate time series. 
+
+RCW is a univariate acoustic time-series dataset within the TimerBed benchmark (Liu et al., 2025b) that evaluates sim-ple deterministic reasoning by requiring models to infer the presence of a North Atlantic right whale call from tempo-ral–spectral structure in the signal. 13 Adaptive Time Series Reasoning via Segment Selection 
+
+ECG-QA (Oh et al., 2023) is a clinical time-series question answering dataset designed to evaluate medical reasoning over ECG signals, consisting of 10-second 12-lead ECG recordings paired with clinical context. In this work, we only use binary (true/false) questions involving a single lead, requiring models to reason over univariate cardiac time series. 
+
+Sleep-QA (Langer et al., 2025) is a clinical time-series question answering dataset designed to evaluate reasoning over sleep-stage dynamics, consisting of 30-second single-channel electroencephalogram (EEG) recordings annotated with sleep stages. Following prior work(Pouliou et al., 2025; Langer et al., 2025), non-REM stages 3 and 4 are merged, yielding five classes: Wake, REM, Non-REM1, Non-REM2, and Non-REM3. 
+
+TRQA (Jing et al., 2025) is a large-scale time-series reasoning benchmark; we use its characterization task, which evaluates reasoning about intrinsic properties of univariate time series through true/false and multiple-choice questions. 
+
+Etiological Reasoning (ETI) (Merrill et al., 2024) is a time-series reasoning dataset that evaluates causal interpretation by requiring models to identify the most plausible generative scenario for a given univariate time series via multiple-choice questions. The original dataset consists of 6,978 synthetic time series; to obtain sufficient data for both RL and SFT, we additionally use a subset of the single–time-series (1TS) dataset released by the authors and adapt it to the etiological reasoning format using their provided code. 
+
+C. SFT CoT Data Creation 
+
+Supervised fine-tuning reasoning traces follow a structured, interleaved format that alternates between natural-language reasoning and explicit time-series segment selection. Each trace consists of multiple reasoning steps, where intermediate reasoning motivates the selection of informative temporal segments, followed by a final answer. To construct these traces, we prompted GPT-5 to answer time-series questions conditioned on rendered visualizations. The resulting responses were then transformed into structured reasoning traces with explicit segment-selection steps and post-processed to ensure correctness, structural consistency, and adherence to the template. A simplified example is shown in Figure 1. Figure 2 presents the prompt used to generate the raw responses from which the structured reasoning traces were derived.                                                                                                                                                  
+
+> Example 1. SFT reasoning trace template.
+> <think> reasoning ... </think> <timeseries_selection_tool> [x1, y1] </timeseries_selection_tool> <think> reasoning ... </think> <timeseries_selection_tool> [x2, y2] </timeseries_selection_tool> <think> reasoning ... </think> <answer> A/B/C/D/E</answer>
+> Example 2. SFT CoT curation example.
+> You are aworld-class expert in time-series reasoning and analysis. You are given: -Atime series (indexed from 0to {ts_len -1}) -Aquestion about the time series -Statistics about the time series -The correct answer. Your task has two parts: (1) Identify the specific contiguous segments of the time series that are essential for solving the question. ,→
+> -You may choose at most 3segments. -Each segment must be at least 8time steps long (inclusive). -Segment boundaries must lie within [0, {ts_len -1}]. -Only include segments that are strictly necessary. If the entire series is needed, use asingle segment [0, {ts_len -1}]. ,→
+> (2) Using only the identified segments and the metadata, provide aconcise, step-by-step explanation that leads to the correct answer. ,→
+
+14 Adaptive Time Series Reasoning via Segment Selection 
+
+Critical explanation constraint: - For each segment, you MUST separate: (a) The reasoning objective for selecting the segment, and (b) The analysis of what the segment reveals. - The sentence explaining why a segment is chosen MUST NOT describe, summarize, or analyze the values, patterns, trends, or variability within that segment, but explain the rationale and how to approach the question correctly. 
+
+> ,→
+> ,→
+
+- All observations and analyses of the segment MUST appear only in the subsequent sentence. ,→
+
+Important constraints: - Base all explanations strictly on the observable behavior and statistical properties of the time series. ,→
+
+- Do NOT use external context, prior knowledge of labels, or textual descriptions of answer options. ,→
+
+- Do NOT mention or allude to any answer option or class label until the final answer line. ,→
+
+Your response MUST follow exactly the structure below, with no additional sections or deviations: ,→
+
+Important segments: Segment 1: [x1, y1] Explanation: First, to solve the question, I need to <state the reasoning objective>. For this purpose, I'm choosing segment [x1, y1] because it is required to <state the logical purpose this segment serves, without describing what is observed>. ,→
+
+From this segment, I conclude that <state the key insight derived from analyzing this segment>. ,→
+
+(If needed) Segment 2: [x2, y2] Explanation: Next, I need to <state the reasoning objective>. For this purpose, I'm choosing segment [x2, y2] is chosen because it is required to <state the logical purpose this segment serves, without describing what is observed>. 
+
+> ,→
+> ,→
+
+From this segment, I conclude that <state the key insight derived from analyzing this segment>. ,→
+
+(If needed) Segment 3: [x3, y3] Explanation: Finally, I need to <state the reasoning objective>. For this purpose, I'm choosing segment [x3, y3] is chosen because it is required to <state the logical purpose this segment serves, without describing what is observed>. 
+
+> ,→
+> ,→
+
+From this segment, I conclude that <state the key insight derived from analyzing this segment>. ,→
+
+Final conclusion: One or two sentences that combine the insights from the selected segments to justify the correct answer, expressed purely in terms of time-series behavior. ,→
+
+Answer: XAnswer formatting rules: - The final line must be exactly: "Answer: X" - X must be a single capital letter: - A/B/C/D for multiple-choice questions - A/B for true/false questions - The final line must contain nothing except the letter. 
+
+15 Adaptive Time Series Reasoning via Segment Selection 
+
+Question: {question} {option_block} Additional data you may use (metadata): Summary statistics: - Mean: {mean} - Min: {min_ts} - Max: {max_ts} - Std: {std} Time series length: {ts_len} Correct answer: {correct_ans} 
+
+D. Supervised Fine-Tuning Configuration 
+
+Prior to reinforcement learning, we train ARTIST through large-scale pretraining following the procedure described in (Xie et al., 2024), enabling joint modeling of time-series representations and natural language inputs. For each benchmark, we then independently perform supervised fine-tuning using LoRA adapters (rank 8, α = 16 ) for up to 5 epochs, with early stopping based on validation performance. 
+
+E. RL Training Configuration 
+
+We train ARTIST using fully on-policy reinforcement learning with full-parameter fine-tuning. Optimization is performed using AdamW with learning rate 1 × 10 −6. Each update processes a batch of 64 question and time-series pairs. For each pair, G = 6 interaction trajectories are sampled for the controller, and for each trajectory, N = 6 final-round reasoner rollouts are generated. During rollout generation, we use a controller temperature of 1.0, a reasoner temperature of 0.7,and top-p sampling with p = 0 .95 . We apply KL regularization only to the reasoner objective with a fixed coefficient 
+
+β = 0 .002 , using the SFT-initialized model as the reference policy πref . Training runs for one epoch over the dataset, and experiments are conducted on four NVIDIA H100 GPUs. 
+
+F. Prompts 
+
+Example 3. SFT Prompt. 
+
+You are a time series expert. Analyze ONLY the given time series data and answer the question. ,→
+
+# Output Schema <think> your reasoning and how you came to the answer.</think> <answer> [Direct answer ONLY - the first line must be exactly one letter from the set of available options.] ,→
+
+</answer> # Rules (MANDATORY) - No text outside <think> and <answer>. - In <think>, explain your reasoning and reference the time series. - In <answer>, the first line must be exactly one letter from the set of available options. ,→
+
+# Time Series ### Segment 0: Timesteps [0, {ts_len}] <TS_DATA> # Question {context} 
+
+Example 4. Reasoner Prompt. 
+
+16 Adaptive Time Series Reasoning via Segment Selection 
+
+You are a time series expert. Analyze ONLY the given time series data and answer the question. ,→
+
+# Output Schema <think>One-two sentences describing your reasoning and how you came to the answer.</think> ,→
+
+<answer> [Direct answer ONLY - the first line must be exactly one letter. </answer> # Rules (MANDATORY) - No text outside <think> and <answer>. - In <think>, explain you reasoning, how you came to the answer, and reference segments by number (e.g., "Seg 2 rises ˜0.3 at t=150-200"). ,→
+
+- if evidence is insufficient, state the most likely answer and reflect uncertainty (consicely. i.e I'm not sure about the answer because...). ,→
+
+- In <answer>: - first line is exactly A, B, C, or D. # Time Series Segments {segments_section} # Question {question} 
+
+Example 5. Controller Prompt. 
+
+You are a time series analysis expert. Your task is to decide which time series segments an LLM needs to accurately answer a question related to a time series. ,→
+
+## Instructions 1. You receive the FULL time series embedding, the question, the segments that were given to the LLM so far, and the LLM's answer. ,→
+
+2. Review the question and the LLM's answer, and analyze the full time series embedding. ,→
+
+3. Evaluate if the LLM's answer is accurate and if the available segments provide sufficient information to answer the question accurately - you can try answering the question yourself to understand what is missing. 
+
+> ,→
+> ,→
+
+4. Make ONE of two decisions: - Retrieve an additional segment: If you think that the answer is not accurate and/or there is critical information missing, use the tool to get an additional segment of time series data for the LLM. 
+
+> ,→
+> ,→
+
+- Accept the LLM's answer as final: If you think the LLM's answer is accurate and the information provided is sufficient. ,→
+
+## Full Time Series Embedding <TS_DATA> ## Current Status - Time series length: X timesteps - Question: {question} - Segments provided to the LLM so far: {CURR_SEG_LIST_TEXT} LLM's PREVIOUS ANSWER: {REASONER_ANS} ## Output Format You MUST respond in ONE of the following two formats: Option 1: Retrieve an additional segment Make a tool call asking for a specific segment of the time series data: 
+
+17 Adaptive Time Series Reasoning via Segment Selection 
+
+<think> includes your concise reasoning for why you are retrieving this segment and what information is missing </think> ,→
+
+<tool_call> {{"name": "timeseries_selection_tool", "arguments": {{"ts_seg": [start, end]}}}} </tool_call> Option 2: Accept the LLM's answer as final You should answer with the following format: <think> includes your concise reasoning for why you are accepting the answer </think> ,→
+
+<answer>ACCEPT</answer> ## Important Rules 1. You can only call 'timeseries_selection_tool' ONCE per turn 2. Specify segments as integers: [100, 200] means timesteps 100 to 200 inclusive 4. Do NOT request segments outside valid range [0, {ts_len - 1}] 5. If you output "ACCEPT", the process will immediately conclude with the LLM's current answer ,→
+
+Make your decision now: 
+
+18

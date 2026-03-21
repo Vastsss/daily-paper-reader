@@ -1,0 +1,1805 @@
+Title: Incremental Transformer Neural Processes
+
+URL Source: https://arxiv.org/pdf/2602.18955v1
+
+Published Time: Tue, 24 Feb 2026 01:47:20 GMT
+
+Number of Pages: 30
+
+Markdown Content:
+# Incremental Transformer Neural Processes 
+
+Philip Mortimer * 1 Cristiana Diaconu * 1 Tommy Rochussen 2 Bruno Mlodozeniec 1 Richard E. Turner 1 3 
+
+## Abstract 
+
+Neural Processes (NPs), and specifically Trans-former Neural Processes (TNPs), have demon-strated remarkable performance across tasks rang-ing from spatiotemporal forecasting to tabular data modelling. However, many of these applica-tions are inherently sequential, involving contin-uous data streams such as real-time sensor read-ings or database updates. In such settings, mod-els should support cheap, incremental updates rather than recomputing internal representations from scratch for every new observation—a capa-bility existing TNP variants lack. Drawing inspi-ration from Large Language Models, we intro-duce the Incremental TNP ( incTNP ). By lever-aging causal masking, Key-Value (KV) caching, and a data-efficient autoregressive training strat-egy, incTNP matches the predictive performance of standard TNPs while reducing the computa-tional cost of updates from quadratic to linear time complexity. We empirically evaluate our model on a range of synthetic and real-world tasks, including tabular regression and temper-ature prediction. Our results show that, surpris-ingly, incTNP delivers performance compara-ble to—or better than—non-causal TNPs while unlocking orders-of-magnitude speedups for se-quential inference. Finally, we assess the con-sistency of the model’s updates—by adapting a metric of “implicit Bayesianness”, we show that 
+
+incTNP retains a prediction rule as implicitly Bayesian as standard non-causal TNPs, demon-strating that incTNP achieves the computational benefits of causal masking without sacrificing the consistency required for streaming inference. 1
+
+> *
+
+Equal contribution 1University of Cambridge 2Technical University of Munich 3Alan Turing Institute. Correspondence to: Philip Mortimer <pm846@cam.ac.uk >, Cristiana Diaconu 
+
+<cdd43@cam.ac.uk >.Preprint. Under review. 
+
+> 1
+
+Code provided at https://github.com/philipmortimer/incTNP-code. 
+
+## 1. Introduction 
+
+The dominant paradigm in machine learning involves train-ing models on static datasets collected up to a fixed point in time. While effective in offline settings, this approach faces significant challenges in real-world streaming sce-narios where data arrive sequentially and continuously. In such cases, a model should be able to quickly integrate new observations to improve predictions. This necessitates architectures that support cheap, incremental updates, al-lowing for immediate adaptation without the computational overhead of reprocessing the entire history. Amongst models that output predictions conditioned on past data (the context set), approaches such as Neural Processes (NP; Garnelo et al. (2018a;b); Nguyen & Grover (2022)) and the closely-related Prior-Fitted Networks (PFNs; M ¨uller et al. (2022)) have shown great promise. They have been successfully applied to tasks such as weather modelling (An-dersson et al., 2023; Allen et al., 2025) and tabular data pre-diction (Hollmann et al., 2025b). Crucially, these domains are inherently suited for streaming workflows, for example integrating real-time measurements from weather sensors or handling continuous updates in active databases. However, existing NP and PFN implementations are not well-suited to handle such live data streams efficiently, as they lack the ability to perform cheap incremental updates. The most pop-ular variants rely on the transformer architecture (Vaswani et al., 2017), which, when applied na ¨ıvely, incurs a quadratic computational cost for every new observation, making high-frequency updates prohibitively expensive. In this work, we address this computational bottleneck by leveraging advancements from causally masked Large Language Models (LLMs) to introduce an incrementally-updateable TNP, the incTNP . By incorporating causal masking into the self-attention mechanism and utilising Key-Value (KV) caching, incTNP enables efficient incremental context updates with linear time complexity. We also intro-duce a dense autoregressive training strategy (referred to as 
+
+incTNP-Seq ) that amortises learning across all context sizes in a single forward pass. Our experiments show that when trained with this data-efficient scheme, incTNP often outperforms standard TNP models trained on a compute-matched budget, while unlocking the ability to perform high-frequency updates in real-time streaming scenarios. 1
+
+> arXiv:2602.18955v1 [cs.LG] 21 Feb 2026 Incremental Transformer Neural Processes
+
+This finding is interesting, indicating that causal masking has surprisingly little effect on the quality of the predictions compared to the full bi-directional attention used in standard TNPs. We further investigate the extent to which causal masking compromises permutation invariance with respect to the context set, a key property of NPs. We adapt the metric of implicit Bayesianness proposed in Mlodozeniec et al. (2024), applying it for the first time to NPs in order to quantify this effect. Comparing the prediction rules of 
+
+incTNP against the standard TNP ( TNP-D ; Nguyen & Grover 2022) in streaming settings, our analysis reveals that, despite its causal structure, incTNP exhibits a degree of im-plicit Bayesianness comparable to the permutation-invariant baseline, confirming that incTNP secures the computa-tional benefits of causal masking without compromising probabilistic consistency. We validate our approach across both factorised and autore-gressive (AR) deployment modes (see Figure 1). The latter is particularly relevant when we expect correlations between target points, yielding state-of-the-art performance (Bru-insma et al., 2023). However, AR prediction creates a com-putational bottleneck: standard TNPs must re-process the entire context history for every generated target. In a stream-ing setting, where this expensive inference loop repeats at every update step, standard TNPs become prohibitively slow. We demonstrate that incTNP overcomes this barrier, ren-dering high-fidelity AR inference feasible even in streaming scenarios. We summarise our key contributions: 1. We propose the Incremental TNP ( incTNP ), a Trans-former NP variant that leverages causal masking and KV caching to enable linear-time context updates, unlocking orders-of-magnitude speedups for streaming predictions tasks, in both factorised and AR deployment mode. 2. We demonstrate on both synthetic benchmarks and com-plex real-world tasks—including environmental temper-ature prediction and tabular regression—that by employ-ing a dense autoregressive training strategy, incTNP 
+
+matches or exceeds the predictive performance of stan-dard TNPs under equal training budgets. 3. We investigate the impact of causal masking on predic-tive consistency using a novel implicit Bayesianness metric. We show that incTNP retains a prediction rule comparable in Bayesian consistency to the stan-dard permutation-invariant TNP-D , confirming that the model achieves computational scalability without sacri-ficing probabilistic coherency. 
+
+## 2. Background 
+
+We consider a supervised meta-learning setting with in-put and output spaces X = RDx and Y = RDy , where the model needs to adapt to new prediction tasks on the tar-get set Dt based on some observed, context data Dc. Let 
+
+|D c| = Nc and |D t| = Nt points, and Xc ∈ X Nc , Yc ∈ Y Nc
+
+and Xt ∈ X Nt , Yt ∈ Y Nt denote the inputs and outputs for 
+
+Dc and Dt. Within the meta-learning setup, a single task is defined as ξ = ( Dc, Dt) = (( Xc, Yc), (Xt, Yt)) .
+
+2.1. Neural Processes 
+
+Neural processes (NPs; Garnelo et al. 2018a;b) define a family of neural-network-based mappings from context sets 
+
+Dc = {(xcn, ycn)}Nc 
+
+> n=1
+
+to predictive distributions at target locations Xt. Viewed through the lens of stochastic pro-cess modelling (Garnelo et al., 2018b), NPs are designed to respect consistency under marginalisation and permuta-tion given a fixed context set . However, as noted by Xu et al. (2023), this design implies that NP variants typically lack conditional consistency : the distribution of a sequence 
+
+yt 
+
+> 1: Nt
+
+conditioned on an initial context need not match the distribution obtained if the points were predicted sequen-tially and appended to the context after each iteration (Kim et al., 2019). This distinction is particularly relevant in streaming settings, where the context set is not fixed but grows dynamically over time. NPs are also tightly linked to Prior-Fitted Networks (PFNs; M ¨uller et al. 2022), which have proven effective in domains such as tabular data prediction (Hollmann et al., 2025a). While PFNs share the same meta-learning frame-work with NPs, they are generally trained on synthetic data and deployed on real-world tasks, necessitating robust sim-to-real capabilities. 
+
+Conditional Neural Processes (CNPs) Within the NP family, we focus on Conditional NPs (CNPs; Garnelo et al. 2018a), which approximate the predictive distribution by assuming factorisation over target points given the context representation: 
+
+p(Yt|Xt, Dc) = 
+
+> Nt
+
+Y
+
+> n=1
+
+pθ (ytn|xtn, Dc) (1) CNPs are trained in a meta-learning setup by max-imising the expected log-likelihood over tasks: 
+
+LML (θ) = Ep(ξ)
+
+ P Nt 
+
+> n=1
+
+log pθ (ytn|xtn, Dc). While efficient, the factorisation assumption prevents CNPs from modelling correlations between target points. 
+
+Autoregressive Deployment To capture dependencies without altering the training objective, CNPs can be de-ployed in AR mode at test time (Bruinsma et al., 2023)—the model predicts one target point at a time, samples a value, and appends it to the context set for the next prediction: 
+
+p(Yt|Xt; Dc) = QNt 
+
+> n=1
+
+pθ (ytn|xtn, Dc ∪ (xtj , ytj )n−1 
+
+> j=1
+
+) (2) 2Incremental Transformer Neural Processes Total Cost:                             
+
+> Total Cost:
+> Total Cost:
+> Total Cost:
+> Figure 1. Computational complexity analysis in the streaming setting (see theoretical analysis in Appendix F). Top : As the data stream grows (steps 1, . . . N ), the model updates its context Cand predicts targets T. In AR mode, the model must perform Ntforward passes (FP) at every step, amplifying the computational burden. Bottom Right : A comparison of the FP mechanics. Standard TNP must re-encode the entire context history at every step (cost O(N2)), whereas incTNP leverages KV caching to process only the incremental update (cost O(N)). Bottom Left : The cumulative cost over a stream of length N. Because TNP recomputes the full attention matrix repeatedly, its total cost scales cubically ( O(N3)). incTNP reduces this to quadratic scaling ( O(N2)), making it the only viable option for long streams, particularly when combined with the expensive AR decoding loop.
+
+While empirically strong, this approach breaks consistency under permutation (Bruinsma et al., 2023) and incurs a high computational cost—a full forward pass for each target point—making it prohibitive for real-time streaming. 
+
+2.2. Transformer Neural Processes (TNPs) 
+
+Transformer-based architectures (Nguyen & Grover, 2022; M ¨uller et al., 2024) have emerged as a powerful backbone for NPs due to their natural handling of set-valued inputs. In a standard TNP, context and target inputs are tokenised into representations Zc 
+
+> 0
+
+and Zt
+
+> 0
+
+. These are processed via alternat-ing layers of Multi-Head Self-Attention (MHSA) on the con-text and Multi-Head Cross-Attention (MHCA) from context to targets: Ztl = MHCA (Ztl−1, MHSA (Zcl−1)) . The Diag-onal TNP ( TNP-D ; Nguyen & Grover 2022) factorises the predictive distribution similar to a CNP. However, because the self-attention mechanism MHSA (Zc) scales quadrati-cally with the number of context points and must be recom-puted whenever the context changes, TNP-D is ill-suited for incremental learning or streaming data. 
+
+2.3. Efficient Incremental Updates via Causal Masking 
+
+Outside the NP literature, Large Language Models (LLMs) have established efficient protocols for incremental se-quence processing. Two key mechanisms enable this: 1) 
+
+Masked Attention , which restricts tokens to attend only to their predecessors, ensuring causality; and 2) KV Caching ,which stores the Key and Value matrices of past tokens to prevent recomputation. Together, these reduce the inference cost of appending a new token from O(N 2) to O(N ) per step (or even O(1) , depending on implementation) (Pope et al., 2022; Katharopoulos et al., 2020). In this work, we adapt these mechanisms to the NP framework to enable efficient streaming updates. 
+
+## 3. Related Work 
+
+3.1. Architectures for Neural Processes 
+
+While early NP architectures relied on efficient aggregation mechanisms like DeepSets (Zaheer et al., 2017; Garnelo et al., 2018a) or convolutions (Gordon et al., 2020; Bru-insma et al., 2023), transformers have become the state-of-the-art for modelling complex relationships in data (Nguyen & Grover, 2022; Ashman et al., 2025). Despite their repre-sentational power, standard TNPs suffer from the quadratic cost of attention. Various works have proposed linear-time or sub-quadratic approximations for NPs (Feng et al., 2023; Lee et al., 2019; Ashman et al., 2025), often by summaris-ing the context representation into a reduced set of pseudo-tokens. A prominent example is the Latent Bottlenecked Attention NP ( LBANP ; Feng et al. 2023), which is used as a baseline in this work. However, these methods typically require re-encoding the full context for each update or are de-signed for static context sets, rendering them inefficient for streaming scenarios where the context grows continuously. 
+
+3.2. Incremental Updates in Neural Processes 
+
+The challenge of efficient autoregression in NPs has re-cently been addressed by Hassan et al. (2025). Their work introduces a causal autoregressive buffer to enable cheaper AR sampling. However, their motivation differs fundamen-tally from ours: they focus on correlated target prediction 3Incremental Transformer Neural Processes 
+
+rather than streaming data adaptation. Consequently, their architecture separates a fixed initial context from a dynamic buffer, a design that becomes unnatural in streaming settings where all data arrive sequentially. To handle infinite streams, their buffer would require periodic merging and re-encoding, reintroducing computational bottlenecks. In contrast, our 
+
+incTNP applies causal masking uniformly across the entire stream, enabling O(N ) updates indefinitely without buffers. Furthermore, we provide the first quantitative analysis of how causal masking affects the consistency of the prediction rule implied by the model. 
+
+3.3. Streaming Prediction and Implicit Bayesianness 
+
+In streaming settings, maintaining coherent probabilistic updates is crucial. Gaussian Processes (GPs) (Rasmussen & Williams, 2006) offer a gold standard for coherent Bayesian updates but scale poorly ( O(N 3)). While sparse GP meth-ods (Bui et al., 2017; Stanton et al., 2021) allow for online updates, they often sacrifice consistency due to their ap-proximations—such as the structured kernel interpolation approximation in Stanton et al. 2021. Furthermore, they lack the meta-learning capabilities of NPs, often struggle in higher-dimensional settings, and generally incur higher inference costs. Since NPs with dynamic contexts (or causal masking) are not strictly consistent stochastic processes, it is vital to assess how coherent their predictions are. Mlodoze-niec et al. (2024) recently proposed a metric of implicit Bayesianness , quantifying how closely a prediction rule adheres to exchangeability—a proxy for being implicitly Bayesian (and hence rational in updating posterior beliefs based on new evidence). This is achieved by permuting the data uniformly at random and computing the variance of the log-joint predictive distribution over a set of target variables across these permutations. We extend this analysis by proposing an alternative metric, and apply it for the first time in the context of NPs to assess the impact of the causal masking mechanism on implicit Bayesianness. 
+
+3.4. Foundation Models for Tabular Data 
+
+Our work is also relevant to the growing field of Foun-dation Models for structured data. Prior-Fitted Networks (PFNs; M ¨uller et al. 2022; Hollmann et al. 2025a) and time-series foundation models (Moroshan et al., 2025) share the in-context learning paradigm of NPs. While highly effec-tive on small datasets, these models often struggle with large historical contexts due to the quadratic attention costs. In real-world applications where data accumulate contin-uously—such as clinical monitoring or financial forecast-ing—our efficient incremental architecture offers a path to scaling these foundation models to massive, evolving datasets without discarding historical information. 
+
+## 4. Incremental Transformer Neural Processes 
+
+In this section, we outline the architecture of the proposed Incremental Transformer Neural Process ( incTNP ). This novel member of the NP family introduces a causal struc-ture to the standard TNP, enabling linear-time context up-dates via KV caching while preserving the expressivity of softmax-based attention. 
+
+4.1. Causally Masked Self-Attention 
+
+To enable efficient updates without recomputing the entire context, we introduce causal masking into the TNP encoder. By enforcing a triangular mask M causal (where token i at-tends only to tokens j ≤ i) and utilising KV caching to store past representations, we decouple historical data from future observations. This allows incTNP to update the context by processing only the newly arrived datapoint. The update at layer l becomes: 
+
+Zcl = MHCA  Zcl−1, M-MHSA (Zcl−1, M causal ) , (3) where M-MHSA denotes Masked Multi-Head Self-Attention. This mechanism reduces the marginal computa-tional cost of an incremental update from O(N 2 
+
+> c
+
+) to O(Nc),enabling scalable streaming inference. 
+
+4.2. Efficient training stategy 
+
+Standard CNPs are trained via a meta-learning objective that approximates the expected predictive log-probability over random tasks: Eξ∼p(ξ)
+
+ P Nt 
+
+> n=1
+
+log pθ (ytn|xtn, Dc). In this regime, gradients are computed for a fixed context size 
+
+Nc per task, potentially leading to high variance and inef-ficient sample usage. Inspired by LLM training, we pro-pose a dense autoregressive training strategy, applied in the model termed incTNP-Seq . Instead of partitioning data into disjoint context and target sets, we treat the data as a single sequence Dseq = [( x1, y1), . . . , (xN , yN )] . We construct two parallel streams for the transformer differenti-ated through a binary flag: a “context” stream Zc, seq and a “target” stream Zt, seq . This change requires application of causal masking not only in the self-attention blocks (as in Equation 3) but also in the cross-attention blocks (MHCA). The target representation update at layer l becomes: 
+
+Ztl = M-MHCA  Ztl−1, M-MHSA (Zcl−1, M causal ), M causal  .
+
+(4) By masking the MHCA, we enforce that the prediction for the n-th target yn relies solely on the context history 
+
+(x1: n, y1: n), effectively computing the loss for every possi-ble prefix context simultaneously in a single forward pass. This dense supervision signal amortises the cost of train-ing across all context sizes, improving data efficiency and generalisation. 4Incremental Transformer Neural Processes 
+
+4.3. Test-time Computational Complexity 
+
+We demonstrate the efficiency gains of the incTNP family by analysing a streaming scenario with a growing context of instantaneous size Ns and Nt target locations. In the fac-torised deployment, existing TNPs must re-encode the full history at every step, incurring an O(N 2 
+
+> s
+
+) cost per update. In contrast, incTNP processes only the new token, reducing update latency to O(Ns). These gains are magnified in AR deployment, where predictions are generated sequentially over the targets to capture dependencies. Whilst this regime is prohibitively expensive for standard models—which scale as O(Nt · N 2 
+
+> s
+
+) per update— incTNP leverages KV caching to reduce the cost to O(Nt · Ns)2. This linear scaling makes high-fidelity autoregressive inference computationally feasi-ble in real-time streaming applications with large histories. 
+
+4.4. Theoretical trade-offs 
+
+While offering significant computational gains, the incTNP 
+
+architecture sacrifices a core property of standard Neural Processes: permutation invariance with respect to the con-text set. Unlike TNP-D , incTNP defines a distribution that is sensitive to the order of context set. However, we argue that in settings where the context is not fixed (e.g., stream-ing data or autoregressive prediction), and hence where the 
+
+TNP-D becomes conditionally inconsistent, strictly enforc-ing invariance with respect to the context constrains model design without necessarily guaranteeing a more “rational” prediction rule. To quantify this trade-off, we adopt a met-ric of implicit Bayesianness to measure the extent of this violation. 
+
+Theoretical Framework Following Mlodozeniec et al. (2024), we consider a prediction rule as a sequence of functions qn that map a history of observations y1: n := (y1, . . . , yn) taking values in some space Yn (and associ-ated inputs x1: n) to a predictive distribution over the next observation; q(yn+1 |y1: n). The sequence of predictions 
+
+q1: n defines a joint distribution on Yn. We transform this joint into a (finitely) exchangeable distribution ˆq1: n by aver-aging over the set Πn of all possible permutations: 
+
+ˆq1: n(y1, . . . , yn) = 1
+
+n!
+
+X
+
+> π∈Πn
+
+q1: n(yπ(1) , . . . , yπ(n)). (5) 
+
+Proposition 4.1. Let p be the true data-generating distri-bution, which we assume to be exchangeable. Then, the following decomposition holds: 
+
+DKL (q1: n ∥ p) = DKL (ˆ q1: n ∥ p) + DKL (q1: n ∥ ˆq1: n) (6) 
+
+and, in particular, DKL (q1: n ∥ p) ≥ DKL (ˆ q1: n ∥ p) with equality if and only if q1: n is exchangeable (see proof in Appendix C).    
+
+> 2Analysis assumes Ns≫Nt
+
+Informally, the proposition implies that, for any true data-generating mechanism, we can ‘gain’ DKL (q1: n ∥ ˆq1: n) in performance by replacing the non-exchangeable prediction rule with its exchangeable counterpart. We term this quan-tity the KL gap ; it acts as a proxy for the performance lost due to the non-exchangeability of q1: n and quantifies the deviation from Bayesian behaviour. A KL gap of zero im-plies that q1: n is perfectly exchangeable and thus implicitly Bayesian. 
+
+Implicit Bayesianness for NPs Since we are concerned with NPs applied to streaming data, we implement the pro-posed metric as follows. For a particular dataset of N ob-servations {xi, yi}Ni=1 , we define our NP prediction rule as an autoregressive factorisation of the joint: pNP (y1: N ) = ΠNi=1 pNP (yi|y1: i−1)—simulating how at each update we predict the next point conditioned on all past history 3. We construct the exchangeable prediction rule ˆpNP following Equation 5, and compute the expected value of the KL gap over a set of Nperm permutations of the observations through Monte Carlo averaging. As argued in Mlodozeniec et al. (2024), implicit Bayesianness is a desirable property, but one that can be trivially achieved by uninformative predic-tions rules. As such, in our empirical investigation we jointly report both the KL gap, as well as a measure of performance in terms of the average negative log-likelihood. 
+
+## 5. Experiments 
+
+We evaluate our approach on synthetic, tabular, and envi-ronmental prediction tasks. Our analysis proceeds in three stages: 1) We assess the impact of causal masking in static settings; 2) We measure probabilistic consistency via im-plicit Bayesianness; and 3) We validate the scalability of 
+
+incTNP in streaming scenarios using both factorised and autoregressive (AR) deployment. Detailed data generation protocols and hyperparameters are provided in Appendix D. We consider the following domains: • 1D GP Regression: Synthetic tasks generated from Gaus-sian Processes (GPs) with randomised kernel hyperparam-eters. This standard benchmark tests the model’s ability to meta-learn flexible function approximations. • Tabular Data Regression: Following Hollmann et al. (2023), we train on synthetic data generated via struc-tural causal models (SCMs) and evaluate on both held-out synthetic tasks and four real-world UCI regression bench-marks (Skillcraft, Powerplant, Elevators, Protein). • Station Temperature Prediction: A real-world spa-tiotemporal task involving temperature prediction across    
+
+> 3Because NPs are not usually trained to support the null context scenario, we compute the joint conditioned on a few fixed dat-apoints pNP (y1: N|yfixed ) = Π Ni=1 pNP (yi|y1: i−1,yfixed ), but this does not change the arguments above.
+
+5Incremental Transformer Neural Processes 
+
+stations in Africa and Europe (see Figure 9). We train the models on a spatiotemporal interpolation task, and evaluate performance on both the interpolation scenario, as well as a forecasting one, where targets are sampled strictly from future time windows relative to the context. 
+
+5.1. Static Context Performance Causal masking maintains predictive performance. As shown in Table 1 (see Table 2 for standard errors), when evaluated in the static context setting, both in factorised (Ta-ble 1(a)), as well as AR mode (Table 1(b)), the incTNP vari-ants achieve competitive if not better performance relative to the non-incremental TNP-D baseline. This is important to establish, as it shows that incTNP achieves computational efficiency and scalability without compromising predictive performance. We observe the following key trends: 
+
+Impact of Training Strategy: While causal masking in-herently restricts the receptive field—evident in the slight performance drop of the vanilla incTNP compared to the full-context TNP-D —our data-efficient training strategy in 
+
+incTNP-Seq effectively counteracts this limitation. Con-sequently, incTNP-Seq closes the gap to TNP-D on sim-pler tasks (1D GP) and outperforms it on more complex benchmarks (Tabular and Temperature) by leveraging the richer training signal. 
+
+Autoregressive Efficiency: In AR mode, incTNP-Seq 
+
+exceeds the predictive performance of TNP-D while signifi-cantly reducing computational cost. By utilising linear-time 
+
+O(N ) context updates rather than re-encoding the full his-tory ( O(N 2)), we achieve substantial speedups (e.g., 3.5×
+
+faster on Temperature) without sacrificing accuracy. 
+
+Comparison to Baselines: Our method bridges the gap be-tween flexibility and performance. We significantly outper-form CNP , the primary baseline supporting incremental up-dates, which is limited by its capacity. Furthermore, we out-perform or achieve parity with LBANP (Feng et al., 2023), a strong baseline which offers efficient forward passes via pseudo-tokens but lacks support for incremental updates. 
+
+Dense autoregressive training improves hyperparame-ter robustness. We assess the sensitivity of each model to hyperparameters by sweeping over a range of learning rates and schedules (see Appendix E.1) on the 1D GP and Tabular benchmarks. After filtering for outliers, the perfor-mance distributions in Figure 2 reveal that incTNP-Seq 
+
+yields significantly lower variance than its counterparts. We attribute this stability to the dense autoregressive training objective, which likely reduces gradient variance during optimisation. Although this training strategy incurs a higher cost per forward pass ( O(( Nc + Nt)2)) compared to stan-dard training ( O(N 2 
+
+> c
+
++ NcNt)), the resulting gradients are more informative. To test if this benefit is purely due to com-TNP-D incTNP incTNP-Seq         
+
+> 0.30.4
+> Test LL  ↑
+> GP
+> TNP-D incTNP incTNP-Seq
+> −0.10.00.1
+> Tabular (synthetic)
+> Ground Truth Compute-Equal Training
+> Figure 2. Test log-likelihoods ( ↑) on synthetic GP and Tabular datasets across multiple training configurations. incTNP-Seq ex-hibits reduced variance compared to TNP-D and incTNP , demon-strating the robustness offerred by its training strategy.
+
+pute, we allocate to TNP-D and incTNP a compute budget equivalent to that of incTNP-Seq (indicated by stars in Figure 2). Since standard training is cheaper per step, this budget allows these models to train for more iterations and observe more data. Crucially, even with this advantage, they fail to surpass the peak performance of incTNP-Seq .
+
+5.2. Implicit Bayesianness 
+
+Next, we investigate the impact of causal masking on im-plicit Bayesianness—the degree to which the model behaves like a consistent Bayesian predictor. While standard TNPs guarantee permutation invariance for a fixed context set, they do not inherently satisfy conditional consistency as the context grows. incTNP further sacrifices permutation invariance with respect to the context set to enable efficient streaming. We therefore ask: Does this sensitivity to con-text order degrade the model’s ability to approximate a valid Bayesian posterior compared to the TNP-D , a model that is permutation invariant with respect to the context set? We evaluate this on the 1D GP benchmark using the KL Gap metric described in Section 4.4. We condition all models on a fixed initial context ( Nc = 20 ) and evaluate predictions on 
+
+Nt = 40 targets. Inference is performed sequentially: the model predicts a target, observes the ground truth, updates its context, and proceeds to the next point. We simulate multiple permutations of the same data stream, compute the KL Gap for each, and then average the results. Remark-ably, as shown in Figure 3, the KL Gap for incTNP vari-ants—particularly incTNP-Seq —is comparable to that of TNP-D . This finding suggests that the primary driver of inconsistency in streaming settings is the lack of conditional consistency (Xu et al., 2023) inherent to multiple NP vari-ants, rather than the specific causal masking mechanism of 
+
+incTNP . In practice, incTNP is no less “Bayesian” than the standard TNP-D when deployed in streaming environ-ments. We provide an additional example in Appendix E.3 which further supports this claim. We also benchmark our method against WISKI (Stanton et al., 2021), a scalable streaming GP framework. While exact GP inference is perfectly Bayesian (yielding a KL gap 6Incremental Transformer Neural Processes 
+
+Table 1. Average Test Log-Likelihoods ( ↑) for (a) Factorised and (b) AR deployment. We report the absolute performance of the reference non-incremental TNP-D. For all the other methods we report the difference ( ∆) relative to the reference performance. Held-out task are shown in purple, while transfer scenarios, such as Sim-to-Real (Tabular) and Forecasting (Temperature) are coloured in orange. 
+
+(a) Factorised predictions . incTNP-Seq achieves parity or outperforms TNP-D on held-out tasks, and dominates on transfer scenarios. 
+
+REFERENCE OURS (∆ (↑) RELATIVE TO REF .) BASELINES (∆ (↑) RELATIVE TO REF .) 
+
+DATASET TNP-D INC TNP INC TNP-S EQ CNP LBANP 
+
+1D GP 0.431 −0.013 −0.002 −0.230 +0.004 
+
+TABULAR (S YNTHETIC ) 0.154 −0.020 +0.007 −0.330 −0.058 
+
+SKILLCRAFT −0.954 +0 .002 +0.008 −0.134 −0.031 
+
+POWERPLANT −0.008 +0 .002 +0.003 −0.269 −0.024 
+
+ELEVATORS -0.322 −0.024 −0.009 −0.942 −0.205 
+
+PROTEIN −1.152 −0.028 +0.036 −0.188 −0.024 
+
+TEMPERATURE (I NTERP ) −1.703 −0.011 +0.018 −0.533 −0.090 
+
+TEMPERATURE (F ORECAST ) −2.571 +0 .030 +0.690 +0 .181 +0 .268 
+
+(b) AR predictions. Cost ( ↓) is the ratio of inference time versus incTNP-Seq (Tmodel /T incTNP-Seq ) ( > 1.0 indicates slower inference). 
+
+TNP-D (R EF ) INC TNP INC TNP-S EQ CNP LBANP DATASET LL ( ↑) COST ∆ (↑) COST ∆ (↑) COST ∆ (↑) COST ∆ (↑) COST 
+
+1D GP 0.767 1.21 × −0.007 1.01 × +0 .002 1.00 × −0.230 0.11 × −0.001 1.38 ×
+
+TEMPERATURE (I NTERP ) −1.670 3.57 × −0.038 1.00 × +0.016 1.00 × −0.552 0.02 × −0.097 1.50 ×
+
+TEMPERATURE (F ORECAST ) −1.749 3.57 × −0.005 1.00 × +0.061 1.00 × −0.559 0.02 × −0.120 1.50 ×
+
+of zero), WISKI relies on structured kernel interpolation approximations to achieve scalability. As shown in Figure 3, these induce a significant loss of Bayesian consistency; 
+
+WISKI exhibits a higher KL gap than both TNP-D and the incTNP variants, alongside inferior predictive perfor-mance. This underscores incTNP ’s superior performance in streaming, maintaining greater Bayesian consistency and accuracy than established approximate GP baselines. 2.5 3.0 3.5   
+
+> KL Gap ( ↓)
+> 10 0
+> NLL (- Optimal) ( ↓) TNP-D incTNP incTNP-Seq WISKI
+
+Figure 3. Performance (Joint NLL gap relative to optimal) versus implicit Bayesianness (KL Gap). incTNP-Seq achieves a KL gap similar to the non-causal TNP-D , whereas the streaming GP baseline ( WISKI ) performs worse in both metrics. Diamond mark-ers ( ⋄) denote the exchangeable versions of the models. 
+
+5.3. Streaming Performance 
+
+This last section focuses on a streaming setup, measuring performance on a fixed set of targets as observations ac-cumulate. While all variants improve performance with new evidence, TNP-D becomes prohibitively expensive— re-encoding its full history during each update incurs a quadratic cost ( O(N 2 
+
+> s
+
+)). In contrast, the incTNP variants leverage caching to achieve linear update scaling ( O(Ns)), all while matching or exceeding baseline accuracy. 
+
+Streaming Tabular Data (Factorised) Following the paradigm of tabular foundation models (Hollmann et al., 2025a), we meta-train on a synthetic prior and evaluate in two distinct regimes: (1) held-out synthetic tasks sam-pled from the same prior used during training; and (2) real-world datasets, which involve sim-to-real transfer and test robustness to distributional shifts. As shown in Fig-ures 4 and 5, incTNP-Seq consistently matches or outper-forms TNP-D , which in turn outperforms the non-sequential 
+
+incTNP . Crucially, we observe strong length generalisa-tion: despite training on contexts of up to only Nc = 1024 ,the models seamlessly adapt to streams exceeding 30 , 000 
+
+points. However, as the stream grows, the quadratic update cost of TNP-D becomes prohibitive, whereas incTNP re-mains computationally tractable (Figure 5 (right)). We pro-vide additional performance and cost comparisons against 
+
+WISKI and LBANP in Appendix E.4.1. 
+
+Streaming Temperature Prediction (AR) Finally, we evaluate our models on the streaming version of the tem-perature prediction task. We consider two regimes of practical interest: Interpolation (e.g., reconstructing data from faulty or sparse sensors), and Forecasting (e.g, pre-dicting future weather patterns based on historical data). Crucially, to capture spatiotemporal correlations, we em-ploy AR decoding over targets at every streaming step. 7Incremental Transformer Neural Processes 1000 2000 
+
+> −1.00
+> −0.95
+> Log-Lik. ( ↑)
+
+Skillcraft   
+
+> 2500 5000
+> −0.05
+> 0.00
+
+Powerplant  
+
+> 5000 10000
+> −0.4
+> −0.3
+
+Elevators   
+
+> 10000 20000
+> −1.2
+> −1.1
+
+Protein Stream Length ( Ns)TNP-D incTNP incTNP-Seq 
+
+Figure 4. Test log-likelihood ( ↑) on Tabular (real-world datasets). Performance generally increases with stream length for all models. While incTNP and TNP-D remain competitive on smaller datasets, incTNP-Seq demonstrates greater robustness on Protein. 15000 30000      
+
+> −0.18
+> −0.17
+> −0.16
+> −0.15
+> −0.14
+> Log-Lik. ( ↑)
+> 15000 30000
+> 0
+> 20
+> 40
+> 60
+> 80
+> Time (s)  O(N2)
+> O(N)
+> Stream Length ( Ns)TNP-D incTNP incTNP-Seq
+
+Figure 5. Test log-likelihood ( ↑) on the Tabular (Synthetic) dataset. (Left) Performance improves with more data, with incTNP-Seq 
+
+consistently outperforming TNP-D and incTNP —even when evaluating beyond the training limit of 1024 points. (Right) While achieving similar accuracy, the incremental variants demonstrate significantly better scaling efficiency as context size grows. 
+
+This creates a “nested” computational burden that renders standard TNP-D prohibitive due to its quadratic scaling (see Appendix F for computational cost plots). In con-trast, incTNP handles this load efficiently. As shown in Figure 6, incTNP-Seq generally outperforms the other NP variants—including the non-incremental LBANP and the capacity-limited CNP —delivering the necessary per-formance for correlated, real-time predictions. In Ap-pendix E.4.2, we report results for TNP-A (Nguyen & Grover, 2022), a variant designed for autoregressive pre-diction, and discuss the differences between incTNP and 
+
+TNP-A in Appendix E.2. 
+
+## 6. Conclusion 
+
+This work introduces the incTNP , a new Neural Process variant designed for streaming settings where efficient con-text updates are crucial. This is achieved by incorporating causal masking and KV caching, and adapting the training strategy to a dense autoregressive objective ( incTNP-Seq )which improves training efficiency and stability. Empiri-cally, incTNP (especially incTNP-Seq ) matches the pre-dictive accuracy of the standard TNP-D across synthetic and real-world benchmarks, while reducing the computational 1000 2000  
+
+> −2.5
+> −2.0
+> −1.5
+> Log-Lik. ( ↑)
+> Interpolation
+> 1000 2000
+> Forecasting Stream Length ( Ns)
+> TNP-D incTNP incTNP-Seq LBANP CNP
+
+Figure 6. Test log-likelihod ( ↑) on the Temperature Prediction task (streaming AR mode). 
+
+update cost from O(N 2) to O(N ). Furthermore, using our proposed metric for “implicit Bayesianness”, we find that in streaming scenarios where the context constantly evolves, 
+
+incTNP retains a prediction rule that is practically no less Bayesian than TNP-D .Several promising avenues for future research remain. First, it would be valuable to analyse incTNP ’s robustness to distributional shifts. We present a preliminary experiment in Appendix G, but a more thorough analysis of how quickly the model adapts to non-stationary environments is war-ranted. Second, the combination of linear-time updates and robust uncertainty estimates makes incTNP an ideal candidate for active learning applications. Third, although our tabular experiments demonstrate strong length gener-alisation (handling 30 , 000 points after training on 1024 ), further testing is needed to ensure extreme context scaling does not introduce anomalies. Finally, although the memory footprint of KV caching was not a bottleneck in our experi-ments, it may become one at extreme scales. Future work could replace the attention backbone with State-Space Mod-els (SSMs) (Gu & Dao, 2024); their constant-time updates and fixed state size would mitigate both computational and memory constraints, facilitating training and inference with even larger context windows. 8Incremental Transformer Neural Processes 
+
+## Reproducibility Statement 
+
+Detailed experimental settings are provided in the Ap-pendix. To facilitate reproducibility, the complete im-plementation is available at https://github.com/ philipmortimer/incTNP-code .
+
+## Acknowledgements 
+
+Cristiana Diaconu is supported by the Cambridge Trust Scholarship. Richard E. Turner is supported by Google, Amazon, ARM, Improbable and the EPSRC Probabilistic AI Hub (EP/Y028783/1). 
+
+## References 
+
+Allen, A., Markou, S., Tebbutt, W., Requeima, J., Bruinsma, W. P., Andersson, T. R., Herzog, M., Lane, N. D., Chantry, M., Hosking, J. S., et al. End-to-end data-driven weather prediction. Nature , pp. 1–8, 2025. Andersson, T. R., Bruinsma, W. P., Markou, S., Requeima, J., Coca-Castro, A., Vaughan, A., Ellis, A.-L., Lazzara, M. A., Jones, D., Hosking, S., et al. Environmental sensor placement with convolutional Gaussian neural processes. 
+
+Environmental Data Science , 2:e32, 2023. Ashman, M., Diaconu, C., Langezaal, E., Weller, A., and Turner, R. E. Gridded transformer neural processes for spatio-temporal data. In Forty-second International Conference on Machine Learning , 2025. URL https: //openreview.net/forum?id=O0oe7hPtbl .Bodnar, C., Bruinsma, W. P., Lucic, A., Stanley, M., Allen, A., Brandstetter, J., Garvan, P., Riechert, M., Weyn, J. A., Dong, H., Gupta, J. K., Thambiratnam, K., Archibald, A. T., Wu, C.-C., Heider, E., Welling, M., Turner, R. E., and Perdikaris, P. A foundation model for the Earth sys-tem. Nature , 2025. doi: 10.1038/s41586-025-09005-y. Bruinsma, W. P., Markou, S., Requiema, J., Foong, A. Y., Andersson, T. R., Vaughan, A., Buonomo, A., Hosking, J. S., and Turner, R. E. Autoregressive Conditional Neural Processes. In The Eleventh International Conference on Learning Representations , 2023. Bui, T. D., Nguyen, C. V., and Turner, R. E. Streaming sparse Gaussian process approximations. In Advances in Neural Information Processing Systems 30 , 2017. Dao, T. FlashAttention-2: Faster Attention with Better Parallelism and Work Partitioning. In Proceedings of the International Conference on Learning Representations (ICLR) , 2024. Dunn, R. J. H., Willett, K. M., Thorne, P. W., Woolley, E. V., Durre, I., Dai, A., Parker, D. E., and Vose, R. S. HadISD: a quality-controlled global synoptic report database for selected variables at long-term stations from 1973–2011. 
+
+Climate of the Past , 8(5):1649–1679, 2012. doi: 10.5194/ cp-8-1649-2012. URL https://cp.copernicus. org/articles/8/1649/2012/ .Dunn, R. J. H., Willett, K. M., Parker, D. E., and Mitchell, L. Expanding HadISD: quality-controlled, sub-daily station data from 1931. Geoscientific Instrumentation, Methods and Data Systems , 5(2):473–491, 2016. doi: 10.5194/ gi-5-473-2016. URL https://gi.copernicus. org/articles/5/473/2016/ .Feng, L., Hajimirsadeghi, H., Bengio, Y., and Ahmed, M. O. Latent Bottlenecked Attentive Neural Processes. In The Eleventh International Conference on Learning Repre-sentations , 2023. Garnelo, M., Rosenbaum, D., Maddison, C., Ramalho, T., Saxton, D., Shanahan, M., Teh, Y. W., Rezende, D., and Eslami, S. A. Conditional Neural Processes. In Interna-tional Conference on Machine Learning , pp. 1704–1713. PMLR, 2018a. Garnelo, M., Schwarz, J., Rosenbaum, D., Viola, F., Rezende, D. J., Eslami, S., and Teh, Y. W. Neural Pro-cesses. arXiv preprint arXiv:1807.01622 , 2018b. Gordon, J., Bruinsma, W. P., Foong, A. Y., Requeima, J., Dubois, Y., and Turner, R. E. Convolutional conditional neural processes. In Proceedings of the International Conference on Learning Representations (ICLR) , 2020. Gu, A. and Dao, T. Mamba: Linear-time sequence modeling with selective state spaces. In First Conference on Lan-guage Modeling , 2024. URL https://openreview. net/forum?id=tEYskw1VY2 .Hassan, C., Loka, N., Li, C.-Y., Huang, D., Chang, P. E., Yang, Y., Silvestrin, F., Kaski, S., and Acerbi, L. Effi-cient autoregressive inference for transformer probabilis-tic models, 2025. URL https://arxiv.org/abs/ 2510.09477 .Herlands, W., Wilson, A., Nickisch, H., Flaxman, S., Neill, D., Van Panhuis, W., and Xing, E. Scalable gaussian processes for characterizing multidimensional change surfaces. In Gretton, A. and Robert, C. C. (eds.), Proceedings of the 19th International Confer-ence on Artificial Intelligence and Statistics , volume 51 of Proceedings of Machine Learning Research , pp. 1013–1021, Cadiz, Spain, 09–11 May 2016. PMLR. URL https://proceedings.mlr.press/v51/ herlands16.html .9Incremental Transformer Neural Processes 
+
+Hollmann, N., M ¨uller, S., Eggensperger, K., and Hut-ter, F. Tabpfn: A transformer that solves small tab-ular classification problems in a second, 2023. URL 
+
+https://arxiv.org/abs/2207.01848 .Hollmann, N., M ¨uller, S., Purucker, L., Krishnaku-mar, A., K ¨orfer, M., Hoo, S. B., Schirrmeis-ter, R. T., Hutter, F., et al. Accurate pre-dictions on small data with a tabular foundation model. Nature , 637:319–326, 2025a. doi: 10.1038/ s41586-024-08328-6. URL https://www.nature. com/articles/s41586-024-08328-6 .Hollmann, N., M ¨uller, S., Purucker, L., Krishnakumar, A., K ¨orfer, M., Hoo, S. B., Schirrmeister, R. T., . . . , and Hutter, F. Accurate predictions on small data with a tabular foundation model. Nature , 637:319–326, 2025b. doi: 10.1038/s41586-024-08328-6. Jaegle, A., Gimeno, F., Brock, A., Vinyals, O., Zisserman, A., and Carreira, J. Perceiver: General Perception with Iterative Attention. In International Conference on Ma-chine Learning , pp. 4651–4664. PMLR, 2021. Katharopoulos, A., Vyas, A., Pappas, N., and Fleuret, F. Transformers are rnns: Fast autoregressive transformers with linear attention, 2020. URL https://arxiv. org/abs/2006.16236 .Kim, H., Mnih, A., Schwarz, J., Garnelo, M., Eslami, A., Rosenbaum, D., Vinyals, O., and Teh, Y. W. Attentive Neural Processes. In International Conference on Learn-ing Representations , 2019. Lee, J., Lee, Y., Kim, J., Kosiorek, A., Choi, S., and Teh, Y. W. Set Transformer: A Framework for Attention-Based Permutation-Invariant Neural Networks. In In-ternational Conference on Machine Learning , pp. 3744– 3753. PMLR, 2019. Loshchilov, I. and Hutter, F. SGDR: Stochastic gradient descent with warm restarts. In International Conference on Learning Representations , 2017. URL https:// openreview.net/forum?id=Skq89Scxx .Loshchilov, I. and Hutter, F. Decoupled weight decay regu-larization. In Proceedings of the 7th International Con-ference on Learning Representations (ICLR) , 2019. Mlodozeniec, B. K., Turner, R. E., and Krueger, D. Im-plicitly bayesian prediction rules in deep learning. In 
+
+Sixth Symposium on Advances in Approximate Bayesian Inference - Archival Track , 2024. URL https:// openreview.net/forum?id=WBPVWdzxBQ .Moroshan, V., Siems, J., Zela, A., Carstensen, T., and Hutter, F. Tempopfn: Synthetic pre-training of linear rnns for zero-shot time series forecasting, 2025. URL https: //arxiv.org/abs/2510.25502 .M ¨uller, S., Hollmann, N., Arango, S. P., Grabocka, J., and Hutter, F. Transformers Can Do Bayesian Inference. In 
+
+International Conference on Learning Representations ,2022. M ¨uller, S., Hollmann, N., Arango, S. P., Grabocka, J., and Hutter, F. Transformers can do bayesian inference, 2024. URL https://arxiv.org/abs/2112.10510 .Nguyen, T. and Grover, A. Transformer Neural Processes: Uncertainty-Aware Meta Learning Via Sequence Model-ing. In International Conference on Machine Learning ,pp. 16569–16594. PMLR, 2022. Pope, R., Douglas, S., Chowdhery, A., Devlin, J., Bradbury, J., Levskaya, A., Heek, J., Xiao, K., Agrawal, S., and Dean, J. Efficiently scaling transformer inference, 2022. URL https://arxiv.org/abs/2211.05102 .Rasmussen, C. E. and Williams, C. K. I. Gaussian Processes for Machine Learning . The MIT Press, 2006. Smith, A., Lott, N., and Vose, R. The integrated surface database: Recent developments and partnerships. Bulletin of the American Meteorological Society , 92(6):704–708, 2011. Stanton, S., Maddox, W., Delbridge, I., and Gordon Wilson, A. Kernel interpolation for scalable online gaussian pro-cesses. In Banerjee, A. and Fukumizu, K. (eds.), Proceed-ings of The 24th International Conference on Artificial Intelligence and Statistics , volume 130 of Proceedings of Machine Learning Research , pp. 3133–3141. PMLR, 13– 15 Apr 2021. URL https://proceedings.mlr. press/v130/stanton21a.html .Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A. N., Kaiser, Ł., and Polosukhin, I. Atten-tion Is All You Need. Advances in Neural Information Processing Systems , 30, 2017. Xu, J., Dupont, E., M ¨artens, K., Rainforth, T., and Teh, Y. W. Deep stochastic processes via functional markov transi-tion operators, 2023. URL https://arxiv.org/ abs/2305.15574 .Zaheer, M., Kottur, S., Ravanbakhsh, S., Poczos, B., Salakhutdinov, R. R., and Smola, A. J. Deep Sets. Ad-vances in Neural Information Processing Systems , 30, 2017. 10 Incremental Transformer Neural Processes 
+
+## A. Hardware specifications 
+
+Training and inference for synthetic GP regression, as well as the training of tabular models, were performed on a single NVIDIA GeForce RTX 2080 Ti GPU (20 CPU cores). For the evaluation of tabular models within the streaming context and for non-streaming evaluation on the Protein UCI dataset, we conduct experiments on a single NVIDIA RTX 6000 Ada Generation GPU (48 GB) with 56 CPU cores. For the computationally expensive temperature prediction task, we perform training and inference for all models on a single NVIDIA A100 80GB GPU with 32 CPU cores. We benchmark tabular model runtimes on the NVIDIA RTX 6000 Ada GPU and environmental model runtimes on the NVIDIA A100 80GB GPU, ensuring that FlashAttention (Dao, 2024) is used across both environments. 
+
+## B. Experiment Details 
+
+For our neural process baseline implementations, we adopt the same architectures as detailed in Ashman et al. (2025); see Appendix A from Ashman et al. (2025) for architectural diagrams of TNP-D and LBANP models. Full code for reproducing our experiments is provided in the supplementary material. 
+
+Optimiser details For all experiments, we optimise parameters using AdamW (Loshchilov & Hutter, 2019) with gradient norms clipped to 0.5, using β1 = 0 .9, β2 = 0 .999 and a weight decay of 1 × 10 −2. We explore the use of both a fixed learning rate and a cosine decay learning rate schedule (Loshchilov & Hutter, 2017). The latter strategy consists of a linear warmup phase across the first 10% of training steps to the maximum learning rate, followed by a half-cosine curve decay to a minimum learning rate of 1 × 10 −6. For the tabular data and GP regression tasks, we explore both schedulers and a sweep of learning rates. For the computationally demanding temperature prediction task (HadISD), we use the cosine learning rate scheduler and a learning rate of 5 × 10 −4 for all trained models. 
+
+Log-likelihood performance metric To evaluate the performance of our NP models, we report the average log-likelihood computed over K test tasks. For the i-th task with context set D(i) 
+
+> c
+
+and Nt target points {x(t)
+
+> n,i
+
+, y(t)
+
+> n,i
+
+}Nt
+
+> n=1
+
+, the metric is defined as: 
+
+LL = 1
+
+KN tKX
+
+> i=1
+> Nt
+
+X
+
+> n=1
+
+log N
+
+
+
+y(t)
+
+> n,i
+
+; μθ (x(t)
+
+> n,i
+
+, D(i) 
+
+> c
+
+), σ 2 
+
+> θ
+
+(x(t)
+
+> n,i
+
+, D(i) 
+
+> c
+
+)
+
+
+
+, (7) where μθ (·) and σ2 
+
+> θ
+
+(·) denote the predicted mean and variance parameters at the target location x(t) 
+
+> n,i
+
+conditioned on the context D(i) 
+
+> c
+
+.
+
+Likelihood details All models parameterise Gaussian predictive likelihoods via a mean and variance. To ensure non-negativity of the variances, we pass the models’ raw variance outputs through a softplus function. We also set a minimum noise level of σ2 
+
+> min
+
+= 1 × 10 −4 for tabular data experiments, and σ2 
+
+> min
+
+= 0 for all other experiments. Thus, given a target representation zt, our decoder, φ, outputs: 
+
+μθ,t , log(exp ( σθ,t − σmin )2 − 1) = φ(zt), p(yt | D c, xt) = N (yt; μθ,t , σ2
+
+> θ,t
+
+). (8) 
+
+Embedder / decoder details For all models, we embed each context point to a fixed dimensional representation in R128 
+
+(i.e., Dz = 128 ) using an MLP ϕ with two hidden layers. Similarly, all models use an MLP with two hidden layers to decode target predictions. All MLPs use 128 neurons per hidden layer (matching Dz ).
+
+CNP details Context points (xcn, ycn) are embedded into a representation zcn ∈ RDz and aggregated together using 
+
+zc = 1
+
+> Nc
+
+PNc 
+
+> n=1
+
+zcn. This representation is concatenated with the target input xt and fed through the decoder to produce the predictive likelihood parameters {μt, σt}.
+
+TNP family shared backbone Each transformer block consists of an attention mechanism (either MHSA or MHCA) and an MLP, with Layer normalisation ( LN ) applied before each operation (pre-norm). We utilise H = 8 heads, each with dimension DV = 16 and DQK = DZ throughout. Each block uses two residual connections. The update rule for a block is defined as: eZ ← Z + Attention(LN 1(Z)) 
+
+Z ← eZ + MLP(LN 2(eZ)) . (9) 11 Incremental Transformer Neural Processes 
+
+Across all transformer models, we use 5 layers. 
+
+LBANP details For our LBANP implementation, we compress our context set into LLBANP latent vectors to obtain a latent representation U ∈ RLLBANP ×Dz , using a Perceiver (Jaegle et al., 2021) style encoder: 
+
+U ← MHCA-layer( U, Zc)
+
+U ← MHSA-layer( U)
+
+Zt ← MHCA-layer( Zt, U).
+
+(10) We use LLBANP = 32 latent vectors for all GP experiments, LLBANP = 128 for tabular data tasks and LLBANP = 256 for temperature modelling, reflecting the increased complexity of the latter two tasks. 
+
+Common incTNP transformer details incTNP class models use the same transformer architecture as TNP models, but substitute unmasked attention operations (MHSA/MHCA) with masked attention operations (M-MHSA/M-MHCA) where appropriate. All causal attention calculations use a causal mask M causal :
+
+M causal  
+
+> i,j
+
+=
+
+(
+
+0 if i ≥ j
+
+−∞ otherwise . (11) Incremental TNP models use updated masked attention layer operations where appropriate: 
+
+eZ ← Z + Attention(LN 1(Z), mask = M )
+
+Z ← eZ + MLP(LN 2(eZ)) . (12) During inference, both incTNP and incTNP-Seq use causal masking M causal ,c ∈ RNc×Nc to encode the context set, and unmasked cross-attention to handle target-context MHCA. At training time, incTNP-Seq trains across the sequence N = Nc + Nt, imposing a contextual masking M causal ,c ∈ RN ×N , and a causal target-context masking 
+
+M causal ,t ∈ R(N −1) ×N .
+
+incTNP architecture To outline the flow of information through incTNP , consider a context set {xcn, ycn}Nc 
+
+> n=1
+
+and a target set {xtn, ytn}Nt
+
+> n=1
+
+. We construct input representations by augmenting these points with a boolean source flag ( 0 for context, 1 for target). Context points are concatenated as [xcn, ycn, 0] . Target points are concatenated as [xtn, 0, 1] , where 0
+
+serves as a zero-vector placeholder for the unobserved target value. These vectors are passed through the MLP embedder to obtain the context and target embeddings R(c)1: Nc and R(t)1: Nt . These representations are propagated through the L = 5 
+
+self-attention and cross-attention layers: 
+
+Z(c) 
+
+> l
+
+= M-MHSA-layer (Z(c)
+
+> l−1
+
+, M causal ) l ∈ 1, · · · , L where Z(c)0 = R(c)1: Nc (13) 
+
+Z(t) 
+
+> l
+
+= MHCA-layer (Z(t)
+
+> l−1
+
+, Z(c) 
+
+> l
+
+) l ∈ 1, · · · , L where Z(t)0 = R(t)1: Nt . (14) Finally, the MLP decoder maps the resulting representation Z(t) 
+
+> L
+
+to the parameters of the factorised predictive distribution 
+
+pθ (Yt | D c, Xt). A visualisation of incTNP ’s architecture can be seen in Figure 7. 
+
+incTNP-Seq data flow At test time, incTNP-Seq behaves identically to incTNP . At training time, data is treated as a single joined sequence such that X(seq ) = [ Xc, Xt] and Y(seq ) = [ Yc, Yt]. Two copies of this sequence are used to generate a context sequence D(seq ) 
+
+> c
+
+= ϕ([ X(seq ), Y(seq ), 0]) and a target sequence D(seq ) 
+
+> t
+
+= ϕ([ X(seq ), 0, 1]) , where ϕ is the MLP embedder. Causally masked self-attention updates the context sequence representation as it does for incTNP . In addition to this, masked cross-attention is used to enforce a causal structure. That is a target token (x(seq ) 
+
+> i
+
+, 0, 1) , is only permitted to attend to preceding context tokens (x(seq ) 
+
+> j
+
+, y(seq ) 
+
+> j
+
+, 0) for 1 ≤ j < i , resulting in the following transformer update equations: 12 Incremental Transformer Neural Processes 
+
+Figure 7. Architecture of the incremental Transformer Neural Process ( incTNP ), which uses interwoven M-MHSA and MHCA layers. 
+
+Z(c) 
+
+> l
+
+= M-MHSA-layer (Z(c)
+
+> l−1
+
+, M causal ,c ) l ∈ 1, · · · , L where Z(c)0 = D(seq ) 
+
+> c
+
+(15) 
+
+Z(t) 
+
+> l
+
+= M-MHCA-layer (Z(t)
+
+> l−1
+
+, Z(c) 
+
+> l
+
+, M causal ,t ) l ∈ 1, · · · , L where Z(t)0 = ( D(seq ) 
+
+> t
+
+)2: Nc+Nt . (16) The data flow and masking configuration of incTNP-Seq during training are outlined in Figure 8. 
+
+WISKI details We utilise the Woodbury Inversion with SKI ( WISKI ) framework proposed by Stanton et al. (2021), using their official implementation 4. WISKI facilitates fast online learning by approximating the kernel matrix using a set of m inducing points placed on a structured grid (Structured Kernel Interpolation). The WISKI architecture requires a user-specified kernel function and optionally a learnable stem to reduce effective feature dimensionality. Training consists of two phases: • Pretraining: WISKI is pretrained on an initial subset of contextual observations (of size Ninit ) over 200 epochs using the Adam optimiser. GP hyperparameters are updated using a learning rate of lr (GP) init , and stem hyperparameters are updated using a learning rate of lr (stem) init .• Online Updates: For the remaining data stream, the model updates sequentially, using a single Adam optimisation step per streamed point. GP hyperparameters are updated using a learning rate of lr (GP) stream , and stem hyperparameters are updated using a learning rate of lr (stem) stream .For the tabular data task, we copy the setup from Stanton et al. (2021). Specifically, we learn an RBF-ARD GP kernel and set the grid resolution to 16 per dimension (resulting in m = 256 total inducing points). We employ a stem that projects data to R2 using a learned linear projection, a batch-norm operation, and a hyperbolic tangent activation in sequence. 
+
+> 4
+
+Official WISKI implementation available at https://github.com/wjmaddox/online_gp 
+
+13 Incremental Transformer Neural Processes 
+
+Figure 8. Schematic of incTNP-Seq during training. All M-MHSA and M-MHCA layers use causal masking. 
+
+We define an initial learning rate for each task lr (base) and set the learning rates as lr (GP) init = lr (base) , lr (stem) init = 10 −1lr (base) ,
+
+lr (GP) stream = 10 −1lr (base) and lr (stem) stream = 10 −2lr (base) . For the Powerplant and Skillcraft datasets, we set lr (base) = 5 × 10 −2 and for all other tabular tasks we use lr (base) = 1 × 10 −2. We pretrain tabular WISKI models using 5% of the total contextual data. For GP regression tasks, we match the GP kernel to the same class as the underlying GP kernel and do not use a stem. We set lr (GP) init = 5 × 10 −2 and lr (GP) stream = 10 −1lr (GP) init , having tuned lr (GP) init on the GP dataset using a learning rate sweep. m = 32 
+
+inducing points are utilised for this task. In Section 5.2, we use Ninit = 20 points to pretrain WISKI .
+
+B.1. 1D Gaussian Process Regression Training and testing details We train NP models on the GP regression task for 16,000 samples with a batch size of 16. We train for 200 epochs on the RBF kernel and for 400 epochs on a more challenging mixed kernel by default. All samples within a batch are drawn from the same randomly sampled GP kernel. For each batch, we select Nt = 128 target points for evaluation and Nc ∼ U [1 , N (max ) 
+
+> c
+
+] context points, with model training lasting approximately 3 hours. We sample uniformly from an input range of [−2, 2] , with the standard deviation of observation noise set to σobs = 0 .1 across all experiments. An outline of our training procedure is provided in Algorithm 1. We evaluate predictive performance across 80,000 random samples. 
+
+B.2. Tabular Data Regression Training and testing details We train our models in exactly the same manner as for the GP regression task, with the key difference being that input features are multi-dimensional x ∈ R20 . When performing inference on real-world tabular tasks, datasets with fewer than 20 features are padded with zeros to be 20-dimensional. We train NP models on a synthetically generated dataset for 500 epochs, using 32,768 samples per epoch with a batch size of 128. For each training step, we select 
+
+Nt = 128 target points and draw Nc ∈ U [10 , 1024] context points. We evaluate synthetic model performance using 80,000 test samples. 14 Incremental Transformer Neural Processes 
+
+Algorithm 1 1D GP Regression Training 
+
+1: Input: Target count Nt, context range [N (min)  
+
+> c
+
+, N (max)  
+
+> c
+
+], epochs E, samples per epoch SE , batch size B, learning rate 
+
+lr , kernel family k, observation noise σobs , NP model NP θ .
+
+2: for epoch = 1 , . . . , E do 
+
+3: for step s = 1 , . . . , S E /B do 
+
+4: ks ∼ k {Sample kernel hyperparameters }
+
+5: Nc ∼ U [N (min)  
+
+> c
+
+, N (max)  
+
+> c
+
+]
+
+6: Dc, Dt ← ∅ , ∅
+
+7: for b = 1 , . . . , B do 
+
+8: f (b) ← SampleGP (0 , k s)
+
+9: x(b) ∼ U [−2, 2] Nt+Nc
+
+10: ϵ(b) ∼ N (0, I )
+
+11: y(b) ← f (b)(x(b)) + σobs ϵ(b)
+
+12: Dc ← D c ∪ { (x(b)1: Nc , y(b)1: Nc )}
+
+13: Dt ← D t ∪ { (x(b) 
+
+> Nc+1: Nc+Nt
+
+, y(b) 
+
+> Nc+1: Nc+Nt
+
+)}
+
+14: end for 
+
+15: Xt, Yt ← D t
+
+16: pred dist ← NP θ (Xt, Dc)
+
+17: L ← NLL (pred dist , Yt) {Negative log-likelihood }
+
+18: θ ← AdamW (θ, ∇θ L, l r )
+
+19: end for 
+
+20: end for B.3. Station Temperature Prediction Task overview For the temperature prediction task using HadISD data, we train models to perform spatiotemporal interpolation conditioned on contextual observations. Consequently, the model learns a spatiotemporal function mapping from time t, latitude ϕ, longitude λ and elevation z to a predicted temperature T :
+
+f : Rt × [−20 ◦, 60 ◦]ϕ × [−10 ◦, 52 ◦]λ × Rz −→ RT , (t, ϕ, λ, z ) 7 → T (t, ϕ, λ, z ). (17) 
+
+Fourier embeddings Raw inputs are 4-dimensional, but we employ Fourier embeddings to extract multi-scale features, resulting in input vectors x ∈ R128 (using 32 dimensions per feature). This approach has been established for foundational NP weather forecasting models, and we adopt a similar setup to (Bodnar et al., 2025), where we Fourier encode each scalar feature xj into a D dimensional vector: FourierEncode (xj ) = 
+
+
+
+cos 
+
+ 2πx j
+
+Λi
+
+
+
+, sin 
+
+ 2πx j
+
+Λi
+
+ 
+
+for 0 ≤ i < D/ 2. (18) The wavelengths Λi are logarithmically spaced between a minimum Λ(min ) and maximum Λ(max ) wavelength: 
+
+Λi = exp 
+
+
+
+log Λ (min ) + i log Λ (max ) − log Λ (min )
+
+D/ 2 − 1
+
+
+
+. (19) We set Λ(min ) and Λ(max ) to match the physical scales we aim to capture in the normalised data. For elevation, we select 
+
+Λ(min ) 
+
+> z
+
+= 0 .1 and Λ(max ) 
+
+> z
+
+= 8 , reflecting the limited impact of fine-scale elevation variations and a maximum normalised altitude just below 8. For latitude and longitude, we use Λ(min ) = 0 .001 and Λ(max ) = 2 . For time, we choose Λ(min ) 
+
+> t
+
+= 1 
+
+and Λ(max ) 
+
+> t
+
+= 8760 (representing the number of hours in a year) to capture seasonal variations. 
+
+Timestamp sampling To ensure observational diversity, we sample training window start times t proportionally to the temporal density of observations. We precompute a count array C containing the number of observations within each 15 Incremental Transformer Neural Processes 
+
+window starting at a given timestamp, and define a probability mass function over all valid timestamps tvalid :
+
+w ←
+
+"
+
+wi = C[i]
+
+P 
+
+> j∈tvalid
+
+C[j]
+
+#
+
+> i∈tvalid
+
+. (20) 
+
+Training and testing details We train for 200 epochs using 32,000 samples per epoch and a batch size of 32. We train on a spatiotemporal interpolation task using H = 8 time windows stepped in increments of δ = 6 hours, resulting in a 48-hour task window. For each sample, we select Nt = 250 target stations and sample Nc ∼ U [100 , 2100] context stations, randomly distributed in space-time. A temporal ordering is imposed on the context sequence. We evaluate factorised predictive performance across 80,000 random test samples and autoregressive (AR) predictive performance across 4,096 test samples. 
+
+## C. Proofs 
+
+We re-state Proposition 4.1 before providing the proof. 
+
+Proposition. Let p be the true data-generating distribution, which we assume to be exchangeable. Then, the following decomposition holds: 
+
+DKL (q1: n ∥ p) = DKL (q1: n ∥ ˆq1: n) + DKL (ˆ q1: n ∥ p) (21) 
+
+and, in particular, DKL (q1: n ∥ p) ≥ DKL (ˆ q1: n ∥ p) with equality if and only if q1: n is exchangeable. Proof. We can expand D KL (q1: n ∥ p) in the following way: DKL (q1: n ∥ p) := 
+
+Z
+
+> Yn
+
+q1: n(y1, . . . , yn) log q1: n(y1, . . . , yn)
+
+p(y1, . . . , yn) dy1: n (22) 
+
+=
+
+Z
+
+> Yn
+
+q1: n(y1, . . . , yn) log q1: n(y1, . . . , yn)ˆq1: n(y1, . . . , yn) + log ˆq1: n(y1, . . . , yn)
+
+p(y1, . . . , yn)
+
+!
+
+dy1: n (23) 
+
+= DKL (q1: n ∥ ˆq1: n) + 
+
+Z
+
+> Yn
+
+q1: n(y1, . . . , yn) log ˆq1: n(y1, . . . , yn)
+
+p(y1, . . . , yn) dy1: n (24) 
+
+(introduce average over all permutations Πn) (25) 
+
+= DKL (q1: n ∥ ˆq1: n) + 1
+
+n!
+
+X
+
+> π∈Πn
+
+Z
+
+> Yn
+
+q1: n(y1, . . . , yn) log ˆq1: n(y1, . . . , yn)
+
+p(y1, . . . , yn) dy1: n (26) 
+
+(apply change of variables (y1, . . . , yn) 7 → (yπ(1) , . . . , yπ(n)) within inner summation) (27) 
+
+= DKL (q1: n ∥ ˆq1: n) + 1
+
+n!
+
+X
+
+> π∈Πn
+
+Z
+
+> Yn
+
+q1: n(yπ(1) , . . . , yπ(n)) log ˆq1: n(yπ(1) , . . . , yπ(n))
+
+p(yπ(1) , . . . , yπ(n)) dy1: n (28) 
+
+= DKL (q1: n ∥ ˆq1: n) + 1
+
+n!
+
+X
+
+> π∈Πn
+
+Z
+
+> Yn
+
+q1: n(yπ(1) , . . . , yπ(n)) log ˆq1: n(y1, . . . , yn)
+
+p(y1, . . . , yn) dy1: n (29) 
+
+= DKL (q1: n ∥ ˆq1: n) + 
+
+Z
+
+> Yn
+
+1
+
+n!
+
+X
+
+> π∈Πn
+
+q1: n(yπ(1) , . . . , yπ(n))
+
+!
+
+log ˆq1: n(y1, . . . , yn)
+
+p(y1, . . . , yn) dy1: n (30) 
+
+= DKL (q1: n ∥ ˆq1: n) + 
+
+Z
+
+> Yn
+
+ˆq1: n(y1, . . . , yn) log ˆq1: n(y1, . . . , yn)
+
+p(y1, . . . , yn) dy1: n (31) 
+
+= DKL (q1: n ∥ ˆq1: n) + DKL (ˆ q1: n ∥ p) (32) where the equality between Equation 28 and Equation 29 follows from both ˆq1: n and p being exchangeable. Clearly, by known properties of the KL-divergence, the gap DKL (q1: n ∥ ˆq1: n) will be 0 if and only if the two distributions are the same. The distributions will only be the same if q1: n is already exchangeable. This completes the proof. 16 Incremental Transformer Neural Processes 
+
+## D. Datasets 
+
+D.1. 1D GP Synthetic Regression 
+
+In the main text we present results for models with up to N (max ) 
+
+> c
+
+= 64 context points, using the RBF kernel. We present additional results in Appendix E.1.1 for more complex kernels, and higher context sizes (up to N (max ) 
+
+> c
+
+= 512 ). 
+
+Data generation For all experiments, input locations x are sampled uniformly from the domain [−2, 2] . Target values are generated as y = f (x) + σobs ϵ, where observation noise is fixed at σobs = 0 .1.
+
+RBF kernel The radial basis function (RBF) kernel is defined as: 
+
+krbf (x, x ′) = exp 
+
+
+
+− (x − x′)2
+
+2ℓ2
+
+
+
+. (33) To span a sensible range of complexity, we use logarithmic uniform sampling to sample the lengthscale ℓ such that 
+
+log 10 (ℓ) ∼ U [log 10 (ℓmin ), log 10 (ℓmax )] . We use ℓmin = 0 .25 and ℓmax = 1 .
+
+Mat ´ern kernels The Mat ´ern kernel is a generalisation of the RBF kernel, with an additional smoothness parameter ν.Within this work, kernels ν ∈ { 12 , 32 , 52 } are considered, referred to as Mat ´ern 1/2 , Mat ´ern 3/2 and Mat ´ern 5/2 . They vary in complexity and are given by: 
+
+km1/2 (x, x ′) = exp 
+
+
+
+− |x − x′|
+
+ℓ
+
+
+
+, (34) 
+
+km3/2 (x, x ′) = 1 + 
+
+√3|x − x′|
+
+ℓ
+
+!
+
+exp −√3|x − x′|
+
+ℓ
+
+!
+
+, (35) 
+
+km5/2 (x, x ′) = 1 + 
+
+√5|x − x′|
+
+ℓ + 5( x − x′)2
+
+3ℓ2
+
+!
+
+exp −√5|x − x′|
+
+ℓ
+
+!
+
+. (36) We sample ℓ using the same methodology as for the RBF kernel. 
+
+Periodic kernel The periodic kernel models periodic data by allowing the correlation between points to cycle over a period p, and is defined as: 
+
+kper (x, x ′) = exp 
+
+
+
+−2 sin 2(π|x − x′|/p )
+
+ℓ2
+
+
+
+. (37) We use p = 2 , allowing for two complete oscillations over the domain, with ℓ being sampled in the same fashion as for the RBF kernel. 
+
+Mixed kernel To introduce additional complexity, we train models using a mixture of GP kernels. In this mixed kernel 
+
+setting, we randomly sample a stationary kernel family k from the set {krbf , k m1/2 , k m3/2 , k m5/2 , k per } for each training batch, before sampling the specific hyperparameters. This requires the NP to implicitly infer not only the kernel parameters but also the underlying kernel family itself for each task. 
+
+D.2. Tabular Data Synthetic prior To encourage generalisation across diverse tabular distributions, we generate synthetic datasets using a structural prior adapted from the TabPFN v1.0 synthetic data pipeline (Hollmann et al., 2025b) 5. For each dataset instance, we sample hyperparameters and instantiate a randomly-weighted MLP-based generator, yielding input features x and  
+
+> 5TabPFN’s pipeline is available at https://github.com/PriorLabs/TabPFN/tree/v1.0.0/tabpfn/priors
+
+17 Incremental Transformer Neural Processes 
+
+regression targets y. The MLP depth is sampled from a truncated normal distribution with a minimum depth of 2, with log-uniformly sampled mean and standard deviation in the range [1 , 6] . The hidden width is sampled analogously with log-uniform mean/standard deviation in the range [5 , 130] and a minimum width of 4. Each MLP randomly selects an activation function from the set {ReLU , Tanh , Sigmoid , ELU , Identity }.To standardize input dimensionality, we Z-score normalise features per dataset and zero-pad feature vectors to a fixed dimension Dx = 20 . For regression targets, we first clip outliers using an interquartile range filter with factor k = 3 .0,then apply a randomized normalisation chosen uniformly from Z-score, Min-Max, Max-Abs, or Robust scaling to induce robustness to varying output scales. 
+
+Testing protocol When testing on synthetically generated data, we test over 80,000 tasks with Nc ∼ U [10 , 1024] and 
+
+Nt = 128 . For real-world datasets of length N , we randomly sample Nc ∼ U [0 .5N, 0.8N ] context points and use the remaining points as the targets Nt = N − Nc, averaging over 50 such tasks from each dataset. When evaluating model performance on real-world datasets in a streaming setting, we evaluate on Nt = 0 .2N randomly selected target points and use the remaining points as contextual information to be streamed, averaging our results across 10 random dataset permutations. We consider the Skillcraft, Powerplant, Elevator and Protein datasets from the UCI Machine Learning Repository for real-world tabular evaluation. We indicate the total number of datapoints N in brackets for each UCI dataset. 
+
+Skillcraft ( N = 3338 ) SkillCraft1 Master Table is a dataset of player rankings on the StarCraft 2 video game. We use this ranking ( LeagueIndex ) as our target output. We drop the GameID column (which is an index column) and log-transform all other features. 
+
+Powerplant ( N = 9568 ) The Combined Cycle Power Plant dataset records the net hourly electrical output of a powerplant alongside ambient environmental features for that point in time. We use the hourly electrical output as our target output (which maps to the last column) and all other columns for our input features. 
+
+Elevator ( N = 16599 ) For the Elevators dataset, a dataset monitoring the control of an aircraft elevator, we use the last column as our target and remove 2 feature columns that have a standard deviation below 1 × 10 −5.
+
+Protein ( N = 44019 ) The Physicochemical Properties of Protein Tertiary Structure is a large scale scientific dataset detailing protein decoy structures. For this task, we use the last column as the target column and drop all duplicate entries. 
+
+Normalisation We Z-normalise both features and targets, and clip all values to be in the range [−5, 5] . In the static context evaluation setting, we compute normalisation statistics on the context dataset and apply normalisation to both the target and context sets. For the streaming setting, we compute normalisation statistics on a calibration set of size max(200 , 0.2Nc)
+
+which is excluded from evaluation and then stream the remaining data. We continuously update feature normalisation statistics in an online fashion as the stream arrives. 
+
+D.3. Station Temperature Prediction 
+
+The HadISD dataset (Dunn et al., 2012; 2016) is a quality-controlled subset of the Integrated Surface Database (ISD) (Smith et al., 2011), comprising in situ observations from 9,948 weather stations. Key recorded variables include temperature, dewpoint temperature, cloud cover and wind speed. Due to computational constraints, we focus on the dry bulb air temperature at a 2-metre screen height across 2,805 stations situated in or near Africa and Europe. This corresponds to a latitude and longitude range of [−20 ◦, 60 ◦]ϕ × [−10 ◦, 52 ◦]λ.As an off-the-grid meteorological dataset, station density varies geographically; weather station observations occur relatively sparsely in Africa, and much more frequently in Europe as seen in Figure 9, adding to the task complexity. 
+
+Data split We train our models on observations from 1980 to 2016, validate model performance on data from 2017, and test model performance on data from 2018–2019. 
+
+Normalisation Latitude and longitude features are normalised to be in the range [−1, 1] , and we apply Z-normalisation to temperature and elevation. All normalisation statistics are computed on the training dataset. 18 Incremental Transformer Neural Processes         
+
+> Figure 9. Distribution of the 2,805 stations across the restricted latitude and longitude used for our station temperature prediction task, using 0.75 ◦×0.75 ◦patches.
+
+Spatiotemporal interpolation We train all NP models on a spatiotemporal interpolation task. Given a random subset of contextual observations at H = 8 windows separated by δ = 6 hours, we train NP models to predict the temperature at randomly sampled locations across the complete time window. This corresponds to a total window of 48 hours. This training task forces NP models to learn complex underlying spatiotemporal temperature patterns, informing a foundational representation of weather modelling. Moreover, the spatiotemporal interpolation is a task of practical interest of its own, such as when having to estimate true readings at faulty or sparse sensors. 
+
+Forecasting We test the ability of our NP models to generalise to weather forecasting, having only been trained on the markedly different task of spatiotemporal interpolation. For forecasting we take H = 8 windows separated by δ = 6 hours and sample Nc temporally ordered observations from the first H − 1 windows as our context set, leaving Nt stations from the last time window to compose our target set. 
+
+## E. Additional Experimental Results 
+
+In addition to the experimental results provided in Section 5, here we present further evidence for the claims that we make in the main part of the paper. We also provide the results of further empirical investigations that we conduct into the performance of our models in certain scenarios. 
+
+E.1. Static Context Performance 
+
+In this task we evaluate the performance of the models when evaluated in the static context setting. This is to establish whether the causal masking introduced in the incTNP variants leads to significant performance drop when evaluated in the standard NP evaluation setting. For the 1D GP and Tabular (Synthetic) tasks the results are obtained over 80000 datasets sampled from the prior. For the real-world tabular tasks, the results are shown over 100 permutations of the datasets. For HadISD, factorised results are averaged over 80000 random samples whilst AR results are averaged over 4096 samples. In Table 2, we expand on the results from Table 1 by including the standard error of the mean (SEM), providing a measure of the variability across test datasets. In one of the only two settings for which incTNP-Seq is outperformed by TNP-D ,the 1D GP task, the performance difference is within an SEM of incTNP-Seq ’s performance. Otherwise, the variability is small enough to demonstrate that, when our models are the top performers, it is not an artefact of randomness. 19 Incremental Transformer Neural Processes 
+
+Table 2. Average Test Log-Likelihoods ( ↑) for (a) Factorised and (b) AR deployment. We report the absolute performance of the reference non-incremental TNP-D. For all the other methods we report the difference ( ∆) relative to the reference performance. Held-out task are shown in purple, while transfer scenarios, such as Sim-to-Real (Tabular) and Forecasting (Temperature) are coloured in orange. The values indicate absolute or relative performance ± the standard error of the mean (SEM) of each method. 
+
+(a) Factorised predictions . incTNP-Seq achieves parity or outperforms TNP-D on held-out tasks, and dominates on transfer scenarios. 
+
+REFERENCE OURS (∆ (↑) RELATIVE TO REF .) BASELINES (∆ (↑) RELATIVE TO REF .) 
+
+DATASET TNP-D INC TNP INC TNP-S EQ CNP LBANP 
+
+1D GP 0.4309 ± 0.0019 −0.0133 ± 0.0019 −0.0016 ± 0.0019 −0.2301 ± 0.0021 +0.0040 ± 0.0019 
+
+TABULAR (S YNTHETIC ) 0.1540 ± 0.0047 −0.0201 ± 0.0046 +0.0075 ± 0.0048 −0.3304 ± 0.0038 −0.0576 ± 0.0045 
+
+SKILLCRAFT −0.9543 ± 0.0002 +0 .0025 ± 0.0002 +0.0078 ± 0.0002 −0.1336 ± 0.0002 −0.0310 ± 0.0002 
+
+POWERPLANT −0.0076 ± 0.0002 +0 .0022 ± 0.0002 +0.0028 ± 0.0002 −0.2692 ± 0.0002 −0.0244 ± 0.0001 
+
+ELEVATORS −0.3219 ± 0.0003 −0.0235 ± 0.0003 −0.0086 ± 0.0004 −0.9417 ± 0.0002 −0.2048 ± 0.0003 
+
+PROTEIN −1.1524 ± 0.0001 −0.0281 ± 0.0001 +0.0363 ± 0.0001 −0.1877 ± 0.0000 −0.0239 ± 0.0001 
+
+HAD ISD (I NTERP ) −1.7025 ± 0.0023 −0.0112 ± 0.0023 +0.0182 ± 0.0022 −0.5331 ± 0.0007 −0.0904 ± 0.0017 
+
+HAD ISD (F ORECAST ) −2.5708 ± 0.0031 +0 .0302 ± 0.0039 +0.6897 ± 0.0019 +0 .1806 ± 0.0011 +0 .2681 ± 0.0018 
+
+(b) AR predictions. DATASET TNP-D (R EF ) INC TNP INC TNP-S EQ CNP LBANP TNP-A 
+
+1D GP 0.767 ± 0.003 −0.007 ± 0.003 +0.002 ± 0.003 −0.230 ± 0.011 −0.001 ± 0.003 +0.004 ± 0.003 
+
+HAD ISD (I NTERP ) −1.670 ± 0.007 −0.038 ± 0.009 +0 .016 ± 0.007 −0.552 ± 0.002 −0.097 ± 0.005 +0.031 ± 0.008 
+
+HAD ISD (F ORECAST ) −1.749 ± 0.003 −0.005 ± 0.003 +0.061 ± 0.004 −0.559 ± 0.004 −0.120 ± 0.005 +0 .035 ± 0.003 
+
+E.1.1. 1D GP S YNTHETIC REGRESSION 
+
+Additional results We provide additional results for larger context set sizes ( Nc up to 512 during training and evaluation) as well as on more complicated kernels (mix of 5 kernels), to show that the conclusions from the main are indeed supported in a variety of experimental settings. These results are shown in Figure 10. In particular, incTNP-Seq continues to be the best-performing variant, followed by TNP-D and then incTNP , while also benefitting from robustness to hyperparameter setting. The differences between incTNP-Seq and TNP-D become even more pronounced with harder tasks. TNP-D incTNP incTNP-Seq    
+
+> 0.30 0.35 0.40 0.45
+> Test LL  ↑
+> GP (RBF, Nc= 64 )
+> Ground Truth Compute-Equal Training
+
+(a) Nc = 64 TNP-D incTNP incTNP-Seq     
+
+> 0.74 0.76 0.78 0.80
+> Test LL  ↑
+> GP (RBF, Nc= 512 )
+> Ground Truth Compute-Equal Training
+
+(b) Nc = 512 TNP-D incTNP incTNP-Seq     
+
+> 0.00 0.05 0.10 0.15
+> Test LL  ↑
+> GP (Mixed, Nc= 64 )
+> Ground Truth Compute-Equal Training
+
+(c) Nc = 64 TNP-D incTNP incTNP-Seq     
+
+> 0.550 0.575 0.600 0.625 0.650
+> Test LL  ↑
+> GP (Mixed, Nc= 512 )
+> Ground Truth Compute-Equal Training
+
+(d) Nc = 512 
+
+Figure 10. Mean Log-Likelihood boxplots for RBF and Mixed kernels and for different context sizes ( Nc). 
+
+Fairness of compute budgets For every task, we also train variants of TNP-D and incTNP where their training time is matched (i.e., increased) to that of incTNP-Seq . This was done to eliminate any bias towards incTNP-Seq in our fixed-number-of-epochs setting by it being slightly more compute-heavy an architecture. This benefits the faster-training models since they encounter a greater number of datasets during training than incTNP-Seq . In all cases, the results are presented for the best-performing variant within each family. We refer to the matched training-time variants as “compute-equal”. Notably, even with compute-equal training, incTNP-Seq remains the top-performing variant across our experiments. 
+
+Robustness to hyperparameter choice To verify robustness to hyperparameter selection, we iterate over learning rates (LRs) in [0 .0001 , 0.0003 , 0.0005 , 0.001 , 0.002] . We perform each iteration twice; once with the LR held constant and again with the LR following a cosine annealing schedule (Loshchilov & Hutter, 2017). For each task and model, the best performing variant, LR, and annealing schedule are as follows: • RBF, Nc = 64 :20 Incremental Transformer Neural Processes 
+
+– TNP-D: 220 epochs (compute-equal), cosine annealing scheduler with initial LR=0.0003 
+
+– incTNP: 200 epochs, cosine annealing scheduler with initial LR=0.0003 
+
+– incTNP-Seq: 200 epochs, cosine annealing scheduler with initial LR=0.0003 • RBF, Nc = 512 :
+
+– TNP-D: 250 epochs (compute-equal), cosine annealing scheduler with initial LR=0.0001 
+
+– incTNP: 250 epochs (compute-equal), cosine annealing scheduler with initial LR=0.0003 
+
+– incTNP-Seq: 200 epochs, cosine annealing scheduler with initial LR=0.0003 • Mixed, Nc = 64 :
+
+– TNP-D: 440 epochs (compute-equal), cosine annealing scheduler with initial LR=0.0003 
+
+– incTNP: 440 epochs (compute-equal), cosine annealing scheduler with initial LR=0.0003 
+
+– incTNP-Seq: 400 epochs, cosine annealing scheduler with initial LR=0.001 • Mixed, Nc = 512 :
+
+– TNP-D: 500 epochs (compute-equal), cosine annealing scheduler with initial LR=0.0003 
+
+– incTNP: 500 epochs (compute-equal), cosine annealing scheduler with initial LR=0.0005 
+
+– incTNP-Seq: 400 epochs, cosine annealing scheduler with initial LR=0.0005 E.1.2. S YNTHETIC TABULAR DATA 
+
+Additional results As with the synthetic GP data, we conduct a further experiment to investigate the effect of larger context sets in the synthetic tabular data setting. These results can be found in Figure 11. They demonstrate the same performance pattern yet again; incTNP-Seq leads and is followed by TNP-D and then incTNP . incTNP-Seq ’s narrower boxplot once more demonstrates superior robustness to the hyperparameter setting. The only difference between these results and those in Figure 2 is that the upper bound of performance is somewhat increased in this setting. This is to be expected since the models are provided with more context data. TNP-D incTNP incTNP-Seq     
+
+> −0.10.00.1
+> Test LL  ↑
+> Tabular (synthetic)
+> Figure 11. Mean Log-Likelihood boxplots for tabular data prediction with Ncup to 1024 .
+
+As with the GP regression task, we perform a learning rate sweep across both a fixed learning rate and cosine learning rate scheduler, searching across (initial) learning rates in [0 .0001 , 0.0003 , 0.0005 , 0.001 , 0.003 , 0.005] . We also compare against compute-equal variants of TNP-D and incTNP .The best trained variants were found to be: • TNP-D: 680 epochs (compute-equal), cosine annealing scheduler with initial LR=0.003. • incTNP: 500 epochs, cosine annealing scheduler with initial LR=0.005. • incTNP-Seq: 500 epochs, cosine annealing scheduler with initial LR=0.003. E.1.3. S TATION TEMPERATURE PREDICTION 
+
+We train all NP models on the temperature prediction task (HadISD) using H = 8 time windows spread δ = 6 hours apart, resulting in a 48 hour training window. For the experiment performed in the main part of the paper, we train the models to perform spatiotemporal interpolation. We then evaluate their performance on the same interpolation scenario, as well as a forecasting scenario in which the targets are sampled strictly from future time windows relative to the context. 21 Incremental Transformer Neural Processes 
+
+To further assess generalisation, here we extend our investigation by evaluating performance over a 24 hour testing window. We evaluate on spatiotemporal interpolation with factorised predictions (where targets are less correlated), as well as forecasting with AR predictions (where targets are highly correlated, making AR predictions especially suitable). Since models are trained on 48 hour windows, we consider 24 hour window evaluation to be an out-of-distribution setting. Table 3 summarises NP model performance, with our incTNP and incTNP-Seq matching or exceeding the performance of 
+
+TNP-D , demonstrating robust generalisation capabilities. 
+
+Table 3. Average Test Log-Likelihoods ( ↑) for (a) Factorised and (b) AR deployment. We report the absolute performance of the reference non-incremental TNP-D. For all the other methods we report the difference ( ∆) relative to the reference performance. All tasks are considered out-of-distribution and coloured in orange. The values indicate absolute or relative performance ± the standard error of the mean (SEM) of each method. 
+
+(a) Factorised predictions . incTNP-Seq and incTNP outperform or achieve parity with TNP-D on OOD interpolation.                                 
+
+> REFERENCE OURS (∆(↑)RELATIVE TO REF .) BASELINES (∆(↑)RELATIVE TO REF .)
+> TIME WINDOW (I NTERP )TNP-D INC TNP INC TNP-S EQ CNP LBANP
+> 24 H OURS −1.6695 ±0.0022 +0 .0064 ±0.0022 +0.0312 ±0.0022 −0.5024 ±0.0007 −0.0501 ±0.0017
+
+(b) AR predictions. incTNP matches TNP-D ’s performance, whilst incTNP-Seq significantly outperforms it.                            
+
+> TIME WINDOW (F ORECAST )TNP-D (R EF )INC TNP INC TNP-S EQ CNP LBANP TNP-A
+> 24 H OURS −1.8108 ±0.0026 +0 .0356 ±0.0030 +0.1536 ±0.0071 −0.4390 ±0.0040 −0.0526 ±0.0050 +0 .0931 ±0.0031
+
+E.2. Discussion on TNP-A 
+
+In addition to TNP-D , Nguyen & Grover (2022) introduce TNP-A , a TNP variant designed to predict the joint distribution over targets autoregressively. Whilst our primary focus is on the streaming setting rather than pure autoregressive (AR) generation, TNP-A represents a significant baseline in the literature that warrants discussion. We report results for TNP-A 
+
+on AR prediction tasks in Table 2(b) and Table 3(b). 
+
+TNP-A processes a context set {xcn, y cn}Nc 
+
+> n=1
+
+and target input locations {xtn, 0}Nt
+
+> n=1
+
+, as well as a sequence of observed targets 
+
+{xtn, y tn}Nt 
+
+> n=1
+
+to model the joint distribution over targets autoregressively. As with TNP-D , context points attend to all other context points. However, target input locations and observed targets attend to all context points as well as preceding observed targets (as is visualised in Figure 2 of (Nguyen & Grover, 2022)), inducing a dependency on the ordering of targets. At prediction time, where the true target observations are not available, TNP-A samples from its predictive distribution sequentially to build up a set of observations, and averages predictions over multiple sample unrolls S.By allowing unmasked attention between context points, TNP-A achieves context permutation invariance but cannot incrementally update its context representation efficiently, incurring the same computational bottleneck as TNP-D .
+
+TNP-A combines the context set, target locations and target observations into a single sequence that is processed through masked self-attention layers, resulting in an O(SN t(Nc + Nt)2) runtime complexity. We observe that Nguyen & Grover (2022)’s TNP-A implementation can be sped up through the use of KV caching to O(S(Nc + Nt)2). We term our implementation TNP-A (Cached) , and refer to the original as TNP-A (Original) . We note that TNP-A ’s reliance on a unified self-attention stack combined with its hybrid masking strategy makes the implementation of KV caching non-trivial. In Figure 12, we explore the AR streaming cost of TNP variants relative to incTNP on the HadISD task. We observe that 
+
+TNP-A (Original) is prohibitively expensive to deploy in streaming environments, scaling less favourably than AR 
+
+TNP-D . Conversely, our optimised TNP-A model scales more capably. Ultimately, the inability to efficiently incrementally update its context representation means that TNP-A is ill-suited for AR streaming tasks, and cannot compete with the computational advantages incTNP offers, which are exacerbated for tasks where the frequency of context observations exceeds the number of inference calls. Our findings are echoed by Hassan et al. (2025), who show that TNP-A ’s design is ill-suited for efficient autoregressive deployment. They show that the use of two target sets ( {xtn, 0}Nt 
+
+> n=1
+
+and {xtn, y tn}Nt
+
+> n=1
+
+) imposes a significant computational burden during AR decoding, particularly when the target set is large. Additionally, they show that TNP-A ’s bespoke masking strategy prevents the use of highly optimised kernels such as FlashAttention (Dao, 2024) during training, resulting 22 Incremental Transformer Neural Processes 0 20000 40000 60000 80000 100000 
+
+Stream Length ( Ns)   
+
+> 0
+> 50
+> 100
+> 150
+> 200
+> 250
+> Time (s)
+> TNP-D incTNP TNP-A (Original) TNP-A (Cached)
+
+# O(N )
+
+# O(N 2)                           
+
+> Figure 12. Cost of each AR mode deployment step as weather observations arrive sequentially on the HadISD task. At each step, models condition on all streamed data Nsand perform AR prediction on a fixed target set of Nt= 250 using S= 50 sample unrolls. The dotted orange line represents the cost of updating incTNP ’s context representation. Both the original unoptimised TNP-A model from Nguyen & Grover (2022), TNP-A (Original) , and our optimised version with KV caching implemented, TNP-A (Cached) ,are compared. We only run TNP-A (Original) over 2000 context points and AR TNP-D over 5000 context points due to their expensive scaling, but fit quadratic functions to them (with dotted black lines) to show their expected scaling. We also fit cost curves to
+> TNP-A (Original) and incTNP with dotted black lines to highlight their respective quadratic and linear per-step AR scaling.
+
+in a prohibitively expensive training cost. Thus, whilst TNP-A achieves strong AR predictive performance (as shown in Table 2(b) and Table 3(b)), it is computationally demanding—particularly during training. By contrast, incTNP-Seq 
+
+utilises a standard causal structure that is compatible with high-performance attention kernels and maintains a linear-time context update per step, making it a more practical candidate for the large-scale streaming tasks explored in this work. 
+
+E.3. Implicit Bayesianness 
+
+We now provide additional details about our empirical investigation into the implicit Bayesianness of the models’ implied prediction rules, as well as further results. These additional results further support our claim that TNP-D and incTNP-Seq 
+
+exhibit similar degrees of consistency in their model updates. In the example provided in Section 5.2, we condition on 20 initial fixed context points, and predict over a set of 40 targets. The number of initial context points is chosen to ensure stable pre-training of WISKI so that it indeed represents a fair baseline. The factorisation of the joint we are using is: 
+
+pNP (yt
+
+> 1:40
+
+|yfixed ) = Π 40 
+
+> i=1
+
+pNP (yti |yt
+
+> 1: i−1
+
+, yfixed ).
+
+To compute the metric, we evaluate over 2000 such datasets. We use 256 different permutations to compute the permutation-invariant prediction map ˆpNP . To compute the expectation of the KL gap, we average over 128 different permutations. Finally, we use 32 Monte Carlo samples to approximate the KL divergence between pNP (Gaussian) and ˆpNP (mixture of Gaussians). Because WISKI is more expensive to run than the TNP-based variants, we compute the metric on 128 datasets, using 64 permutations for constructing ˆpNP , and 32 permutations for computing the expectation of the KL gap. Finally, we use 20 Monte Carlo samples for computing the KL divergence. To verify the robustness of our findings regarding implicit Bayesianness, we replicate the analysis in a sparser initial context setting: conditioning on an initial fixed context of 3 points and evaluating the joint distribution over 100 target points. We omit WISKI from this comparison, as the method proved numerically unstable given such a small fixed context size. The results, presented in Figure 13, corroborate our earlier conclusions: incTNP-Seq exhibits a KL gap only marginally higher than the baseline TNP-D , while achieving superior NLL. Similarly, although incTNP shows a slightly larger KL gap and lower predictive performance, it remains highly comparable to the non-incremental baseline. 23 Incremental Transformer Neural Processes 55 60           
+
+> KL Gap ( ↓)
+> 2×10 0
+> 3×10 0
+> 4×10 0
+> 6×10 0
+> Joint NLL Mean (- Optimal) ( ↓) TNP-D incTNP incTNP-Seq
+
+Figure 13. Performance (Joint NLL gap relative to optimal) versus implicit Bayesianness (KL Gap). Similarly to Figure 3, incTNP-Seq 
+
+achieves a KL gap similar to the non-causal TNP-D and a better performance. In contrast, incTNP ’s performance is poorer, and the KL gap is slightly larger, but within errors. Diamond markers ( ⋄) denote the permutation-invariant versions of the models. 
+
+E.4. Streaming Setting 
+
+E.4.1. S TREAMING TABULAR DATA 
+
+In the main part of the paper, we only compare TNP family members since the goal of the investigation is to expose any trade-offs introduced by our causal masking mechanism. However, a natural question to ask is how well our models perform in comparison to other baselines that practitioners might consider. We include WISKI as a baseline since it is a well-established stochastic process model suitable for streaming-data settings, and also the LBANP to represent the state-of-the-art of sub-quadratic and general-purpose TNP-based models. These additional results are shown in Figures 14 and 15 for synthetic and real-world scenarios, respectively. Although we also included a CNP as a baseline, its performance was so poor that it would not even show up on the same scale in our figures. In both synthetic and real-world environments, the three TNP-type models considered in the main portion of the paper significantly outperform the extra baselines LBANP and WISKI . So, not only are the three TNP variants simply more performant in the straightforward synthetic setting (Figure 14), but there are also more efficient at overcoming the difficult sim-to-real transfer than the additional baselines are (Figure 15). Also note that, for all baselines, the predictive performance improves as the number of context points is increased, as expected. 15000 30000  
+
+> −0.4
+> −0.2
+> Log-Likelihood ( ↑)
+> 15000 30000
+> 0.0
+> 0.5
+> 1.0
+> Cumulative Time (s)  ×10 6
+
+Stream Length ( Ns)    
+
+> TNP-D incTNP incTNP-Seq LBANP WISKI
+
+Figure 14. Test log-likelihood ( ↑) on the Tabular (Synthetic) dataset including baselines ( LBANP and WISKI ). (Left) The TNP variants show significantly better performance than the baselines. (Right) Although the TNP-based models show better performance, the TNP-D is more costly than the baselines at large streaming lengths. In contrast, the incTNP variants have both the best performance and lowest computational cost. 
+
+24 Incremental Transformer Neural Processes 1000 2000 
+
+−1.1
+
+−1.0
+
+> Log-Likelihood ( ↑)
+
+## Skillcraft 
+
+2500 5000 
+
+−0.10 
+
+−0.05 
+
+0.00 Powerplant 
+
+5000 10000 
+
+−0.75 
+
+−0.50 
+
+## Elevators 
+
+10000 20000 
+
+−1.2
+
+−1.1 Protein 
+
+Stream Length ( Ns)TNP-D incTNP incTNP-Seq LBANP WISKI 
+
+Figure 15. Test log-likelihood ( ↑) on Tabular (real-world datasets). The TNP-based variants show better performance on the real-world datasets too. 
+
+E.4.2. S TREAMING TEMPERATURE AR P REDICTION 250 500 750 1000 1250 1500 1750 2000             
+
+> Stream Length ( Ns)
+> −2.8
+> −2.6
+> −2.4
+> −2.2
+> −2.0
+> −1.8
+> −1.6
+> Log-Lik. ( ↑)
+> Interpolation
+> 250 500 750 1000 1250 1500 1750 2000
+> Stream Length ( Ns)
+> Forecasting
+> TNP-D incTNP incTNP-Seq TNP-A LBANP CNP
+
+Figure 16. Test log-likelihood ( ↑) on the temperature prediction task using AR predictions, reporting streamed performance for both spatiotemporal interpolation (left) and forecasting (right). Results are averaged over 2,000 samples, with the shaded areas representing the standard error of the mean (SEM). 
+
+We evaluate the streamed performance of AR predictions for both spatiotemporal interpolation and forecasting on the temperature prediction task in Figure 16, including TNP-A as an additional baseline. In the interpolation setting (left), all TNP and incremental TNP variants improve their predictive performance as context arrives, consistently outperforming the CNP and LBANP baselines. Notably, incTNP closely matches TNP-D ’s predictive capabilities across all context sizes, supporting the notion that causal masking of context points incurs minimal detriment to model performance. incTNP-Seq 
+
+provides the strongest performance throughout the majority of the stream, ultimately converging to a similar log-likelihood as TNP-A at Ns = 2000 . While TNP-A performs poorly when context is limited, it adapts effectively as the context set grows. Figure 16 (right) showcases streamed AR performance for temperature forecasting. In this setup, observations are streamed from H = 7 time windows (spaced in steps of δ = 6 hours), and performance is evaluated on the final window (48 hours from the first window). Consequently, the model must initially forecast 48 hours into the future, a task that becomes a 6-hour forecast by the end of the stream. Given the difficulty of this evaluation, performance improves more gradually, with significant boosts occurring as observations from the final time window arrive. Both incTNP and incTNP-Seq outperform 
+
+TNP-D throughout the stream, with incTNP-Seq achieving superior final performance to all baselines. This highlights the effectiveness of the dense training strategy employed by incTNP-Seq , and the strong generalisation capabailites of incremental TNPs more broadly. Whilst incTNP-Seq experiences a transient performance drop for Ns ∈ [600 , 1100] ,we attribute this to the inherent difficulty of forecasting at target locations that are multiple time windows into the future; similar drops are observed for TNP-D and TNP-A . Crucially, all models recover as they observe the final context window, with incTNP-Seq exhibiting the strongest final generalisation. 25 Incremental Transformer Neural Processes 
+
+## F. Computational Complexity Analysis 
+
+In this section, we discuss the computational cost of incTNP , incTNP-Seq and TNP-D in the streaming setting. Within this environment, we evaluate on Nt target points and a streamed context set Ds of size Ns. For AR mode predictions, we aggregate over S separate sample unrolls. For simplicity—and to align with typical streaming setups—, we consider the case of O(1) new contextual observations for each streamed update step. Our analysis can easily be extended to deal with alternative context update arrangements. 
+
+MHSA and MHCA cost Our cost calculations derive from the fact that self-attention on a sequence of length A costs 
+
+O(A2) and that cross-attention between two sequences of lengths A and B costs O(AB ). If causally masked self-attention has already been performed on a sequence of length A and an additional point arrives at the end of that sequence, the cost of self-attention for that point falls to O(A) through KV caching. However, if self-attention is bidirectional, then the cost of self-attention remains O(A2). We apply these facts to our NP models. 
+
+Conditioning cost Early-stage NP variants such as the CNP support incrementally conditioning on contextual information as it arrives in O(Ns), allowing for a separation between conditional updating and target querying. As TNP-D models use bidirectional self-attention to encode the context set, they fail to support efficient incremental updating; each new context point requires the entire context representation to be recomputed in O(N 2 
+
+> s
+
+). However, incTNP models use a causal masking within the context set. This avoids the need to recompute the contextual representations of previous context points, supporting efficient conditioning in O(Ns) through KV caching. This speedup ultimately makes incTNP models strong choices for streaming tasks and renders TNP-D prohibitively expensive. 
+
+Querying cost (factorised) Having conditioned on the context set, both TNP-D and incTNP class models employ cross attention between embedded targets and context points, incurring an O(NsNt) cost. 
+
+Querying cost (AR) Having conditioned on the context set, AR mode deployment involves iteratively predicting one target point at a time and concatenating a sample from that distribution to the context set: 
+
+p(Yt|Xt; Ds) = 
+
+> Nt
+
+Y
+
+> n=1
+
+pθ (ytn|xtn, Ds ∪ (xtj , ytj )n−1 
+
+> j=1
+
+). (38) This process is repeated over S unrolls. At each AR update step, TNP-D has to recompute its entire contextual representation. Thus each step i requires computing self-attention for a context set of size Ns + i − 1 (costing O(( Ns + i − 1) 2)), as well as computing cross attention between the single target point and this expanded context set (costing O(Ns + i − 1) ). Thus the total cost for AR mode prediction of TNP-D is: 
+
+S
+
+> Nt
+
+X
+
+> i=1
+
+O(( Ns + i − 1) 2)
+
+| {z }
+
+> MHSA
+
++ O(Ns + i − 1) 
+
+| {z }
+
+> MHCA
+
+
+
+= O(SN t(Ns + Nt)2).
+
+Both incTNP and incTNP-Seq dramatically speed up AR mode deployment as they allow for efficient incremental conditioning. Thus, the cost of updating the contextual representation at each step i using the causally masked self-attention layer drops from a quadratic cost to a linear one: O(( Ns + i − 1)) . Thus the total AR cost reduces to: 
+
+S
+
+> Nt
+
+X
+
+> i=1
+
+O(( Ns + i − 1)) 
+
+| {z }
+
+> M-MHSA
+
++ O(Ns + i − 1) 
+
+| {z }
+
+> MHCA
+
+
+
+= O(SN t(Ns + Nt)) .
+
+26 Incremental Transformer Neural Processes 
+
+F.1. Per-Update Cost 
+
+Table 4 summarises the per step cost of incremental TNP models relative to TNP. Within the streaming setting, causal masking enables computationally viable incremental context updates, enabling models to handle long streamed sequences. 
+
+Table 4. Summary of per-step streamed conditioning and querying cost for NP models, using both factorised and AR predictions. The training step cost for Nc context points and Nt targets is also included. 
+
+Querying Cost (Step) Model Update Cost (Step) Factorised Autoregressive Training Cost 
+
+incTNP O(Ns) O(NsNt) O(SN t(Ns + Nt)) O(N 2 
+
+> c
+
++ NcNt)
+
+incTNP-Seq O(Ns) O(NsNt) O(SN t(Ns + Nt)) O(( Nc + Nt)2)
+
+TNP-D O(N 2 
+
+> s
+
+) O(NsNt) O(SN t(Ns + Nt)2) O(N 2 
+
+> c
+
++ NcNt)
+
+Consider a streaming update step requiring NP models to have conditioned on all Ns streamed points and compute the target distribution for Nt target points. Predicting a factorised distribution with TNP-D costs O(N 2 
+
+> s
+
++ NsNt) per streaming step, increasing to O(SN t(Ns + Nt)2) for AR predictions. Our incremental TNP models scale much more attractively, performing in O(NsNt) and O(SN t(Ns + Nt)) for factorised and AR mode respectively. 
+
+F.2. Cumulative Cost 
+
+Next, we explore the cumulative cost across Ns streaming steps. TNP-D suffers a quadratic conditioning cost at each step resulting in a cubic cumulative complexity: 
+
+> Ns
+
+X
+
+> i=1
+
+O(i2) = O(N 3 
+
+> s
+
+).
+
+incTNP and incTNP-Seq only suffer a linear conditioning cost per step, leading to an overall quadratic complexity: 
+
+> Ns
+
+X
+
+> i=1
+
+O(i) = O(N 2 
+
+> s
+
+).
+
+For our HadISD weather forecasting task, the streaming setup is such that the target set is fixed, but the predictions are updated as new context observations arrive in sequence. In particular, the observations arrive in a temporal ordering, allowing us to update our temperature predictions for a fixed set of Nt = 250 target stations. In such cases, the cumulative querying cost of factorised predictions for all models becomes: 
+
+> Ns
+
+X
+
+> i=1
+
+O(iN t) = O(N 2 
+
+> s
+
+Nt).
+
+In the case of AR mode deployment, TNP-D suffers from a cumulative querying cost of: 
+
+> Ns
+
+X
+
+> i=1
+
+O(SN t(i + Nt)2) = O(SN tNs(Ns + Nt)2).
+
+incTNP and incTNP-Seq offer a much more scalable cumulative querying cost of: 27 Incremental Transformer Neural Processes 
+
+> Ns
+
+X
+
+> i=1
+
+O(SN t(i + Nt)) = O(SN tNs(Ns + Nt)) .
+
+Thus for cases where Nt << N s and Nt ∈ O (1) , the cumulative cost for incTNP models is quadratic, whilst it is cubic for TNP-D . An example of this cumulative scaling on the HadISD task is shown in Figure 17, where TNP-D is 3.5 times more computationally expensive after 2000 context points, with the gap ever expanding. For AR streaming tasks where the number of target points is large, this gap becomes significantly larger still. In short, imposing causal masking across the context set allows for transformer neural processes to be used in streaming tasks for both factorised and AR predictions, something which is simply not computationally viable for TNP-D .0 250 500 750 1000 1250 1500 1750 2000 
+
+Stream Length ( Ns)    
+
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> 1.25
+> 1.50
+> 1.75
+> Cumulative Time (s)
+> ×10 5TNP-D incTNP LBANP CNP
+
+# O(N 2)
+
+# O(N 3)
+
+Figure 17. Cumulative runtime cost (measured in seconds) on the HadISD dataset of deploying in AR mode as the context set grows (Ns). Runtime measured as station observations arrive in a streamed fashion, resulting in updated predictions at Nt = 250 stations using 
+
+S = 50 sample unrolls across 32 batches. We fit quadratic and cubic cumulative cost functions to incTNP and TNP-D (plotted with dotted black lines), to highlight the cumulative AR scaling cost of both approaches. 
+
+Cumulative runtime performance is summarised in Table 5. 
+
+Table 5. Summary of cumulative streamed conditioning and querying cost for NP models, using both factorised and AR predictions. Both 
+
+incTNP and incTNP-Seq share the same streamed cumulative scaling and are presented together. 
+
+Querying Cost (Cumulative) Model Update Cost (Cumulative) Factorised Autoregressive 
+
+incTNP (-Seq ) O(N 2 
+
+> s
+
+) O(N 2 
+
+> s
+
+Nt) O(SN tNs(Ns + Nt)) 
+
+TNP-D O(N 3 
+
+> s
+
+) O(N 2 
+
+> s
+
+Nt) O(SN tNs(Ns + Nt)2)
+
+## G. Distribution Shift 
+
+In many real-world streaming tasks, the task distribution may evolve over time; such distribution shifts may occur subtly over a long period or happen suddenly. We investigate how incTNP models, as well as other NP baselines, handle this phenomenon within the context of GP regression. Concretely, we adapt a version of the change surface GP kernel proposed by Herlands et al. (2016) to smoothly blur between two GP kernels k1 and k2 over a number of context observations t:
+
+kcs 
+
+
+
+(x, t ), (x′, t ′)
+
+
+
+=
+
+
+
+1 − ω(t)
+
+ 
+
+1 − ω(t′)
+
+
+
+k1(x, x ′) + ω(t)ω(t′)k2(x, x ′),
+
+28 Incremental Transformer Neural Processes 
+
+where ω(t) is the scaled and shifted sigmoid function: 
+
+ω(t) = σsig 
+
+t − t0
+
+τ + ϵ
+
+!
+
+.
+
+and where σsig (·) := 11+ e−· denotes the standard sigmoid function. The distribution shift is controlled by a central parameter t0, dictating where both kernels are mixed equally, and a temperature τ controlling the transition rate between the kernels, with ϵ preventing zero division. For this work k1 and k2
+
+are chosen from the same kernel family but have different randomly sampled hyperparameters, and we aggregate our results over 4,096 tasks. We consider performance for NP models trained up to N (max ) 
+
+> c
+
+= 64 context points on both the mixed and RBF kernels (using the training procedure from Appendix B.1). Crucially, these models were trained on stationary kernels where the kernel hyperparameters remain fixed throughout each task. They have never been exposed to distribution shifts during training. 
+
+Figure 18 illustrates the streaming performance of NP models as the distribution shifts between different kernels sampled randomly from the mixed kernel (using a moderate shift of t0 = 20 , τ = 10 ). A primary finding is that, despite being trained exclusively on static tasks where the underlying distribution remains fixed, the TNP-based models ( TNP-D and incTNP 
+
+variants) successfully adapt with the non-stationary environment. These models recover and achieve strong predictive performance as more data is observed from the new regime k2. This demonstrates the strong generalisation capabilities of these models because they have never been exposed to shifting distributions during training. Within the crossover region, all transformer-based NPs suffer a temporary drop in log-likelihood, with incremental TNPs exhibiting a slightly sharper decline as their fixed causal context history initially remains dominated by the previous regime. However, crucially, both incTNP and incTNP-Seq manage to recover as additional information arrives, with 
+
+incTNP-Seq ultimately outperforming TNP-D in the long run. This indicates that incremental TNPs can capably handle distribution shifts, holding significant potential for real-world online learning tasks. 100 200 300 400 500 
+
+Number of Context Points 
+
+> −0.03
+> −0.02
+> −0.01
+> 0.00
+> 0.01
+> Mean Log-Likelihood
+
+t0                 
+
+> TNP-D incTNP incTNP-Seq CNP GT LL
+> Figure 18. Test log-likelihood ( ↑) on the distribution shift experiment (transitioning from kernel k1to k2) using models trained on the mixed kernel GP task. The red line indicates the crossover point t0= 20 , where both kernels k1and k2are mixed equally. The shaded purple region represents the transition from k1to k2. Shaded region starts at 5% mixing interval (distribution is drawn mostly from k1)and ends at 95% mixing interval (distribution is drawn mostly from k2), using τ= 10 . The dotted grey line indicates the ground truth log-likelihood (GT LL). Results are averaged over 4,096 tasks.
+
+In Figure 19, we visualise the impact of the transition rate—controlled by τ —on the RBF kernel, where k1 and k2 possess different randomly sampled lengthscales. We observe that all TNP-based models successfully recover strong predictive performance as context data from the new regime arrives, aligning with our findings from the mixed kernel. Whilst the 
+
+CNP baseline adapts quickly, it remains a much weaker model due to its tendency to underfit. In contrast, incremental TNPs achieve predictive parity with, or outperform, the non-incremental TNP-D , fitting the data more closely as the stream progresses. As expected, smoother transitions (corresponding to larger τ ) result in less severe drops in log-likelihood. 29 Incremental Transformer Neural Processes 100 200 300 400 500 
+
+> Number of Context Points
+> −0.6
+> −0.5
+> −0.4
+> −0.3
+> −0.2
+> −0.1
+> 0.0
+> Mean Log-Likelihood
+> t0
+> TNP-D incTNP incTNP-Seq LBANP CNP GT LL
+
+(a) τ = 0 100 200 300 400 500  
+
+> Number of Context Points
+> −0.20
+> −0.15
+> −0.10
+> −0.05
+> 0.00
+> Mean Log-Likelihood
+> t0
+> TNP-D incTNP incTNP-Seq LBANP CNP GT LL
+
+(b) τ = 5 100 200 300 400 500  
+
+> Number of Context Points
+> −0.14
+> −0.12
+> −0.10
+> −0.08
+> −0.06
+> −0.04
+> −0.02
+> 0.00
+> 0.02
+> Mean Log-Likelihood
+> t0
+> TNP-D incTNP incTNP-Seq LBANP CNP GT LL
+
+(c) τ = 10 100 200 300 400 500 
+
+> Number of Context Points
+> −0.10
+> −0.08
+> −0.06
+> −0.04
+> −0.02
+> 0.00
+> Mean Log-Likelihood
+> t0
+> TNP-D incTNP incTNP-Seq LBANP CNP GT LL
+
+(d) τ = 15 100 200 300 400 500  
+
+> Number of Context Points
+> −0.08
+> −0.06
+> −0.04
+> −0.02
+> 0.00
+> Mean Log-Likelihood
+> t0
+> TNP-D incTNP incTNP-Seq LBANP CNP GT LL
+
+(e) τ = 20 
+
+Figure 19. Test log-likelihood ( ↑) on the distribution shift task for the RBF kernel as the transition rate τ between kernels changes. Smaller 
+
+τ values result in a much more abrupt distribution shift, whilst larger values lead to a smoother transition. t0 = 20 is used throughout. Results are averaged over 4,096 tasks. 
+
+Notably, in these cases, the model starts to recover performance before fully transitioning into the second regime (i.e., prior to the 95% mixing threshold). This suggests that when the shift is sufficiently gradual, the model can successfully detect and adapt to the changing distribution dynamics on the fly. This preliminary investigation demonstrates that incTNP and incTNP-Seq are capable of handling distribution shifts, rendering them promising candidates for streaming tasks in non-stationary environments too. Further work is required to quantify the rate of adaptation to such distribution shifts and how this depends on task difficulty, as well as their extrapolation behaviour as the number of context points is pushed even further beyond the maximum number of context points seen during training. 30
