@@ -6,82 +6,79 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-03-21
-- 运行时间：2026-03-21 19:56:37 UTC
+- 最新运行日期：2026-03-22
+- 运行时间：2026-03-22 19:31:40 UTC
 - 运行状态：成功
-- 本次总论文数：20
-- 精读区：8
+- 本次总论文数：19
+- 精读区：7
 - 速读区：12
 
 ### 今日简报（AI）
-今日精选 20 篇前沿成果，深度解析大模型在能源系统重构与高精度时序预测中的核心应用。
-重点推荐 LLM 引导的电网拓扑安全强化学习，以及融合市场竞争维度的 CPC 广告出价预测新范式。
-建议关注分布式 LLM 训练与绿色能源的结合，把握时序模型在复杂电网预测中的演进趋势。
-- 详情：[/202603/21/README](/202603/21/README)
+今日深度复盘 19 篇 AI 论文，聚焦大模型蒸馏与时间序列预测的架构革新。
+核心突破在于利用图谱分解重构时序 Patch 依赖，并系统性探讨了 LLM 知识蒸馏的最新范式。
+推荐关注 Patch 机制与贝叶斯 Transformer 的结合，以提升复杂预测任务的解释性与鲁棒性。
+- 详情：[/202603/22/README](/202603/22/README)
 
 ### 精读区论文标签
-1. [Competition-Aware CPC Forecasting with Near-Market Coverage](/202603/21/2603.13059v1-competition-aware-cpc-forecasting-with-near-market-coverage)  
+1. [Routing Channel-Patch Dependencies in Time Series Forecasting with Graph Spectral Decomposition](/202603/22/2603.13702v1-routing-channel-patch-dependencies-in-time-series-forecasting-with-graph-spectral-decomposition)  
    标签：评分：9.0/10、query:llm-ts
-   evidence：使用预训练Transformer表示预测关键词序列
-2. [LLM-Guided Safe Reinforcement Learning for Energy System Topology Reconfiguration](/202603/21/2603.14018v1-llm-guided-safe-reinforcement-learning-for-energy-system-topology-reconfiguration)  
-   标签：评分：9.0/10、query:llm-wd
-   evidence：LLM引导的再生能源电网强化学习
-3. [IntegratingWeather Foundation Model and Satellite to Enable Fine-Grained Solar Irradiance Forecasting](/202603/21/2603.14845v1-integratingweather-foundation-model-and-satellite-to-enable-fine-grained-solar-irradiance-forecasting)  
-   标签：评分：9.0/10、query:llm-wd
-   evidence：用于太阳辐照度预测的气象基础模型
-4. [Integrating Weather Foundation Model and Satellite to Enable Fine-Grained Solar Irradiance Forecasting](/202603/21/2603.14845v2-integrating-weather-foundation-model-and-satellite-to-enable-fine-grained-solar-irradiance-forecasting)  
-   标签：评分：9.0/10、query:llm-wd
-   evidence：用于太阳辐照度预测的气象基础模型
-5. [PanguMotion: Continuous Driving Motion Forecasting with Pangu Transformers](/202603/21/2603.16196v1-pangumotion-continuous-driving-motion-forecasting-with-pangu-transformers)  
+   evidence：具有通道-补丁依赖关系的时间序列预测
+2. [Knowledge Distillation for Large Language Models](/202603/22/2603.13765v1-knowledge-distillation-for-large-language-models)  
    标签：评分：9.0/10、query:llm-ts
-   evidence：大语言模型用于运动预测和时间连续性
-6. [TimeAPN: Adaptive Amplitude-Phase Non-Stationarity Normalization for Time Series Forecasting](/202603/21/2603.17436v1-timeapn-adaptive-amplitude-phase-non-stationarity-normalization-for-time-series-forecasting)  
+   evidence：专注于大语言模型的知识蒸馏与压缩技术
+3. [What Really Controls Temporal Reasoning in Large Language Models: Tokenisation or Representation of Time?](/202603/22/2603.19017v1-what-really-controls-temporal-reasoning-in-large-language-models-tokenisation-or-representation-of-time)  
    标签：评分：9.0/10、query:llm-ts
-   evidence：多变量长期时间序列预测
-7. [MLOW: Interpretable Low-Rank Frequency Magnitude Decomposition of Multiple Effects for Time Series Forecasting](/202603/21/2603.18432v1-mlow-interpretable-low-rank-frequency-magnitude-decomposition-of-multiple-effects-for-time-series-forecasting)  
-   标签：评分：9.0/10、query:llm-ts
-   evidence：用于时间序列预测的可解释频率分解方法
-8. [Accurate and Efficient Multi-Channel Time Series Forecasting via Sparse Attention Mechanism](/202603/21/2603.18712v1-accurate-and-efficient-multi-channel-time-series-forecasting-via-sparse-attention-mechanism)  
-   标签：评分：9.0/10、query:llm-ts
-   evidence：多通道时间序列预测架构
+   evidence：LLM中的时间推理与时间表示
+4. [Harmonic Dataset Distillation for Time Series Forecasting](/202603/22/2603.03760v1-harmonic-dataset-distillation-for-time-series-forecasting)  
+   标签：评分：8.0/10、query:llm-ts
+   evidence：时间序列预测的数据集蒸馏
+5. [SEA-TS: Self-Evolving Agent for Autonomous Code Generation of Time Series Forecasting Algorithms](/202603/22/2603.04873v1-sea-ts-self-evolving-agent-for-autonomous-code-generation-of-time-series-forecasting-algorithms)  
+   标签：评分：8.0/10、query:llm-ts
+   evidence：时间序列预测算法的自主代码生成
+6. [Locally Linear Continual Learning for Time Series based on VC-Theoretical Generalization Bounds](/202603/22/2603.13674v1-locally-linear-continual-learning-for-time-series-based-on-vc-theoretical-generalization-bounds)  
+   标签：评分：8.0/10、query:llm-ts
+   evidence：非平稳环境下的时间序列预测
+7. [A Multi-Agent System for Building-Age Cohort Mapping to Support Urban Energy Planning](/202603/22/2603.17626v1-a-multi-agent-system-for-building-age-cohort-mapping-to-support-urban-energy-planning)  
+   标签：评分：8.0/10、query:llm-wd
+   evidence：用于城市能源规划的多代理 LLM 系统
 
 ### 速读区论文标签
-1. [Benchmarking State Space Models, Transformers, and Recurrent Networks for US Grid Forecasting](/202603/21/2602.21415v1-benchmarking-state-space-models-transformers-and-recurrent-networks-for-us-grid-forecasting)  
+1. [PatchDecomp: Interpretable Patch-Based Time Series Forecasting](/202603/22/2603.03902v1-patchdecomp-interpretable-patch-based-time-series-forecasting)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：针对电网预测的Transformer和状态空间模型基准测试
-2. [Learning Recursive Multi-Scale Representations for Irregular Multivariate Time Series Forecasting](/202603/21/2602.21498v1-learning-recursive-multi-scale-representations-for-irregular-multivariate-time-series-forecasting)  
+   evidence：基于补丁的可解释时间序列预测
+2. [Uncertainty-Gated Generative Modeling](/202603/22/2603.07753v1-uncertainty-gated-generative-modeling)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：不规则多变量时间序列预测
-3. [Distributed LLM Pretraining During Renewable Curtailment Windows: A Feasibility Study](/202603/21/2602.22760v1-distributed-llm-pretraining-during-renewable-curtailment-windows-a-feasibility-study)  
-   标签：评分：8.0/10、query:llm-wd
-   evidence：利用可再生能源弃电进行大语言模型预训练
-4. [LLM-MLFFN: Multi-Level Autonomous Driving Behavior Feature Fusion via Large Language Model](/202603/21/2603.02528v1-llm-mlffn-multi-level-autonomous-driving-behavior-feature-fusion-via-large-language-model)  
+   evidence：金融时间序列预测与生成式建模
+3. [Bayesian Transformer for Probabilistic Load Forecasting in Smart Grids](/202603/22/2603.07899v1-bayesian-transformer-for-probabilistic-load-forecasting-in-smart-grids)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：大语言模型增强的数值时间序列建模多级特征融合
-5. [Deep Distance Measurement Method for Unsupervised Multivariate Time Series Similarity Retrieval](/202603/21/2603.12544v1-deep-distance-measurement-method-for-unsupervised-multivariate-time-series-similarity-retrieval)  
+   evidence：使用PatchTST骨干网络进行概率负荷预测
+4. [GCGNet: Graph-Consistent Generative Network for Time Series Forecasting with Exogenous Variables](/202603/22/2603.08032v1-gcgnet-graph-consistent-generative-network-for-time-series-forecasting-with-exogenous-variables)  
+   标签：评分：8.0/10、query:llm-ts
+   evidence：带外生变量的时间序列预测
+5. [R3-REC: Reasoning-Driven Recommendation via Retrieval-Augmented LLMs over Multi-Granular Interest Signals](/202603/22/2603.13730v1-r3-rec-reasoning-driven-recommendation-via-retrieval-augmented-llms-over-multi-granular-interest-signals)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：无监督多变量时间序列相似性检索
-6. [Graph In-Context Operator Networks for Generalizable Spatiotemporal Prediction](/202603/21/2603.12725v1-graph-in-context-operator-networks-for-generalizable-spatiotemporal-prediction)  
+   evidence：用于序列推荐的检索增强LLM
+6. [MeTok: An Efficient Meteorological Tokenization with Hyper-Aligned Group Learning for Precipitation Nowcasting](/202603/22/2603.13752v1-metok-an-efficient-meteorological-tokenization-with-hyper-aligned-group-learning-for-precipitation-nowcasting)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：时空预测与时间序列系统的上下文学习
-7. [TerraFlow: Multimodal, Multitemporal Representation Learning for Earth Observation](/202603/21/2603.12762v1-terraflow-multimodal-multitemporal-representation-learning-for-earth-observation)  
+   evidence：基于Transformer架构的气象预测
+7. [Mixed difference integer-valued GARCH model for $ \mathbb{Z}$-valued time series](/202603/22/2603.13784v1-mixed-difference-integer-valued-garch-model-for--mathbbz-valued-time-series)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：用于地球观测的多模态、多时间基础模型
-8. [From AI Weather Prediction to Infrastructure Resilience: A Correction-Downscaling Framework for Tropical Cyclone Impacts](/202603/21/2603.12828v1-from-ai-weather-prediction-to-infrastructure-resilience-a-correction-downscaling-framework-for-tropical-cyclone-impacts)  
-   标签：评分：7.0/10、query:llm-wd
-   evidence：基于AI的风场预测与基础设施影响
-9. [DS$^2$-Instruct: Domain-Specific Data Synthesis for Large Language Models Instruction Tuning](/202603/21/2603.12932v2-ds2-instruct-domain-specific-data-synthesis-for-large-language-models-instruction-tuning)  
+   evidence：用于时间序列的整数值GARCH模型
+8. [PA-Net: Precipitation-Adaptive Mixture-of-Experts for Long-Tail Rainfall Nowcasting](/202603/22/2603.13818v1-pa-net-precipitation-adaptive-mixture-of-experts-for-long-tail-rainfall-nowcasting)  
+   标签：评分：7.0/10、query:llm-ts
+   evidence：使用Transformer进行时空令牌建模和降水临近预报
+9. [MR-GNF: Multi-Resolution Graph Neural Forecasting on Ellipsoidal Meshes for Efficient Regional Weather Prediction](/202603/22/2603.13563v1-mr-gnf-multi-resolution-graph-neural-forecasting-on-ellipsoidal-meshes-for-efficient-regional-weather-prediction)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：针对特定领域的 LLM 指令微调
-10. [Identification and Visualization of Correlation Structures in Large-Scale Power Quality Data](/202603/21/2603.12948v1-identification-and-visualization-of-correlation-structures-in-large-scale-power-quality-data)  
+   evidence：用于区域天气预报的图神经预测
+10. [Greedy Information Projection for LLM Data Selection](/202603/22/2603.13790v1-greedy-information-projection-for-llm-data-selection)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：大规模电能质量时间序列数据分析
-11. [Neuron-Aware Data Selection In Instruction Tuning For Large Language Models](/202603/21/2603.13201v1-neuron-aware-data-selection-in-instruction-tuning-for-large-language-models)  
+   evidence：大语言模型微调的数据选择
+11. [Discrete-time linear quadratic stochastic control with equality-constrained inputs: Application to energy demand response](/202603/22/2603.13975v1-discrete-time-linear-quadratic-stochastic-control-with-equality-constrained-inputs-application-to-energy-demand-response)  
+   标签：评分：6.0/10、query:llm-wd
+   evidence：应用于能源需求响应和太阳能发电
+12. [QiMeng-CodeV-SVA: Training Specialized LLMs for Hardware Assertion Generation via RTL-Grounded Bidirectional Data Synthesis](/202603/22/2603.14239v1-qimeng-codev-sva-training-specialized-llms-for-hardware-assertion-generation-via-rtl-grounded-bidirectional-data-synthesis)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：针对目标领域能力的LLM指令微调
-12. [Sparse-Dense Mixture of Experts Adapter for Multi-Modal Tracking](/202603/21/2603.13719v1-sparse-dense-mixture-of-experts-adapter-for-multi-modal-tracking)  
-   标签：评分：6.0/10、query:llm-ts
-   evidence：跨模态学习与多模态跟踪
+   evidence：通过数据合成训练专用 LLM
 
 
 <div class="dpr-home-promo-card">
