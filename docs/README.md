@@ -6,79 +6,79 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-03-23
-- 运行时间：2026-03-23 19:49:23 UTC
+- 最新运行日期：2026-03-24
+- 运行时间：2026-03-24 20:36:04 UTC
 - 运行状态：成功
 - 本次总论文数：19
 - 精读区：7
 - 速读区：12
 
 ### 今日简报（AI）
-今日深度研读 19 篇时序前沿论文，重点攻克动态波动建模与深度自相关预测难题。
-GARCH-FIS 混合模型与改进版 Adam 算法为应对分布偏移和复杂波动提供了高效的新方案。
-建议优先阅读深度自相关建模综述，掌握提升长序列预测稳定性的核心技术路径。
-- 详情：[/202603/23/README](/202603/23/README)
+今日精选 19 篇前沿论文，深度聚焦时间序列大模型与多变量预测的性能突破。
+重点关注获满分评价的 CoRA 适配器如何强化时序基础模型，以及事件序列中潜在表示与可解释特征的桥接技术。
+建议优先研读 CoRA 论文以掌握多变量预测的最新范式，并关注强化学习在时序微调中的应用潜力。
+- 详情：[/202603/24/README](/202603/24/README)
 
 ### 精读区论文标签
-1. [GARCH-FIS: A Hybrid Forecasting Model with Dynamic Volatility-Driven Parameter Adaptation](/202603/23/2603.14793v1-garch-fis-a-hybrid-forecasting-model-with-dynamic-volatility-driven-parameter-adaptation)  
+1. [CoRA: Boosting Time Series Foundation Models for Multivariate Forecasting through Correlation-aware Adapter](/202603/24/2603.21828v1-cora-boosting-time-series-foundation-models-for-multivariate-forecasting-through-correlation-aware-adapter)  
+   标签：评分：10.0/10、query:llm-ts
+   evidence：通过相关性感知适配器增强时间序列基础模型
+2. [Embedding-Aware Feature Discovery: Bridging Latent Representations and Interpretable Features in Event Sequences](/202603/24/2603.15713v1-embedding-aware-feature-discovery-bridging-latent-representations-and-interpretable-features-in-event-sequences)  
    标签：评分：9.0/10、query:llm-ts
-   evidence：金融时间序列的混合预测模型
-2. [Deep Autocorrelation Modeling for Time-Series Forecasting: Progress and Prospects](/202603/23/2603.19899v1-deep-autocorrelation-modeling-for-time-series-forecasting-progress-and-prospects)  
+   evidence：大语言模型驱动的时间事件序列特征发现
+3. [Towards Multimodal Time Series Anomaly Detection with Semantic Alignment and Condensed Interaction](/202603/24/2603.21612v1-towards-multimodal-time-series-anomaly-detection-with-semantic-alignment-and-condensed-interaction)  
    标签：评分：9.0/10、query:llm-ts
-   evidence：深度时间序列预测的全面综述
-3. [Permutation-Equivariant 2D State Space Models: Theory and Canonical Architecture for Multivariate Time Series](/202603/23/2603.08753v1-permutation-equivariant-2d-state-space-models-theory-and-canonical-architecture-for-multivariate-time-series)  
+   evidence：结合时序-文本语义对齐的多模态时间序列异常检测
+4. [Optimizing Multi-Agent Weather Captioning via Text Gradient Descent: A Training-Free Approach with Consensus-Aware Gradient Fusion](/202603/24/2603.21673v1-optimizing-multi-agent-weather-captioning-via-text-gradient-descent-a-training-free-approach-with-consensus-aware-gradient-fusion)  
+   标签：评分：9.0/10、query:llm-ts
+   evidence：用于天气时间序列描述和分析的LLM
+5. [FISformer: Replacing Self-Attention with a Fuzzy Inference System in Transformer Models for Time Series Forecasting](/202603/24/2603.21724v1-fisformer-replacing-self-attention-with-a-fuzzy-inference-system-in-transformer-models-for-time-series-forecasting)  
+   标签：评分：9.0/10、query:llm-ts
+   evidence：用于时间序列预测的Transformer模型
+6. [RS-WorldModel: a Unified Model for Remote Sensing Understanding and Future Sense Forecasting](/202603/24/2603.14941v1-rs-worldmodel-a-unified-model-for-remote-sensing-understanding-and-future-sense-forecasting)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：多变量时间序列的标准架构
-4. [Temporal-Conditioned Normalizing Flows for Multivariate Time Series Anomaly Detection](/202603/23/2603.09490v1-temporal-conditioned-normalizing-flows-for-multivariate-time-series-anomaly-detection)  
+   evidence：文本引导的未来场景预测与时空先验
+7. [Evaluating Time Awareness and Cross-modal Active Perception of Large Models via 4D Escape Room Task](/202603/24/2603.15467v1-evaluating-time-awareness-and-cross-modal-active-perception-of-large-models-via-4d-escape-room-task)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：时间序列异常检测与时间依赖性
-5. [Expert Mind: A Retrieval-Augmented Architecture for Expert Knowledge Preservation in the Energy Sector](/202603/23/2603.14541v1-expert-mind-a-retrieval-augmented-architecture-for-expert-knowledge-preservation-in-the-energy-sector)  
-   标签：评分：8.0/10、query:llm-wd
-   evidence：大语言模型和检索增强生成用于能源领域的知识保护
-6. [OpenReservoirComputing: GPU-Accelerated Reservoir Computing in JAX](/202603/23/2603.14802v1-openreservoircomputing-gpu-accelerated-reservoir-computing-in-jax)  
-   标签：评分：8.0/10、query:llm-ts
-   evidence：用于时间序列预测的储备池计算
-7. [Learning to Predict, Discover, and Reason in High-Dimensional Event Sequences](/202603/23/2603.16313v2-learning-to-predict-discover-and-reason-in-high-dimensional-event-sequences)  
-   标签：评分：8.0/10、query:llm-ts
-   evidence：将事件时间序列视为自然语言词汇
+   evidence：大模型中的跨模态整合与时变推理
 
 ### 速读区论文标签
-1. [Rethinking Adam for Time Series Forecasting: A Simple Heuristic to Improve Optimization under Distribution Shifts](/202603/23/2603.10095v1-rethinking-adam-for-time-series-forecasting-a-simple-heuristic-to-improve-optimization-under-distribution-shifts)  
+1. [Fast and Interpretable Autoregressive Estimation with Neural Network Backpropagation](/202603/24/2603.19041v1-fast-and-interpretable-autoregressive-estimation-with-neural-network-backpropagation)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：改进分布偏移下的时间序列预测优化
-2. [EnTransformer: A Deep Generative Transformer for Multivariate Probabilistic Forecasting](/202603/23/2603.11909v1-entransformer-a-deep-generative-transformer-for-multivariate-probabilistic-forecasting)  
+   evidence：时间序列自回归估计的神经网络公式化
+2. [Graph2TS: Structure-Controlled Time Series Generation via Quantile-Graph VAEs](/202603/24/2603.19970v1-graph2ts-structure-controlled-time-series-generation-via-quantile-graph-vaes)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：基于Transformer的多变量时间序列预测架构
-3. [Surprised by Attention: Predictable Query Dynamics for Time Series Anomaly Detection](/202603/23/2603.12916v2-surprised-by-attention-predictable-query-dynamics-for-time-series-anomaly-detection)  
+   evidence：时间序列生成与全局时间结构建模
+3. [Fine-tuning Timeseries Predictors Using Reinforcement Learning](/202603/24/2603.20063v1-fine-tuning-timeseries-predictors-using-reinforcement-learning)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：多变量时间序列异常检测
-4. [Interpretable Classification of Time Series Using Euler Characteristic Surfaces](/202603/23/2603.15079v1-interpretable-classification-of-time-series-using-euler-characteristic-surfaces)  
+   evidence：使用强化学习微调金融时间序列预测器
+4. [The Multiverse of Time Series Machine Learning: an Archive for Multivariate Time Series Classification](/202603/24/2603.20352v1-the-multiverse-of-time-series-machine-learning-an-archive-for-multivariate-time-series-classification)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：时间序列数据的可解释分类
-5. [Geometric Framework for Robust Order Detection in Delay-Coordinates Dynamic Mode Decomposition](/202603/23/2603.14383v1-geometric-framework-for-robust-order-detection-in-delay-coordinates-dynamic-mode-decomposition)  
+   evidence：多元时间序列分类存档
+5. [A New Lower Bounding Paradigm and Tighter Lower Bounds for Elastic Similarity Measures](/202603/24/2603.14899v2-a-new-lower-bounding-paradigm-and-tighter-lower-bounds-for-elastic-similarity-measures)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：高维时间序列分析
-6. [E-TRENDS: Enhanced LSTM Trend Forecasting for Equities](/202603/23/2603.14453v1-e-trends-enhanced-lstm-trend-forecasting-for-equities)  
+   evidence：时间序列搜索的弹性相似性度量
+6. [Transformers As Generalizable Optimal Controllers](/202603/24/2603.14910v1-transformers-as-generalizable-optimal-controllers)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：基于LSTM的股票趋势预测框架
-7. [A Score Filter Enhanced Data Assimilation Framework for Data-Driven Dynamical Systems](/202603/23/2603.14863v1-a-score-filter-enhanced-data-assimilation-framework-for-data-driven-dynamical-systems)  
+   evidence：用于线性时不变系统状态反馈的Transformer策略
+7. [Ultra-Early Prediction of Tipping Points: Integrating Dynamical Measures with Reservoir Computing](/202603/24/2603.14944v1-ultra-early-prediction-of-tipping-points-integrating-dynamical-measures-with-reservoir-computing)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：基于生成式AI的数据同化用于动力系统预测
-8. [A New Lower Bounding Paradigm and Tighter Lower Bounds for Elastic Similarity Measures](/202603/23/2603.14899v1-a-new-lower-bounding-paradigm-and-tighter-lower-bounds-for-elastic-similarity-measures)  
+   evidence：使用观测时间序列数据进行预测
+8. [Spatio-temporal probabilistic forecast using MMAF-guided learning](/202603/24/2603.15055v1-spatio-temporal-probabilistic-forecast-using-mmaf-guided-learning)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：用于时间序列相似性搜索的弹性相似性度量
-9. [Collective Grid: Privacy-Preserved Multi-Operator Energy Sharing Optimization via Federated Energy Prediction](/202603/23/2603.14606v1-collective-grid-privacy-preserved-multi-operator-energy-sharing-optimization-via-federated-energy-prediction)  
+   evidence：时空数据集的概率预测
+9. [Scalable Text-Embedding-informed Cognitive Diagnosis of Large Language Models](/202603/24/2603.14676v1-scalable-text-embedding-informed-cognitive-diagnosis-of-large-language-models)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：能源消耗预测模块
-10. [On the evaluation of time-to-event, survival time and first passage time forecasts](/202603/23/2603.14835v1-on-the-evaluation-of-time-to-event-survival-time-and-first-passage-time-forecasts)  
+   evidence：大语言模型的评估与诊断
+10. [Physics-informed fine-tuning of foundation models for partial differential equations](/202603/24/2603.15431v1-physics-informed-fine-tuning-of-foundation-models-for-partial-differential-equations)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：事件发生时间和生存时间预测的评估
-11. [Beam Prediction Based on Multimodal Large Language Models](/202603/23/2603.15093v1-beam-prediction-based-on-multimodal-large-language-models)  
+   evidence：基础模型的物理信息微调
+11. [Predictive Uncertainty in Short-Term PV Forecasting under Missing Data: A Multiple Imputation Approach](/202603/24/2603.15564v1-predictive-uncertainty-in-short-term-pv-forecasting-under-missing-data-a-multiple-imputation-approach)  
+   标签：评分：6.0/10、query:llm-wd
+   evidence：可再生能源中缺失数据下的短期光伏预测
+12. [Temporal Fact Conflicts in LLMs: Reproducibility Insights from Unifying DYNAMICQA and MULAN](/202603/24/2603.15892v1-temporal-fact-conflicts-in-llms-reproducibility-insights-from-unifying-dynamicqa-and-mulan)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：用于波束预测的多模态大模型及时间对齐
-12. [A Data-Driven Regional Model for Skillful Medium-Range Typhoon Prediction](/202603/23/2603.15127v1-a-data-driven-regional-model-for-skillful-medium-range-typhoon-prediction)  
-   标签：评分：6.0/10、query:llm-ts
-   evidence：用于中程台风预测的区域人工智能预测框架
+   evidence：LLM中的时间事实冲突与演变信息
 
 
 <div class="dpr-home-promo-card">
