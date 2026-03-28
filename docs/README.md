@@ -6,76 +6,70 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-03-27
-- 运行时间：2026-03-27 20:10:44 UTC
+- 最新运行日期：2026-03-28
+- 运行时间：2026-03-28 19:50:45 UTC
 - 运行状态：成功
-- 本次总论文数：18
-- 精读区：6
+- 本次总论文数：16
+- 精读区：4
 - 速读区：12
 
 ### 今日简报（AI）
-今日聚焦 18 篇前沿进展，深度解析了长期异常预测与气象预报的跨代升级。
-核心突破在于通过异常得分建模实现长效预警，并利用大模型先验显著延长了降水临近预报的时效。
-建议关注基础模型与物理观测的融合趋势，以及验证方法对多步预测模型排名的逆转性影响。
-- 详情：[/202603/27/README](/202603/27/README)
+今日深度解析 16 篇前沿成果，聚焦大模型驱动的动力系统发现与气象预报时效的跨越式突破。
+重点推荐 LLM-ODE 自动化建模与频谱融合降水预报技术，展示了基础模型在复杂物理系统中的强大潜力。
+建议关注因果推断与时间序列的深度融合，以应对模型推理中的“捷径”偏差并提升动态预测的可靠性。
+- 详情：[/202603/28/README](/202603/28/README)
 
 ### 精读区论文标签
-1. [Long-Term Outlier Prediction Through Outlier Score Modeling](/202603/27/2603.20993v1-long-term-outlier-prediction-through-outlier-score-modeling)  
+1. [LLM-ODE: Data-driven Discovery of Dynamical Systems with Large Language Models](/202603/28/2603.20910v1-llm-ode-data-driven-discovery-of-dynamical-systems-with-large-language-models)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：时间序列数据中的长期异常值预测
-2. [Extending Precipitation Nowcasting Horizons via Spectral Fusion of Radar Observations and Foundation Model Priors](/202603/27/2603.21768v2-extending-precipitation-nowcasting-horizons-via-spectral-fusion-of-radar-observations-and-foundation-model-priors)  
-   标签：评分：8.0/10、query:llm-wd
-   evidence：天气基础模型先验用于降水临近预报
-3. [SpecTM: Spectral Targeted Masking for Trustworthy Foundation Models](/202603/27/2603.22097v1-spectm-spectral-targeted-masking-for-trustworthy-foundation-models)  
+   evidence：LLM辅助从数据中发现动力系统
+2. [Extending Precipitation Nowcasting Horizons via Spectral Fusion of Radar Observations and Foundation Model Priors](/202603/28/2603.21768v1-extending-precipitation-nowcasting-horizons-via-spectral-fusion-of-radar-observations-and-foundation-model-priors)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：用于时间预测的物理信息基础模型
-4. [WAKE-NET: 3D-Wake-Aware Turbine Layout and Cabling Optimization Framework of Multi-Hub-Height Wind Farms for Grid-Scale and Industrial Power Systems](/202603/27/2603.23372v1-wake-net-3d-wake-aware-turbine-layout-and-cabling-optimization-framework-of-multi-hub-height-wind-farms-for-grid-scale-and-industrial-power-systems)  
-   标签：评分：8.0/10、query:llm-wd
-   evidence：风电场涡轮机布局和功率输出优化
-5. [Embracing Heteroscedasticity for Probabilistic Time Series Forecasting](/202603/27/2603.24254v1-embracing-heteroscedasticity-for-probabilistic-time-series-forecasting)  
+   evidence：集成天气基础模型进行降水临近预报
+3. [Causal-INSIGHT: Probing Temporal Models to Extract Causal Structure](/202603/28/2603.25473v1-causal-insight-probing-temporal-models-to-extract-causal-structure)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：概率时间序列预测与异方差性
-6. [Anchored-Branched Steady-state WInd Flow Transformer (AB-SWIFT): a metamodel for 3D atmospheric flow in urban environments](/202603/27/2603.25635v1-anchored-branched-steady-state-wind-flow-transformer-ab-swift-a-metamodel-for-3d-atmospheric-flow-in-urban-environments)  
-   标签：评分：8.0/10、query:llm-wd
-   evidence：用于风电场风流建模的Transformer元模型
+   evidence：从时间模型和时间序列中提取因果结构
+4. [Spatiotemporal System Forecasting with Irregular Time Steps via Masked Autoencoder](/202603/28/2603.25597v1-spatiotemporal-system-forecasting-with-irregular-time-steps-via-masked-autoencoder)  
+   标签：评分：8.0/10、query:llm-ts
+   evidence：时空系统预测与不规则时间序列分析
 
 ### 速读区论文标签
-1. [EntropyCache: Decoded Token Entropy Guided KV Caching for Diffusion Language Models](/202603/27/2603.18489v1-entropycache-decoded-token-entropy-guided-kv-caching-for-diffusion-language-models)  
+1. [When are time series predictions causal? The potential system and dynamic causal effects](/202603/28/2603.20394v1-when-are-time-series-predictions-causal-the-potential-system-and-dynamic-causal-effects)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：扩散大语言模型的KV缓存技术
-2. [Revisiting OmniAnomaly for Anomaly Detection: performance metrics and comparison with PCA-based models](/202603/27/2603.18985v1-revisiting-omnianomaly-for-anomaly-detection-performance-metrics-and-comparison-with-pca-based-models)  
+   evidence：用于因果影响评估的非参数时间序列模型
+2. [Mitigating Shortcut Reasoning in Language Models: A Gradient-Aware Training Approach](/202603/28/2603.20899v1-mitigating-shortcut-reasoning-in-language-models-a-gradient-aware-training-approach)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：多变量时间序列异常检测
-3. [Rolling-Origin Validation Reverses Model Rankings in Multi-Step PM10 Forecasting: XGBoost, SARIMA, and Persistence](/202603/27/2603.20315v1-rolling-origin-validation-reverses-model-rankings-in-multi-step-pm10-forecasting-xgboost-sarima-and-persistence)  
+   evidence：减轻大语言模型中的捷径推理
+3. [From Causal Discovery to Dynamic Causal Inference in Neural Time Series](/202603/28/2603.20980v1-from-causal-discovery-to-dynamic-causal-inference-in-neural-time-series)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：多步PM10预测与时间序列验证
-4. [Neural Hidden Markov Model with Adaptive Granularity Attention for High-Frequency Order Flow Modeling](/202603/27/2603.20456v1-neural-hidden-markov-model-with-adaptive-granularity-attention-for-high-frequency-order-flow-modeling)  
+   evidence：神经时间序列中的因果发现与推理
+4. [Benchmarking Scientific Machine Learning Models for Air Quality Data](/202603/28/2603.21039v1-benchmarking-scientific-machine-learning-models-for-air-quality-data)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：金融时间序列中的多尺度时间动态建模
-5. [Spatio-Temporal Grid Intelligence: A Hybrid Graph Neural Network and LSTM Framework for Robust Electricity Theft Detection](/202603/27/2603.20488v1-spatio-temporal-grid-intelligence-a-hybrid-graph-neural-network-and-lstm-framework-for-robust-electricity-theft-detection)  
-   标签：评分：7.0/10、query:llm-ts
-   evidence：时间序列异常检测与电网稳定性
-6. [LLM-Driven Heuristic Synthesis for Industrial Process Control: Lessons from Hot Steel Rolling](/202603/27/2603.20537v1-llm-driven-heuristic-synthesis-for-industrial-process-control-lessons-from-hot-steel-rolling)  
+   evidence：对经典和深度学习时间序列方法进行基准测试
+5. [Pretrained Video Models as Differentiable Physics Simulators for Urban Wind Flows](/202603/28/2603.21210v1-pretrained-video-models-as-differentiable-physics-simulators-for-urban-wind-flows)  
    标签：评分：7.0/10、query:llm-wd
-   evidence：大语言模型驱动的工业过程控制合成
-7. [AlignMamba-2: Enhancing Multimodal Fusion and Sentiment Analysis with Modality-Aware Mamba](/202603/27/2603.18462v1-alignmamba-2-enhancing-multimodal-fusion-and-sentiment-analysis-with-modality-aware-mamba)  
+   evidence：预训练视频模型用于城市风流
+6. [Sonny: Breaking the Compute Wall in Medium-Range Weather Forecasting](/202603/28/2603.21284v1-sonny-breaking-the-compute-wall-in-medium-range-weather-forecasting)  
+   标签：评分：7.0/10、query:llm-ts
+   evidence：用于中程天气预报的分层Transformer
+7. [Machine Learning-Based Prediction of Heat Index in Selected U.S. Cities](/202603/28/2603.19488v1-machine-learning-based-prediction-of-heat-index-in-selected-us-cities)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：预训练模型中的多模态融合与跨模态对齐
-8. [SINDy-KANs: Sparse identification of non-linear dynamics through Kolmogorov-Arnold networks](/202603/27/2603.18548v1-sindy-kans-sparse-identification-of-non-linear-dynamics-through-kolmogorov-arnold-networks)  
-   标签：评分：6.0/10、query:llm-ts
-   evidence：学习动力系统的稀疏方程
-9. [Unified Taxonomy for Multivariate Time Series Anomaly Detection using Deep Learning](/202603/27/2603.18941v1-unified-taxonomy-for-multivariate-time-series-anomaly-detection-using-deep-learning)  
-   标签：评分：6.0/10、query:llm-ts
-   evidence：多变量时间序列异常检测分类法
-10. [Balancing Performance and Fairness in Explainable AI for Anomaly Detection in Distributed Power Plants Monitoring](/202603/27/2603.18954v1-balancing-performance-and-fairness-in-explainable-ai-for-anomaly-detection-in-distributed-power-plants-monitoring)  
+   evidence：用于天气相关时间序列预测的机器学习
+8. [SIMPLER: Efficient Foundation Model Adaptation via Similarity-Guided Layer Pruning for Earth Observation](/202603/28/2603.19873v1-simpler-efficient-foundation-model-adaptation-via-similarity-guided-layer-pruning-for-earth-observation)  
    标签：评分：6.0/10、query:llm-wd
-   evidence：分布式电站监控中的异常检测
-11. [Finite-sample bounds for multi-output system identification](/202603/27/2603.19073v1-finite-sample-bounds-for-multi-output-system-identification)  
+   evidence：地球观测基础模型的高效适配
+9. [Structured Latent Dynamics in Wireless CSI via Homomorphic World Models](/202603/28/2603.20048v1-structured-latent-dynamics-in-wireless-csi-via-homomorphic-world-models)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：线性时不变系统的系统辨识
-12. [Stochastic Virtual Power Plant Dispatch via Temporally Aggregated Distributed Predictive Control with Performance Guarantees](/202603/27/2603.19106v1-stochastic-virtual-power-plant-dispatch-via-temporally-aggregated-distributed-predictive-control-with-performance-guarantees)  
-   标签：评分：6.0/10、query:llm-wd
-   evidence：包含可再生能源发电和时间序列聚合的虚拟电厂调度
+   evidence：建模时间演化并预测未来嵌入
+10. [FAAR: Efficient Frequency-Aware Multi-Task Fine-Tuning via Automatic Rank Selection](/202603/28/2603.20403v1-faar-efficient-frequency-aware-multi-task-fine-tuning-via-automatic-rank-selection)  
+   标签：评分：6.0/10、query:llm-ts
+   evidence：通过自动秩选择进行高效多任务微调
+11. [Functional Estimation of Manifold-Valued Diffusion Processes](/202603/28/2603.20945v1-functional-estimation-of-manifold-valued-diffusion-processes)  
+   标签：评分：6.0/10、query:llm-ts
+   evidence：非平稳高维时间序列的估计
+12. [Neural Inference Functions for Margins for Time Series Copula Models](/202603/28/2603.21075v1-neural-inference-functions-for-margins-for-time-series-copula-models)  
+   标签：评分：6.0/10、query:llm-ts
+   evidence：多元时间序列Copula模型的神经推理
 
 
 <div class="dpr-home-promo-card">
