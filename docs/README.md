@@ -6,70 +6,70 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-03-28
-- 运行时间：2026-03-28 19:50:45 UTC
+- 最新运行日期：2026-03-29
+- 运行时间：2026-03-29 19:59:12 UTC
 - 运行状态：成功
 - 本次总论文数：16
 - 精读区：4
 - 速读区：12
 
 ### 今日简报（AI）
-今日深度解析 16 篇前沿成果，聚焦大模型驱动的动力系统发现与气象预报时效的跨越式突破。
-重点推荐 LLM-ODE 自动化建模与频谱融合降水预报技术，展示了基础模型在复杂物理系统中的强大潜力。
-建议关注因果推断与时间序列的深度融合，以应对模型推理中的“捷径”偏差并提升动态预测的可靠性。
-- 详情：[/202603/28/README](/202603/28/README)
+今日深度解析16篇AI前沿进展，重点攻克开放词汇情感推理与复杂时间序列建模两大难题。
+推荐关注AcoustEmo利用Q-Former实现的情感语义对齐，以及多变量时间序列中可识别潜在表示的理论突破。
+建议开发者留意云边端LLM协同路由与低秩梯度优化技术，探索更高效的大模型训练与部署方案。
+- 详情：[/202603/29/README](/202603/29/README)
 
 ### 精读区论文标签
-1. [LLM-ODE: Data-driven Discovery of Dynamical Systems with Large Language Models](/202603/28/2603.20910v1-llm-ode-data-driven-discovery-of-dynamical-systems-with-large-language-models)  
+1. [AcoustEmo: Open-Vocabulary Emotion Reasoning via Utterance-Aware Acoustic Q-Former](/202603/29/2603.20894v1-acoustemo-open-vocabulary-emotion-reasoning-via-utterance-aware-acoustic-q-former)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：LLM辅助从数据中发现动力系统
-2. [Extending Precipitation Nowcasting Horizons via Spectral Fusion of Radar Observations and Foundation Model Priors](/202603/28/2603.21768v1-extending-precipitation-nowcasting-horizons-via-spectral-fusion-of-radar-observations-and-foundation-model-priors)  
+   evidence：捕捉局部时间动态的时间敏感多模态大模型
+2. [Conditionally Identifiable Latent Representation for Multivariate Time Series with Structural Dynamics](/202603/29/2603.22886v1-conditionally-identifiable-latent-representation-for-multivariate-time-series-with-structural-dynamics)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：集成天气基础模型进行降水临近预报
-3. [Causal-INSIGHT: Probing Temporal Models to Extract Causal Structure](/202603/28/2603.25473v1-causal-insight-probing-temporal-models-to-extract-causal-structure)  
+   evidence：多变量时间序列基准的概率预测
+3. [PRISM: Dynamic Primitive-Based Forecasting for Large-Scale GPU Cluster Workloads](/202603/29/2603.25378v1-prism-dynamic-primitive-based-forecasting-for-large-scale-gpu-cluster-workloads)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：从时间模型和时间序列中提取因果结构
-4. [Spatiotemporal System Forecasting with Irregular Time Steps via Masked Autoencoder](/202603/28/2603.25597v1-spatiotemporal-system-forecasting-with-irregular-time-steps-via-masked-autoencoder)  
+   evidence：大规模GPU工作负载的时间序列预测框架
+4. [On Neural Scaling Laws for Weather Emulation through Continual Training](/202603/29/2603.25687v1-on-neural-scaling-laws-for-weather-emulation-through-continual-training)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：时空系统预测与不规则时间序列分析
+   evidence：天气预报基础模型的神经缩放法则
 
 ### 速读区论文标签
-1. [When are time series predictions causal? The potential system and dynamic causal effects](/202603/28/2603.20394v1-when-are-time-series-predictions-causal-the-potential-system-and-dynamic-causal-effects)  
+1. [Optimal low-rank stochastic gradient estimation for LLM training](/202603/29/2603.20632v1-optimal-low-rank-stochastic-gradient-estimation-for-llm-training)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：用于因果影响评估的非参数时间序列模型
-2. [Mitigating Shortcut Reasoning in Language Models: A Gradient-Aware Training Approach](/202603/28/2603.20899v1-mitigating-shortcut-reasoning-in-language-models-a-gradient-aware-training-approach)  
+   evidence：大语言模型（LLM）训练优化
+2. [An information criterion for detecting periodicities in functional time series](/202603/29/2603.21161v1-an-information-criterion-for-detecting-periodicities-in-functional-time-series)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：减轻大语言模型中的捷径推理
-3. [From Causal Discovery to Dynamic Causal Inference in Neural Time Series](/202603/28/2603.20980v1-from-causal-discovery-to-dynamic-causal-inference-in-neural-time-series)  
+   evidence：检测函数型时间序列中的周期性
+3. [ConsRoute:Consistency-Aware Adaptive Query Routing for Cloud-Edge-Device Large Language Models](/202603/29/2603.21237v1-consrouteconsistency-aware-adaptive-query-routing-for-cloud-edge-device-large-language-models)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：神经时间序列中的因果发现与推理
-4. [Benchmarking Scientific Machine Learning Models for Air Quality Data](/202603/28/2603.21039v1-benchmarking-scientific-machine-learning-models-for-air-quality-data)  
+   evidence：大语言模型的自适应查询路由
+4. [CurvZO: Adaptive Curvature-Guided Sparse Zeroth-Order Optimization for Efficient LLM Fine-Tuning](/202603/29/2603.21725v1-curvzo-adaptive-curvature-guided-sparse-zeroth-order-optimization-for-efficient-llm-fine-tuning)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：对经典和深度学习时间序列方法进行基准测试
-5. [Pretrained Video Models as Differentiable Physics Simulators for Urban Wind Flows](/202603/28/2603.21210v1-pretrained-video-models-as-differentiable-physics-simulators-for-urban-wind-flows)  
-   标签：评分：7.0/10、query:llm-wd
-   evidence：预训练视频模型用于城市风流
-6. [Sonny: Breaking the Compute Wall in Medium-Range Weather Forecasting](/202603/28/2603.21284v1-sonny-breaking-the-compute-wall-in-medium-range-weather-forecasting)  
+   evidence：使用零阶优化进行高效LLM微调
+5. [Cluster-Specific Predictive Modeling: A Scalable Solution for Resource-Constrained Wi-Fi Controllers](/202603/29/2603.21778v1-cluster-specific-predictive-modeling-a-scalable-solution-for-resource-constrained-wi-fi-controllers)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：用于中程天气预报的分层Transformer
-7. [Machine Learning-Based Prediction of Heat Index in Selected U.S. Cities](/202603/28/2603.19488v1-machine-learning-based-prediction-of-heat-index-in-selected-us-cities)  
-   标签：评分：6.0/10、query:llm-ts
-   evidence：用于天气相关时间序列预测的机器学习
-8. [SIMPLER: Efficient Foundation Model Adaptation via Similarity-Guided Layer Pruning for Earth Observation](/202603/28/2603.19873v1-simpler-efficient-foundation-model-adaptation-via-similarity-guided-layer-pruning-for-earth-observation)  
+   evidence：对时间序列数据进行分组以进行预测建模
+6. [MIHT: A Hoeffding Tree for Time Series Classification using Multiple Instance Learning](/202603/29/2603.22074v1-miht-a-hoeffding-tree-for-time-series-classification-using-multiple-instance-learning)  
+   标签：评分：7.0/10、query:llm-ts
+   evidence：使用多示例学习进行时间序列分类
+7. [A Control Architecture for Fast Frequency Regulation with Increasing Penetration of Inverter Based Resources](/202603/29/2603.20500v1-a-control-architecture-for-fast-frequency-regulation-with-increasing-penetration-of-inverter-based-resources)  
    标签：评分：6.0/10、query:llm-wd
-   evidence：地球观测基础模型的高效适配
-9. [Structured Latent Dynamics in Wireless CSI via Homomorphic World Models](/202603/28/2603.20048v1-structured-latent-dynamics-in-wireless-csi-via-homomorphic-world-models)  
+   evidence：具有可再生能源发电的电力系统频率调节
+8. [Watch an AI Weather Model Learn (and Unlearn) Tropical Cyclones](/202603/29/2603.20541v1-watch-an-ai-weather-model-learn-and-unlearn-tropical-cyclones)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：建模时间演化并预测未来嵌入
-10. [FAAR: Efficient Frequency-Aware Multi-Task Fine-Tuning via Automatic Rank Selection](/202603/28/2603.20403v1-faar-efficient-frequency-aware-multi-task-fine-tuning-via-automatic-rank-selection)  
+   evidence：用于极端事件预测的 AI 气象模型
+9. [Context Cartography: Toward Structured Governance of Contextual Space in Large Language Model Systems](/202603/29/2603.20578v1-context-cartography-toward-structured-governance-of-contextual-space-in-large-language-model-systems)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：通过自动秩选择进行高效多任务微调
-11. [Functional Estimation of Manifold-Valued Diffusion Processes](/202603/28/2603.20945v1-functional-estimation-of-manifold-valued-diffusion-processes)  
+   evidence：LLM系统上下文空间的治理
+10. [Physics-Informed Graph Neural Jump ODEs for Cascading Failure Prediction in Power Grids](/202603/29/2603.20838v1-physics-informed-graph-neural-jump-odes-for-cascading-failure-prediction-in-power-grids)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：非平稳高维时间序列的估计
-12. [Neural Inference Functions for Margins for Time Series Copula Models](/202603/28/2603.21075v1-neural-inference-functions-for-margins-for-time-series-copula-models)  
+   evidence：电网中的时间演化预测
+11. [Left Behind: Cross-Lingual Transfer as a Bridge for Low-Resource Languages in Large Language Models](/202603/29/2603.21036v1-left-behind-cross-lingual-transfer-as-a-bridge-for-low-resource-languages-in-large-language-models)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：多元时间序列Copula模型的神经推理
+   evidence：大语言模型在低资源语言上的表现
+12. [mSFT: Addressing Dataset Mixtures Overfiting Heterogeneously in Multi-task SFT](/202603/29/2603.21606v1-msft-addressing-dataset-mixtures-overfiting-heterogeneously-in-multi-task-sft)  
+   标签：评分：6.0/10、query:llm-ts
+   evidence：语言模型的多任务监督微调
 
 
 <div class="dpr-home-promo-card">
