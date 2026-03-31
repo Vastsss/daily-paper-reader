@@ -6,64 +6,79 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-03-30
-- 运行时间：2026-03-30 20:31:51 UTC
+- 最新运行日期：2026-03-31
+- 运行时间：2026-03-31 19:59:34 UTC
 - 运行状态：成功
-- 本次总论文数：14
-- 精读区：2
+- 本次总论文数：19
+- 精读区：7
 - 速读区：12
 
 ### 今日简报（AI）
-今日深度解析 14 篇前沿论文，聚焦高质量时序预测基准与医疗基础模型的重大突破。
-重点推荐 QuitoBench 开源基准及采用掩码潜变量注意力的心脏时序基础模型，为精准预测提供新标杆。
-建议关注时序数据标准化评估及垂直领域大模型的架构演进。
-- 详情：[/202603/30/README](/202603/30/README)
+今日聚焦 19 篇时序 AI 论文，深度解析掩码自编码器与十亿级气象大模型的最新突破。
+重点推荐结合 Normalizing Flow 的异常检测新架构，以及能够实现“言出即行”的气象序列生成技术。
+建议关注 LLM 赋能工业节能及流式数据自适应的实战案例，把握时序预测的理论边界。
+- 详情：[/202603/31/README](/202603/31/README)
 
 ### 精读区论文标签
-1. [QuitoBench: A High-Quality Open Time Series Forecasting Benchmark](/202603/30/2603.26017v1-quitobench-a-high-quality-open-time-series-forecasting-benchmark)  
+1. [VAN-AD: Visual Masked Autoencoder with Normalizing Flow For Time Series Anomaly Detection](/202603/31/2603.26842v1-van-ad-visual-masked-autoencoder-with-normalizing-flow-for-time-series-anomaly-detection)  
    标签：评分：9.0/10、query:llm-ts
-   evidence：对时间序列预测基础模型进行基准测试
-2. [Foundation Model for Cardiac Time Series via Masked Latent Attention](/202603/30/2603.26475v1-foundation-model-for-cardiac-time-series-via-masked-latent-attention)  
+   evidence：时间序列异常检测的基础模型
+2. [Spectral-Aware Text-to-Time Series Generation with Billion-Scale Multimodal Meteorological Data](/202603/31/2603.27135v1-spectral-aware-text-to-time-series-generation-with-billion-scale-multimodal-meteorological-data)  
    标签：评分：9.0/10、query:llm-ts
-   evidence：心脏时间序列的基础模型
+   evidence：基于多模态气象数据的文本到时间序列生成
+3. [Statistical Efficiency of Single- and Multi-step Models for Forecasting and Control](/202603/31/2603.23465v1-statistical-efficiency-of-single--and-multi-step-models-for-forecasting-and-control)  
+   标签：评分：8.0/10、query:llm-ts
+   evidence：动力系统预测模型
+4. [Interpretable PM2.5 Forecasting for Urban Air Quality: A Comparative Study of Operational Time-Series Models](/202603/31/2603.25495v1-interpretable-pm25-forecasting-for-urban-air-quality-a-comparative-study-of-operational-time-series-models)  
+   标签：评分：8.0/10、query:llm-ts
+   evidence：PM2.5预测的操作性时间序列模型对比研究
+5. [From Prediction to Diagnosis: Reasoning-Aware AI for Photovoltaic Defect Inspection](/202603/31/2603.26776v1-from-prediction-to-diagnosis-reasoning-aware-ai-for-photovoltaic-defect-inspection)  
+   标签：评分：8.0/10、query:llm-wd
+   evidence：用于可再生能源基础设施检查的视觉语言框架
+6. [MemGuard-Alpha: Detecting and Filtering Memorization-Contaminated Signals in LLM-Based Financial Forecasting via Membership Inference and Cross-Model Disagreement](/202603/31/2603.26797v1-memguard-alpha-detecting-and-filtering-memorization-contaminated-signals-in-llm-based-financial-forecasting-via-membership-inference-and-cross-model-disagreement)  
+   标签：评分：8.0/10、query:llm-ts
+   evidence：基于大语言模型的金融预测与时间数据污染
+7. [TianJi:An autonomous AI meteorologist for discovering physical mechanisms in atmospheric science](/202603/31/2603.27738v1-tianjian-autonomous-ai-meteorologist-for-discovering-physical-mechanisms-in-atmospheric-science)  
+   标签：评分：8.0/10、query:llm-ts
+   evidence：LLM驱动的多智能体架构用于天气预报
 
 ### 速读区论文标签
-1. [mSFT: Addressing Dataset Mixtures Overfitting Heterogeneously in Multi-task SFT](/202603/30/2603.21606v4-msft-addressing-dataset-mixtures-overfitting-heterogeneously-in-multi-task-sft)  
+1. [Hierarchical Control Framework Integrating LLMs with RL for Decarbonized HVAC Operation](/202603/31/2603.26050v1-hierarchical-control-framework-integrating-llms-with-rl-for-decarbonized-hvac-operation)  
+   标签：评分：8.0/10、query:llm-ts
+   evidence：针对HVAC控制中历史时间数据的微调LLM
+2. [Forecastability as an Information-Theoretic Limit on Prediction](/202603/31/2603.27074v1-forecastability-as-an-information-theoretic-limit-on-prediction)  
+   标签：评分：8.0/10、query:llm-ts
+   evidence：预测的信息论限制
+3. [RG-TTA: Regime-Guided Meta-Control for Test-Time Adaptation in Streaming Time Series](/202603/31/2603.27814v1-rg-tta-regime-guided-meta-control-for-test-time-adaptation-in-streaming-time-series)  
+   标签：评分：8.0/10、query:llm-ts
+   evidence：流式时间序列预测的测试时自适应
+4. [Skillful Kilometer-Scale Regional Weather Forecasting via Global and Regional Coupling](/202603/31/2603.28173v1-skillful-kilometer-scale-regional-weather-forecasting-via-global-and-regional-coupling)  
+   标签：评分：8.0/10、query:llm-ts
+   evidence：基于预训练Transformer的全球预测模型
+5. [End-to-End Differentiable Predictive Control with Guaranteed Constraint Satisfaction and feasibility for Building Demand Response](/202603/31/2603.22104v1-end-to-end-differentiable-predictive-control-with-guaranteed-constraint-satisfaction-and-feasibility-for-building-demand-response)  
    标签：评分：7.0/10、query:llm-ts
+   evidence：用于建筑需求响应控制的Encoder-Only Transformer
+6. [MemDLM: Memory-Enhanced DLM Training](/202603/31/2603.22241v1-memdlm-memory-enhanced-dlm-training)  
+   标签：评分：7.0/10、query:llm-ts
+   evidence：扩散语言模型训练优化
+7. [A Frequency-Domain Approach for Integrating Multiple Functional Time Series](/202603/31/2603.22719v1-a-frequency-domain-approach-for-integrating-multiple-functional-time-series)  
+   标签：评分：7.0/10、query:llm-ts
+   evidence：多变量函数型时间序列的综合分析
+8. [KARMA: Knowledge-Action Regularized Multimodal Alignment for Personalized Search at Taobao](/202603/31/2603.22779v1-karma-knowledge-action-regularized-multimodal-alignment-for-personalized-search-at-taobao)  
+   标签：评分：7.0/10、query:llm-ts
+   evidence：针对下一项预测任务微调大语言模型
+9. [Toward a Theory of Hierarchical Memory for Language Agents](/202603/31/2603.21564v1-toward-a-theory-of-hierarchical-memory-for-language-agents)  
+   标签：评分：6.0/10、query:llm-ts
+   evidence：语言智能体的分层记忆
+10. [SSAM: Singular Subspace Alignment for Merging Multimodal Large Language Models](/202603/31/2603.21584v1-ssam-singular-subspace-alignment-for-merging-multimodal-large-language-models)  
+   标签：评分：6.0/10、query:llm-ts
+   evidence：跨不同输入模态合并多模态大语言模型
+11. [mSFT: Addressing Dataset Mixtures Overfitting Heterogeneously in Multi-task SFT](/202603/31/2603.21606v2-msft-addressing-dataset-mixtures-overfitting-heterogeneously-in-multi-task-sft)  
+   标签：评分：6.0/10、query:llm-ts
    evidence：语言模型的多任务监督微调
-2. [Mamba-VMR: Multimodal Query Augmentation via Generated Videos for Precise Temporal Grounding](/202603/30/2603.22121v1-mamba-vmr-multimodal-query-augmentation-via-generated-videos-for-precise-temporal-grounding)  
-   标签：评分：7.0/10、query:llm-ts
-   evidence：LLM引导的字幕匹配用于视频中的时间定位
-3. [ThinkJEPA: Empowering Latent World Models with Large Vision-Language Reasoning Model](/202603/30/2603.22281v1-thinkjepa-empowering-latent-world-models-with-large-vision-language-reasoning-model)  
-   标签：评分：7.0/10、query:llm-ts
-   evidence：利用视觉语言模型从视频观测中预测未来世界状态
-4. [Generalizing Dynamics Modeling More Easily from Representation Perspective](/202603/30/2603.22655v1-generalizing-dynamics-modeling-more-easily-from-representation-perspective)  
-   标签：评分：7.0/10、query:llm-ts
-   evidence：用于复杂系统观测的预训练动力学编码器
-5. [Set-Valued Prediction for Large Language Models with Feasibility-Aware Coverage Guarantees](/202603/30/2603.22966v1-set-valued-prediction-for-large-language-models-with-feasibility-aware-coverage-guarantees)  
-   标签：评分：7.0/10、query:llm-ts
-   evidence：大语言模型的集合值预测
-6. [Can Large Language Models Reason and Optimize Under Constraints?](/202603/30/2603.23004v1-can-large-language-models-reason-and-optimize-under-constraints)  
-   标签：评分：7.0/10、query:llm-wd
-   evidence：LLM用于能源系统中的最优潮流问题
-7. [Understanding Contextual Recall in Transformers: How Finetuning Enables In-Context Reasoning over Pretraining Knowledge](/202603/30/2603.20969v1-understanding-contextual-recall-in-transformers-how-finetuning-enables-in-context-reasoning-over-pretraining-knowledge)  
+12. [SmaAT-QMix-UNet: A Parameter-Efficient Vector-Quantized UNet for Precipitation Nowcasting](/202603/31/2603.21879v1-smaat-qmix-unet-a-parameter-efficient-vector-quantized-unet-for-precipitation-nowcasting)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：研究基于Transformer的LLM中的上下文召回和微调
-8. [Mixture of Chapters: Scaling Learnt Memory in Transformers](/202603/30/2603.21096v1-mixture-of-chapters-scaling-learnt-memory-in-transformers)  
-   标签：评分：6.0/10、query:llm-ts
-   evidence：扩展Transformer中的内存
-9. [Diffusion-based Probabilistic Air Quality Forecasting with Mechanistic Insight](/202603/30/2603.21131v1-diffusion-based-probabilistic-air-quality-forecasting-with-mechanistic-insight)  
-   标签：评分：6.0/10、query:llm-ts
-   evidence：概率性区域空气质量预测与预报
-10. [High-Endurance UCAV Propulsion System: A 1-D CNN-Based Real-Time Fault Classification for Tactical-Grade IPMSM Drive](/202603/30/2603.21133v1-high-endurance-ucav-propulsion-system-a-1-d-cnn-based-real-time-fault-classification-for-tactical-grade-ipmsm-drive)  
-   标签：评分：6.0/10、query:llm-ts
-   evidence：用于实时信号分类的1D CNN
-11. [Climate Prompting: Generating the Madden-Julian Oscillation using Video Diffusion and Low-Dimensional Conditioning](/202603/30/2603.21856v1-climate-prompting-generating-the-madden-julian-oscillation-using-video-diffusion-and-low-dimensional-conditioning)  
-   标签：评分：6.0/10、query:llm-ts
-   evidence：气候时间序列序列的生成建模
-12. [Parameter-Efficient Fine-Tuning for Medical Text Summarization: A Comparative Study of Lora, Prompt Tuning, and Full Fine-Tuning](/202603/30/2603.21970v1-parameter-efficient-fine-tuning-for-medical-text-summarization-a-comparative-study-of-lora-prompt-tuning-and-full-fine-tuning)  
-   标签：评分：6.0/10、query:llm-ts
-   evidence：大语言模型的参数高效微调
+   evidence：使用深度数据驱动模型进行降水临近预报
 
 
 <div class="dpr-home-promo-card">
