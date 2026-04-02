@@ -1,0 +1,646 @@
+Title: Fast and Accurate Probing of In-Training LLMs' Downstream Performances
+
+URL Source: https://arxiv.org/pdf/2604.01025v1
+
+Published Time: Thu, 02 Apr 2026 01:27:00 GMT
+
+Number of Pages: 18
+
+Markdown Content:
+# Fast and Accurate Probing of In-Training LLMs’ Downstream Performances 
+
+Zhichen Liu 1 * Tianle Lun 1 * Zhibin Wen 1 Hao An 1 Yulin Ou 1 Jianhui Xu 1 Hao Zhang 2 Wenyi Fang 2
+
+Yang Zheng 2 Yang Xu 1
+
+## Abstract 
+
+The paradigm of scaling Large Language Models (LLMs) in both parameter size and test time has pushed the boundaries of AI capabilities, but at the cost of making the traditional generative evalu-ation paradigm prohibitively expensive, therefore making the latency of LLM’s in-training down-stream performance evaluation unbearable. How-ever, simple metrics like training loss (perplexity) are not always correlated with downstream per-formance, as sometimes their trends diverge from the actual task outcomes. This dilemma calls for a method that is computationally efficient and sufficiently accurate in measuring model capa-bilities. To address this challenge, we introduce a new in-training evaluation paradigm that uses a lightweight probe for monitoring downstream performance. The probes take the internal repre-sentations of LLM checkpoints (during training) as input and directly predict the checkpoint’s per-formance on downstream tasks measured by suc-cess probability (i.e., pass@1). We design several probe architectures, validating their effectiveness using the OLMo3-7B’s checkpoints across a di-verse set of downstream tasks. The probes can ac-curately predict a checkpoint’s performance (with avg. AUROC >0.75), have decent generalizabil-ity across checkpoints (earlier predicts later), and reduce the computation latency from ∼1 hr (us-ing conventional generative evaluation method) to ∼3 min. In sum, this work presents a practical and scalable in-training downstream evaluation paradigm, enabling a more agile, informed, and efficient LLM development process. 
+
+## 1. Introduction 
+
+With the continuous scaling of model parameters (Kaplan et al., 2020; Hoffmann et al., 2022), the engineering be-hind training Large Language Models (LLMs) has become   
+
+> 1Southern University of Science and Technology 2Huawei. Correspondence to: Yang Xu <xuyang@sustech.edu.cn >.
+> Preprint. April 2, 2026.
+
+increasingly complex, necessitating auxiliary mechanisms for in-training supervision. Unlike traditional supervision that prioritizes training stability (Chowdhery et al., 2022), capability-oriented in-training evaluation focuses on veri-fying whether the capabilities acquired by the model align with expectations for each downstream task (Biderman et al., 2023; Groeneveld et al., 2024). This approach involves tracking evaluation metrics across various downstream tasks rather than relying solely on training perplexity (PPL, i.e., loss). When detecting performance deviations in a specific task, researchers can intervene by adjusting data mixtures to rebalance the model’s overall competence (Xie et al., 2023; Chen et al., 2023). Crucially, perplexity metrics lack this granularity–while perplexity tends to plateau after conver-gence, performance on downstream tasks often continues to evolve as training progresses (Wei et al., 2022; Suzgun et al., 2022b). As the capability boundaries of LLMs expand, the paradigm of in-training evaluation is shifting from traditional formats (e.g., multiple-choice) toward generative evaluation (Liang et al., 2023; Myrzakhan et al., 2024). This transition is driven by the predominance of generative demands in mod-ern downstream tasks; generative evaluation not only better reflects LLM’s generalizability, but also assesses LLM’s ability to handle increasingly complex problems (Suzgun et al., 2022b; Bubeck et al., 2023). However, this expansion aligns with the evolution of scaling laws: while previous scaling focused on parameter count and training data size, re-cent trends emphasize test-time scaling (Snell et al., 2024). This shift not only escalates the computational cost of a single forward but also significantly increases the token con-sumption required for generative evaluation. The resulting latency poses a severe bottleneck: for instance, if running a full evaluation on a benchmark takes tens of hours, low-latency in-training monitoring becomes computationally prohibitive and practically infeasible. For the reasons outlined above, perplexity remains an inade-quate surrogate to serve as a reliable proxy for downstream performance. While engineering solutions attempt to re-duce evaluation latency by sampling a small-enough subset (Polo et al., 2024), this approach inevitably introduces esti-mation bias (Myrzakhan et al., 2024). Consequently, there is an urgent requirement for a new in-training evaluation 1 
+
+> arXiv:2604.01025v1 [cs.LG] 1 Apr 2026 Fast and Accurate Probing of In-Training LLMs’ Downstream Performances
+> Figure 1. Workflow comparison between the current generative evaluation paradigm and the proposed probing evaluation paradigm for in-training downstream monitoring. Current paradigm suffers from high evaluation cost and excessive latency, resulting in delayed feedback to training progress. In contrast, probe can bypasses the generation process during the evaluation phase, thereby enabling rapid and timely assessment.
+
+paradigm that is both accurate and low-latency. To address this challenge, we introduce an efficient probe evaluation framework that utilizes a probe model to monitor down-stream performance. The probe model takes the internal states of the model under training and the task input text as inputs, and predicts the corresponding performance metrics (e.g., accuracy and pass@k). Crucially, this allows us to bypass the computationally expensive generation, directly yielding performance predictions. We investigate several probe architectures, specifically the LoRA-based probe and submodel-based probe, evaluate their performance against some simple baselines. These experiments are conducted under a generative evaluation framework across diverse domains, including general tasks, mathematics, and code generation. The results demonstrate that our method maintains high predictive fidelity (AUROC 
+
+> 0.75) while drastically reducing evaluation latency, slash-ing the time required from ∼1 hour to ∼3 minutes (on OLMo3-7B-base). Consequently, our framework revital-izes the possibility of low-latency, lightweight in-training evaluation once again in the era of modern LLM training. Our main contributions are summarized as follows: 
+
+❶ We propose a novel framework for efficiently in-training downstream evaluation by leveraging lightweight probe models. The proposed method can give feedback accu-rately with a low latency. 
+
+❷ We design and evaluate three distinct probe architectures (submodel and LoRA) to predict task-specific success probabilities from the model’s internal states. 
+
+❸ We empirically demonstrate on diverse domains that our trained probes exhibit strong cross-checkpoint general-ization, enabling accurate performance prediction for future training steps. 
+
+❹ Our method provides a practical, low-latency workflow to the current in-training evaluation paradigm, enabling a more agile and informed LLM training process. 
+
+## 2. Related Works 
+
+Predictability AI Zhou et al. (2025) introduces the fun-damental idea of predictable AI that an AI system’s key validity indicators can be anticipated (e.g., performance). Schellaert et al. (2025) further analyse the predictability of whether the performance of LLM is predictable. Therefore, many works have attempted to better predict the downstream performance of an LLM (Chen et al., 2025; Xu et al., 2025). The most popular approach is to train a third-party model for performance prediction (Pacchiardi et al., 2024; Koh et al., 2025; Zeng et al., 2025), while another approach predicts the task-level performance directly rather than individual-level performance (Ren et al., 2025). These works make efforts on LLMs’ performance prediction. 2Fast and Accurate Probing of In-Training LLMs’ Downstream Performances  
+
+> Figure 2. Demonstration of the working process of in-training downstream performance evaluation framework in training stage, and the structure of two lightweight probe models. Training would be applied only in specific checkpoints. Once a probe is trained, it could maintain predictability in the future checkpoints.
+
+LLM In-training Supervision A vast array of intrinsic metrics inside LLM are proposed to either monitor or sta-bilize the training process. Dong et al. (2023) explores the rank collapse inside the attention mechanism and uses the relative norm to measure such collapse. Team (2025) discovers the explosion of “MaxLogit” and proposes to sta-bilize training using QK-Clip. Some works find that the massive values inside attention are crucial for contextual understanding (Jin et al., 2025; Gu et al., 2025), while oth-ers also find that a stable training process is also related to a stable behavior of attention entropy (Zhai et al., 2023; Zhang et al., 2025). Besides in-training monitoring, Du et al. (2025) produces a new perspective for in-training evalua-tion by building the correlation between the loss value and downstream performance. 
+
+Probe Recent work suggests there is a “truthfulness” di-rection in latent space (Marks & Tegmark, 2024; Azaria & Mitchell, 2023). Some studies employ linear probes to pre-dict whether a model’s answers are correct (Li et al., 2025; Han et al., 2024). To reduce reliance on the model’s gener-ated responses and speed up prediction, certain approaches directly feed the question’s hidden state into the probe to as-sess the model’s ability to provide accurate answers (Snyder et al., 2024; Gottesman & Geva, 2024). However, correct-ness and factuality are not entirely linearly encoded (Wehner et al., 2025). Therefore, this work proposes the sub-model probe, which captures the dynamic flow of information within the model to predict its performance. 
+
+## 3. Methods 
+
+The primary objective of in-training probe evaluation is to develop a framework for rapidly and efficiently estimating an LLM’s performance on downstream tasks without re-sorting to computationally expensive full-scale evaluations. To achieve this, we first model the generative evaluation process (from input text to generation, then gathering the results to obtain the Pass@1 score) as a regression task, and then introduce a lightweight probe to approximate it. 
+
+3.1. Preliminaries: Performance Estimation as Value Approximation 
+
+The evaluation process can be modeled as value approxima-tion. Let Mθ denote a large language model parameterized by weights θ. Given a prompt x from the dataset D, the model generates a response y following the policy πθ (y|x).To quantify the performance, we define a ground-truth re-ward function R(x, y ) ∈ { 0, 1}, which evaluates whether the response y correctly solves the problem in the prompt x.Our goal is to estimate the expected performance of Mθ on a downstream task without performing a full-scale evalua-tion. Adopting a reinforcement learning (RL) perspective, we treat the prompt x as the state s ∈ S and the generated response y as the action a ∈ A . The performance of the model on a specific prompt can be modeled as the state-value function V π (s), which represents the expected reward 3Fast and Accurate Probing of In-Training LLMs’ Downstream Performances 
+
+under the current policy πθ :
+
+V π (s) = Ea∼πθ (·| s)[Qπ (s, a )] = X
+
+> a∈A
+
+πθ (a|s)Qπ (s, a )
+
+(1) where Qπ (s, a ) corresponds to the immediate reward (cor-rectness) of taking action a in state s. In our context, since the task is single-turn generation, Qπ (s, a ) ≡ R(s, a ).Thus, predicting the model’s accuracy on a prompt is equiv-alent to approximating the value function V π (s).
+
+3.2. The Monte Carlo Approximation and Pass@1 
+
+Because the action space A–encompassing all valid token sequences–is theoretically infinite, calculating the exact expectation V π (s) is intractable. We therefore employ a Monte Carlo estimator. For a given prompt s, we sample 
+
+n independent responses {a1, a 2, . . . , a n} from the policy 
+
+πθ (·| s) to get ˆv(s):
+
+ˆv(s) = 1
+
+n
+
+> n
+
+X
+
+> i=1
+
+R(s, a i) (2) that ˆv(s) acts as an approximation of V π (s). This ˆv(s)
+
+serves as the ground truth label for our probe. The objective of our probe Φ is to minimize the regression loss over the dataset D:
+
+L(ϕ) = Es∼D 
+
+|| Φ( s, θ ; ϕ) − ˆv(s)|| 2 (3) where ϕ denotes the learnable parameters of the probe. The widely used Pass @1 metric estimates the probability of correctness when sampling one sample from an n-sample set (Chen et al., 2021a). From the aspect of Pass @1 , ˆv(s) is equivalent to Pass @1( n) when n is held constant. We can analyze this through the definition of Pass @1( n):Pass @1( n) = 1
+
+n
+
+> n
+
+X
+
+> i=1
+
+I(yi is correct ) (4) which shows the same formulation as ˆv(s) (I(·) is a decision function). Therefore, modeling Pass @1( n) is equivalent to modeling V π (s). It is worth noting that the commonly used binary metric “accuracy” can be viewed as a special case of Pass @1 when n = 1 .
+
+3.3. Modeling the Probability of Correctness 
+
+3.3.1. G ENERATIVE EVALUATION 
+
+The ability of an LLM to answer a given question relies on two fundamental sources of information: its internal 
+
+parametric knowledge (θ), encapsulated within its network weights, and the contextual knowledge (S) provided by the input prompt (Petroni et al., 2019). The model fuses these two sources to form a high-dimensional latent representa-tion, which we denote as Rep (S, θ ) ∈ Rd. Subsequently, a generation function, ψ, maps this representation to an an-swer, and a decision function, I(·), maps the answer to a binary class that represents correct or incorrect. Therefore, the likelihood p of answering the question correctly can be formulated as: 
+
+p = 1
+
+n
+
+> n
+
+X
+
+> i=1
+
+I(ψ(Rep (Si, θ )) is correct ) (5) The entire process is computationally expensive due to the sequential nature of the generation process ψ. It is infeasible for frequent evaluation during model training or for large-scale model selection. 3.3.2. P ROBE EVALUATION 
+
+To overcome this efficiency bottleneck, we propose replac-ing the whole process of 1
+
+> n
+
+Pni=1 I(ψ(·)) with a lightweight and efficient probe model , denoted as f (·; ϕ), where ϕ
+
+represents the probe’s parameters. The probe is trained to directly predict the success probability from the LLM’s internal representation: 
+
+p ≈ ˆp = f (Rep (S, θ ); ϕ) (6) While this approximation may introduce some level of fi-delity loss, it provides a sufficiently reliable estimate for monitoring training dynamics and identifying potential is-sues, at a fraction of the computational cost. The design of the probe hinges on the choice of the representation 
+
+Rep (S, θ ) which extracts from the base model. We explore two distinct probe architectures based on different hypothe-ses about where the most salient information resides. 
+
+3.4. Probe Architectures 
+
+3.4.1. S UBMODEL PROBE 
+
+Hypothesis 1 We posit that the model’s parametric knowl-edge is encoded in the progressive transformation of internal states across layers. Therefore, the probe should have access to the hidden states from various depths of the LLM. This architecture captures parametric knowledge via the base model’s hidden states. We postulate that the evolution of hidden states across layers forms an ”intrinsic dimension” that correlates with the model’s confidence and capability. Let H(l) ∈ RT ×d be the hidden states of the base model 
+
+Mθ at layer l, where T is the sequence length. We construct a lightweight decoder-only probe model with parameters 
+
+ϕ, consisting of Lprobe layers. The probe’s input at layer k
+
+integrates its previous state and the projected hidden state from the base model. Formally, let Z(k) ∈ RT ×dprobe de-note the hidden state of the probe at layer k. The update 4Fast and Accurate Probing of In-Training LLMs’ Downstream Performances 
+
+rule is: 
+
+Z(k) = Decoder (k) 
+
+Z(k−1) + W (k) 
+
+> proj
+
+H(k); ϕ(k)
+
+(7) where W (k) 
+
+> proj
+
+∈ Rdmodel ×dprobe is a learnable projection matrix, and k ∈ K matches the probe layer index to the corresponding base model layer index (e.g., K = N for a full-layer mapping, or K < N for an early-layer mapping, 
+
+K is the number of layers in probe, and N is the number of layers in base model). H(k) = Decoder (k)(H(k−1) ; θ(k))
+
+represents the hidden states from base model that contains information from both S and θ. The final prediction is obtained from the last token representation of the final probe layer ˆp = σ(Linear (Z(K)[−1] )) , where Z[−1] means taking the representation at the last position, and σ is the sigmoid function to bound the output within [0 , 1] . The probe model can be formulated as: 
+
+fsub (Rep (S, θ ); ϕ) = Decoder (k) ◦ Decoder (k−1) ◦ . . . 
+
+◦ Decoder (1) (W (1)  
+
+> proj
+
+H(1) ; ϕ)
+
+(8) where H(1) = Emb (X) is the output of the embedding layer. Therefore, 
+
+ˆp = σ(Linear (fsub (Rep (S, θ ); ϕ)[−1] )) (9) 3.4.2. L ORA P ROBE 
+
+Hypothesis 2 We hypothesize that the most direct access to task-specific parametric knowledge is achieved through lightweight perturbations of the frozen model weights. This architecture captures parametric knowledge by di-rectly interacting with the weights via Low-Rank Adap-tation (LoRA) (Hu et al., 2021). We interpret the LoRA mechanism not just as fine-tuning, but as a probe that modu-lates the frozen parametric knowledge θ based on contextual knowledge S. If we treat the LoRA module AB as the probe model’s weight Wϕ, the standard LoRA formulation can be rewritten as: 
+
+Y = ( Wθ + AB )X = WϕX + Wθ X (10) therefore the probe model takes both X ∈ S and Wθ ∈ θ as inputs through the following formulation: 
+
+flora (Rep (S, θ ); ϕ) = ˜D(n) ◦ ˜D(n−1) ◦ . . . 
+
+◦ ˜D(1) (H(1) ; θ, ϕ ) (11) where ˜D(H; θ, ϕ ) is a standard decoder layer operated by LoRA through ˜W = Wθ + AB . We attach LoRA adapters 
+
+ϕ = {Al, B l}Ll=1 to the base model. Unlike standard LoRA for text generation, we optimize these adapters solely for the regression task: 
+
+ˆp = σ(Linear (flora (Rep (S, θ ); ϕ)[−1] )) (12) This architecture implicitly learns to measure the “compe-tence” of the base model weights Wθ for the given input X
+
+by learning the necessary correction Wϕ required to map the state to its value estimate. 
+
+3.5. In-Training Probe Evaluation Pipeline 
+
+The in-training probe evaluation pipeline requires an initial probe training phase, after which the trained probe can be utilized to evaluate future checkpoints. Consider a set of downstream tasks, each containing a training set and a test set (or manually split it if necessary). The pipeline proceeds as follows: 1. Data Collection: Perform a generative evaluation on the training set to compute the probability of correctness (i.e., Pass@1), which is assigned as the label for each prompt. 2. Probe Training: Formulate the problem as a regression task, using the prompt as input and the calculated proba-bility as the training target. 3. Probe Evaluation: Feed prompts from the test set into the probe to predict the probability of correctness. In terms of computational cost, phase 1 and 2 are the most intensive. However, once a probe is trained, it can predict the Pass@1 value using a single forward pass, significantly accelerating the evaluation process at phase 3. 
+
+## 4. Experiments 
+
+In this section, we empirically validate the effectiveness of the proposed In-Training Probe Evaluation framework. We aim to scrutinize the framework’s capability to monitor downstream performance efficiently and accurately through-out the LLM training lifecycle. Specifically, our experi-ments are designed to address the following research ques-tions: • RQ1 (Fidelity): Can lightweight probes accurately ap-proximate the downstream performance of LLMs solely based on internal representations? • RQ2 (Generalizability): Do probes trained on early checkpoints exhibit transferability to future checkpoints, despite the significant distribution shifts incurred during training? • RQ3 (Efficiency): What is the magnitude of computa-tional acceleration achieved by our framework compared to traditional generative evaluation paradigms? 
+
+4.1. Experimental Setup Datasets Preparation. o ensure a comprehensive assess-ment of model capabilities, we curate a diverse benchmark suite spanning three primary domains: (1) Reasoning : We 5Fast and Accurate Probing of In-Training LLMs’ Downstream Performances 
+
+Table 1. Summary of datasets used for probe training and evalua-tion. N-shot denotes the number of in-context exemplars. Stage 
+
+indicates the applicable training phase: Pre (Pre-training) and Post 
+
+(Post-training/Instruction Tuning). Sampling Budget ( n) refers to the number of samples generated to estimate the ground-truth Pass@1 score in pre/post stage.                                                       
+
+> Dataset Domain N-shot Stage Sampling Budget Train Size Test Size
+> MMLU Knowledge 5Pre/Post 8/4 10k 14k GSM8K Math 8Pre/Post 8/4 7.5k 1.3k MATH Math 4Pre/Post 8/4 6k 500 BBH Reasoning 3Pre/Post 8/4 5.2k 1.4k HumanEval Code 0Pre/Post 8/4 100 64 MBPP Code 3Pre/Post 8/4 710 250 AIME Math 0Post -/16 933 60 GPQA Science 0Post -/8 350 98
+
+employ GSM8K (Cobbe et al., 2021), MATH (Hendrycks et al., 2021b), AIME (Veeraboina, 2023; Zhang & Math-AI, 2025) to evaluate mathematical problem-solving, GPQA (Rein et al., 2024) for graduate-level scientific reason-ing, and BBH (Suzgun et al., 2022a) for symbolic rea-soning tasks. (2) Knowledge : The MMLU (Hendrycks et al., 2021a) benchmark is utilized to assess massive mul-titask language understanding. (3) Coding : We adopt Hu-manEval (Chen et al., 2021b) and MBPP (Austin et al., 2021) to evaluate code generation proficiency. For each dataset, we construct the training targets by per-forming a standard generative evaluation. Specifically, we define the ground truth label as the empirical success proba-bility, estimated by sampling n responses per prompt (de-noted as Pass@1( n)). Detailed statistics and configuration of the datasets are summarized in Table 1. Further imple-mentation details are provided in Appendix A. 
+
+Base Models and Checkpoints. We conduct our exper-iments using the OLMo3-7B’s checkpoints (Olmo et al., 2025), because of its open accessibility to granular check-points across the training trajectory. To rigorously evaluate the robustness of our probes against distribution shifts, we utilize a sequence of checkpoints spanning two distinct train-ing phases: 1. Pre-training Phase: We sample intermediate check-points at varying step intervals during the fundamental language modeling stage (i.e., OLMo-3-1025-7B 1). 2. Post-training Phase: We include checkpoints from in-struction tuning and alignment stages (i.e., OLMo-3-7B-Instruct 2 and OLMo-3-7B-Think 3). 
+
+Baselines To benchmark the effectiveness of our proposed architectures, we compare them against two established baselines: 1. Loss fit , a conventional metric that uses the 
+
+> 1https://huggingface.co/allenai/Olmo-3-1025-7B
+> 2https://huggingface.co/allenai/Olmo-3-7B-Instruct
+> 3https://huggingface.co/allenai/Olmo-3-7B-Think
+
+negative log-likelihood to predict the value. This baseline assumes that lower perplexity correlates with higher down-stream accuracy. 2. Linear probe , a simplified version of our framework, where each layer trained a linear regressor to predict the final value. This serves to isolate the gains attributed to our proposed non-linear probe architectures (Submodel and LoRA). See Appendix B for more imple-mentation details. We also provide a comparison with subset sampling in Appendix D. 
+
+Evaluation Metrics. The probes are trained to regress the success probability ˆp. To quantify the estimation quality, we applied a binary classification process to the Pass@1 value in metrics computation: We binarized the ground truth Pass@1 values using a threshold of 0.5, i.e., 
+
+y = I(Pass@1 ≥ 0.5) and report the Area Under the Re-ceiver Operating Characteristic Curve (AUROC) . AU-ROC is threshold-independent and robust to class imbal-ance, making it an ideal metric to measure how well the probe’s predicted scores rank successful instances higher than failed ones. A larger AUROC value means better probe performance: AUROC = 1 .0 indicates perfect prediction; AUROC = 0 .5 indicates random guessing. Additionally, we also reported Mean Squared Error (MSE) ∥ˆp − p∥2 as an evidence for goodness of fit. 
+
+4.2. RQ1: High-Fidelity Performance Estimation 
+
+We first assess the fundamental capability of the proposed probes to approximate ground-truth performance metrics (Pass@1) using only internal representations. Table 2 presents the comparative results on the pre-training check-points. The Loss Fit baseline yields an average AUROC of only 0.5795, barely outperforming random guessing (0.5). This corroborates the “emergence” phenomenon in LLMs, where training loss cannot correctly correlate with the abil-ity to solve complex reasoning tasks. Similarly, the Linear probe fails to extract sufficient signals (Avg. AUROC of 0.5810), suggesting that the mapping from static represen-tations to task success is highly non-linear. The proposed Submodel architecture significantly outperforms all base-lines, achieving an average AUROC of 0.7890 and reducing MSE to 0.1049. From these results, we can conclude that Submodel is sufficient to approximate the correctness with high relevance and low error. Notably, probes on tasks like HumanEval and BBH can achieve higher AUROCs compared to other tasks, while MMLU is less predictable. The discussion and more related information are in Appendix C, where we demonstrate all results in the pre-training and post-training stages. 6Fast and Accurate Probing of In-Training LLMs’ Downstream Performances 
+
+Table 2. Estimation fidelity on Pre-training Checkpoints. The models are trained and evaluated on the OLMo-3-Base-800k checkpoint. (↑: higher is better; ↓: lower is better). 
+
+Metric MMLU GSM8k MATH BBH HumanEval MBPP Avg. Loss fit AUROC ( ↑) 0.4588 0.6189 0.6177 0.5219 0.7048 0.5549 0.5795 MSE ( ↓) 0.2322 0.1239 0.0399 0.1880 0.1407 0.1755 0.1500 Linear AUROC ( ↑) 0.6019 0.5036 0.4714 0.7309 0.5966 0.5818 0.5810 MSE ( ↓) 0.1780 0.1310 0.0406 0.1534 0.1773 0.1686 0.1415 Submodel AUROC ( ↑) 0.6737 0.7827 0.7776 0.8014 0.9163 0.7822 0.7890 
+
+MSE ( ↓) 0.1492 0.0962 0.0333 0.1302 0.0810 0.1395 0.1049 
+
+LoRA AUROC ( ↑) 0.5519 0.6737 0.6983 0.7731 0.6565 0.7031 0.6761 MSE ( ↓) 0.2049 0.1201 0.0436 0.1399 0.1463 0.1501 0.1342 
+
+4.3. RQ2: Cross-Checkpoint Generalizability 
+
+A critical requirement for in-training monitoring is Forward Transferability : can a probe trained on an earlier check-point ( t) accurately forecast the performance of a future checkpoint ( t + ∆ t)? We investigate this by training probes on specific checkpoints (rows in Table 3) and testing them on subsequent checkpoints (columns). As shown in Table 3, the Submodel probe demonstrates ex-ceptional temporal robustness. For instance, a probe trained at step 200k maintains an AUROC of ∼ 0.75 even when evaluated on the final checkpoint (Last), despite massive updates to the base model’s weights. This implies that the mapping between hidden state dynamics and task correct-ness is an invariant property of the model architecture, in-dependent of specific weight values. Conversely, the LoRA probe suffers from significant degradation when transferred to future checkpoints (e.g., dropping from 0.67 to 0.56). This confirms our hypothesis: LoRA learns to modulate spe-cific weight matrices ( Wθ ), and as Wθ drifts during training, the learned modulation ∆Wϕ becomes obsolete. In con-trast, the Submodel operates on the semantic representation space , which evolves more smoothly. 
+
+4.4. RQ3: Computational Efficiency and Amortized Cost 
+
+While the accuracy and generalizability have been demon-strated, another core focus of the proposed framework is ef-ficiency, that is, whether it can replace traditional generative evaluation to achieve low-latency assessment. We analyze the computational cost of the probe evaluation pipeline com-pared to standard generative evaluation. The total time cost 
+
+T can be modeled as T = Tinit + N × teval , where N is the number of evaluations. Generative evaluation does not con-tain a Tinit , however, it usually contains a high teval . While probe evaluation requires a preparation phase, its teval is significantly smaller than generative evaluation. As illus-trated in Figure 3, although the probe method requires an 0 10 20 30 40 50 
+
+> Number of Evaluations
+> 0
+> 5
+> 10
+> 15
+> 20
+> 25
+> 30
+> 35
+> 40
+> Total Time (Hours)
+> Break-even Point
+> (11.1 evals)
+> Probe vs. Generative, Base Model
+> Probe Evaluation, k=0.05
+> Generative Evaluation, k=0.78
+
+Figure 3. Cumulative time consumption for Probe Evaluation vs. Generative Evaluation on pre-training checkpoints (OLMo-3-Base). 
+
+initialization phase (data collection + training), it achieves a 15.6 × speedup in inference per checkpoint on the base model–while generative evaluation requires 0.78h to finish an evaluation, probe evaluation only takes 0.05h. The ad-vantage becomes even more pronounced in post-training stages where generation length increases. As detailed in Appendix E, the speedup factors reach 61.4 × for instruct models and 231.8 × for think models. This makes our frame-work particularly suitable for high-frequency monitoring of modern reasoning models. 
+
+4.5. Ablation: Layer-wise Information Sufficiency 
+
+Finally, we investigate the minimal information required for accurate prediction. The Submodel probe normally ag-gregates hidden states from all layers. Here, we analyze the performance impact of restricting the input to the first 
+
+k layers (“Early Exit” strategy). Table 4 reveals that the first 16 layers contain the majority of the signal required for performance estimation (Avg. AUROC 0.7725 vs. 0.7890). 7Fast and Accurate Probing of In-Training LLMs’ Downstream Performances   
+
+> Table 3. Forward Transferability Analysis. We report AUROC scores where probes are trained on earlier checkpoints (rows) and tested on future checkpoints (columns).
+
+Train Ckpt (k) 
+
+Test Ckpt (k) 200 400 600 800 1000 1200 1400 last 
+
+Submodel 200 0.7639 0.7346 0.7523 0.7633 0.7504 0.7379 0.7414 0.7513 400 – 0.7491 0.7654 0.7764 0.7647 0.7561 0.7554 0.7657 600 – – 0.7773 0.7850 0.7697 0.7617 0.7628 0.7685 800 – – – 0.7890 0.7719 0.7695 0.7680 0.7731 1000 – – – – 0.7728 0.7608 0.7630 0.7687 1200 – – – – – 0.7667 0.7655 0.7741 
+
+1400 – – – – – – 0.7709 0.7780 
+
+LoRA 200 0.6741 0.6318 0.6457 0.6132 0.5958 0.5728 0.5831 0.5683 400 – 0.6729 0.6733 0.6477 0.5949 0.5741 0.6028 0.5981 600 – – 0.7097 0.6574 0.6179 0.5964 0.6284 0.6115 800 – – – 0.6761 0.6245 0.5891 0.6434 0.6269 1000 – – – – 0.6432 0.5993 0.6313 0.6126 1200 – – – – – 0.6744 0.6607 0.6433 1400 – – – – – – 0.6744 0.6318     
+
+> Table 4. Impact of Input Layer Depth. Comparison of Submodel probes trained on the first klayers versus the full model (32 layers).
+
+Num of Layers MMLU GSM8k MATH BBH HumanEval MBPP Avg. 8-layer 0.6079 0.6663 0.6921 0.7894 0.8612 0.5911 0.7013 16-layer 0.6937 0.7463 0.7636 0.7963 0.9184 0.7166 0.7725 Full (32-layer) 0.6737 0.7827 0.7776 0.8014 0.9136 0.7822 0.7890 However, reducing the scope to only the first 8 layers results in a notable performance drop, indicating that critical rea-soning cues are distributed across the mid-to-upper layers of the network. This finding supports the feasibility of further accelerating the pipeline by caching only the upper-layer representations. 
+
+## 5. Conclusion 
+
+In this work, we address the critical bottleneck of efficiently monitoring the downstream performance of LLMs during training, where the imperative for frequent monitoring con-flicts with the computationally prohibitive cost of standard generative benchmarks. We introduce the In-Training Probe Evaluation framework, a novel paradigm that substitutes the high latency generative evaluation paradigm with agile, efficient diagnostic probes. By formulating performance es-timation as a value approximation problem, we demonstrate that lightweight probes can accurately regress the probabili-ties of correctness on downstream tasks from the model’s internal representations, bypassing the need for full-scale generation. Our extensive experiments yield two pivotal insights. First, we establish that the correlation between internal hidden states and task correctness is remarkably invariant to the distribution shifts inherent in model training. Specifically, our Submodel probe architecture exhibits strong forward transferability : a probe trained on previous checkpoints can reliably forecast the performance of future checkpoints. Second, we quantify the efficiency gains, demonstrating that our framework reduces evaluation latency by orders of magnitude ( 15 .6× speed up compared with generative evaluation), rendering high-frequency, granular monitoring feasible once again. Looking ahead, this work lays the foundation for a more controllable and scientifically grounded LLM development process. The implications extend beyond passive moni-toring; our framework offers a viable path toward active training intervention. The high-fidelity signals provided by these probes could serve as real-time feedback mechanisms for dynamic data curriculum learning—allowing develop-ers to adjust data mixtures or hyperparameters on-the-fly to optimize specific downstream capabilities. By decoupling evaluation costs from model scale, we provide a scalable methodology to accelerate the iteration and understanding of next-generation AI systems. 8Fast and Accurate Probing of In-Training LLMs’ Downstream Performances 
+
+## Impact Statement 
+
+This paper presents work whose goal is to advance the field of Large Language Models In-Training Supervision. There are many potential societal consequences of our work, none of which we feel must be specifically highlighted here. 
+
+## References 
+
+Austin, J., Odena, A., Nye, M., Bosma, M., Michalewski, H., Dohan, D., Jiang, E., Cai, C., Terry, M., Le, Q., et al. Program synthesis with large language models. arXiv preprint arXiv:2108.07732 , 2021. Azaria, A. and Mitchell, T. The internal state of an LLM knows when it’s lying. In The 2023 Conference on Empirical Methods in Natural Language Processing ,2023. URL https://openreview.net/forum? id=y2V6YgLaW7 .Biderman, S., Schoelkopf, H., Anthony, Q., Bradley, H., O’Brien, K., Hallahan, E., Khan, M. A., Purohit, S., Prashanth, U. S., Raff, E., Skowron, A., Sutawika, L., and van der Wal, O. Pythia: A suite for analyzing large language models across training and scaling, 2023. URL 
+
+https://arxiv.org/abs/2304.01373 .Bubeck, S., Chandrasekaran, V., Eldan, R., Gehrke, J., Horvitz, E., Kamar, E., Lee, P., Lee, Y. T., Li, Y., Lund-berg, S., Nori, H., Palangi, H., Ribeiro, M. T., and Zhang, Y. Sparks of artificial general intelligence: Early experi-ments with gpt-4, 2023. URL https://arxiv.org/ abs/2303.12712 .Chen, M., Tworek, J., Jun, H., Yuan, Q., de Oliveira Pinto, H. P., Kaplan, J., Edwards, H., Burda, Y., Joseph, N., Brockman, G., Ray, A., Puri, R., Krueger, G., Petrov, M., Khlaaf, H., Sastry, G., Mishkin, P., Chan, B., Gray, S., Ryder, N., Pavlov, M., Power, A., Kaiser, L., Bavar-ian, M., Winter, C., Tillet, P., Such, F. P., Cummings, D., Plappert, M., Chantzis, F., Barnes, E., Herbert-Voss, A., Guss, W. H., Nichol, A., Paino, A., Tezak, N., Tang, J., Babuschkin, I., Balaji, S., Jain, S., Saun-ders, W., Hesse, C., Carr, A. N., Leike, J., Achiam, J., Misra, V., Morikawa, E., Radford, A., Knight, M., Brundage, M., Murati, M., Mayer, K., Welinder, P., Mc-Grew, B., Amodei, D., McCandlish, S., Sutskever, I., and Zaremba, W. Evaluating large language models trained on code, 2021a. URL https://arxiv.org/abs/ 2107.03374 .Chen, M., Tworek, J., Jun, H., Yuan, Q., de Oliveira Pinto, H. P., Kaplan, J., Edwards, H., Burda, Y., Joseph, N., Brockman, G., Ray, A., Puri, R., Krueger, G., Petrov, M., Khlaaf, H., Sastry, G., Mishkin, P., Chan, B., Gray, S., Ryder, N., Pavlov, M., Power, A., Kaiser, L., Bavar-ian, M., Winter, C., Tillet, P., Such, F. P., Cummings, D., Plappert, M., Chantzis, F., Barnes, E., Herbert-Voss, A., Guss, W. H., Nichol, A., Paino, A., Tezak, N., Tang, J., Babuschkin, I., Balaji, S., Jain, S., Saunders, W., Hesse, C., Carr, A. N., Leike, J., Achiam, J., Misra, V., Morikawa, E., Radford, A., Knight, M., Brundage, M., Murati, M., Mayer, K., Welinder, P., McGrew, B., Amodei, D., McCandlish, S., Sutskever, I., and Zaremba, W. Evaluating large language models trained on code, 2021b. Chen, M., Roberts, N., Bhatia, K., WANG, J., Zhang, C., Sala, F., and R ´e, C. Skill-it! a data-driven skills frame-work for understanding and training language models. In Oh, A., Naumann, T., Globerson, A., Saenko, K., Hardt, M., and Levine, S. (eds.), Advances in Neural Informa-tion Processing Systems , volume 36, pp. 36000–36040. Curran Associates, Inc., 2023. Chen, Y., Huang, B., Gao, Y., Wang, Z., Yang, J., and Ji, H. Scaling laws for predicting downstream perfor-mance in llms, 2025. URL https://arxiv.org/ abs/2410.08527 .Chowdhery, A., Narang, S., Devlin, J., Bosma, M., Mishra, G., Roberts, A., Barham, P., Chung, H. W., Sutton, C., Gehrmann, S., Schuh, P., Shi, K., Tsvyashchenko, S., Maynez, J., Rao, A., Barnes, P., Tay, Y., Shazeer, N., Prabhakaran, V., Reif, E., Du, N., Hutchinson, B., Pope, R., Bradbury, J., Austin, J., Isard, M., Gur-Ari, G., Yin, P., Duke, T., Levskaya, A., Ghemawat, S., Dev, S., Michalewski, H., Garcia, X., Misra, V., Robinson, K., Fedus, L., Zhou, D., Ippolito, D., Luan, D., Lim, H., Zoph, B., Spiridonov, A., Sepassi, R., Dohan, D., Agrawal, S., Omernick, M., Dai, A. M., Pillai, T. S., Pellat, M., Lewkowycz, A., Moreira, E., Child, R., Polo-zov, O., Lee, K., Zhou, Z., Wang, X., Saeta, B., Diaz, M., Firat, O., Catasta, M., Wei, J., Meier-Hellstern, K., Eck, D., Dean, J., Petrov, S., and Fiedel, N. Palm: Scaling language modeling with pathways, 2022. URL 
+
+https://arxiv.org/abs/2204.02311 .Cobbe, K., Kosaraju, V., Bavarian, M., Chen, M., Jun, H., Kaiser, L., Plappert, M., Tworek, J., Hilton, J., Nakano, R., et al. Training verifiers to solve math word problems. 
+
+arXiv preprint arXiv:2110.14168 , 2021. Dong, Y., Cordonnier, J.-B., and Loukas, A. Attention is not all you need: Pure attention loses rank doubly exponen-tially with depth, 2023. URL https://arxiv.org/ abs/2103.03404 .Du, Z., Zeng, A., Dong, Y., and Tang, J. Understanding emergent abilities of language models from the loss per-spective, 2025. URL https://arxiv.org/abs/ 2403.15796 .9Fast and Accurate Probing of In-Training LLMs’ Downstream Performances 
+
+Gottesman, D. and Geva, M. Estimating knowledge in large language models without generating a single token, 2024. URL https://arxiv.org/abs/2406.12673 .Groeneveld, D., Beltagy, I., Walsh, P., Bhagia, A., Kinney, R., Tafjord, O., Jha, A. H., Ivison, H., Magnusson, I., Wang, Y., Arora, S., Atkinson, D., Authur, R., Chandu, K. R., Cohan, A., Dumas, J., Elazar, Y., Gu, Y., Hessel, J., Khot, T., Merrill, W., Morrison, J., Muennighoff, N., Naik, A., Nam, C., Peters, M. E., Pyatkin, V., Ravichan-der, A., Schwenk, D., Shah, S., Smith, W., Strubell, E., Subramani, N., Wortsman, M., Dasigi, P., Lambert, N., Richardson, K., Zettlemoyer, L., Dodge, J., Lo, K., Sol-daini, L., Smith, N. A., and Hajishirzi, H. Olmo: Ac-celerating the science of language models, 2024. URL 
+
+https://arxiv.org/abs/2402.00838 .Gu, X., Pang, T., Du, C., Liu, Q., Zhang, F., Du, C., Wang, Y., and Lin, M. When attention sink emerges in language models: An empirical view, 2025. URL https:// arxiv.org/abs/2410.10781 .Han, J., Kossen, J., Razzak, M., Schut, L., Malik, S. A., and Gal, Y. Semantic entropy probes: Robust and cheap hal-lucination detection in LLMs. In ICML 2024 Workshop on Foundation Models in the Wild , 2024. URL https: //openreview.net/forum?id=Zd0XLr6JKn .Hendrycks, D., Burns, C., Basart, S., Zou, A., Mazeika, M., Song, D., and Steinhardt, J. Measuring massive multitask language understanding, 2021a. URL https: //arxiv.org/abs/2009.03300 .Hendrycks, D., Burns, C., Kadavath, S., Arora, A., Basart, S., Tang, E., Song, D., and Steinhardt, J. Measuring math-ematical problem solving with the math dataset. arXiv preprint arXiv:2103.03874 , 2021b. Hoffmann, J., Borgeaud, S., Mensch, A., Buchatskaya, E., Cai, T., Rutherford, E., de Las Casas, D., et al. Training compute-optimal large language models, 2022. URL 
+
+https://arxiv.org/abs/2203.15556 .Hu, E. J., Shen, Y., Wallis, P., Allen-Zhu, Z., Li, Y., Wang, S., Wang, L., and Chen, W. Lora: Low-rank adaptation of large language models, 2021. URL https://arxiv. org/abs/2106.09685 .Jin, M., Mei, K., Xu, W., Sun, M., Tang, R., Du, M., Liu, Z., and Zhang, Y. Massive values in self-attention modules are the key to contextual knowledge understanding, 2025. URL https://arxiv.org/abs/2502.01563 .Kaplan, J., McCandlish, S., Henighan, T., Brown, T. B., Chess, B., Child, R., Gray, S., Radford, A., Wu, J., and Amodei, D. Scaling laws for neural language mod-els, 2020. URL https://arxiv.org/abs/2001. 08361 .Koh, W., Suk, J., Han, S., Yun, S.-Y., and Shin, J. Predicting llm reasoning performance with small proxy model, 2025. URL https://arxiv.org/abs/2509.21013 .Li, Q., Geng, J., Chen, Z., Zhu, D., Wang, Y., Ma, C., Lyu, C., and Karray, F. Hd-ndes: Neural differential equations for hallucination detection in llms, 2025. URL 
+
+https://arxiv.org/abs/2506.00088 .Liang, P., Bommasani, R., Lee, T., Tsipras, D., Soylu, D., Yasunaga, M., Zhang, Y., Narayanan, D., Wu, Y., Kumar, A., Newman, B., Yuan, B., Yan, B., Zhang, C., Cosgrove, C., Manning, C. D., R ´e, C., Acosta-Navas, D., Hudson, D. A., Zelikman, E., Durmus, E., Ladhak, F., Rong, F., Ren, H., Yao, H., Wang, J., Santhanam, K., Orr, L., Zheng, L., Yuksekgonul, M., Suzgun, M., Kim, N., Guha, N., Chatterji, N., Khattab, O., Henderson, P., Huang, Q., Chi, R., Xie, S. M., Santurkar, S., Ganguli, S., Hashimoto, T., Icard, T., Zhang, T., Chaudhary, V., Wang, W., Li, X., Mai, Y., Zhang, Y., and Koreeda, Y. Holistic evaluation of language models, 2023. URL https://arxiv.org/ abs/2211.09110 .Lightman, H., Kosaraju, V., Burda, Y., Edwards, H., Baker, B., Lee, T., Leike, J., Schulman, J., Sutskever, I., and Cobbe, K. Let’s verify step by step. arXiv preprint arXiv:2305.20050 , 2023. Marks, S. and Tegmark, M. The geometry of truth: Emer-gent linear structure in large language model representa-tions of true/false datasets. In First Conference on Lan-guage Modeling , 2024. URL https://openreview. net/forum?id=aajyHYjjsk .Myrzakhan, A., Bsharat, S. M., and Shen, Z. Open-llm-leaderboard: From multi-choice to open-style questions for llms evaluation, benchmark, and arena, 2024. URL 
+
+https://arxiv.org/abs/2406.07545 .Olmo, T., :, Ettinger, A., Bertsch, A., Kuehl, B., Graham, D., Heineman, D., Groeneveld, D., Brahman, F., Timbers, F., Ivison, H., Morrison, J., Poznanski, J., Lo, K., Soldaini, L., Jordan, M., Chen, M., Noukhovitch, M., Lambert, N., Walsh, P., Dasigi, P., Berry, R., Malik, S., Shah, S., Geng, S., Arora, S., Gupta, S., Anderson, T., Xiao, T., Murray, T., Romero, T., Graf, V., Asai, A., Bhagia, A., Wettig, A., Liu, A., Rangapur, A., Anastasiades, C., Huang, C., Schwenk, D., Trivedi, H., Magnusson, I., Lochner, J., Liu, J., Miranda, L. J. V., Sap, M., Morgan, M., Schmitz, M., Guerquin, M., Wilson, M., Huff, R., Bras, R. L., Xin, R., Shao, R., Skjonsberg, S., Shen, S. Z., Li, S. S., Wilde, T., Pyatkin, V., Merrill, W., Chang, Y., Gu, Y., Zeng, Z., Sabharwal, A., Zettlemoyer, L., Koh, P. W., Farhadi, A., Smith, N. A., and Hajishirzi, H. Olmo 3, 2025. URL 
+
+https://arxiv.org/abs/2512.13961 .10 Fast and Accurate Probing of In-Training LLMs’ Downstream Performances 
+
+Pacchiardi, L., Cheke, L. G., and Hern ´andez-Orallo, J. 100 instances is all you need: predicting the success of a new llm on unseen data by testing on a few instances, 2024. URL https://arxiv.org/abs/2409.03563 .Petroni, F., Rockt ¨aschel, T., Lewis, P., Bakhtin, A., Wu, Y., Miller, A. H., and Riedel, S. Language models as knowledge bases?, 2019. URL https://arxiv. org/abs/1909.01066 .Polo, F. M., Weber, L., Choshen, L., Sun, Y., Xu, G., and Yurochkin, M. tinybenchmarks: evaluating llms with fewer examples, 2024. URL https://arxiv.org/ abs/2402.14992 .Rein, D., Hou, B. L., Stickland, A. C., Petty, J., Pang, R. Y., Dirani, J., Michael, J., and Bowman, S. R. Gpqa: A graduate-level google-proof q&a benchmark. In First Conference on Language Modeling , 2024. Ren, K., Cortes-Gomez, S., Pati ˜no, C. M., Joshi, A., Lyu, R., Tang, J., Turcan, A., Yamin, K., Wu, S., and Wilder, B. Predicting language models’ success at zero-shot probabilistic prediction, 2025. URL https://arxiv. org/abs/2509.15356 .Schellaert, W., Mart ´ınez-Plumed, F., and Hern ´andez-Orallo, J. Analysing the predictability of language model perfor-mance. ACM Trans. Intell. Syst. Technol. , 16(2), February 2025. ISSN 2157-6904. doi: 10.1145/3706118. URL 
+
+https://doi.org/10.1145/3706118 .Snell, C., Lee, J., Xu, K., and Kumar, A. Scaling llm test-time compute optimally can be more effective than scal-ing model parameters, 2024. URL https://arxiv. org/abs/2408.03314 .Snyder, B., Moisescu, M., and Zafar, M. B. On early de-tection of hallucinations in factual question answering. In Proceedings of the 30th ACM SIGKDD Conference on Knowledge Discovery and Data Mining , KDD ’24, pp. 2721–2732, New York, NY, USA, 2024. Associa-tion for Computing Machinery. ISBN 9798400704901. doi: 10.1145/3637528.3671796. URL https://doi. org/10.1145/3637528.3671796 .Suzgun, M., Scales, N., Sch ¨arli, N., Gehrmann, S., Tay, Y., Chung, H. W., Chowdhery, A., Le, Q. V., Chi, E. H., Zhou, D., , and Wei, J. Challenging big-bench tasks and whether chain-of-thought can solve them. arXiv preprint arXiv:2210.09261 , 2022a. Suzgun, M., Scales, N., Sch ¨arli, N., Gehrmann, S., Tay, Y., Chung, H. W., Chowdhery, A., Le, Q. V., Chi, E. H., Zhou, D., and Wei, J. Challenging big-bench tasks and whether chain-of-thought can solve them, 2022b. URL 
+
+https://arxiv.org/abs/2210.09261 .Team, K. Kimi k2: Open agentic intelligence, 2025. URL 
+
+https://arxiv.org/abs/2507.20534 .Veeraboina, H. Aime problem set 1983-2024, 2023. URL https://www.kaggle. com/datasets/hemishveeraboina/ aime-problem-set-1983-2024 .Wehner, J., Abdelnabi, S., Tan, D., Krueger, D., and Fritz, M. Taxonomy, opportunities, and challenges of represen-tation engineering for large language models. Transac-tions on Machine Learning Research , 2025. ISSN 2835-8856. URL https://openreview.net/forum? id=2U1KIfmaU9 . Survey Certification. Wei, J., Tay, Y., Bommasani, R., Raffel, C., Zoph, B., Borgeaud, S., Yogatama, D., Bosma, M., Zhou, D., Metzler, D., Chi, E. H., Hashimoto, T., Vinyals, O., Liang, P., Dean, J., and Fedus, W. Emergent abili-ties of large language models, 2022. URL https: //arxiv.org/abs/2206.07682 .Xie, S. M., Pham, H., Dong, X., Du, N., Liu, H., Lu, Y., Liang, P., Le, Q. V., Ma, T., and Yu, A. W. Doremi: Optimizing data mixtures speeds up language model pre-training, 2023. URL https://arxiv.org/abs/ 2305.10429 .Xu, C., Chen, K., Li, X., Shen, K., and Li, C. Un-veiling downstream performance scaling of llms: Aclustering-based perspective, 2025. URL https:// arxiv.org/abs/2502.17262 .Zeng, H., Hui, K., Zhuang, H., Qin, Z., Yue, Z., Zamani, H., and Alon, D. Can pre-training indicators reliably predict fine-tuning outcomes of llms?, 2025. URL https:// arxiv.org/abs/2504.12491 .Zhai, S., Likhomanenko, T., Littwin, E., Busbridge, D., Ramapuram, J., Zhang, Y., Gu, J., and Susskind, J. Sta-bilizing transformer training by preventing attention en-tropy collapse, 2023. URL https://arxiv.org/ abs/2303.06296 .Zhang, Y. and Math-AI, T. American invitational mathemat-ics examination (aime) 2025, 2025. Zhang, Z., Wang, Y., Huang, X., Fang, T., Zhang, H., Deng, C., Li, S., and Yu, D. Attention entropy is a key factor: An analysis of parallel context encoding with full-attention-based pre-trained language models, 2025. URL https: //arxiv.org/abs/2412.16545 .Zhou, L., Moreno-Casares, P. A., Mart ´ınez-Plumed, F., Bur-den, J., Burnell, R., Cheke, L., Ferri, C., Marcoci, A., Mehrbakhsh, B., Moros-Daval, Y., h ´Eigeartaigh, S. ´O., Rutar, D., Schellaert, W., Voudouris, K., and Hern ´andez-Orallo, J. Predictable artificial intelligence, 2025. URL 
+
+https://arxiv.org/abs/2310.06167 .11 Fast and Accurate Probing of In-Training LLMs’ Downstream Performances 
+
+## A. Data Preparation 
+
+A.1. Preparation Process 
+
+Data preparation requires splitting datasets into training and test sets. For MMLU and GSM8k, which already contain standard splits, we use them directly. However, other datasets do not provide a training split; therefore, we manually perform a train-test split for BBH, HumanEval, MBPP, and GPQA. Specifically, for MATH, we use MATH-500 (Lightman et al., 2023) as the test set and the original MATH dataset (excluding MATH-500) as the training set. For BBH, which consists of multiple subsets, we select 50 samples from each subset for the test set and use the remaining data for training. Finally, we randomly downsample the training sets of MMLU and MATH, as their large size would make the evaluation time cost prohibitive. 
+
+A.2. MMLU Prompt Format 
+
+Think step by step and answer the following questions. Question: {question }
+
+(A) {option 1 } (B) {option 2} (C) {option 3 } (D) {option 4 }
+
+Answer: {answer }{the rest 4 shots }
+
+Question: {question }
+
+Answer: Let’s think step by step. 
+
+A.3. GSM8K Prompt Format 
+
+Question: {question }
+
+Answer: {chain-of-thought }
+
+### {answer }{the rest 7 shots }
+
+Question: {question }
+
+Answer: 
+
+A.4. MATH Prompt Format 
+
+Please reason step by step, and put your final answer within \boxed {} .Question: {question }
+
+Answer: {answer }{the rest 3 shots }
+
+Question: {question }
+
+Answer: 
+
+A.5. BBH Prompt Format 
+
+{task description }
+
+12 Fast and Accurate Probing of In-Training LLMs’ Downstream Performances 
+
+QUESTION: {question }
+
+OPTIONS: 
+
+{options }
+
+Let’s think step by step. 
+
+{chain-of-thought }
+
+ANSWER: {answer }{the rest 2 shots }
+
+QUESTION: {question }
+
+OPTIONS: {options }
+
+Let’s think step by step. 
+
+A.6. MBPP Prompt Format 
+
+You are an expert Python programmer, and here is your task: {task }.Your code should pass these tests: 
+
+{tests }
+
+[BEGIN] 
+
+{code }
+
+[DONE] 
+
+{the rest 2 shots }
+
+You are an expert Python programmer, and here is your task: {task }.Your code should pass these tests: 
+
+{tests }
+
+[BEGIN] 
+
+A.7. AIME Prompt Format 
+
+Please reason step by step, and put your final answer within \boxed {} .
+
+{question }
+
+A.8. GPQA Prompt Format 
+
+Please reason step by step, and put your final answer within \boxed {} .Question: 
+
+{question }
+
+Answer: 
+
+## B. Baselines 
+
+B.1. Linear Probe 
+
+The Linear Probe shares the same paradigm as the proposed probing methods. It collects hidden states from the base model and applies linear regression to each layer to obtain a predicted value. The average of these predicted values is then used to estimate the probability of correctness. 13 Fast and Accurate Probing of In-Training LLMs’ Downstream Performances 
+
+B.2. Loss Curve Fit 
+
+Inspired by Du et al. (2025), who utilized regression to link loss values to downstream performance, we model the relationship between the model’s loss on a given input and its final probability of correctness. Specifically, we collect loss values and the corresponding correctness probabilities for all prompts and perform linear regression using ordinary least squares. To predict downstream performance, we input the loss of a given prompt into the trained regression model to estimate its probability of correctness. 
+
+## C. Full Results 
+
+In this section, we present the full results on each dataset for checkpoints from the pre-training stage (base model) and the post-training stage (instruct and think). 
+
+C.1. Base Model 
+
+Table 5. Comprehensive AUROC Results for OLMo-3-base across Six Datasets (Train ckpt × Test ckpt) 
+
+(a) MMLU Dataset 
+
+Train Ckpt (k) Test Ckpt (k) 200 400 600 800 1000 1200 1400 last 200 0.6613 0.6739 0.6748 0.6804 0.7062 0.6875 0.6877 0.6984 400 – 0.6685 0.6734 0.6838 0.7119 0.6884 0.6909 0.6997 600 – – 0.6750 0.6821 0.7087 0.6849 0.6878 0.6945 800 – – – 0.6737 0.7141 0.6969 0.7004 0.7072 1000 – – – – 0.7230 0.7014 0.7062 0.7049 1200 – – – – – 0.6939 0.6967 0.6950 1400 – – – – – – 0.6987 0.7018 
+
+(b) GSM8k Dataset 
+
+Train Ckpt (k) Test Ckpt (k) 200 400 600 800 1000 1200 1400 last 200 0.8082 0.7463 0.7279 0.7376 0.7549 0.7112 0.7253 0.7439 400 – 0.7742 0.7592 0.7594 0.7786 0.7336 0.7374 0.7648 600 – – 0.7771 0.7654 0.7825 0.7453 0.7489 0.7669 800 – – – 0.7827 0.7781 0.7548 0.7522 0.7748 1000 – – – – 0.7732 0.7399 0.7478 0.7568 1200 – – – – – 0.7564 0.7490 0.7671 1400 – – – – – – 0.7554 0.7670 
+
+(c) MATH Dataset 
+
+Train Ckpt (k) Test Ckpt (k) 200 400 600 800 1000 1200 1400 last 200 0.7096 0.6997 0.7525 0.7662 0.7944 0.7490 0.7158 0.7224 400 – 0.6863 0.7576 0.7768 0.8130 0.7544 0.7326 0.7361 600 – – 0.7520 0.7695 0.8072 0.7484 0.7294 0.7283 800 – – – 0.7776 0.7966 0.7562 0.7289 0.7328 1000 – – – – 0.8236 0.7628 0.7322 0.7308 1200 – – – – – 0.7476 0.7263 0.7303 1400 – – – – – – 0.7347 0.7538 
+
+(d) BBH Dataset 
+
+Train Ckpt (k) Test Ckpt (k) 200 400 600 800 1000 1200 1400 last 200 0.7749 0.7583 0.7782 0.7773 0.7546 0.7633 0.7885 0.7927 400 – 0.7709 0.7778 0.7649 0.7565 0.7691 0.7721 0.7804 600 – – 0.8046 0.7853 0.7625 0.7839 0.7827 0.7844 800 – – – 0.8014 0.7765 0.7961 0.8020 0.8024 1000 – – – – 0.7719 0.7732 0.7929 0.7933 1200 – – – – – 0.7982 0.7965 0.7993 1400 – – – – – – 0.8046 0.7972 
+
+(e) HumanEval Dataset 
+
+Train Ckpt (k) Test Ckpt (k) 200 400 600 800 1000 1200 1400 last 200 0.9252 0.8483 0.8667 0.9197 0.7836 0.8298 0.8496 0.8748 400 – 0.8594 0.8913 0.9218 0.8012 0.8655 0.8871 0.9093 600 – – 0.8952 0.9340 0.8064 0.8626 0.8955 0.9174 800 – – – 0.9163 0.8211 0.8538 0.8768 0.8905 1000 – – – – 0.7965 0.8485 0.8732 0.8967 1200 – – – – – 0.8456 0.8720 0.8967 1400 – – – – – – 0.8841 0.9105 
+
+(f) MBPP Dataset 
+
+Train Ckpt (k) Test Ckpt (k) 200 400 600 800 1000 1200 1400 last 200 0.7043 0.6809 0.6938 0.6986 0.7086 0.6862 0.6812 0.6758 400 – 0.7353 0.7331 0.7514 0.7270 0.7257 0.7122 0.7040 600 – – 0.7598 0.7738 0.7510 0.7449 0.7323 0.7197 800 – – – 0.7822 0.7450 0.7590 0.7478 0.7310 1000 – – – – 0.7485 0.7390 0.7256 0.7294 1200 – – – – – 0.7583 0.7524 0.7563 1400 – – – – – – 0.7477 0.7377 
+
+14 Fast and Accurate Probing of In-Training LLMs’ Downstream Performances 
+
+C.2. Instruct Model 
+
+Table 6. OLMo-3-Instruct Results 
+
+(a) Main Results 
+
+Train ckpt Test ckpt 100 200 300 400 100 0.7402 0.7261 0.7253 0.7421 200 – 0.7367 0.7379 0.7508 300 – – 0.7285 0.7452 400 – – – 0.7293 
+
+(b) MMLU Results 
+
+Train ckpt Test ckpt 100 200 300 400 100 0.6706 0.6723 0.6670 0.6667 200 – 0.6674 0.6630 0.6631 300 – – 0.6651 0.6655 400 – – – 0.6684 
+
+(c) GSM8k Results 
+
+Train ckpt Test ckpt 100 200 300 400 100 0.7215 0.7267 0.7220 0.7264 200 – 0.7310 0.7238 0.7294 300 – – 0.7200 0.7264 400 – – – 0.7164 
+
+(d) MATH Results 
+
+Train ckpt Test ckpt 100 200 300 400 100 0.8365 0.8416 0.8172 0.8551 200 – 0.8527 0.8354 0.8656 300 – – 0.8288 0.8665 400 – – – 0.8606 
+
+(e) BBH Results 
+
+Train ckpt Test ckpt 100 200 300 400 100 0.8856 0.8749 0.8721 0.8566 200 – 0.8825 0.8852 0.8702 300 – – 0.8878 0.8777 400 – – – 0.8816 
+
+(f) HumanEval Results 
+
+Train ckpt Test ckpt 100 200 300 400 100 0.6215 0.6512 0.6861 0.6922 200 – 0.6887 0.7126 0.7172 300 – – 0.7381 0.7188 400 – – – 0.6266 
+
+(g) MBPP Results 
+
+Train ckpt Test ckpt 100 200 300 400 100 0.7999 0.7718 0.7652 0.7919 200 – 0.7694 0.7755 0.7961 300 – – 0.7208 0.7553 400 – – – 0.7545 
+
+(h) AIME Results 
+
+Train ckpt Test ckpt 100 200 300 400 100 0.7267 0.7348 0.6244 0.7094 200 – 0.7593 0.6591 0.7302 300 – – 0.6196 0.7179 400 – – – 0.7063 
+
+(i) GPQA Results 
+
+Train ckpt Test ckpt 100 200 300 400 100 0.6594 0.5353 0.6484 0.6385 200 – 0.5428 0.6486 0.6342 300 – – 0.6480 0.6336 400 – – – 0.6199 
+
+15 Fast and Accurate Probing of In-Training LLMs’ Downstream Performances 
+
+C.3. Think Model 
+
+Table 7. OLMo-3-Think AUROC Results (Total 9 Datasets) 
+
+(a) Main Results 
+
+Train ckpt Test ckpt 200 400 600 800 1000 1200 200 0.7946 0.7922 0.7849 0.7969 0.8001 0.7872 400 – 0.7925 0.7934 0.7977 0.8030 0.7859 600 – – 0.7917 0.8055 0.8108 0.7941 800 – – – 0.7967 0.7992 0.7862 1000 – – – – 0.8126 0.7941 1200 – – – – – 0.7780 
+
+(b) MMLU Results 
+
+Train ckpt Test ckpt 200 400 600 800 1000 1200 200 0.6573 0.6558 0.6556 0.6493 0.6538 0.6541 400 – 0.6626 0.6621 0.6556 0.6600 0.6602 600 – – 0.6683 0.6638 0.6686 0.6679 800 – – – 0.6578 0.6630 0.6630 1000 – – – – 0.6669 0.6664 1200 – – – – – 0.6649 
+
+(c) GSM8k Results 
+
+Train ckpt Test ckpt 200 400 600 800 1000 1200 200 0.7578 0.7632 0.7408 0.7424 0.7635 0.7540 400 – 0.7581 0.7417 0.7416 0.7642 0.7520 600 – – 0.7594 0.7588 0.7801 0.7591 800 – – – 0.7481 0.7703 0.7564 1000 – – – – 0.7681 0.7465 1200 – – – – – 0.7430 
+
+(d) MATH Results 
+
+Train ckpt Test ckpt 200 400 600 800 1000 1200 200 0.9299 0.9129 0.8870 0.8938 0.8884 0.8667 400 – 0.9061 0.8816 0.8897 0.8806 0.8623 600 – – 0.8812 0.8903 0.8866 0.8733 800 – – – 0.8853 0.8850 0.8728 1000 – – – – 0.8917 0.8825 1200 – – – – – 0.8657 
+
+(e) BBH Results 
+
+Train ckpt Test ckpt 200 400 600 800 1000 1200 200 0.9557 0.9542 0.9290 0.9514 0.9465 0.9303 400 – 0.9505 0.9258 0.9460 0.9475 0.9331 600 – – 0.9188 0.9475 0.9476 0.9298 800 – – – 0.9573 0.9482 0.9317 1000 – – – – 0.9533 0.9364 1200 – – – – – 0.9298 
+
+(f) HumanEval Results 
+
+Train ckpt Test ckpt 200 400 600 800 1000 1200 200 0.7480 0.7434 0.7492 0.7990 0.8090 0.7902 400 – 0.7606 0.8041 0.8000 0.8343 0.7897 600 – – 0.7646 0.8049 0.8194 0.7946 800 – – – 0.7926 0.8021 0.7788 1000 – – – – 0.8462 0.8006 1200 – – – – – 0.7639 
+
+(g) MBPP Results 
+
+Train ckpt Test ckpt 200 400 600 800 1000 1200 200 0.7191 0.7238 0.7476 0.7454 0.7394 0.7269 400 – 0.7171 0.7452 0.7535 0.7312 0.7180 600 – – 0.7576 0.7679 0.7626 0.7297 800 – – – 0.7387 0.7270 0.7143 1000 – – – – 0.7493 0.7325 1200 – – – – – 0.7005 
+
+(h) AIME Results 
+
+Train ckpt Test ckpt 200 400 600 800 1000 1200 200 0.6575 0.6903 0.7069 0.7008 0.6855 0.6722 400 – 0.6726 0.7028 0.6834 0.6584 0.6580 600 – – 0.6992 0.6863 0.6697 0.6610 800 – – – 0.6887 0.6765 0.6657 1000 – – – – 0.6663 0.6492 1200 – – – – – 0.6675 
+
+(i) GPQA Results 
+
+Train ckpt Test ckpt 200 400 600 800 1000 1200 200 0.6808 0.6294 0.6412 0.6408 0.6509 0.6112 400 – 0.6417 0.6747 0.6551 0.6822 0.6287 600 – – 0.6522 0.6614 0.6551 0.6120 800 – – – 0.6672 0.6709 0.6210 1000 – – – – 0.6500 0.6058 1200 – – – – – 0.6222 
+
+16 Fast and Accurate Probing of In-Training LLMs’ Downstream Performances 
+
+C.4. Discussion on Performance 
+
+Comparing across datasets, HumanEval, BBH, MATH and MBPP are relatively easy to predict, while MMLU, AIME and GPQA are hard. AIME and GPQA are extremely hard benchmarks that require ultra long reasoning steps to provide the correct answer. Contrary to our initial expectations of poor performance, we were surprised to find that the probe exhibited meaningful predictive capability on these two datasets. Specifically, it generally achieved scores above 0.6 on both instruct model and think model, and even surpassed 0.75 on AIME in instruct model. This suggests a possibility that, with further research, datasets like AIME, which typically require tens of thousands of tokens for evaluation, could be assessed without generation, relying solely on the internal states elicited by the input prompt to predict correctness. For MMLU, we attribute the subpar performance to insufficient training data. Although the full MMLU training set contains nearly 100k samples, we utilized only 10k (concerning the generation time). This sample size is relatively small compared to the ∼14k test samples, preventing the probe from fully capturing the dataset’s features and ultimately resulting in mediocre predictive capability. 
+
+## D. Comparison with Subset Sampling 
+
+Subset sampling is an efficient evaluation method commonly used in industry. It approximates an LLM’s performance on a full dataset by evaluating it on a smaller subset. The comparison between probes and subset sampling primarily focuses on two aspects: 1. If both methods are constrained to the same level of efficiency, which one provides a more accurate assessment of the model’s performance on the full dataset? 2. Without excessive efficiency constraints, can the probe method maintain its performance on the sampled subset, thereby consistently achieving higher efficiency than the subset approach? For aspect 1, we constrain the number of evaluation steps to 50 iters. Therefore, to match the probe’s efficiency, the time cost of subset sampling is 50 × Tsubset = Tinit + 50 × teval ≥ Tinit , as teval is negligible. Then, we can get that 
+
+Tsubset = Tinit  
+
+> 50
+
+= Tf ullset +Ttrain  
+
+> 50
+
+≥ Tf ullset  
+
+> 50
+
+. Therefore, we set 2% as the proportion of subset size. The evaluation results are shown in Table 8. It demonstrates that compared with subset sampling, probe evaluation obtains an overall smaller absolute error in assessing the performance on the full dataset.  
+
+> Table 8. Comparison between probe evaluation and subset sampling on absolute error (smaller is better).
+
+Absolute Error HumanEval MATH BBH MMLU GSM8k MBPP Probe 0.0263 0.0009 0.0447 0.0159 0.0081 0.0952 Subset 0.2305 0.0012 0.1221 0.0320 0.009 0.0761 For aspect 2, we set the subset size to 20%, and conduct a probe evaluation on the subset. Table 9 shows the comparison between probe trained on subset and trained on fullset. It demonstrates that even when the subset size is reduced to 20%, the probe’s performance on the subset remains close to its performance on the fullset, with only a slight and minor decline.  
+
+> Table 9. Comparison between probe trained on subset and fullset.
+
+Metrics Datasets HumanEval Math BBH MMLU GSM8K MBPP AUROC Subset 0.8946 0.7766 0.7373 0.6824 0.7232 0.6251 Fullset 0.9163 0.7776 0.8014 0.6737 0.7827 0.7822 MSE Subset 0.1035 0.0354 0.1520 0.1566 0.1167 0.1692 Fullset 0.0810 0.0333 0.1302 0.1492 0.0962 0.1395 
+
+## E. Time Comparison 
+
+In this section, we present the time costs for the two models in the post-training stage (Instruct and Think). For the Instruct model, probe evaluation achieves a 61.4x speedup compared to generative evaluation, with its amortized time cost falling below that of generative evaluation after 11 evaluation steps. For the Think model, the efficiency gain reaches 231.8x, becoming more cost-effective than generative evaluation after just 9 evaluation steps. The probe preparation time includes the data collection time (i.e., conduct a generative evaluation on trainset) and the probe training time, as indicated by the y-axis intercept of the “probe evaluation” line in Figure 3 and Figure 4. The specific time 17 Fast and Accurate Probing of In-Training LLMs’ Downstream Performances 0 10 20 30 40 50 
+
+> Number of Evaluations
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> 120
+> 140
+> 160
+> Total Time (Hours)
+> Break-even Point
+> (11.5 evals)
+> Probe vs. Generative, Instruct Model
+> Probe Evaluation, k=0.05
+> Generative Evaluation, k=3.07
+
+(a) OLMo-3-7B-Instruct 0 10 20 30 40 50  
+
+> Number of Evaluations
+> 0
+> 100
+> 200
+> 300
+> 400
+> 500
+> 600
+> Total Time (Hours)
+> Break-even Point
+> (9.1 evals)
+> Probe vs. Generative, Think Model
+> Probe Evaluation, k=0.05
+> Generative Evaluation, k=11.59
+
+(b) OLMo-3-7B-Think 
+
+Figure 4. Cumulative time consumption for Probe Evaluation vs. Generative Evaluation on post-training checkpoints for Instruct and Think models. 
+
+values are presented in Table 10. data collection probe training base 5.9h 2.5h instruct 35.5h 2.6h think 112h 2.6h 
+
+Table 10. Detailed time cost of probe preparation. 
+
+## F. Discussion on Data Selection 
+
+Another discussion concerns the selection of training data. To ensure experimental rigor in this study, we maintained a strict separation between training and test sets, ensuring the test data remained unseen during the probe’s training. This setup implicitly tests the probe’s ability to generalize from training samples to test samples. However, in real-world industrial scenarios, this type of generalization is not strictly necessary. In practice, the primary objective is to accurately model the mapping from input data to downstream metrics; overfitting to the specific dataset is acceptable, provided that cross-checkpoint generalization is preserved. Consequently, practical applications can forgo the train/test split and train the probe directly on the target evaluation set. This approach would yield higher monitoring accuracy and further reduce the time overhead of the probe preparation phase. 
+
+## G. Hardware Specifications 
+
+Key specifications relevant to the GPU used in experiments are detailed below: • Memory Capacity: 48 GB GDDR6 • Memory Bandwidth: 960 GB/s • CUDA Cores: 14,080 • Tensor Cores: 440 • Single-Precision Performance: 69.3 TFLOPS • Tensor Performance: 1,108.4 TFLOPS • Interface: PCIe 4.0 ×16 18
