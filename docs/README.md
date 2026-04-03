@@ -6,76 +6,79 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-04-02
-- 运行时间：2026-04-02 20:28:36 UTC
+- 最新运行日期：2026-04-03
+- 运行时间：2026-04-03 19:53:54 UTC
 - 运行状态：成功
-- 本次总论文数：18
-- 精读区：6
+- 本次总论文数：19
+- 精读区：7
 - 速读区：12
 
 ### 今日简报（AI）
-今日精选 18 篇前沿论文，重点聚焦 LLM 驱动的建筑电网协同仿真及复杂时间序列建模。
-推荐关注 AutoB2G 自动化仿真框架与新冠病毒动态分析模型，展现了 AI 在物理系统与生物医学中的深度应用。
-建议普通读者从 LLM 剪枝与知识蒸馏技术入手，了解如何让大模型在特定任务中更轻量、更高效。
-- 详情：[/202604/02/README](/202604/02/README)
+今日深挖 19 篇时序前沿进展，重点聚焦 LLM 评估机制与长程预测的语义压缩技术。
+满分论文创新性地引入 LLM 作为时序解释评委，而 DySCo 方案则通过动态语义压缩突破了长程预测瓶颈。
+推荐优先研读 LLM 在时序领域的跨界应用，并关注金融场景下 Transformer 模型的预测稳定性问题。
+- 详情：[/202604/03/README](/202604/03/README)
 
 ### 精读区论文标签
-1. [AutoB2G: A Large Language Model-Driven Agentic Framework For Automated Building-Grid Co-Simulation](/202604/02/2603.26005v1-autob2g-a-large-language-model-driven-agentic-framework-for-automated-building-grid-co-simulation)  
+1. [LLM-as-a-Judge for Time Series Explanations](/202604/03/2604.02118v1-llm-as-a-judge-for-time-series-explanations)  
+   标签：评分：10.0/10、query:llm-ts
+   evidence：大语言模型对基于时间序列的自然语言解释进行评估
+2. [DySCo: Dynamic Semantic Compression for Effective Long-term Time Series Forecasting](/202604/03/2604.01261v1-dysco-dynamic-semantic-compression-for-effective-long-term-time-series-forecasting)  
+   标签：评分：9.0/10、query:llm-ts
+   evidence：能源与气象领域的长期时间序列预测
+3. [Topological Detection of Hopf Bifurcations via Persistent Homology: A Functional Criterion from Time Series](/202604/03/2603.27395v1-topological-detection-of-hopf-bifurcations-via-persistent-homology-a-functional-criterion-from-time-series)  
+   标签：评分：8.0/10、query:llm-ts
+   evidence：直接从时间序列中检测分叉
+4. [MR-ImagenTime: Multi-Resolution Time Series Generation through Dual Image Representations](/202604/03/2603.28253v1-mr-imagentime-multi-resolution-time-series-generation-through-dual-image-representations)  
+   标签：评分：8.0/10、query:llm-ts
+   evidence：多分辨率时间序列生成与预测
+5. [The Energy Footprint of LLM-Based Environmental Analysis: LLMs and Domain Products](/202604/03/2604.00053v1-the-energy-footprint-of-llm-based-environmental-analysis-llms-and-domain-products)  
    标签：评分：8.0/10、query:llm-wd
-   evidence：大语言模型驱动的建筑-电网协同仿真框架
-2. [Mixed Time Series Quasi-Likelihood Models for Uncovering Covid-19 Viral Load and Mortality Dynamics](/202604/02/2603.26358v1-mixed-time-series-quasi-likelihood-models-for-uncovering-covid-19-viral-load-and-mortality-dynamics)  
-   标签：评分：8.0/10、query:llm-ts
-   evidence：死亡率动态的混合值时间序列建模
-3. [Multimodal Forecasting for Commodity Prices Using Spectrogram-Based and Time Series Representations](/202604/02/2603.27321v1-multimodal-forecasting-for-commodity-prices-using-spectrogram-based-and-time-series-representations)  
-   标签：评分：8.0/10、query:llm-ts
-   evidence：大宗商品价格的多模态预测
-4. [Interpretable models for forecasting high-dimensional functional time series](/202604/02/2603.28344v1-interpretable-models-for-forecasting-high-dimensional-functional-time-series)  
-   标签：评分：8.0/10、query:llm-ts
-   evidence：高维函数型时间序列的建模与预测
-5. [Time Series Correlations and Kolmogorov Complexity: A Hausdorff Dimension Perspective](/202604/02/2603.28375v2-time-series-correlations-and-kolmogorov-complexity-a-hausdorff-dimension-perspective)  
-   标签：评分：8.0/10、query:llm-ts
-   evidence：利用柯氏复杂性在时间序列分析中防止虚假相关性的原则性保障
-6. [Fast and Accurate Probing of In-Training LLMs' Downstream Performances](/202604/02/2604.01025v1-fast-and-accurate-probing-of-in-training-llms-downstream-performances)  
-   标签：评分：8.0/10、query:llm-ts
-   evidence：探测训练中大语言模型的下游性能
+   evidence：基于LLM的气候与环境分析
+6. [Transformer self-attention encoder-decoder with multimodal deep learning for response time series forecasting and digital twin support in wind structural health monitoring](/202604/03/2604.01712v1-transformer-self-attention-encoder-decoder-with-multimodal-deep-learning-for-response-time-series-forecasting-and-digital-twin-support-in-wind-structural-health-monitoring)  
+   标签：评分：8.0/10、query:llm-wd
+   evidence：用于风致响应时间序列预测的Transformer
+7. [PLL Based Sub-/Super-synchronous Resonance Damping Controller for D-PMSG Wind Farm Integrated Power Systems](/202604/03/2604.01923v1-pll-based-sub-super-synchronous-resonance-damping-controller-for-d-pmsg-wind-farm-integrated-power-systems)  
+   标签：评分：8.0/10、query:llm-wd
+   evidence：风电场集成电力系统的谐振抑制控制器
 
 ### 速读区论文标签
-1. [Diet Your LLM: Dimension-wise Global Pruning of LLMs via Merging Task-specific Importance Score](/202604/02/2603.23985v1-diet-your-llm-dimension-wise-global-pruning-of-llms-via-merging-task-specific-importance-score)  
+1. [mtslearn: Machine Learning in Python for Medical Time Series](/202604/03/2603.29432v1-mtslearn-machine-learning-in-python-for-medical-time-series)  
+   标签：评分：8.0/10、query:llm-ts
+   evidence：医疗时间序列分析工具包
+2. [Forecast collapse of transformer-based models under squared loss in financial time series](/202604/03/2604.00064v1-forecast-collapse-of-transformer-based-models-under-squared-loss-in-financial-time-series)  
+   标签：评分：8.0/10、query:llm-ts
+   evidence：基于Transformer的金融时间序列预测模型
+3. [Embedded Variational Neural Stochastic Differential Equations for Learning Heterogeneous Dynamics](/202604/03/2604.00669v1-embedded-variational-neural-stochastic-differential-equations-for-learning-heterogeneous-dynamics)  
+   标签：评分：8.0/10、query:llm-ts
+   evidence：建模复杂的社会经济时间序列数据
+4. [Multiple-group (Controlled) Interrupted Time Series Analysis with Higher-Order Autoregressive Errors: A Simulation Study Comparing Newey-West and Prais-Winsten Methods](/202604/03/2603.24814v1-multiple-group-controlled-interrupted-time-series-analysis-with-higher-order-autoregressive-errors-a-simulation-study-comparing-newey-west-and-prais-winsten-methods)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：大语言模型（LLM）的结构化剪枝
-2. [Learning Response-Statistic Shifts and Parametric Roll Episodes from Wave--Vessel Time Series via LSTM Functional Models](/202604/02/2603.24431v1-learning-response-statistic-shifts-and-parametric-roll-episodes-from-wave--vessel-time-series-via-lstm-functional-models)  
+   evidence：具有自回归误差的中断时间序列分析
+5. [MP-MoE: Matrix Profile-Guided Mixture of Experts for Precipitation Forecasting](/202604/03/2603.25046v1-mp-moe-matrix-profile-guided-mixture-of-experts-for-precipitation-forecasting)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：通过LSTM从波浪-船舶时间序列中学习
-3. [TuneShift-KD: Knowledge Distillation and Transfer for Fine-tuned Models](/202604/02/2603.24518v1-tuneshift-kd-knowledge-distillation-and-transfer-for-fine-tuned-models)  
+   evidence：利用时间序列相似性进行降水预测
+6. [A Distribution-to-Distribution Neural Probabilistic Forecasting Framework for Dynamical Systems](/202604/03/2603.25370v1-a-distribution-to-distribution-neural-probabilistic-forecasting-framework-for-dynamical-systems)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：从微调模型中提取专业知识
-4. [DyMRL: Dynamic Multispace Representation Learning for Multimodal Event Forecasting in Knowledge Graph](/202604/02/2603.24636v1-dymrl-dynamic-multispace-representation-learning-for-multimodal-event-forecasting-in-knowledge-graph)  
+   evidence：动力系统的神经概率预测
+7. [GLU: Global-Local-Uncertainty Fusion for Scalable Spatiotemporal Reconstruction and Forecasting](/202604/03/2603.26023v1-glu-global-local-uncertainty-fusion-for-scalable-spatiotemporal-reconstruction-and-forecasting)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：多模态事件预测与时间敏感信息学习
-5. [Contrastive Learning Boosts Deterministic and Generative Models for Weather Data](/202604/02/2603.24744v1-contrastive-learning-boosts-deterministic-and-generative-models-for-weather-data)  
-   标签：评分：7.0/10、query:llm-ts
-   evidence：气象数据预测的对比学习
-6. [System-Anchored Knee Estimation for Low-Cost Context Window Selection in PDE Forecasting](/202604/02/2603.25025v1-system-anchored-knee-estimation-for-low-cost-context-window-selection-in-pde-forecasting)  
-   标签：评分：7.0/10、query:llm-ts
-   evidence：时间序列预测中的上下文窗口选择
-7. [SumRank: Aligning Summarization Models for Long-Document Listwise Reranking](/202604/02/2603.24204v1-sumrank-aligning-summarization-models-for-long-document-listwise-reranking)  
+   evidence：时空重建与动态预测框架
+8. [Knowledge Distillation for Efficient Transformer-Based Reinforcement Learning in Hardware-Constrained Energy Management Systems](/202604/03/2603.26249v1-knowledge-distillation-for-efficient-transformer-based-reinforcement-learning-in-hardware-constrained-energy-management-systems)  
+   标签：评分：7.0/10、query:llm-wd
+   evidence：基于Transformer的强化学习用于能源管理
+9. [Learning to Staff: Offline Reinforcement Learning and Fine-Tuned LLMs for Warehouse Staffing Optimization](/202604/03/2603.24883v1-learning-to-staff-offline-reinforcement-learning-and-fine-tuned-llms-for-warehouse-staffing-optimization)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：对齐LLM摘要模型用于文档重排序
-8. [Conformalized Transfer Learning for Li-ion Battery State of Health Forecasting under Manufacturing and Usage Variability](/202604/02/2603.24475v1-conformalized-transfer-learning-for-li-ion-battery-state-of-health-forecasting-under-manufacturing-and-usage-variability)  
+   evidence：LLM基于状态描述进行仓库人员配置优化
+10. [LLM-Driven Reasoning for Constraint-Aware Feature Selection in Industrial Systems](/202604/03/2603.24979v1-llm-driven-reasoning-for-constraint-aware-feature-selection-in-industrial-systems)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：用于电池健康状态预测的 LSTM 模型
-9. [Hyena Operator for Fast Sequential Recommendation](/202604/02/2603.25027v1-hyena-operator-for-fast-sequential-recommendation)  
+   evidence：大语言模型驱动的工业系统特征选择推理
+11. [Physics-informed structured learning of a class of recurrent neural networks with guaranteed properties](/202604/03/2603.25574v1-physics-informed-structured-learning-of-a-class-of-recurrent-neural-networks-with-guaranteed-properties)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：建模长期时间依赖关系
-10. [MegaFlow: Zero-Shot Large Displacement Optical Flow](/202604/02/2603.25739v1-megaflow-zero-shot-large-displacement-optical-flow)  
+   evidence：学习用于大规模系统的循环神经网络
+12. [On Integrating Resilience and Human Oversight into LLM-Assisted Modeling Workflows for Digital Twins](/202604/03/2603.25898v1-on-integrating-resilience-and-human-oversight-into-llm-assisted-modeling-workflows-for-digital-twins)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：利用预训练Transformer实现零样本泛化和时间一致性运动场
-11. [Adversarial-Robust Multivariate Time-Series Anomaly Detection via Joint Information Retention](/202604/02/2603.25956v1-adversarial-robust-multivariate-time-series-anomaly-detection-via-joint-information-retention)  
-   标签：评分：6.0/10、query:llm-ts
-   evidence：多变量时间序列异常检测
-12. [Hybrid physics-data driven spectral forecasts of semisubmersible response](/202604/02/2603.26026v1-hybrid-physics-data-driven-spectral-forecasts-of-semisubmersible-response)  
-   标签：评分：6.0/10、query:llm-ts
-   evidence：船舶运动时间序列的概率预测
+   evidence：利用传感器数据进行LLM辅助的数字孪生建模
 
 
 <div class="dpr-home-promo-card">
