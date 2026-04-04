@@ -6,79 +6,64 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-04-03
-- 运行时间：2026-04-03 19:53:54 UTC
+- 最新运行日期：2026-04-04
+- 运行时间：2026-04-04 20:13:02 UTC
 - 运行状态：成功
-- 本次总论文数：19
-- 精读区：7
+- 本次总论文数：14
+- 精读区：2
 - 速读区：12
 
 ### 今日简报（AI）
-今日深挖 19 篇时序前沿进展，重点聚焦 LLM 评估机制与长程预测的语义压缩技术。
-满分论文创新性地引入 LLM 作为时序解释评委，而 DySCo 方案则通过动态语义压缩突破了长程预测瓶颈。
-推荐优先研读 LLM 在时序领域的跨界应用，并关注金融场景下 Transformer 模型的预测稳定性问题。
-- 详情：[/202604/03/README](/202604/03/README)
+今日深度解析 14 篇前沿成果，聚焦供应链风险预警与时序数据贝叶斯补全技术。
+重点推荐“远见学习”在中断预测中的应用，以及 Bayes-MICE 框架对复杂时序数据质量的显著提升。
+建议从高分精读论文入手，探索如何利用先进模型应对现实世界中的不确定性挑战。
+- 详情：[/202604/04/README](/202604/04/README)
 
 ### 精读区论文标签
-1. [LLM-as-a-Judge for Time Series Explanations](/202604/03/2604.02118v1-llm-as-a-judge-for-time-series-explanations)  
-   标签：评分：10.0/10、query:llm-ts
-   evidence：大语言模型对基于时间序列的自然语言解释进行评估
-2. [DySCo: Dynamic Semantic Compression for Effective Long-term Time Series Forecasting](/202604/03/2604.01261v1-dysco-dynamic-semantic-compression-for-effective-long-term-time-series-forecasting)  
+1. [Forecasting Supply Chain Disruptions with Foresight Learning](/202604/04/2604.01298v1-forecasting-supply-chain-disruptions-with-foresight-learning)  
    标签：评分：9.0/10、query:llm-ts
-   evidence：能源与气象领域的长期时间序列预测
-3. [Topological Detection of Hopf Bifurcations via Persistent Homology: A Functional Criterion from Time Series](/202604/03/2603.27395v1-topological-detection-of-hopf-bifurcations-via-persistent-homology-a-functional-criterion-from-time-series)  
+   evidence：训练大语言模型对供应链事件进行校准的概率预测
+2. [Bayes-MICE: A Bayesian Approach to Multiple Imputation for Time Series Data](/202604/04/2603.27142v1-bayes-mice-a-bayesian-approach-to-multiple-imputation-for-time-series-data)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：直接从时间序列中检测分叉
-4. [MR-ImagenTime: Multi-Resolution Time Series Generation through Dual Image Representations](/202604/03/2603.28253v1-mr-imagentime-multi-resolution-time-series-generation-through-dual-image-representations)  
-   标签：评分：8.0/10、query:llm-ts
-   evidence：多分辨率时间序列生成与预测
-5. [The Energy Footprint of LLM-Based Environmental Analysis: LLMs and Domain Products](/202604/03/2604.00053v1-the-energy-footprint-of-llm-based-environmental-analysis-llms-and-domain-products)  
-   标签：评分：8.0/10、query:llm-wd
-   evidence：基于LLM的气候与环境分析
-6. [Transformer self-attention encoder-decoder with multimodal deep learning for response time series forecasting and digital twin support in wind structural health monitoring](/202604/03/2604.01712v1-transformer-self-attention-encoder-decoder-with-multimodal-deep-learning-for-response-time-series-forecasting-and-digital-twin-support-in-wind-structural-health-monitoring)  
-   标签：评分：8.0/10、query:llm-wd
-   evidence：用于风致响应时间序列预测的Transformer
-7. [PLL Based Sub-/Super-synchronous Resonance Damping Controller for D-PMSG Wind Farm Integrated Power Systems](/202604/03/2604.01923v1-pll-based-sub-super-synchronous-resonance-damping-controller-for-d-pmsg-wind-farm-integrated-power-systems)  
-   标签：评分：8.0/10、query:llm-wd
-   evidence：风电场集成电力系统的谐振抑制控制器
+   evidence：时间序列数据的多重插补
 
 ### 速读区论文标签
-1. [mtslearn: Machine Learning in Python for Medical Time Series](/202604/03/2603.29432v1-mtslearn-machine-learning-in-python-for-medical-time-series)  
-   标签：评分：8.0/10、query:llm-ts
-   evidence：医疗时间序列分析工具包
-2. [Forecast collapse of transformer-based models under squared loss in financial time series](/202604/03/2604.00064v1-forecast-collapse-of-transformer-based-models-under-squared-loss-in-financial-time-series)  
-   标签：评分：8.0/10、query:llm-ts
-   evidence：基于Transformer的金融时间序列预测模型
-3. [Embedded Variational Neural Stochastic Differential Equations for Learning Heterogeneous Dynamics](/202604/03/2604.00669v1-embedded-variational-neural-stochastic-differential-equations-for-learning-heterogeneous-dynamics)  
-   标签：评分：8.0/10、query:llm-ts
-   evidence：建模复杂的社会经济时间序列数据
-4. [Multiple-group (Controlled) Interrupted Time Series Analysis with Higher-Order Autoregressive Errors: A Simulation Study Comparing Newey-West and Prais-Winsten Methods](/202604/03/2603.24814v1-multiple-group-controlled-interrupted-time-series-analysis-with-higher-order-autoregressive-errors-a-simulation-study-comparing-newey-west-and-prais-winsten-methods)  
+1. [Accurate Precipitation Forecast by Efficiently Learning from Massive Atmospheric Variables and Unbalanced Distribution](/202604/04/2603.26108v1-accurate-precipitation-forecast-by-efficiently-learning-from-massive-atmospheric-variables-and-unbalanced-distribution)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：具有自回归误差的中断时间序列分析
-5. [MP-MoE: Matrix Profile-Guided Mixture of Experts for Precipitation Forecasting](/202604/03/2603.25046v1-mp-moe-matrix-profile-guided-mixture-of-experts-for-precipitation-forecasting)  
+   evidence：短期降水预报与时间序列预测
+2. [WiMamba: Linear-Scale Wireless Foundation Model](/202604/04/2603.26367v1-wimamba-linear-scale-wireless-foundation-model)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：利用时间序列相似性进行降水预测
-6. [A Distribution-to-Distribution Neural Probabilistic Forecasting Framework for Dynamical Systems](/202604/03/2603.25370v1-a-distribution-to-distribution-neural-probabilistic-forecasting-framework-for-dynamical-systems)  
+   evidence：用于线性时间序列建模的无线基础模型
+3. [Hybrid Deep Learning with Temporal Data Augmentation for Accurate Remaining Useful Life Prediction of Lithium-Ion Batteries](/202604/04/2603.27186v1-hybrid-deep-learning-with-temporal-data-augmentation-for-accurate-remaining-useful-life-prediction-of-lithium-ion-batteries)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：动力系统的神经概率预测
-7. [GLU: Global-Local-Uncertainty Fusion for Scalable Spatiotemporal Reconstruction and Forecasting](/202604/03/2603.26023v1-glu-global-local-uncertainty-fusion-for-scalable-spatiotemporal-reconstruction-and-forecasting)  
+   evidence：用于电池预测中多尺度时间特征的Transformer编码器
+4. [StretchCast: Global-Regional AI Weather Forecasting on Stretched Cubed-Sphere Mesh](/202604/04/2603.27288v1-stretchcast-global-regional-ai-weather-forecasting-on-stretched-cubed-sphere-mesh)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：时空重建与动态预测框架
-8. [Knowledge Distillation for Efficient Transformer-Based Reinforcement Learning in Hardware-Constrained Energy Management Systems](/202604/03/2603.26249v1-knowledge-distillation-for-efficient-transformer-based-reinforcement-learning-in-hardware-constrained-energy-management-systems)  
-   标签：评分：7.0/10、query:llm-wd
-   evidence：基于Transformer的强化学习用于能源管理
-9. [Learning to Staff: Offline Reinforcement Learning and Fine-Tuned LLMs for Warehouse Staffing Optimization](/202604/03/2603.24883v1-learning-to-staff-offline-reinforcement-learning-and-fine-tuned-llms-for-warehouse-staffing-optimization)  
+   evidence：AI天气预报和针对时间数据的多步预测器
+5. [What-If Explanations Over Time: Counterfactuals for Time Series Classification](/202604/04/2603.27792v1-what-if-explanations-over-time-counterfactuals-for-time-series-classification)  
+   标签：评分：7.0/10、query:llm-ts
+   evidence：时间序列分类和时间数据的算法综述
+6. [Self-Organizing Score-based Data Assimilation](/202604/04/2603.28048v2-self-organizing-score-based-data-assimilation)  
+   标签：评分：7.0/10、query:llm-ts
+   evidence：使用扩散模型从观测的时间序列数据中推断潜在状态
+7. [ZEBRA-Prop: A Zero-Shot Embedding-Based Rapid and Accessible Regression Model for Materials Properties](/202604/04/2603.26060v1-zebra-prop-a-zero-shot-embedding-based-rapid-and-accessible-regression-model-for-materials-properties)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：LLM基于状态描述进行仓库人员配置优化
-10. [LLM-Driven Reasoning for Constraint-Aware Feature Selection in Industrial Systems](/202604/03/2603.24979v1-llm-driven-reasoning-for-constraint-aware-feature-selection-in-industrial-systems)  
+   evidence：利用LLM嵌入进行科学属性预测的零样本回归模型
+8. [Error Growth Dynamic and Predictability of Tropical Cyclone in Machine Learning Weather Prediction Model](/202604/04/2603.26165v1-error-growth-dynamic-and-predictability-of-tropical-cyclone-in-machine-learning-weather-prediction-model)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：大语言模型驱动的工业系统特征选择推理
-11. [Physics-informed structured learning of a class of recurrent neural networks with guaranteed properties](/202604/03/2603.25574v1-physics-informed-structured-learning-of-a-class-of-recurrent-neural-networks-with-guaranteed-properties)  
+   evidence：用于天气预报和预测的机器学习
+9. [SPECTRA: An Efficient Spectral-Informed Neural Network for Sensor-Based Activity Recognition](/202604/04/2603.26482v1-spectra-an-efficient-spectral-informed-neural-network-for-sensor-based-activity-recognition)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：学习用于大规模系统的循环神经网络
-12. [On Integrating Resilience and Human Oversight into LLM-Assisted Modeling Workflows for Digital Twins](/202604/03/2603.25898v1-on-integrating-resilience-and-human-oversight-into-llm-assisted-modeling-workflows-for-digital-twins)  
+   evidence：捕捉传感器信号中的谱时域依赖关系
+10. [MemBoost: A Memory-Boosted Framework for Cost-Aware LLM Inference](/202604/04/2603.26557v1-memboost-a-memory-boosted-framework-for-cost-aware-llm-inference)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：利用传感器数据进行LLM辅助的数字孪生建模
+   evidence：成本感知的大语言模型推理增强框架
+11. [Characterization and forecasting of national-scale solar power ramp events](/202604/04/2603.26596v1-characterization-and-forecasting-of-national-scale-solar-power-ramp-events)  
+   标签：评分：6.0/10、query:llm-wd
+   evidence：电网管理中的太阳能功率爬坡事件预测
+12. [Benchmarking Tabular Foundation Models for Conditional Density Estimation in Regression](/202604/04/2603.26611v1-benchmarking-tabular-foundation-models-for-conditional-density-estimation-in-regression)  
+   标签：评分：6.0/10、query:llm-ts
+   evidence：对表格基础模型的预测分布进行基准测试
 
 
 <div class="dpr-home-promo-card">
