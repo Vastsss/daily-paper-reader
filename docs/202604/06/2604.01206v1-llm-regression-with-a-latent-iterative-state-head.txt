@@ -1,0 +1,1163 @@
+Title: LLM REgression with a Latent Iterative State Head
+
+URL Source: https://arxiv.org/pdf/2604.01206v1
+
+Published Time: Thu, 02 Apr 2026 01:29:50 GMT
+
+Number of Pages: 39
+
+Markdown Content:
+Preprint. Under review. 
+
+# LLM REgression with a Latent Iterative State Head (RELISH) 
+
+Yiheng Su 
+
+School of Information University of Texas at Austin Austin, Texas, USA 
+
+{sam.su }@utexas.edu 
+
+Matthew Lease 
+
+School of Information University of Texas at Austin Austin, Texas 78703, USA 
+
+{ml }@utexas.edu 
+
+## Abstract 
+
+We present RELISH (RE gression with a Latent Iterative State Head), a novel, lightweight architecture designed for text regression with large lan-guage models. Rather than decoding numeric targets as text or aggregating multiple generated outputs, RELISH predicts scalar values directly from frozen LLM representations by iteratively refining a learned latent state through cross-attention over token-level representations, and then mapping the final state to a point estimate with a linear regressor. Across five datasets, four LLM backbones, and two LLM training regimes, RELISH consistently outperforms prior baselines from all three major LLM regression families, including autoregressive decoding, regression-aware inference, and exist-ing predictive head methods. Despite these gains, RELISH remains highly parameter-efficient, requiring only ∼3.4–3.7M trainable parameters across frozen LLM backbones (only 0.01–0.04% additional overhead), far less than LoRA-based alternatives that grow with model size (0.26–0.42%). 
+
+## 1 Introduction 
+
+In the era of large language models (LLMs), most natural language processing (NLP) tasks are unified under the text-to-text paradigm, in which models consume text inputs and produce text outputs (Raffel et al., 2020; Anthropic, 2025; Singh et al., 2025; Yang et al., 2025; Google DeepMind, 2026). Theoretically, this paradigm is appealing because the same pre-trained model, linguistic interface, and decoding procedure can be applied across diverse applications that traditionally required different architectures. Empirically, this paradigm has been particularly successful for intrinsically generative tasks such as question answering, summarization, translation, and code generation (Clark et al., 2018; Hendrycks et al., 2020; Chen et al., 2021; Srivastava et al., 2023; Wang et al., 2024b; Kazemi et al., 2025; Li et al., 2025b; Center for AI Safety et al., 2026). Here, the need to produce coherent, contextually appropriate text aligns naturally with the language modeling objectives used to pre-train LLMs, such as autoregressive next-token prediction (Radford et al., 2019; Brown et al., 2020). However, the text-to-text paradigm is less suited to predictive tasks such as classification and regression (Lukasik et al., 2025). Unlike generative tasks whose outputs are naturally text, predictive tasks seek discrete labels or continuous scalars. In regression, this mismatch makes text generation suboptimal because predictive quality depends on numerical error, whereas language modeling penalizes token mismatches. For example, if the target is 1.0, a regression objective like MSE prefers 0.9 to 0.1, whereas a language modeling objective like cross-entropy treats them as discrete tokens and remains agnostic to numerical proximity. Recent work has explored how to adapt LLMs to regression. Three major families have emerged (See Table 1): autoregressive decoding (Vacareanu et al., 2024; Song et al., 2024; Song & Bahri, 2025; Akhauri et al., 2025), regression-aware inference (Lukasik et al., 2024; 2025; Chiang et al., 2025), and predictive heads (Xin et al., 2021; Wang et al., 2022; Zhuang et al., 2023; Fernandes et al., 2023; Zhang & Li, 2024; Tang et al., 2025; Nguyen et al., 2024). Autoregres-sive methods simply prompt the LLM. Regression-aware methods complement next-token generation with regression-aware decision rules that explicitly minimize numerical error. 1
+
+> arXiv:2604.01206v1 [cs.CL] 1 Apr 2026
+
+Preprint. Under review. Predictive heads avoid text generation entirely by finetuning a predictive head (e.g., a linear layer) attached to the LLM to directly output numerical estimates. Autoregressive decoding is simplest and most faithful to how LLMs are pre-trained (Vacare-anu et al., 2024). Consequently, it is least aligned with the numerical nature of regression targets, since decoding is based on token probabilities rather than numerical proximity. Regression-aware inference seeks to remedy this mismatch by forming predictions from the LLM’s output distribution using Bayes-optimal decision rules to directly minimize the loss metric, such as the posterior mean under mean squared error (Lukasik et al., 2024; 2025). However, approximating this posterior often requires sampling multiple outputs or enumerating candidate targets, thereby increasing computation at inference time. Moreover, this approach only partially resolves the mismatch, since the posterior is still defined over textualized numbers (e.g., “3.5”) rather than directly over the continuous output space. Predictive head methods instead bypass text generation at inference time by mapping LLM representations directly to numeric predictions through a task-specific regressor. This enables direct optimization in the continuous output space, yielding efficient single-pass inference. However, existing approaches (Zhuang et al., 2023; Zhang & Li, 2024; Nguyen et al., 2024; Tang et al., 2025) are limited, typically relying on basic pooling heuristics (e.g., mean pooling) over frozen hidden states. As a result, they may fail to fully extract regression-relevant information from LLM representations and thus may underperform regression-aware inference. Can we match the predictive performance of regression-aware approaches without sacrificing the efficiency of predictive heads? 
+
+In this work, we propose RE gression with a Latent Iterative State Head ( RELISH ), a novel, lightweight yet expressive predictive head architecture for LLM-based regression. Rather than decoding numeric targets as text or aggregating across several generated outputs, RELISH predicts scalar values directly from frozen LLM representations through an iterative refinement mechanism. Concretely, RELISH repeatedly updates a learned latent state via cross-attention over the LLM’s token representations, and then maps the final state to a scalar prediction with a linear regressor. Compared with existing predictive heads based on simple pooling heuristics, RELISH provides a more robust summarization mechanism for extracting regression-relevant information without sacrificing inference efficiency. RELISH consistently outperforms state-of-the-art baselines across four LLM backbones (8–32B), five datasets spanning semantic textual similarity (Marelli et al., 2014; Muennighoff et al., 2023) and machine translation quality estimation (Specia et al., 2020), and both frozen and LoRA (Hu et al., 2022) LLM training regimes. Relative to the 2nd-best method, RAFT (Lukasik et al., 2025), RELISH improves Pearson correlation (6.7%), Spearman (7.2%), and range-normalized RMSE (19.9%) (Table 3). RELISH is also highly parameter-efficient, requir-ing only ∼3.4–3.7M trainable parameters across frozen LLM backbones (only 0.01–0.04% more overhead), far less than LoRA-based alternatives (Table 4) that grow with model size (0.26–0.42%). Overall, our key contributions are :1. A novel predictive head architecture designed for text regression (§ 3). 2. A unified conceptual ( § 2.2) and empirical ( § 4.2) comparison of autoregressive decoding, regression-aware inference, and predictive-head methods across five datasets, four LLM backbones, and both frozen and LoRA fine-tuned regimes, showing that RELISH achieves the strongest overall performance with a substan-tially smaller trainable footprint than LoRA. 
+
+## 2 Background on LLM-based Regression 
+
+In this section, we begin with problem formulation ( § 2.1), then review existing methods for inference (§ 2.2) and training (§ 2.3) (see Table 1). Last, we differentiate RELISH in § 2.4. 2Preprint. Under review. 
+
+Inference family How to make predictions Suitable training setups Autoregressive decoding (Vacareanu et al., 2024) 
+
+Parse from string: 
+
+ˆyARD (x) = float (arg max  
+
+> y∈Y
+
+p(str (y) | x)) 
+
+PEFT/SFT: Minimize token-level CE on str (y∗).
+
+LCE = − 
+
+> |str (y∗)|
+
+## ∑
+
+> t=1
+
+log p(yt | x, y<t)
+
+Regression-aware inference (RAIL) (Lukasik et al., 2024) 
+
+Bayes-optimal from p (· | x):
+
+ˆyRAIL (x) = arg min  
+
+> v∈R
+
+Ey∼p[ℓ(float (y), v)] 
+
+When ℓ = LMSE , same as posterior mean: ˆyRAIL (x) ≈ ∑
+
+> y∈Y grid
+
+y · p(str (y) | x)
+
+PEFT/SFT: 
+
+(i) Minimize LCE .(ii) RAFT (Lukasik et al., 2025). 
+
+LRAFT =
+
+
+
+y∗ − Ey∼p[float (y)] 
+
+2
+
+Predictive Head (Tang et al., 2025) 
+
+Extract representations, then regress: 
+
+ˆyHEAD (x) = fREG 
+
+ ϕ H(x) Head-only: train fREG with LMSE .
+
+PEFT/SFT + head: fine-tune back-bone jointly with fREG .
+
+RELISH (ours) 
+
+Iteratively refine a latent state, then regress: r(i) = Refine 
+
+
+
+r(i−1), H(x)
+
+
+
+, i = 1, . . . , L
+
+ˆyRELISH (x) = w⊤r(L) + b
+
+Head-only: train r(0), w, b, and refinement modules with LMSE .
+
+PEFT/SFT + head: optionally fine-tune backbone jointly with REL-ISH modules. 
+
+Table 1: Taxonomy of methods leveraging LLMs for regression. We characterize LLM-based regression along two axes: (a) how the model produces a point estimate ( inference family ) and (b) which parameters are trained and how ( training setup ). Autoregressive decod-ing generates str (y) and parses it. RAIL computes a Bayes-optimal estimate under p(· | x)
+
+for loss ℓ (e.g., the posterior mean for LMSE ), where the posterior is estimated via sampling or candidate enumeration over a grid Ygrid . Predictive heads regress from pooled hidden states, whereas RELISH replaces static pooling with iterative latent-state summarization over token-level representations. Typical objectives are LCE for autoregressive decoding, 
+
+LCE or LRAFT for RAIL, and LMSE for predictive-head methods. 
+
+2.1 Problem Formulation 
+
+Following Lukasik et al. (2025), we study natural language regression . Given a dataset 
+
+D = ( xi, y∗ 
+
+> i
+
+)Ni=1, where each xi is a textual input and each y∗ 
+
+> i
+
+∈ R is a continuous target, the goal is to learn a predictor ˆ y(x) ∈ R that minimzes some regression loss L(y∗, ˆ y).LLMs offer a flexible foundation for natural language regression. They can encode rich textual inputs without manual feature engineering, transfer broad semantic knowledge from pre-training, and support a common interface across diverse tasks (Song et al., 2024; Akhauri et al., 2025). However, there is no consensus on how to best adapt LLMs for regression .We categorize prior work by two axes: (a) how the model produces a numeric prediction ,and (b) whether (and how) the model is trained . For (a), three inference families emerge: autoregressive decoding, regression-aware inference, and predictive head methods. For (b), four training regimes emerge: no training (prompt-only), parameter-efficient fine-tuning (PEFT), full supervised fine-tuning (SFT), and training only the predictive heads while freezing the backbone. Table 1 summarizes this taxonomy, and Table 2 compares the operational costs of standard LLM regression approaches. Inference methods and training regimes are largely orthogonal. For instance, the same inference procedure (e.g., predictive heads) can be applied to either a frozen or fine-tuned LLM, while the same training regime (e.g., PEFT) can support different inference procedures. Some pairings are more natural than others, however, since certain training objectives (e.g., regression-aware objectives) better support particular inference procedures. 3Preprint. Under review.                   
+
+> Method Family Training Inference
+> Zero / Many Shot (Vacareanu et al., 2024) Autoregressive None Single pass Linear / MLP (Tang et al., 2025) Predictive head Low Single pass RAIL (Lukasik et al., 2024) Regression-aware None Multi-sample RAFT (Lukasik et al., 2025) Regression-aware High Multi-sample
+> RELISH (ours) Predictive head Low Single pass
+
+Table 2: Operational costs of common LLM regression approaches. 2.2 Inference Paradigms Autoregressive decoding (ARD). Autoregressive decoding (Vacareanu et al., 2024; Song et al., 2024; Song & Bahri, 2025; Akhauri et al., 2025) treats scalar targets as text. Given an input x, a decoder LLM produces a point prediction by autoregressively generating a numeric string from vocabulary tokens Y and then parsing it into a real value: ˆyARD (x) = float (arg max  
+
+> y∈Y
+
+p(str (y) | x)) 
+
+In practice, the most common approach is direct prompting, either zero-shot or with many-shot demonstrations. Thus, ARD requires no task-specific training and only one pass during inference (Table 2). However, ARD generates the most likely numeric string rather than directly minimizing numerical error, making ARD sensitive to prompt formatting and insensitive to numerical proximity among candidate predictions (Lukasik et al., 2025). 
+
+Regression-aware inference (RAIL). RAIL (Lukasik et al., 2024) addresses the representa-tional mismatch by replacing autoregressive decoding with a loss-aware decision rule over the LLM’s predictive distribution. Formally, given an input x, RAIL predicts: ˆyRAIL (x) = arg min  
+
+> v∈R
+
+Ey∼p(·| x) [ℓ (float (y), v)] .This is equivalent to the Bayes-optimal decision rule for the target loss ℓ (Kumar & Byrne, 2004). For mean squared error, the optimal prediction is the mean of the posterior. In practice, this posterior is approximated either by sampling multiple completions or, when feasible (e.g., ordinal regression), by enumerating a grid of candidate values. As summarized in Table 2, RAIL thus trades higher inference cost for better alignment with numerical proximity. Lukasik et al. (2024) show that RAIL improves over greedy and self-consistency decoding (Wang et al., 2023) on semantic text similarity and sentiment analysis tasks. Subsequent work further strengthens RAIL through regression-aware fine-tuning (Lukasik et al., 2025), which we expand in Section 2.3. 
+
+Predictive heads over LLM representations. Predictive heads (Fernandes et al., 2023; Zhuang et al., 2023; Tang et al., 2025) avoid text decoding by predicting scalar values directly from internal LLM representations. Given an input x, let H(x) ∈ RS×d denote the token-level hidden states of the LLM, where S is the sequence length and d is the LLM’s hidden dimension. Predictive head methods first summarize token representations into a fixed-sized vector, and then apply a downstream regressor: ˆyHEAD (x) = fREG (ϕ(H(x))) .Here, ϕ typically either means-pools across token sequences (Li et al., 2020) or indexes the hidden state of a specific token, such as [CLS] (Reimers & Gurevych, 2019). The regressor 
+
+fREG varies by implementation. Vector-based heads employ an auxiliary module, such as a dense linear layer (Zhuang et al., 2023) or a 2-layer MLP (Tang et al., 2025). Logit-based heads repurpose the LLM’s language modeling head by extracting the unnormalized logit of a specific vocabulary token (Fernandes et al., 2023; Zhuang et al., 2023). 4Preprint. Under review. 
+
+2.3 Training Regimes 
+
+Complementary to the inference mechanism, LLM regression methods also differ in which parameters are updated and which loss objective is used . As summarized in Table 1, these choices are largely separable from the inference family, though some objectives are more naturally paired with certain prediction rules. 
+
+No training. The simplest regime uses the LLM as-is, so all task adaptation occurs through the prompt rather than gradient updates. This regime is most natural for autoregres-sive decoding, but can also be combined with regression-aware inference by applying a regression-aware decision rule to the output distribution of a frozen model (e.g., RAIL). 
+
+Head-only training. Predictive heads typically freeze the LLM backbone and directly optimize numerical errors like MSE. Thus, only the auxiliary head parameters are trained: vector-based heads update the regressor fREG , while logit-based heads optimize the linear matrix W ∈ Rd×|Y | that projects model hidden states to the vocabulary tokens. 
+
+Backbone adaptation: PEFT and SFT. The LLM backbone can be adapted via parameter-efficient fine-tuning (e.g., LoRA (Hu et al., 2022)) or full supervised fine-tuning. For au-toregressive decoding, the model is typically optimized using token-level cross-entropy to reproduce the textualized target string exactly: 
+
+LCE = − 
+
+> |str (y∗)|
+
+# ∑
+
+> t=1
+
+log p(yt | x, y<t).While LCE does not directly minimize numerical error, large-scale training can lift generation to match or exceed scalar alternatives (Song et al., 2024; Song & Bahri, 2025; Akhauri et al., 2025). However, these methods rely on massive proprietary datasets (e.g., telemetry logs) to learn numerical continuity and are impractical for most applications. 
+
+Regression-aware fine-tuning. For regression-aware inference, one may still fine-tune the LLM with LCE , but a more natural objective is to directly optimize the same posterior statistic used at inference. RAFT (Lukasik et al., 2025) operationalize this by minimizing: 
+
+LRAFT =
+
+
+
+y∗ − Ey∼p[float (y)] 
+
+2
+
+,thereby aligning training with the Bayes-optimal estimator used by RAIL. This is computa-tionally more expensive, since the posterior must be approximated during training as well, and test-time inference remains multi-sample or candidate-based (see Table 2). 
+
+2.4 How is RELISH different? 
+
+RELISH falls under the predictive head family, but differs in how it summarizes token representations. Both vector-based and logit-based heads impose a rigid bottleneck: vector-based methods compress the sequence into a fixed-length vector (Zhuang et al., 2023; Tang et al., 2025), while logit-based methods bind predictions to designated vocabulary dimensions (Zhuang et al., 2023; Fernandes et al., 2023). This limits the regressor’s ability to selectively extract localized or distributed information from token-level representations. In contrast, RELISH replaces this rigid extraction function ϕ with an iterative refinement mechanism. Concretely, RELISH maintains a learned latent state r(0) and repeatedly refines it through cross-attention over the token representations H(x):
+
+r(i) = Refine 
+
+
+
+r(i−1), H(x)
+
+
+
+, i = 1, . . . , L,followed by a linear regressor head: ˆyRELISH (x) = w⊤r(L) + b.5Preprint. Under review. By leveraging trainable latent queries rather than static pooling or indexing, RELISH is related in spirit to DeepMind’s Perceiver IO (Jaegle et al., 2022) and BLIP-2 architectures (Li et al., 2023). Unlike prior latent-query architectures designed for general encoding or multimodal bridging, RELISH is specifically engineered for regression by iteratively distilling token-level hidden states into a single latent state optimized for scalar prediction. As summarized in Table 2, this design preserves the single-pass efficiency and low training cost of predictive heads while providing a more robust summarization mechanism. 
+
+## 3 Method 
+
+3.1 Setup 
+
+We assume a frozen decoder-only LLM backbone that maps an input sequence x of length S
+
+to the penultimate-layer hidden states (right before the langauge modeling head): 
+
+H(x) = LLM frozen (x) ∈ RS×d.Following Nguyen et al. (2024), Song et al. (2024), and Tang et al. (2025), we apply y-normalization to standardize y∗ using training-split statistics (μy, σy) and train the model to predict an unbounded standardized target: 
+
+z = y∗ − μy
+
+σy + ϵ , ˆy = ˆz(σy + ϵ) + μy,where ϵ > 0 is a small constant for numerical stability. 
+
+3.2 Architecture 
+
+RELISH replaces static pooling with an iterative refinement mechanism over token-level LLM representations. Rather than collapsing the sequence into a fixed vector in a single step, RELISH maintains a latent task state that is repeatedly refined via cross-attention over the input tokens before being mapped to a scalar prediction. We first project backbone states into a head dimension dh:
+
+X(x) = H(x)W, W ∈ Rd×dh ,so that X(x) ∈ RS×dh serves as the token-level memory. This projection is optional if dh = d.See § B.1 on why we recommend including this step. Let r(0) ∈ Rdh denote a learned latent task state. For i = 1, . . . , L, RELISH updates this latent state with Transformer-style residual refinement blocks: ˜r(i) = LN  r(i−1) + MHA  r(i−1), X(x), X(x) , r(i) = LN  ˜r(i) + FFN  ˜r(i) .Here, LN is a post-layer normalization (Vaswani et al., 2017), FFN is a feed-forward MLP, and MHA (·) is a multi-head cross-attention with the latent state as query and token-level representations as keys and values. For each attention head m out of M total heads, 
+
+Qm = r(i−1)WQm , Km = X(x)WKm , Vm = X(x)WVm ,Attn m(Qm, Km, Vm) = softmax QmK⊤
+
+> m
+
+√dh/M
+
+!
+
+Vm.After L refinement steps, the final state is mapped to an unbounded standardized prediction: ˆz = w⊤r(L) + b,where w ∈ Rdh and b ∈ R are trainable parameters. 6Preprint. Under review. 
+
+3.3 Training Objective 
+
+We train all RELISH parameters end-to-end while keeping the LLM backbone frozen, i.e., the projection W, latent state r(0), refinement blocks, and linear weights (w, b). We optimize the Huber loss (Huber, 1992) on standardized targets: 
+
+LHuber ( ˆz, z) = 
+
+( 12 ( ˆz − z)2, | ˆz − z| ≤ δ,
+
+δ | ˆz − z| − 12 δ, otherwise, where δ > 0 is the Huber threshold. 
+
+## 4 Evaluation 
+
+4.1 Experimental Setup LLM Backbones We employ four LLM backbones: Llama 3.1 8B Instruct (Grattafiori et al., 2024), Qwen3 8, 32B (Yang et al., 2025), and Gemma 3 27B Instruct (Team et al., 2025). 
+
+Datasets We evaluate on two canonical text regression tasks: semantic textual similarity (STS) (Enevoldsen et al., 2025) and machine translation quality estimation (WMT) (Specia et al., 2020). For STS, models predict a scalar score representing the degree of semantic equivalence between two sentences. For WMT, models rate how accurately a machine translation preserves the source language’s meaning without human references. The STS-Benchmark (STS-B) (Enevoldsen et al., 2025) contains English sentence pairs from captions and forums on a 0–5 scale. The semantic relatedness subset of Sentences Involving Com-positional Knowledge (SICK-R) (Marelli et al., 2014) is on a 1–5 scale. For WMT, the 2020 Multilingual Quality Estimation Task 1 (Specia et al., 2020) provides scores on a 0–100 scale for English–Chinese, Russian–English, and Sinhala–English following Wang et al. (2022). 
+
+Metrics We report Pearson ( r), Spearman ( ρ), and range-normalized root mean squared error (NRMSE) in Table 3. Because our datasets have different gold label ranges, raw RMSEs are not directly comparable. We therefore report NRMSE = RMSE/ (ymax − ymin ), which normalizes prediction error on the same scale across datasets. Tables 14, 15, 16, 17, and 18 report raw RMSE scores for each individual dataset. 
+
+Baselines We compare RELISH against baselines from three LLM-based regression fam-ilies (Table 2). For autoregressive decoding, we evaluate zero-shot and many-shot (128 demonstrations) prompting. For regression-aware inference, we evaluate RAIL (Lukasik et al., 2024) and RAFT (Lukasik et al., 2025), using 16 samples to approximate the posterior. For predictive heads, we compare to linear regression (Lin.) and a two-layer MLP, with the MLP hidden size chosen to match RELISH’s trainable parameter count for each LLM backbone. All baselines are evaluated on both frozen and LoRA fine-tuned LLM backbones, except for LoRA with many-shot prompting, since the benefits of in-context demonstrations often diminish after fine-tuning (Yin et al., 2024; Duan et al., 2024). We use M = 8, dh = 256, and L = 3 for RELISH. See § B for additional details on RELISH (§ B.1), LLM backbones (§ B.2), datasets (§ B.3), metrics (§ B.4), and baselines (§ B.5). 
+
+4.2 Results: Predictive Performance 
+
+As shown in Table 3 , RELISH consistently outperforms baselines across four LLM backbones and five datasets. Figure 1 shows detailed results for Pearson correlation relative to the zero-shot performance of the underlying LLM backbones. Across all four LLM backbones and five datasets, RELISH consistently achieves the largest positive gains. In contrast, the other baselines are unreliable: they may yield comparable or modest improvements in some cases, but can degrade below zero-shot performance (negative bars). Full predictive performance tables are reported in Tables 14, 15, 16, 17, and 18 (Appendix). There, we observe that RELISH achieves the highest predictive performance in almost all 7Preprint. Under review. 
+
+Frozen Backbone Fine-tuned (LoRA/RAFT) Ours Metric Zero Many Lin. MLP RAIL L+Zero L+Lin. L+MLP L+RAIL RAFT RELISH 
+
+r ↑ 61.0 ±.3 57.8 ±.9 52.9 ±.0 64.7 ±.0 61.6 ±.0 61.7 ±.2 53.4 ±.1 64.8 ±.1 66.9 ±.6 71.5 ±.4 76 .3±.2
+
+ρ ↑ 60.9 ±.3 56.1 ±.7 50.3 ±.0 61.7 ±.0 64.1 ±.1 58.9 ±.1 51.0 ±.1 61.7 ±.1 66.1 ±.6 69.0 ±.2 74 .0±.1
+
+NRMSE ↓ 26.9 ±0.0 23.9 ±0.6 24.4 ±0.0 16.7 ±0.1 27.3 ±0.0 19.8 ±0.1 24.3 ±0.0 16.7 ±0.1 19.0 ±0.2 16.6 ±0.3 13 .3±0.3
+
+Table 3: Predictive performance macro-averaged across five datasets, four LLMs, and three runs for each baseline. We report Pearson ( r) and Spearman ( ρ) correlations ( ↑ higher is better) and range-Normalized Root Mean Squared Error (NRMSE) ( ↓ lower is better), all scaled to %. L+ denotes LoRA-based fine-tuning. We also report standard deviation ( ±). 
+
+Figure 1: Detailed results across datasets (columns) and LLMs (rows). The rightmost column averages over all datasets, and the bottom row averages over LLMs. Bars show absolute improvement in Pearson ( r) correlation over the zero-shot baseline (the ”ground zero” line). Error bars denote variability across 3 independently-seeded runs. All metrics are computed using gold test labels. RELISH consistently performs best across all settings. cases, except for a minor case in STS-B where Spearman is comparable to LoRA + RAIL (Lukasik et al., 2024) for Gemma 3 27B Instruct. See Appendix C for extended discussions. 8Preprint. Under review. We conduct ablations in § E to further validate the design of RELISH . § E.1 compares RELISH trained with Huber and MSE to confirm that gains are primarily architectural rather than loss-dependent. § E.2 examines the role of refinement depth ( L) and shows that while attention-pooling alone is a strong baseline (L = 1) , iterative latent updates (L > 1) can substantially improve predictive performance. We discuss limitations in § F. 
+
+4.3 Results: Training Footprint             
+
+> Method Llama 3.1 8B Qwen3 8B Gemma3 27B Qwen3 32B
+> LoRA / RAFT 21.0M (0.26%) 21.8M (0.27%) 116.5M (0.42%) 134.2M (0.41%)
+> RELISH 3.4M (0.04%) 3.4M (0.04%) 3.7M (0.01%) 3.7M (0.01%)
+
+Table 4: How trainable parameter sizes vary for different LLM backbones. We report the total trainable parameters and their % relative to the underlying LLM. RAFT applies a regression-aware loss to LoRA adapters, sharing the same trainable footprint as LoRA with cross-entropy loss. While LoRA’s budgets scale with model size, RELISH remains essentially invariant to the backbone, scaling instead with the hidden dimension (Table 7). RELISH trains a small set of modules atop a frozen LLM backbone, yielding a small trainable footprint. Table 4 shows that RELISH consistently requires only ∼3.4–3.7M trainable parameters across all LLM backbones (0.01–0.04%) , whereas LoRA’s trainable budget (and by extension RAFT’s, which utilizes the same adapter architecture) grows with model size (0.26–0.42%). Moreover, this gap widens as LLM backbones scale. Moving from 8B-class models to 27B–32B models increases LoRA parameters substantially, but RELISH remains nearly unchanged. Holding other parameters constant, RELISH’s trainable components scale primarily with the backbone hidden dimension (e.g., 4096 vs. 5120 units), rather than the total number of model parameters. See Table 7 and Appendix D for details. 
+
+## 5 Discussion 
+
+5.1 Broader Applications 
+
+RELISH may also benefit a broader set of use cases, such as reward modeling (RM) (Ouyang et al., 2022; Wang et al., 2024a; Xu et al., 2024; Liu et al., 2024), LLM-as-a-judge (LLMaaJ) (Zheng et al., 2023; Li et al., 2025a; Chiang et al., 2025), and confidence estimation (CE) (Kadavath et al., 2022; Tian et al., 2023; Xiong et al., 2024; Steyvers et al., 2025). For example, TRACT (Chiang et al., 2025) fine-tunes LLMaaJ to output rubric-based scalar scores alongside chain-of-thought rationales under a regression-aware objective. However, the supervised training underlying RELISH may represent a practical barrier for adoption in some settings. Many reference-free LLMaaJ systems leverage black-box models that rely solely on prompt steering rather than supervised training (Li et al., 2024; 2025a). Likewise, many CE methods obtain confidence scores directly from black-box models through verbalization without supervision (Kadavath et al., 2022; Tian et al., 2023; Xiong et al., 2024; Steyvers et al., 2025). RM differs more fundamentally: its scalar rewards are typically learned from pairwise preference data and are only meaningful for comparing responses under the same prompt (Ouyang et al., 2022; Wang et al., 2024a). We thus view these applications as potential extensions to this work. 
+
+5.2 Point Prediction vs. Distribution Elicitation 
+
+This work focuses on natural language regression, where the goal is to make a point estimate given textual inputs. A complementary line of work treats LLMs as probabilistic predictors and studies how to best elicit distributions for uncertainty quantification (Requeima et al., 2024; Vedula et al., 2025; Wang et al., 2025; Hsu et al., 2026; Kambhatla et al., 2026; Piskorz et al., 2026). While conceptually related, how best to elicit distributions from LLMs is beyond 9Preprint. Under review. the scope of this work. Nonetheless, RELISH could yield distributions by replacing the linear regressor with quantile heads trained with pinball loss. 
+
+## 6 Conclusion 
+
+We proposed RELISH, a novel, lightweight architecture for LLM-based natural language regression that iteratively refines a learned latent state via cross-attention. Across five datasets and four LLM backbones, RELISH consistently outperforms previous state-of-the-art regression baselines. In addition, RELISH requires only ∼3.4–3.7M trainable parameters (0.01-0.04% additional overhead) and avoids LoRA scaling bottlenecks. Promising applica-tions include uncertainty quantification, reward modeling, and LLM-as-a-judge tasks. 
+
+## References 
+
+Yash Akhauri, Bryan Lewandowski, Cheng-Hsi Lin, Adrian N Reyes, Grant C Forbes, Arissa Wongpanich, Bangding Yang, Mohamed S Abdelfattah, Sagi Perel, and Xingyou Song. Performance prediction for large systems via text-to-text regression. arXiv [cs.LG] , June 2025. AI Anthropic. System card: Claude opus 4 & claude sonnet 4. Claude-4 Model Card , 2025. Tom Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared D Kaplan, Prafulla Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, and Others. Language models are few-shot learners. Adv. Neural Inf. Process. Syst. , 33:1877–1901, 2020. Center for AI Safety, Scale AI, and HLE Contributors Consortium. A benchmark of expert-level academic questions to assess AI capabilities. Nature , 649(8099):1139–1146, January 2026. Daniel Cer, Mona Diab, Eneko Agirre, I ˜nigo Lopez-Gazpio, and Lucia Specia. SemEval-2017 task 1: Semantic textual similarity multilingual and crosslingual focused evaluation. In Steven Bethard, Marine Carpuat, Marianna Apidianaki, Saif M. Mohammad, Daniel Cer, and David Jurgens (eds.), Proceedings of the 11th International Workshop on Semantic Evaluation (SemEval-2017) , pp. 1–14, Vancouver, Canada, August 2017. Association for Computational Linguistics. doi: 10.18653/v1/S17-2001. URL https://aclanthology. org/S17-2001/ .David Chen and William Dolan. Collecting highly parallel data for paraphrase evaluation. In Dekang Lin, Yuji Matsumoto, and Rada Mihalcea (eds.), Proceedings of the 49th Annual Meeting of the Association for Computational Linguistics: Human Language Technologies , pp. 190–200, Portland, Oregon, USA, June 2011. Association for Computational Linguistics. URL https://aclanthology.org/P11-1020/ .Mark Chen, Jerry Tworek, Heewoo Jun, Qiming Yuan, Henrique Ponde de Oliveira Pinto, Jared Kaplan, Harri Edwards, Yuri Burda, Nicholas Joseph, Greg Brockman, Alex Ray, Raul Puri, Gretchen Krueger, Michael Petrov, Heidy Khlaaf, Girish Sastry, Pamela Mishkin, Brooke Chan, Scott Gray, Nick Ryder, Mikhail Pavlov, Alethea Power, Lukasz Kaiser, Mo-hammad Bavarian, Clemens Winter, Philippe Tillet, Felipe Petroski Such, Dave Cummings, Matthias Plappert, Fotios Chantzis, Elizabeth Barnes, Ariel Herbert-Voss, William Hebgen Guss, Alex Nichol, Alex Paino, Nikolas Tezak, Jie Tang, Igor Babuschkin, Suchir Balaji, Shantanu Jain, William Saunders, Christopher Hesse, Andrew N Carr, Jan Leike, Josh Achiam, Vedant Misra, Evan Morikawa, Alec Radford, Matthew Knight, Miles Brundage, Mira Murati, Katie Mayer, Peter Welinder, Bob McGrew, Dario Amodei, Sam McCandlish, Ilya Sutskever, and Wojciech Zaremba. Evaluating large language models trained on code. 
+
+arXiv [cs.LG] , July 2021. Cheng-Han Chiang, Hung-Yi Lee, and Michal Lukasik. TRACT: Regression-aware fine-tuning meets chain-of-thought reasoning for LLM-as-a-judge. In Wanxiang Che, Joyce Nabende, Ekaterina Shutova, and Mohammad Taher Pilehvar (eds.), Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) ,pp. 2934–2952, Stroudsburg, PA, USA, 2025. Association for Computational Linguistics. 10 Preprint. Under review. Peter Clark, Isaac Cowhey, Oren Etzioni, Tushar Khot, Ashish Sabharwal, Carissa Schoenick, and Oyvind Tafjord. Think you have solved question answering? try ARC, the AI2 reasoning challenge. arXiv [cs.AI] , March 2018. Hanyu Duan, Yixuan Tang, Yi Yang, Ahmed Abbasi, and Kar Yan Tam. Exploring the relationship between in-context learning and instruction tuning. In Yaser Al-Onaizan, Mohit Bansal, and Yun-Nung Chen (eds.), Findings of the Association for Computational Linguistics: EMNLP 2024 , pp. 3197–3210, Miami, Florida, USA, November 2024. Associ-ation for Computational Linguistics. doi: 10.18653/v1/2024.findings-emnlp.182. URL 
+
+https://aclanthology.org/2024.findings-emnlp.182/ .Kenneth Enevoldsen, Isaac Chung, Imene Kerboua, M ´arton Kardos, Ashwin Mathur, David Stap, Jay Gala, Wissam Siblini, Dominik Krzemi ´nski, Genta Indra Winata, Saba Sturua, Saiteja Utpala, Mathieu Ciancone, Marion Schaeffer, Diganta Misra, Shreeya Dhakal, Jonathan Rystrøm, Roman Solomatin, ¨Omer Veysel C¸ a ˘gatan, Akash Kundu, Martin Bern-storff, Shitao Xiao, Akshita Sukhlecha, Bhavish Pahwa, Rafał Po ´swiata, Kranthi Kiran GV, Shawon Ashraf, Daniel Auras, Bj ¨orn Pl ¨uster, Jan Philipp Harries, Lo ¨ıc Magne, Isabelle Mohr, Dawei Zhu, Hippolyte Gisserot-Boukhlef, Tom Aarsen, Jan Kostkan, Konrad Woj-tasik, Taemin Lee, Marek Suppa, Crystina Zhang, Roberta Rocca, Mohammed Hamdy, Andrianos Michail, John Yang, Manuel Faysse, Aleksei Vatolin, Nandan Thakur, Manan Dey, Dipam Vasani, Pranjal A Chitale, Simone Tedeschi, Nguyen Tai, Artem Snegirev, Mariya Hendriksen, Michael G ¨unther, Mengzhou Xia, Weijia Shi, Xing Han L `u, Jor-dan Clive, Gayatri K, Maksimova Anna, Silvan Wehrli, Maria Tikhonova, Henil Shalin Panchal, Aleksandr Abramov, Malte Ostendorff, Zheng Liu, Simon Clematide, Lester James Validad Miranda, Alena Fenogenova, Guangyu Song, Ruqiya Bin Safi, Wen-Ding Li, Alessia Borghini, Federico Cassano, Lasse Hansen, Sara Hooker, Chenghao Xiao, Vaibhav Adlakha, Orion Weller, Siva Reddy, and Niklas Muennighoff. MMTEB: Massive multilingual text embedding benchmark. In The Thirteenth International Conference on Learning Representations , 2025. URL https://openreview.net/forum?id=zl3pfz4VCV .Patrick Fernandes, Daniel Deutsch, Mara Finkelstein, Parker Riley, Andr ´e Martins, Graham Neubig, Ankush Garg, Jonathan Clark, Markus Freitag, and Orhan Firat. The devil is in the errors: Leveraging large language models for fine-grained machine translation evaluation. In Philipp Koehn, Barry Haddow, Tom Kocmi, and Christof Monz (eds.), 
+
+Proceedings of the Eighth Conference on Machine Translation , pp. 1066–1083, Stroudsburg, PA, USA, 2023. Association for Computational Linguistics. Xavier Glorot, Antoine Bordes, and Yoshua Bengio. Deep sparse rectifier neural networks. In Proceedings of the fourteenth international conference on artificial intelligence and statistics ,pp. 315–323. JMLR Workshop and Conference Proceedings, 2011. Google DeepMind. Gemini 3.1 pro model card. Technical report, Google DeepMind, February 2026. URL https://deepmind.google/models/model-cards/gemini-3-1-pro/ .Accessed: 2026-03-10. Aaron Grattafiori, Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Alex Vaughan, et al. The llama 3 herd of models. arXiv preprint arXiv:2407.21783 , 2024. Francisco Guzm ´an, Peng-Jen Chen, Myle Ott, Juan Pino, Guillaume Lample, Philipp Koehn, Vishrav Chaudhary, and Marc’Aurelio Ranzato. The flores evaluation datasets for low-resource machine translation: Nepali–english and sinhala–english. In Proceedings of the 2019 conference on empirical methods in natural language processing and the 9th international joint conference on natural language processing (EMNLP-IJCNLP) , pp. 6098–6111, 2019. Lifeng Han, Alan Smeaton, and Gareth Jones. Translation quality assessment: A brief survey on manual and automatic methods. In Proceedings for the first workshop on modelling translation: Translatology in the digital age , pp. 15–33, 2021. Dan Hendrycks and Kevin Gimpel. Gaussian error linear units (gelus). arXiv preprint arXiv:1606.08415 , 2016. 11 Preprint. Under review. Dan Hendrycks, Collin Burns, Steven Basart, Andy Zou, Mantas Mazeika, Dawn Song, and Jacob Steinhardt. Measuring massive multitask language understanding. In International Conference on Learning Representations , October 2020. Micah Hodosh, Peter Young, and Julia Hockenmaier. Framing image description as a ranking task: Data, models and evaluation metrics. Journal of Artificial Intelligence Research ,47:853–899, 2013. Chi-Yang Hsu, Alexander Braylan, Yiheng Su, Matthew Lease, and Omar Alonso. PIE: Performance interval estimation for free-form generation tasks. arXiv [cs.CL] , January 2026. Edward J Hu, yelong shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean Wang, Lu Wang, and Weizhu Chen. LoRA: Low-rank adaptation of large language models. In 
+
+International Conference on Learning Representations , 2022. URL https://openreview.net/ forum?id=nZeVKeeFYf9 .Peter J Huber. Robust estimation of a location parameter. In Breakthroughs in statistics: Methodology and distribution , pp. 492–518. Springer, 1992. Andrew Jaegle, Sebastian Borgeaud, Jean-Baptiste Alayrac, Carl Doersch, Catalin Ionescu, David Ding, Skanda Koppula, Daniel Zoran, Andrew Brock, Evan Shelhamer, Olivier J Henaff, Matthew Botvinick, Andrew Zisserman, Oriol Vinyals, and Joao Carreira. Per-ceiver IO: A general architecture for structured inputs & outputs. In International Conference on Learning Representations , 2022. URL https://openreview.net/forum?id=fILj7WpI-g .Saurav Kadavath, Tom Conerly, Amanda Askell, Tom Henighan, Dawn Drain, Ethan Perez, Nicholas Schiefer, Zac Hatfield-Dodds, Nova DasSarma, Eli Tran-Johnson, Scott Johnston, Sheer El-Showk, Andy Jones, Nelson Elhage, Tristan Hume, Anna Chen, Yuntao Bai, Sam Bowman, Stanislav Fort, Deep Ganguli, Danny Hernandez, Josh Jacobson, Jackson Kernion, Shauna Kravec, Liane Lovitt, Kamal Ndousse, Catherine Olsson, Sam Ringer, Dario Amodei, Tom Brown, Jack Clark, Nicholas Joseph, Ben Mann, Sam McCandlish, Chris Olah, and Jared Kaplan. Language models (mostly) know what they know. arXiv [cs.CL] , July 2022. Gauri Kambhatla, Sanjana Gautam, Angela Zhang, Alex Liu, Ravi Srinivasan, Junyi Jessy Li, and Matthew Lease. Improving the distributional alignment of LLMs using supervision. 
+
+arXiv [cs.CL] , February 2026. Mehran Kazemi, Bahare Fatemi, Hritik Bansal, John Palowitch, Chrysovalantis Anastasiou, Sanket Vaibhav Mehta, Lalit K Jain, Virginia Aglietti, Disha Jindal, Peter Chen, Nishanth Dikkala, Gladys Tyen, Xin Liu, Uri Shalit, Silvia Chiappa, Kate Olszewska, Yi Tay, Vinh Q. Tran, Quoc V Le, and Orhan Firat. BIG-bench extra hard. In Wanxiang Che, Joyce Nabende, Ekaterina Shutova, and Mohammad Taher Pilehvar (eds.), Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pp. 26473– 26501, Vienna, Austria, July 2025. Association for Computational Linguistics. ISBN 979-8-89176-251-0. doi: 10.18653/v1/2025.acl-long.1285. URL https://aclanthology. org/2025.acl-long.1285/ .Shankar Kumar and William Byrne. Minimum Bayes-risk decoding for statistical ma-chine translation. In Proceedings of the Human Language Technology Conference of the North American Chapter of the Association for Computational Linguistics: HLT-NAACL 2004 , pp. 169–176, Boston, Massachusetts, USA, May 2 - May 7 2004. Association for Computational Linguistics. URL https://aclanthology.org/N04-1022/ .Bohan Li, Hao Zhou, Junxian He, Mingxuan Wang, Yiming Yang, and Lei Li. On the sentence embeddings from pre-trained language models. In Proceedings of the 2020 conference on empirical methods in natural language processing (EMNLP) , pp. 9119–9130, 2020. Dawei Li, Bohan Jiang, Liangjie Huang, Alimohammad Beigi, Chengshuai Zhao, Zhen Tan, Amrita Bhattacharjee, Yuxuan Jiang, Canyu Chen, Tianhao Wu, Kai Shu, Lu Cheng, and 12 Preprint. Under review. Huan Liu. From generation to judgment: Opportunities and challenges of LLM-as-a-judge. In Christos Christodoulopoulos, Tanmoy Chakraborty, Carolyn Rose, and Violet Peng (eds.), Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing , pp. 2757–2791, Suzhou, China, November 2025a. Association for Computa-tional Linguistics. ISBN 979-8-89176-332-6. doi: 10.18653/v1/2025.emnlp-main.138. URL 
+
+https://aclanthology.org/2025.emnlp-main.138/ .Haitao Li, Qian Dong, Junjie Chen, Huixue Su, Yujia Zhou, Qingyao Ai, Ziyi Ye, and Yiqun Liu. Llms-as-judges: a comprehensive survey on llm-based evaluation methods. arXiv preprint arXiv:2412.05579 , 2024. Junnan Li, Dongxu Li, Silvio Savarese, and Steven Hoi. BLIP-2: Bootstrapping language-image pre-training with frozen image encoders and large language models. In An-dreas Krause, Emma Brunskill, Kyunghyun Cho, Barbara Engelhardt, Sivan Sabato, and Jonathan Scarlett (eds.), Proceedings of the 40th International Conference on Machine Learning ,volume 202 of Proceedings of Machine Learning Research , pp. 19730–19742. PMLR, 23–29 Jul 2023. URL https://proceedings.mlr.press/v202/li23q.html .Xiangyang Li, Xiaopeng Li, Kuicai Dong, Zhangquanhu, Rongju Ruan, Xinyi Dai, Yasheng Wang, and Ruiming Tang. Humanity’s last code exam: Can advanced LLMs conquer human’s hardest code competition? In Findings of the Association for Computational Linguistics: EMNLP 2025 , pp. 21122–21137, Stroudsburg, PA, USA, 2025b. Association for Computational Linguistics. Tianqi Liu, Wei Xiong, Jie Ren, Lichang Chen, Junru Wu, Rishabh Joshi, Yang Gao, Jiaming Shen, Zhen Qin, Tianhe Yu, Daniel Sohn, Anastasia Makarova, Jeremiah Zhe Liu, Yuan Liu, Bilal Piot, Abe Ittycheriah, Aviral Kumar, and Mohammad Saleh. RRM: Robust reward model training mitigates reward hacking. In The Thirteenth International Conference on Learning Representations , October 2024. Michal Lukasik, Harikrishna Narasimhan, Aditya Krishna Menon, Felix Yu, and Sanjiv Kumar. Regression aware inference with LLMs. In Findings of the Association for Computa-tional Linguistics: EMNLP 2024 , pp. 13667–13678, Stroudsburg, PA, USA, November 2024. Association for Computational Linguistics. Michal Lukasik, Zhao Meng, Harikrishna Narasimhan, Yin-Wen Chang, Aditya Krishna Menon, Felix Yu, and Sanjiv Kumar. Better autoregressive regression with LLMs via regression-aware fine-tuning. International Conference on Learning Representations , 2025: 69871–69901, May 2025. Marco Marelli, Stefano Menini, Marco Baroni, Luisa Bentivogli, Raffaella Bernardi, and Roberto Zamparelli. A SICK cure for the evaluation of compositional distributional se-mantic models. In Nicoletta Calzolari, Khalid Choukri, Thierry Declerck, Hrafn Loftsson, Bente Maegaard, Joseph Mariani, Asuncion Moreno, Jan Odijk, and Stelios Piperidis (eds.), Proceedings of the Ninth International Conference on Language Resources and Evaluation (LREC’14) , pp. 216–223, Reykjavik, Iceland, May 2014. European Language Resources Association (ELRA). URL https://aclanthology.org/L14-1314/ .Niklas Muennighoff, Nouamane Tazi, Loic Magne, and Nils Reimers. MTEB: Massive text embedding benchmark. In Andreas Vlachos and Isabelle Augenstein (eds.), Proceedings of the 17th Conference of the European Chapter of the Association for Computational Linguistics ,pp. 2014–2037, Dubrovnik, Croatia, May 2023. Association for Computational Linguistics. doi: 10.18653/v1/2023.eacl-main.148. URL https://aclanthology.org/2023.eacl-main. 148/ .Tung Nguyen, Qiuyi Zhang, Bangding Yang, Chansoo Lee, Jorg Bornschein, Sagi Perel, Yutian Chen, and Xingyou Song. Predicting from strings: Language model embeddings for bayesian optimization, 2024. URL https://openreview.net/forum?id=L5nW2DxI5h .Long Ouyang, Jeffrey Wu, Xu Jiang, Diogo Almeida, Carroll Wainwright, Pamela Mishkin, Chong Zhang, Sandhini Agarwal, Katarina Slama, Alex Ray, John Schulman, Jacob Hilton, 13 Preprint. Under review. Fraser Kelton, Luke Miller, Maddie Simens, Amanda Askell, Peter Welinder, Paul F Chris-tiano, Jan Leike, and Ryan Lowe. Training language models to follow instructions with human feedback. In S. Koyejo, S. Mohamed, A. Agarwal, D. Belgrave, K. Cho, and A. Oh (eds.), Advances in Neural Information Processing Systems , volume 35, pp. 27730–27744. Cur-ran Associates, Inc., 2022. URL https://proceedings.neurips.cc/paper files/paper/ 2022/file/b1efde53be364a73914f58805a001731-Paper-Conference.pdf .Julianna Piskorz, Kasia Kobalczyk, and Mihaela van der Schaar. Eliciting numerical pre-dictive distributions of LLMs without auto-regression. In The Fourteenth International Conference on Learning Representations , 2026. URL https://openreview.net/forum?id= SsuBd46twl .Alec Radford, Jeffrey Wu, Rewon Child, David Luan, Dario Amodei, Ilya Sutskever, et al. Language models are unsupervised multitask learners. OpenAI blog , 1(8):9, 2019. Colin Raffel, Noam Shazeer, Adam Roberts, Katherine Lee, Sharan Narang, Michael Matena, Yanqi Zhou, Wei Li, and Peter J. Liu. Exploring the limits of transfer learning with a unified text-to-text transformer. Journal of Machine Learning Research , 21(140):1–67, 2020. URL http://jmlr.org/papers/v21/20-074.html .Nils Reimers and Iryna Gurevych. Sentence-BERT: Sentence embeddings using Siamese BERT-networks. In Kentaro Inui, Jing Jiang, Vincent Ng, and Xiaojun Wan (eds.), Proceed-ings of the 2019 Conference on Empirical Methods in Natural Language Processing and the 9th International Joint Conference on Natural Language Processing (EMNLP-IJCNLP) , pp. 3982– 3992, Hong Kong, China, November 2019. Association for Computational Linguistics. doi: 10.18653/v1/D19-1410. URL https://aclanthology.org/D19-1410/ .James Requeima, John F Bronskill, Dami Choi, Richard E Turner, and David Duvenaud. LLM processes: Numerical predictive distributions conditioned on natural language. In 
+
+The Thirty-eighth Annual Conference on Neural Information Processing Systems , November 2024. Aaditya Singh, Adam Fry, Adam Perelman, Adam Tart, Adi Ganesh, Ahmed El-Kishky, Aidan McLaughlin, Aiden Low, AJ Ostrow, Akhila Ananthram, et al. Openai gpt-5 system card. arXiv preprint arXiv:2601.03267 , 2025. Xingyou Song and Dara Bahri. Decoding-based regression. Transact. Mach. Learn. Res. , May 2025. Xingyou Song, Oscar Li, Chansoo Lee, Bangding Yang, Daiyi Peng, Sagi Perel, and Yutian Chen. OmniPred: Language models as universal regressors. Transact. Mach. Learn. Res. ,December 2024. Lucia Specia, Fr ´ed ´eric Blain, Marina Fomicheva, Erick Fonseca, Vishrav Chaudhary, Fran-cisco Guzm ´an, and Andr ´e F. T. Martins. Findings of the WMT 2020 shared task on quality estimation. In Lo ¨ıc Barrault, Ond ˇrej Bojar, Fethi Bougares, Rajen Chatterjee, Marta R. Costa-juss `a, Christian Federmann, Mark Fishel, Alexander Fraser, Yvette Gra-ham, Paco Guzman, Barry Haddow, Matthias Huck, Antonio Jimeno Yepes, Philipp Koehn, Andr ´e Martins, Makoto Morishita, Christof Monz, Masaaki Nagata, Toshiaki Nakazawa, and Matteo Negri (eds.), Proceedings of the Fifth Conference on Machine Trans-lation , pp. 743–764, Online, November 2020. Association for Computational Linguistics. doi: 10.18653/v1/2020.wmt-1.79. URL https://aclanthology.org/2020.wmt-1.79/ .Aarohi Srivastava et al. Beyond the imitation game: Quantifying and extrapolating the capabilities of language models. Transactions on Machine Learning Research , 2023. ISSN 2835-8856. URL https://openreview.net/forum?id=uyTL5Bvosj . Featured Certification. M Steyvers, Heliodoro Tejeda, Aakriti Kumar, Catarina Bel ´em, Sheer Karny, Xinyue Hu, Lukas Mayer, and P Smyth. What large language models know and what people think they know. Nature Machine Intelligence , pp. 1–11, January 2025. 14 Preprint. Under review. Eric Tang, Bangding Yang, and Xingyou Song. Understanding LLM embeddings for regression. Transactions on Machine Learning Research , 2025. ISSN 2835-8856. URL 
+
+https://openreview.net/forum?id=Wt6Iz5XNIO .Gemma Team et al. Gemma 3 technical report, 2025. URL https://arxiv.org/abs/2503. 19786 .Katherine Tian, Eric Mitchell, Allan Zhou, Archit Sharma, Rafael Rafailov, Huaxiu Yao, Chelsea Finn, and Christopher Manning. Just ask for calibration: Strategies for eliciting calibrated confidence scores from language models fine-tuned with human feedback. In Houda Bouamor, Juan Pino, and Kalika Bali (eds.), Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing , pp. 5433–5442, Stroudsburg, PA, USA, 2023. Association for Computational Linguistics. Robert Vacareanu, Vlad Andrei Negru, Vasile Suciu, and Mihai Surdeanu. From words to numbers: Your large language model is secretly a capable regressor when given in-context examples. In First Conference on Language Modeling , 2024. URL https://openreview.net/ forum?id=LzpaUxcNFK .Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Ł ukasz Kaiser, and Illia Polosukhin. Attention is all you need. In 
+
+Advances in Neural Information Processing Systems , volume 30. Curran Associates, Inc., 2017. URL https://proceedings.neurips.cc/paper files/paper/2017/file/ 3f5ee243547dee91fbd053c1c4a845aa-Paper.pdf .Nikhita Vedula, Dushyanta Dhyani, Laleh Jalali, Boris N Oreshkin, Mohsen Bayati, and Shervin Malmasi. Quantile regression with large language models for price prediction. In Findings of the Association for Computational Linguistics: ACL 2025 , pp. 12396–12415, Stroudsburg, PA, USA, 2025. Association for Computational Linguistics. Binghai Wang, Rui Zheng, Lu Chen, Yan Liu, Shihan Dou, Caishuang Huang, Wei Shen, Senjie Jin, Enyu Zhou, Chenyu Shi, et al. Secrets of rlhf in large language models part ii: Reward modeling. arXiv preprint arXiv:2401.06080 , 2024a. Victor Wang, Michael J Q Zhang, and Eunsol Choi. Improving LLM-as-a-judge inference with the judgment distribution. In Findings of the Association for Computational Linguistics: EMNLP 2025 , pp. 23173–23199, Stroudsburg, PA, USA, November 2025. Association for Computational Linguistics. Xuezhi Wang, Jason Wei, Dale Schuurmans, Quoc V Le, Ed H. Chi, Sharan Narang, Aakanksha Chowdhery, and Denny Zhou. Self-consistency improves chain of thought reasoning in language models. In The Eleventh International Conference on Learning Repre-sentations , 2023. URL https://openreview.net/forum?id=1PL1NIMMrw .Yubo Wang, Xueguang Ma, Ge Zhang, Yuansheng Ni, Abhranil Chandra, Shiguang Guo, Weiming Ren, Aaran Arulraj, Xuan He, Ziyan Jiang, Tianle Li, Max Ku, Kai Wang, Alex Zhuang, Rongqi Fan, Xiang Yue, and Wenhu Chen. Mmlu-pro: A more robust and challenging multi-task language understanding benchmark. In A. Globerson, L. Mackey, D. Belgrave, A. Fan, U. Paquet, J. Tomczak, and C. Zhang (eds.), Advances in Neural Informa-tion Processing Systems , volume 37, pp. 95266–95290. Curran Associates, Inc., 2024b. doi: 10. 52202/079017-3018. URL https://proceedings.neurips.cc/paper files/paper/2024/ file/ad236edc564f3e3156e1b2feafb99a24-Paper-Datasets and Benchmarks Track.pdf .Yuxia Wang, Daniel Beck, Timothy Baldwin, and Karin Verspoor. Uncertainty estimation and reduction of pre-trained models for text regression. Trans. Assoc. Comput. Linguist. , 10: 680–696, June 2022. Ji Xin, Raphael Tang, Yaoliang Yu, and Jimmy Lin. Berxit: Early exiting for bert with better fine-tuning and extension to regression. In Proceedings of the 16th conference of the European chapter of the association for computational linguistics: Main Volume , pp. 91–104, 2021. 15 Preprint. Under review. Miao Xiong, Zhiyuan Hu, Xinyang Lu, YIFEI LI, Jie Fu, Junxian He, and Bryan Hooi. Can LLMs express their uncertainty? an empirical evaluation of confidence elicitation in LLMs. In The Twelfth International Conference on Learning Representations , 2024. URL 
+
+https://openreview.net/forum?id=gjeQKFxFpZ .Dehong Xu, Liang Qiu, Minseok Kim, Faisal Ladhak, and Jaeyoung Do. Aligning large language models via fine-grained supervision. In Lun-Wei Ku, Andre Martins, and Vivek Srikumar (eds.), Proceedings of the 62nd Annual Meeting of the Association for Computa-tional Linguistics (Volume 2: Short Papers) , pp. 673–680, Bangkok, Thailand, August 2024. Association for Computational Linguistics. doi: 10.18653/v1/2024.acl-short.62. URL 
+
+https://aclanthology.org/2024.acl-short.62/ .An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, et al. Qwen3 technical report. arXiv preprint arXiv:2505.09388 , 2025. Qingyu Yin, Xuzheng He, Chak Tou Leong, Fan Wang, Yanzhao Yan, Xiaoyu Shen, and Qiang Zhang. Deeper insights without updates: The power of in-context learning over fine-tuning. In Yaser Al-Onaizan, Mohit Bansal, and Yun-Nung Chen (eds.), Findings of the Association for Computational Linguistics: EMNLP 2024 , pp. 4138–4151, Miami, Florida, USA, November 2024. Association for Computational Linguistics. doi: 10.18653/v1/2024. findings-emnlp.239. URL https://aclanthology.org/2024.findings-emnlp.239/ .Fengting Yuchi, Li Du, and Jason Eisner. LLMs know more about numbers than they can say. In Proceedings of the Conference of the European Chapter of the Association for Computational Linguistics: Human Language Technologies (EACL) , Rabat, Morocco, March 2026. URL 
+
+https://arxiv.org/abs/2602.07812 . Oral presentation. Bowen Zhang and Chunping Li. Advancing semantic textual similarity modeling: A regression framework with translated ReLU and smooth K2 loss. In Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing , pp. 11882–11893, Stroudsburg, PA, USA, November 2024. Association for Computational Linguistics. Lianmin Zheng, Wei-Lin Chiang, Ying Sheng, Siyuan Zhuang, Zhanghao Wu, Yonghao Zhuang, Zi Lin, Zhuohan Li, Dacheng Li, Eric Xing, et al. Judging llm-as-a-judge with mt-bench and chatbot arena. Advances in neural information processing systems , 36:46595–46623, 2023. Honglei Zhuang, Zhen Qin, Rolf Jagerman, Kai Hui, Ji Ma, Jing Lu, Jianmo Ni, Xuanhui Wang, and Michael Bendersky. RankT5: Fine-tuning T5 for text ranking with ranking losses. In Proceedings of the 46th International ACM SIGIR Conference on Research and Development in Information Retrieval , pp. 2308–2313, New York, NY, USA, July 2023. ACM. 16 Preprint. Under review. 
+
+## A Appendix Organization 
+
+We organize the Appendix as follows: • Experimental Setup ( § B) Complements § 4.1 with granular details on RELISH ( § B.1), LLM backbones ( § B.2), datasets ( § B.3), metrics ( § B.4), and baselines ( § B.5). • Predictive Performance ( § C) Expands on the main results ( § 4.2) by detailing the metrics aggregation pipeline ( § C.1), providing additional tables and figures ( § C.2), and analyzing both high-level (§ C.3) and dataset-specific (§ C.4) patterns. • Training Footprint ( § D) Expands on the parameter efficiency and training footprint discussion from § 4.3. • Ablation Studies ( § E) Complements the main predictive performance results ( § 4.2) by comparing RELISH trained with Huber versus MSE loss ( § E.1), and examining the model’s sensitivity to the refinement depth L (§ E.2). • Limitations ( § F): Concludes with a discussion of the method’s limitations and avenues for future work. 
+
+## B Expanded Experimental Setup 
+
+In this section, we provide further details of the experimental setup discussed in § 4.1 on RELISH ( § B.1), LLM backbones ( § B.2), datasets ( § B.3), metrics ( § B.4) and baselines ( § B.5). To ensure statistical robustness and reproducibility of our empirical results, we conduct independent runs of experiments using three different random seeds (42, 1234, and 2026) to initialize pseudo-random number generation. We then report aggregated metrics across trials to account for this natural variance. Table 6 summarizes all hyperparameters. 
+
+B.1 RELISH 
+
+For RELISH, we keep the LLM backbone frozen and train only the projection matrix W ∈
+
+Rd×dh , the latent state r(0), the attention module, and the linear mapout module. We use a learning rate of 1 e − 4, eight attention heads, a hidden size of dh = 256, and a Huber 
+
+δ = 1.0 for all datasets and LLM backbones. Our FFN residual MLP consists of two linear layers with a hidden size of 4 ∗ dh interpolated by a GELU (Hendrycks & Gimpel, 2016). See Table 6 for all hyperparameters. 
+
+What if the initial projection is omitted? In § 3, we noted that the initial projection from the frozen LLM backbone states H(x) ∈ RS×d into a token-level summary X(x) ∈ RS×dh
+
+using W ∈ Rd×dh is mathematically optional whenever the chosen head dimension matches the backbone’s hidden dimension ( dh = d). If this optional step is not taken, the token-level memory directly utilizes the raw LLM hidden states (i.e., X(x) = H(x)). 
+
+Omitting this inital projection is highly parameter inefficient . By directly utilizing the raw hidden states ( X(x) = H(x)), the model bypasses the projection matrix W, reducing the total parameter count by d2 initially. However, the L downstream refinement layers now operate at the full LLM backbone’s dimension d instead of dh. Within each refinement layer, each multi-head cross-attention block introduces at least ≈ 3d2 additional parameters, since each projection matrix for the query, value, and key ( WQm , WKm , WVm ) now operate in d. Similarly, each feed-forward network introduces ≈ 8d2 additional parameters, assuming our 2-layer setup where each layer is now of shape d × 4d. Thus, omitting the inital projection at least contributes O(L · 11 d2) additional parameters. Consequently, the initial savings of d2
+
+from dropping W are vastly overshadowed by the quadratic parameter explosion in the refinement steps. Empirically, this quadratic scaling no longer renders RELISH as lightweight. Under our configuration with L = 3, setting dh = d scales the trainable footprint to approximately 17 Preprint. Under review.                         
+
+> Dataset Name Train Validation Test Score Range
+> STS-B 5,750 1,500 1,380 [0, 5] SICKR-STS 6,948 1,985 994 [1, 5] WMT EN ZH 7,000 1,000 1,000 [0, 100] WMT RU EN 7,000 1,000 1,000 [0, 100] WMT SI EN 7,000 1,000 1,000 [0, 100]
+
+Table 5: Dataset split statistics. 
+
+≈ 32 d2. For our LLM backbones with large hidden state dimensions (e.g., d ≥ 4096 versus dh = 256, see Table 7), this effectively scacles overall parameters by a factor of 
+
+≈ 512, requiring over hundreds of millions of parameters. As a result, this full-dimension configuration introduces substantially more trainable parameters than even LoRA. We suspect that this quadratic scaling will yield dimenishing returns in predictive performance that will not justify this explosive additional overhead. Moreover, beyond the severe parameter inefficiency, omitting this projection step forces the iterative refinement mechanism to operate directly on the raw pre-trained representation space, prohibiting the model’s ability to transform those frozen representations into a specialized, task-specific manifold before the cross-attention interactions begin. Therefore, we do not experiment with setting dh = d in our experiments. 
+
+B.2 LLM Backbones 
+
+We source our LLM backbones directly from public Huggingface checkpoints: Llama-3.1-8B-Instruct ,1 Qwen3-8B ,2 Qwen3-32B ,3 and Gemma-3-27B-Instruct .4.
+
+B.3 Datasets 
+
+We further provide details on the origin, composition, annotation, and post-processing of the five natural language regression datasets used in our experiments. Table 5 summarizes the splits we adopt for each dataset. 
+
+STS-Benchmark (STS-B) STS-B 5 is a compilation of the English datasets used in the SemEval STS shared tasks from 2012 to 2017. Cer et al. (2017) curated STS-B to provide a standard benchmark for the STS community. Sentence pairs are sampled from three distinct domains: image captions, video captions, and news headlines. Annotations were collected via crowdsourcing (Amazon Mechanical Turk), where workers assigned scores from 0 to 5 based on the degree of semantic equivalence. We followed the split created by Enevoldsen et al. (2025). 
+
+SICKR-STS Derived from the Sentences Involving Compositional Knowledge (SICK) dataset (Marelli et al., 2014), SICKR-STS 6 focuses specifically on semantic relatedness. The sentences originated from the 8K ImageFlickr (Hodosh et al., 2013) and MSR-Video Description (Chen & Dolan, 2011) datasets and were subsequently processed to include specific linguistic variations, such as negation and passive-to-active voice transformations. Like STS-B, it was annotated by crowdsourced workers on a 5-point Likert scale. We followed the split created by Enevoldsen et al. (2025). 
+
+> 1https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct
+> 2https://huggingface.co/Qwen/Qwen3-8B
+> 3https://huggingface.co/Qwen/Qwen3-32B
+> 4https://huggingface.co/google/gemma-3-27b-it
+> 5https://huggingface.co/datasets/mteb/stsbenchmark-sts
+> 6https://huggingface.co/datasets/mteb/sickr-sts
+
+18 Preprint. Under review. 
+
+WMT2020 Multilingual Quality Estimation (MLQE) Datasets The MLQE 7 “Task 1: Predicting sentence-level DA” involves predicting the quality of neural machine trans-lation (NMT) outputs, without access to human references. We select three subsets to test model performance across varying data availability: English-to-Chinese (En–Zh; high-resource), Russian-to-English (Ru–En; medium-resource), and Sinhala-to-English (Si–En; low-resource). The source sentences for En–Zh and Si–En are primarily from Wikipedia, while Ru–En includes a mix of Wikipedia and Reddit content. Each machine translation was directly assessed (DA) by professional translators who scored the output on a fine-grained, ordinal 0-100 scale based on its accuracy relative to the source sentence. We directly adopt the splits created by Specia et al. (2020). 
+
+B.4 Metrics Range-Normalized Root Mean Square Error Because our datasets use heterogeneous label scales (e.g., STS-B: 0–5, SICK-R: 1–5, WMT: 0–100), raw RMSE is not directly comparable across datasets. In addition, direct macro averaging over raw RMSE can disproportionately upweight the translation datasets, since the prediction errors are generally larger for the WMT task. In Table 3, we therefore report range-normalized RMSE (NRMSE), defined as NRMSE = RMSE/ (ymax − ymin ), or dividing the raw RMSE by each dataset’s gold-score range. We then macro-average NRMSE across datasets, models, and runs. This yields an error metric on a common unitless scale, where lower values indicate smaller prediction error relative to the particular dataset’s full scoring range. 
+
+B.5 Baselines 
+
+This section provides further implementation details for the baseline methods (Table 2) benchmarked in our work, including specific hyperparameter configurations for both the frozen and LoRA-fine-tuned regimes. 
+
+B.5.1 Autoregressive Decoding 
+
+Zero-shot Prompting We evaluate the base capabilities of the LLM backbones using the system prompts and formatting templates detailed in Table 9, 10, 11, 12, and 13. We limit model outputs to a maximum of 10 new tokens. We set temperature = 0.7 across three independent seed runs to control for output variance. The numeric score is directly extracted from the generated text using Python’s FLOAT function. Note that this means the LLM could generate potentially multiple equivalent string representations of the same numeric candidate, such as “1.0” versus “1.00”. Since we employed only instruction-following models, all LLM backbones produced valid numeric strings. 
+
+Many-shot Prompting As shown in Vacareanu et al. (2024), LLMs can be capable regres-sors when given in-context demonstrations. We therefore also experiment with many-shot learning in addition to zero-shot prompting. We provide k = 128 in-context demonstrations for all datasets, which already incurs a ≈ 10 × slowdown in inference across all LLM back-bones, so we did not experiment with larger numbers of demonstrations. Examples are randomly sampled from the training split for each independent run, but are consistent for trials using the same random seed. We use the same formatting instructions as the zero-shot case, prefixing the user message with formatted examples before appending the test query. As noted in the main body, we do not evaluate many-shot in the LoRA fine-tuning regime because the parameter updates during fine-tuning are intended to internalize the task logic, rendering in-context demonstrations (which were already seen during training) redundant. 
+
+B.5.2 Regression-Aware Baselines 
+
+RAIL Regression-aware inference for LLMs (RAIL) (Lukasik et al., 2024) avoids text decoding by treating the numeric prediction as a decision-theoretic problem. We implement the RAIL posterior mean approach, where the model’s output distribution over numeric 
+
+> 7https://huggingface.co/datasets/wmt/wmt20 mlqe task1
+
+19 Preprint. Under review. tokens is used to calculate an expected value. We limit the vocabulary to digits 0–9 and the decimal point, normalizing the probabilities over these tokens at each step of a fixed-length numeric sequence generation. Following Lukasik et al. (2024), we sampled 16 outputs from the LLM backbone to approximate the posterior with an effective temperature of 0.25. 
+
+RAFT Regression-aware fine-tuning (RAFT) (Lukasik et al., 2025) extends RAIL by fine-tuning the model to minimize a regression-aware loss rather than the standard token-level cross-entropy. In our experiments, RAFT uses the same hyperparameter setup as the standard LoRA decoding baselines, but optimizes the numeric expected value computed via the RAIL procedure using mean squared error. Following Lukasik et al. (2025), we do not sample like RAIL but instead pick Ygrid values that correspond to the gold-score range for each dataset. For STS-B, we use Ygrid = {0, 1, 2, 3, 4, 5 }. For SICKR-STS, we use Ygrid =
+
+{1, 2, 3, 4, 5 }. For WMT datasets, we use Ygrid = {0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100 }. As noted by Lukasik et al. (2025), we observe that all LLM backbones produced continuous scalars and achieved good predictive performance even with only a few grid candidates. 
+
+B.5.3 Predictive Head Baselines 
+
+Linear Regression (Lin.) We first extract token hidden states from the penultimate layer of the transformer, H(x) ∈ RS×d, and an attention mask m ∈ { 0, 1 }S. We then compute the masked mean-pooled representation: ¯h(x) = ∑St=1 mt Ht(x)
+
+∑St=1 mt
+
+.Finally, we apply a single linear layer to predict the (standardized) scalar target: ˆz = w⊤ ¯h(x) + b.We omit the y-normalization and de-normalization specified in Section 3 for brevity. 
+
+Multi-Layer Perceptron (MLP) We similarly first compute ¯h(x) for the MLP predictive head. Following Tang et al. (2025), we use a 2-layer MLP regressor 
+
+u1 = Drop  RELU (W1 ¯h + b1) , u2 = Drop (RELU (W2u1 + b2)) , ˆz = W3u2 + b3,
+
+W1 ∈ Rd×h, W2 ∈ Rh×h, W3 ∈ Rh×1,with RELU activations (Glorot et al., 2011) and dropout rate 0.1 after each hidden layer. To approximately match the training capacity of RELISH, we select hidden size h by parameter matching. This yields h = 704 for Llama 3.1 8B Instruct and Qwen3 8B, and h = 640 for Gemma 3 27B Instruct and Qwen3 32B. We finetune both the linear regressor head and the 2-layer MLP using Huber loss with δ = 1.0 and a learning rate of 1 e − 4. See Table 6 for all hyperparameters. 
+
+B.5.4 LLM Training Configurations 
+
+All LLM backbones were trained using the AdamW optimizer with a linear learning rate scheduler and a warmup phase of 10% of the total training steps. LLM training was conducted for 5 epochs with an effective batch size of 32 and a learning rate of 5 e − 5. We stop the training early after 2 epochs if the validation RMSE does not improve. 
+
+Frozen Regime In the frozen regime, the LLM backbone parameters θ are fixed. For RELISH, Linear, and MLP baselines, only the weights of the predictive heads are updated. We used a learning rate of 1 e − 4, the Huber loss, and a maximum of 10 epochs, with a patience of 2 epochs to improve the validation loss. 
+
+LoRA Regime For fine-tuning, we apply Low-Rank Adaptation (Hu et al., 2022) to all linear projections within the transformer blocks: the attention modules ( q proj, k proj, v proj, o proj ) and the feed-forward network modules ( gate proj, up proj, down proj ). We use a learning rate of 5 × 10 −5. Detailed hyperparameters are provided in Table 6. 20 Preprint. Under review.           
+
+> Hyperparameter Value
+> Shared
+> Seed Values 42, 1234, 2026 Effective Batch Size 32 Early Stopping Patience 2Warmup Ratio 0.1 Weight Decay 0.01 Dropout 0.1 Precision bfloat16
+> LoRA / RAFT
+> Learning Rate 5
+
+× 10 −5      
+
+> Max Epochs 5Rank ( r)8Alpha ( α)16 Target Modules All Linear Layers ( q, k, v, o, gate, up, down )
+> Predictive Heads / RELISH
+> Learning Rate 1
+
+× 10 −4         
+
+> Max Epochs 10 RELISH dh256 Predictive Head dh704 (Llama & Qwen-8B) or 640 (Gemma & Qwen-32B); see § B.5.3
+> L3FFN Hidden Size 1024 Huber δ1.0
+
+Table 6: Hyperparameter configurations. 
+
+## C Full Predictive Performance Results 
+
+In this section, we expand on the predictive performance results discussed in § 4.2. First, we discuss how we aggregated results across datasets, LLMs, and seeds in Table 3. We then introduce additional figures and tables ( § C.2). Next, we discuss the high-level trends and provide some intuition on why RELISH works so well ( § C.3). Finally, we dive into each dataset and analyze trends locally (§ C.4). 
+
+C.1 Aggregation Pipeline for Table 3 
+
+Table 3 reports the macro-averaged results for Pearson correlation ( r), Spearman correlation (ρ), and range-Normalized Root Mean Squared Error (NRMSE). In this section, we specify the aggregation pipeline. Namely, we report macro-averaged means across metrics, com-bined with seed-to-seed standard deviations in ±. We adopt this aggregation strategy to measure both the generalizability of regression-baselines across diverse tasks and LLMs and their stability across training runs. 
+
+Granular Metric Computation For each metric ℓ ∈ { r, ρ, NRMSE }, we first compute the score x(k,ℓ) 
+
+> d,m,s
+
+for a given baseline k, evaluated on dataset d, using LLM backbone m,under some random seed s. Note that NRMSE normalizes RMSE by the label range of the respective dataset d to ensure comparability across tasks with vastly different target scales: NRMSE (k) 
+
+> d,m,s
+
+= RMSE (k)
+
+> d,m,s
+
+ymax  
+
+> d
+
+− ymin 
+
+> d
+
+All reported metrics are scaled by 100 to be reported as percentages. 
+
+Macro-averaging Across Datasets, LLM backbones, and Seeds For a given method k and metric ℓ, we compute a macro-mean a(k,ℓ) 
+
+> s
+
+for each seed s by averaging the scores across all 21 Preprint. Under review. available dataset-model pairs P:
+
+a(k,ℓ) 
+
+> s
+
+= 1
+
+|P | ∑
+
+> (d,m)∈P
+
+x(k,ℓ)
+
+> d,m,s
+
+Table 3 then reports the mean ( μ) and standard deviation ( σ) of a(k,ℓ) 
+
+> s
+
+:
+
+μ(k,ℓ) = 1
+
+|S| ∑
+
+> s∈S
+
+a(k,ℓ)
+
+> s
+
+σ(k,ℓ) =
+
+s 1
+
+|S| − 1 ∑
+
+> s∈S
+
+
+
+a(k,ℓ) 
+
+> s
+
+− μ(k,ℓ)
+
+2
+
+Why not Micro-Average? We chose to report macro-averages rather than micro-averages, which would have first pooled individual predictions across all datasets before computing the respective metric. While this can be more intuitive, micro-averaging is highly susceptible to datasets with larger samples or higher variance, which can disproportionately skew the overall result. By computing the macro-mean a(k,ℓ) 
+
+> s
+
+, we treat every dataset-model pair as an equal vote. Consequently, the superior predictive performance of RELISH in Table 3 reflects robust and consistent gains across diverse datasets and LLM backbones, rather than potentially lifted by a few datasets or LLM backbones with large improvements. In addition, we highlight that our reported σ (seed-to-seed variance) is not task heterogeneity, or the variance of metrics across different datasets and models. Task heterogeneity would be much larger, since datasets inherently vary in difficulty. Instead, our reported ± isolates stability across different seeds (training variance). The relatively tight ± bounds shown in Table 3 confirm that the performance gains achieved by RELISH are statistically stable and not the artifact of a ”lucky” random initialization. 
+
+C.2 Additional Figures and Tables 
+
+Like Figure 1, Figure 2, and Figure 3 report detailed results for Spearman correlation and the range-normalized root mean squared error (NRMSE) relative to the zero-shot performance of the underlying LLM backbones, respectively. Specifically, for Figure 1, Figure 2, the absolute improvement is calculated as rRELISH − rzero shot and ρRELISH − ρzero shot , respectivefully. For Figure 3, we flip the order and compute the absolute improvement as NRMSE zero shot −
+
+NRMSE RELISH , since lower is better. Full predictive performance tables reporting raw RMSE, Pearson, and Spearman correlation across four LLM backbones and five datasets are reported in Tables 14, 15, 16, 17, and 18. We do not report range-normalized RMSE there since each table compares baseline-LLM pairs within each dataset. Nevertheless, one may simply convert raw RMSE to NRMSE by dividing each dataset by its appropriate gold-score range (e.g., STS-B: 0–5, SICK-R: 1–5, WMT: 0–100). 
+
+C.3 High Level Patterns 
+
+C.3.1 The Verbalization Gap: Why Prompting is Suboptimal 
+
+Consistent with Vacareanu et al. (2024), our results confirm that LLMs are capable regressors with learned numerical reasoning capabilities. Instead, the main challenge is how to 
+
+best extract numerical predictions from LLMs . Specifically, while pre-trained LLMs encode regression-relevant signals in their hidden states, existing inference methods are suboptimal at exploiting what the LLM already knows. Autoregressive (prompt-based) methods are the simplest, directly modeling numeric targets as text. Zero-shot prompting establishes a reasonable baseline (see Table 3), indicating that although LLMs are not explicitly trained as regressors, the internalized scale and relational 22 Preprint. Under review. 
+
+Figure 2: Spearman ( ρ) correlation across datasets (columns) and LLMs (rows). The right-most column averages over all datasets, and the bottom row averages over LLMs. Whereas earlier Figure 1 showed Pearson correlation, this figure shows absolute improvement in Spearman correlation over the zero-shot baseline (the ”ground zero” line). Error bars denote variability across 3 independently-seeded runs. All metrics are computed using gold test labels. RELISH consistently performs best across all settings. priors (e.g., “low” versus “high”) learned during pre-training are sufficient to verbalize approximate numeric values at inference time (Yuchi et al., 2026). However, autoregressive approaches are fundamentally limited by the verbalization gap 
+
+(Yuchi et al., 2026): while LLM internal representations may accurately encode a scalar, the stochastic process of next-token generation often introduces noise, preventing the model from accurately translating its internal estimates into the correct string of digits. Our many-shot results (see Table 3) exemplify this gap. Contrary to expectations, adding in-context demonstration may actually degrade correlation metrics (e.g., r = 57.8 compared to r = 61.0 for zero-shot). We attribute this degradation to contextual distraction : rather than calibrating the model’s internal scale, the presence of fixed exemplars introduces formatting biases and a documented tendency to regress toward the mean of the provided demonstrations (Vacareanu et al., 2024). Consequently, simply providing more context fails to bridge the verbalization gap, as the model remains limited by the autoregressive generation process, which is poorly aligned with the numerical nature of regression targets. 23 Preprint. Under review. 
+
+Figure 3: NRMSE results across datasets (columns) and LLMs (rows). The rightmost column averages over all datasets, and the bottom row averages over LLMs. Whereas earlier Figure 1 showed Pearson correlation, this figure shows absolute improvement in range-normalized root mean squared error (NRMSE) over the zero-shot baseline (the ”ground zero” line). Error bars denote variability across 3 independently-seeded runs. All metrics are computed using gold test labels. RELISH consistently performs best across all settings. 
+
+C.3.2 The Summarization Bottleneck: Why Static Pooling for Predictive Heads is Suboptimal 
+
+Predictive heads bypass the verbalization gap by treating the LLM as a feature extractor rather than a text generator. Specifically, predictive heads attach an auxiliary regressor to the model’s internal representations, aiming to directly ”read out” numeric values that the autoregressive generator often fails to articulate. However, our results indicate that standard predictive heads are constrained by a summarization bottleneck : mean-pooled representa-tions are often too coarse to capture the fine-grained signal necessary for regression. For instance, our results show that a linear regressor over mean-pooled hidden states is the weakest baseline, significantly underperforming even zero-shot prompting in terms of Pearson and Spearman correlation (e.g., r = 52.9 versus r = 61.0, and ρ = 50.3 versus 
+
+ρ = 60.9, respectively). We attribute this to information collapse , where static averaging washes out the localized token-level features essential for precise numeric estimation (e.g., the log-magnitude signals identified by Yuchi et al. (2026)). While a non-linear MLP head 24 Preprint. Under review. (r = 64.7, ρ = 71.7) can improve predictive performance, this approach remains bottlenecked by a fixed-vector summary and thus is suboptimal compared to RELISH. In summary, while existing predictive heads avoid the noise of token generation, they introduce their own limitations by compressing high-dimensional hidden states into static vector representations that are too restrictive for regression. 
+
+C.3.3 Regression-aware Inference Helps, but Remains Suboptimal. 
+
+Regression-aware baselines such as RAIL (Lukasik et al., 2024) and RAFT (Lukasik et al., 2025) attempt to bridge the verbalization gap by aligning the decoding process with continu-ous scalar predictions. These methods thus implicitly assume that LLMs already possess the internal reasoning capabilities for regression, but better verbalization techniques are needed to obtain accurate numerical estimates. However, regression-aware inference remains an indirect and computationally expensive solution to the extraction problem. Empirically, Table 3 shows that RAIL can outperform zero-shot prompting on correlation metrics, but not on RMSE. A plausible explanation is that RAIL improves ranking without improving scale calibration . In particular, the constrained decoding procedure may preserve relative ordering across examples while shrinking predictions toward high-probability re-gions, clipping extreme values, or discretizing outputs too coarsely. Such effects can increase bias in the mean prediction even as they reduce variance, leading to better correlation but worse RMSE. More broadly, because RAIL still inherits the backbone LLM’s imperfect numeric calibration, averaging samples from its induced predictive distribution can stabi-lize outputs without correcting systematic errors in magnitude. We therefore view RAIL as a partial mitigation of the generation-regression mismatch, rather than a guaranteed improvement over zero-shot next-token prediction. RAFT performs best among baseline methods, consistently outperforming all autoregressive approaches. However its empirical gains are not consistent across all settings and can underperform baselines such as the MLP predictive head (e.g., see Figure 1 for Qwen 3 8B on WMT RU En). Computationally, RAFT requires an expensive pipeline: LoRA fine-tuning, regression-aware training (multiple output samples during training to form expectations), and regression-aware inference (also sampling during inference to form expectations). In contrast, RELISH addresses the verbalization gap and summarization bottleneck more directly. Rather than forcing the generation process to behave like a regressor, RELISH learns a task-specific summarization over token-level representations to predict scores in a single pass. This approach is not only more computationally efficient but also more architecturally natural: if the log-magnitude signals are already present in the hidden states (Yuchi et al., 2026), directly learning to extract them is more intuitive than attempting to elicit them through sampled or constrained decoding. 
+
+C.3.4 RELISH Provides Architectural Gains Beyond Head Capacity Alone. 
+
+The gains from RELISH cannot be explained by simply adding more trainable parameters. Our MLP baseline is parameter-matched to RELISH for each LLM backbone, yet RELISH still consistently outperforms it across five datasets. This indicates that the improvements are architectural rather than capacity alone, suggesting that iterative token-level summarization is more effective for scalar prediction than static mean pooling. This interpretation is further supported by the comparison to the LoRA + zero-shot baseline. Although LoRA updates substantially more parameters, it remains less performant than RELISH. This suggests that, for regression tasks such as semantic sentence similarity and machine translation quality estimation, the primary bottleneck is not necessarily acquiring new task-relevant knowledge through backbone adaptation, but extracting an accurate scalar prediction from representations that already encode substantial numerical signal. From this perspective, LoRA may help with task adaptation by calibrating to expected output ranges, but it is less effective than RELISH’s iterative summarization mechanism. 25 Preprint. Under review. 
+
+C.3.5 RELISH Provides Structural Gains Beyond Calibration Alone. 
+
+The gains from RELISH are not solely due to calibration. Across Figures 1, 2, and 3, RELISH consistently achieves the largest gains across Pearson, Spearman, and RMSE. This is significant because a calibration method that merely rescales predictions might lower RMSE or increase Pearson (e.g., LoRA fine-tuning), but such a method would not necessarily change the relative ranking of test queries. The consistent gains in Spearman correlation across LLM backbones and datasets demonstrate that RELISH actually improves the LLM’s ability to rank instances by similarity or quality. Thus, RELISH is not just calibrating model predictions, but also learning how to make more accurate numerical predictions using a higher-resolution regression signal that is otherwise lost to the noise of verbalization or the coarseness of static pooling. 
+
+C.3.6 RELISH Helps Machine Translation Quality Estimation more than Semantic Textual Similarity. 
+
+Examining results at the task level helps clarify when RELISH’s architectural design pro-vides the greatest benefit. Empirically, we observe that RELISH yields the largest gains on the machine translation quality estimation datasets (WMT), whereas the improvements on semantic textual similarity (STS) are more modest (see Figures 1, 2, and 3). Intuitively, this pattern aligns with the different structural requirements of the two tasks. STS gener-ally requires only a global interpretation of relative similarity, a signal that prompting and mean-pooled heads can capture effectively. Conversely, WMT quality estimation depends on localized errors, such as omissions or subtle meaning shifts, that may be unevenly dis-tributed across input sequences. Such fine-grained signals may be easily washed out by the summarization bottleneck from static pooling or by the noise of autoregressive verbaliza-tion. In contrast, RELISH’s can easily identify local, distributed signals via cross-attention, providing the granularity needed for complex regression. 
+
+C.4 Dataset Specific Patterns STS-B (Table 14): For STS-B, improvements over baselines are generally modest. Because STS relies on global semantic similarity, larger LLM backbones already perform quite well with standard autoregressive or regression-aware decoding methods. Consequently, as the backbone scales, the headroom for improvement shrinks. This is evident on Gemma 3 27B Instruct, where RELISH’s Spearman correlation ( ρ = 0.923) effectively ties with the computationally heavier LoRA+RAIL baseline. Nevertheless, RELISH maintains a definite lead in both Pearson and RMSE. Thus, even where baseline methods are already strong, RELISH remains the most robust across all LLM backbones and metrics. 
+
+SICKR-STS (Table 15): Similarly, for SICKR-STS, improvements over baselines are gener-ally modest. However, in this dataset, predictive heads are surprisingly strong baselines, suggesting that the mean-pooled representations retained much of the information embed-ded in full token-level hidden states. Yet, even in this highly competitive setting, RELISH consistently squeezes additional performance across all four backbones. For instance, on Gemma 3 27B Instruct, RELISH narrowly but definitively outperforms the strongest alternatives, including RAFT and LoRA+RAIL. This demonstrates that even when exist-ing baselines perform reasonably well, iterative latent refinement still captures valuable, task-relevant signals that are missed by verbalization and static aggregation. 
+
+WMT Ru–En (Table 16): RELISH’s architectural advantages are especially evident on WMT RU EN. This dataset exposes the weaknesses of generation-based methods: many-shot prompting yields inconsistent gains, and RAIL frequently trails behind learned predic-tive heads. RELISH capitalizes on this, achieving substantial margins over RAFT and LoRA baselines across all backbones. This trend reinforces our prior hypothesis that machine translation quality estimation requires selectively analyzing localized cues spread across source-translation pairs, a task RELISH excels at with its token-level latent querying. 26 Preprint. Under review. 
+
+WMT En–Zh (Table 17): This translation dataset poses the most difficult task in our suite, yielding significantly lower correlation metrics across all methods and LLM backbones. Under these challenging conditions, standard methods may not perform well. Notably, even LoRA-adapted methods (particularly LoRA+Zero Shot and LoRA+Linear) degrade sharply, struggling to maintain stability. RAFT, typically the second-best baseline, may actually underperform simpler baselines like LoRA+RAIL on Qwen 3 8B. In contrast, RELISH remains highly robust, consistently achieving the highest predictive performance. 
+
+WMT Si-En (Table 18): WMT SI EN is meant to test the capabilities of LLMs on a low-resource language setting, such as translating from Sinhala to English. Interestingly, the correlation scores here are higher than those in WMT EN ZH. For instance, RELISH reaches the highest Pearson correlation of r = 0.669 on Gemma 3 27B Instruct here, versus a best of r = 0.567 on Qwen 3 32B for WMT EN ZH. We suspect that since the translation is in English, the LLM backbones can rely on strong English priors to avoid major structural errors that often appear in low-resource translation (Guzm ´an et al., 2019; Han et al., 2021). Nevertheless, RELISH performs best across all four backbones, suggesting that its token-level summarization remains effective even under low-resource settings. 
+
+## D Full Training Footprint Results 
+
+Table 7 compares the exact trainable component count across all evaluated LLM backbones for RELISH, LoRA (Hu et al., 2022), and RAFT (Lukasik et al., 2025). Notably, while Table 4 and Table 7 show that LoRA and RAFT have the same trainable parameter count, in practice, RAFT incurs a higher cost because the posterior for each training example must still be approximated via sampling. Despite being the most performant method, RELISH also finetunes significantly fewer parameters than LoRA and RAFT, which use a regression-aware loss for LoRA fine-tuning. For instance, on the 8B-class models (Llama 3.1 and Qwen3), RELISH introduces merely 3.4 million trainable parameters, or roughly 0.04% of the LLM backbone. In contrast, standard LoRA and RAFT adaptation requires over 20 million parameters, or roughly 0.26% of the LLM backbone, representing a roughly six-fold increase in parameter overhead. This gap is even more significant for larger models. For Qwen 3 32B, LoRA and RAFT require fine-tuning roughly 37 times as many parameters as RELISH. In addition, unlike LoRA and RAFT, RELISH’s training footprint does not scale with the LLM backbone. Rather, the dominant components in RELISH are the projection matrix 
+
+W ∈ Rd×dh and the iterative refinement layers consisting of the multi-head attention (MHA), the FFN, and the LayerNormalization (LN). Thus, the main hyperparameters that affect the trainable capacity of RELISH are the head dimension dh, the number of refinement layers L,and parameter sizes within each refinement layer, such as the hidden size of the FFN (4 ∗ dh). Conversely, this means that RELISH’s training footprint does not scale with the size of the LLM backbone . In summary, RELISH is not performant merely because it fine-tunes more parameters, but by providing a more architecturally efficient summarization mechanism. 
+
+## E Ablation Results 
+
+E.1 How sensitive is RELISH to the choice of loss function? 
+
+Table 3 shows that RELISH consistently improves over prior LLM-regression baselines. But where do the gains come from? In this section, we investigate whether the improvements are due to better architectural design or simply an artifact of the Huber loss (Huber, 1992). Towards this goal, we ablate the RELISH trained with the standard mean-squared error (MSE) loss. We keep y-normalization, as we observe that training collapses without it. Specifically, without label normalization, all predictive heads will default to predicting the dataset label mean as the simplest solution to minimize numerical error. Theoretically, the Huber loss helps stabilize training by behaving like MSE near the numeric target while down-weighting occasional large residuals, which is attractive in our setting 27 Preprint. Under review.     
+
+> Method Trainable ( n)% of Model Llama 3.1 8B Instruct (d
+
+= 4096, N = 8, 030, 261, 248) LoRA/RAFT 20,971,520 0.2612%     
+
+> RELISH 3,418,625 0.0426% Qwen3 8B (d
+
+= 4096, N = 8, 190, 735, 360) LoRA/RAFT 21,823,488 0.2664%     
+
+> RELISH 3,418,625 0.0417% Gemma 3 27B Instruct (d
+
+= 5376, N = 27, 432, 406, 640) LoRA/RAFT 116,502,528 0.4247%     
+
+> RELISH 3,746,305 0.0137% Qwen3 32B (d
+
+= 5120, N = 32, 762, 123, 264) LoRA/RAFT 134,217,728 0.4097%   
+
+> RELISH 3,680,769 0.0112%
+
+Table 7: Detailed parameter footprints across architectures. N represents the total number of backbone parameters and d is the model hidden dimension. Trainable ( n) is the number of parameters updated during training, and % of Model denotes n/N. Note that while baseline footprints scale with the total parameter count N, RELISH’s footprint remains largely invariant to backbone size, scaling primarily as a function of d.      
+
+> Fine-tuned Baselines RELISH Variants Metric LoRA+MLP RAFT RELISH (MSE) RELISH (Huber)
+> r
+
+↑ 64.8 ±0.1 71.5 ±0.4 74.2 ±0.4 76 .3±0.2 
+
+> ρ
+
+↑ 61.7 ±0.1 69.0 ±0.2 71.3 ±0.4 74 .0±0.1 
+
+> NRMSE
+
+↓ 16.7 ±0.1 16.6 ±0.3 13.5 ±0.1 13 .3±0.3
+
+Table 8: Ablating RELISH with Huber versus MSE loss. We report macro-averaged Pearson 
+
+r and Spearman ρ correlation (higher is better), as well as range-normalized RMSE (NRMSE, lower is better) in %. Metrics are averaged across five datasets, four LLM backbones, and three independently seeded runs. We also report standard deviation ( ±). because our evaluation spans heterogeneous tasks with different score ranges and annota-tion processes. At the same time, with label normalization that already caps large residuals, we hypothesize that the performance difference between RELISH trained with Huber and with MSE will be modest. Following the aggregation protocol detailed in § C.1, we report macro-averaged metrics and standard deviations in Table 8. For reference, we duplicate the two most performant baselines from Table 3, namely LoRA + MLP and RAFT (Lukasik et al., 2025). We then provide more fine-grained result breakdowns per dataset and LLM backbone in Figure 4. Based on Table 8, on average, we observe that the improvements from RELISH are likely due to improved architectural design, and not an artifact of the Huber loss . Compared to the other baselines, both variants of RELISH yield higher overall predictive performance. Notably, on NRMSE, RELISH trained with Huber or MSE is very similar (13.5 vs. 13.3), but the Huber loss yields greater improvements on the correlation metrics (76.3 vs. 74.2, 74.0 vs. 71.3, respectively). Nevertheless, the main gains are likely from the iterative-refinement design of RELISH, and using Huber over MSE yields modest improvements in addition to the gains from the architecture. Figure 4 confirms the overall pattern observed in Table 4. Across five datasets, four LLM backbones, and three metrics, the RELISH (MSE) and RELISH (Huber) bars are usually close, often nearly overlapping, indicating that RELISH is generally robust to the loss function . This affirms our prior intuition that after label normalization, extreme residual 28 Preprint. Under review. 
+
+Figure 4: RELISH loss ablations . We compare LoRA + MLP, RAFT, and two RELISH variants trained with MSE or Huber across five datasets (columns) and four LLM backbones (rows). Metrics are NRMSE (lower is better), Pearson correlation (higher is better), and Spearman correlation (higher is better). Error bars show variability across 3 seeds. Overall, MSE and Huber perform similarly, but Huber is modestly better in most settings. magnitudes become less dominant, so Huber no longer has a structural advantage over MSE. Nevertheless, for the majority of panels, RELISH (Huber) outperforms RELISH (MSE), slightly scoring lower for NRMSE and higher for Pearson and Spearman. This suggests that although Huber does not help with output calibration, since labels are already normalized, it can help RELISH learn cleaner monotonic relationships when ranking test queries. Looking more closely at Figure 4, there are also settings where RELISH with MSE outper-forms the original Huber variant. Most notably, for Llama 3.1 8B and Qwen 3 8B, RELISH (MSE) ties with or exceeds RELISH (Huber) across several translation datasets. Similar reversals occasionally appear for larger LLM backbones, but less frequently. We rarely observe any reversals for the semantic similarity datasets. One possible explanation is that smaller LLM backbones are more capacity-limited, so their main bottleneck is representational expressivity rather than robustness to occasional large residuals. Hence, the fully quadratic signal from MSE may sometimes be more preferable, especially on noisier translation tasks where fitting fine-grained score variation is already difficult. In contrast, larger LLM backbones may be better able to exploit Huber’s robustness. Once the representation is sufficiently strong, down-weighting harder or noisier examples can more reliably improve ranking consistency. Of course, the main empirical trend remains unchanged: RELISH performs strongly under both losses, and Huber is better overall and in most settings, but only modestly so. Finally, we note that RELISH’s gains are not due to using a more robust objective than other regression baselines . On the contrary, the baselines we compare to in Table 3 typically employ loss functions that are at least as robust as Huber. For the predictive head methods (linear and MLP), we use the same Huber objective. For RAFT, a special regression-aware loss is employed. The only exception might be the LoRA finetuned autoregressive methods, but their capacity is larger (more trainable parameters), and yet RELISH consistently outper-forms them all. Hence, the gains from RELISH cannot be explained solely by the Huber loss. The iterative architecture offers a clear advantage over existing LLM-regression methods. 29 Preprint. Under review. 
+
+Figure 5: RELISH refinement depth ablations. We systematically vary the refinement depth of RELISH from 1 to 5. We report range-normalized root mean square error (NRMSE; lower is better), Pearson correlation, and Spearman correlation (higher is better) macro-averaged across five datasets for four LLM backbones. Error bars denote the standard deviation across three random seeds. The L = 1 configuration isolates the performance of a single-step, attention-based pooling baseline. For most LLM backbones, multiple refinement iterations (L ≥ 2) substantially enhance predictive performance, with diminishing returns past L = 3(our default setting, shaded in grey). Notably, the optimal depth varies by LLM architecture: Qwen 3 8B achieves peak performance at L = 1, while the larger Gemma 3 27B continues to benefit from refinement even at higher depths. 
+
+E.2 How sensitive is RELISH to the number of iterative refinement blocks ( L)? 
+
+Previously, § E.1 demonstrated that the improvements from RELISH are primarily driven by architectural design rather than the Huber loss, which only modestly improves predictive performance. Furthermore, § 2.4 highlighted two core architectural differentiations of RELISH from prior predictive head methods: learning a latent attention-based query for robust summarization, and iteratively refining this latent state. In this section, we aim to 
+
+disentangle the observed gains of RELISH between the attention-pooling mechanism and the iterative nature of the refinement process .Specifically, we systematically vary the number of refinement blocks, L, from 1 to 5. Notably, the L = 1 configuration serves as a strict learned, attention-based query-pooling baseline, as the output prediction is computed in a single pass without subsequent iterations. By comparing L = 1 against variants where L ≥ 2, we can explicitly isolate the performance gains attributable to repeated latent state updates versus attention-pooling alone. Figure 5 reports LLM-specific metrics macro-averaged across five datasets, with ± denoting standard deviation across seeds. The primary takeaway is that although attention-pooling alone serves as a strong baseline, multiple iteration refinement blocks substantially enhance predictive performance . While a single pass of token-level cross-attention ( L = 1) outperforms naive pooling, it remains suboptimal compared to the full RELISH architecture. Across the evaluated LLM backbones and datasets, the L = 1 configuration generally yields the highest range-normalized root mean square error (NRMSE; lower is better) and the lowest Pearson and Spearman correlations (higher is better). This confirms that merely attending to token representations is insufficient to fully capture the regression target from the frozen latent space. As L increases, we observe sharp reductions in NRMSE alongside notable improvements in both correlation metrics, demonstrating that the latent state requires at least one subsequent pass to re-attend to the token sequence and properly contextualize its initial estimate. Following the initial performance surge at L = 2, we observe a clear pattern of convergence and diminishing returns. The NRMSE curves rapidly flatten, and all predictive metrics become highly stable across L = 3 through L = 5, exhibiting only marginal fluctuations. 30 Preprint. Under review. Collectively, these patterns justify our default choice of L = 3. Importantly, RELISH does not exhibit optimization instabilities or degradation at these deeper refinement levels. However, we note distinct exceptions to these trends across model architectures. For Qwen 3 8B, iterations yield minimal benefits; the model achieves its lowest NRMSE at L = 1, with performance slightly degrading as refinement blocks are added. This suggests that Qwen 3 8B’s frozen representations may already encode regression features in a highly localized, accessible manner, allowing efficient extraction in a single pass, whereas subsequent itera-tions merely inject noise or induce overfitting. We do not observe this behavior in the larger Qwen 3 32B model. We hypothesize this discrepancy stems from the 32B model’s larger hidden dimension (5120 vs. 4096), which may dilute regression-relevant information and necessitate iterative contextualization. Conversely, while Gemma 3 27B Instruct clearly benefits from added iterations, its predictive performance does not plateau at higher depths. Instead, all three metrics continue to improve through L = 5, suggesting further gains are possible. We suspect this is similarly tied to the model’s hidden size; Gemma 3 27B features the largest hidden dimension in our suite (5376; see Table 7), necessitating deeper iterative refinement to fully isolate task-relevant signals. Therefore, while L = 3 serves as a robust empirical default, the optimal refinement depth is ultimately intrinsically tied to the latent representation geometry of the specific LLM backbone. 
+
+## F Limitations 
+
+In this section, we note some limitations of RELISH. 
+
+Reliance on LLM backbones. Because RELISH operates over a frozen LLM backbone, its predictive capability is inherently bounded by the quality of the LLM’s pre-trained representations. That is, RELISH is designed to robustly extract and refine regression-relevant signals that are already embedded in model hidden states. Thus, for tasks that require novel or out-of-distribution domain knowledge, we would expect some fine-tuning of the LLM backbone to be necessary. 
+
+Computational Scaling with Sequence Length. RELISH adds minimal trainable param-eters ( ∼3.4–3.7M) and avoids the heavy inference costs of autoregressive generation or multi-sample posterior approximation of regression-aware inference methods. However, its attention-based pooling mechanism scales linearly with the input sequence length. For ex-ceptionally long inputs (e.g., estimating the quality of entire research papers), cross-attention operations over token-level representations could become a computational bottleneck. 
+
+Scope of Evaluated Tasks. Our evaluation focuses exclusively on two canonical tasks: semantic textual similarity (STS) and machine translation (MT) quality estimation. Both tasks rely on pairwise inputs, in which LLMs are expected to estimate the quality of a given text relative to a reference. Future work could also include single-input tasks, such as sentiment analysis. While sentiment has canonically been evaluated wrt. an aggregated integer rating (e.g., majority vote over annotators), rather than a continuous rating (e.g., average over annotators), one could always reframe the sentiment task as predicting a continuous average annotator rating, which would render it more suitable for RELISH. Future work could also extend RELISH to predict product prices or average product ratings, building on the recent work by Vedula et al. (2025). While its authors were ultimately unable to release their datasets as planned, immediately prior to the submission of this work, they helpfully suggested two public datasets—Amazon Reviews 2018 8 and 2023 9—which we are interested to extend our evaluation to include in future work. 
+
+> 8https://cseweb.ucsd.edu/ ∼jmcauley/datasets/amazon v2/
+> 9https://amazon-reviews-2023.github.io/
+
+31 Preprint. Under review. 
+
+Dataset: STS-B System Prompt You are an expert human annotator for semantic textual similarity (STS). You will see English sentence pairs and judge how similar in MEANING they are. Scoring instructions: - Output a real-valued similarity score from 0.000 to 5.000, inclusive. - 5.000 = same meaning / paraphrases. - 2.500 = partially similar with important differences. - 0.000 = completely unrelated meaning. CRITICAL FORMAT RULE: Return ONLY the numeric score, with EXACTLY three digits after the decimal point (e.g., 3.000). Do NOT include any words, punctuation, units, labels, or explanation. 
+
+User Message Sentence A: {sentence_a} Sentence B: {sentence_b} Score (0.000 to 5.000 only): 
+
+Table 9: Full prompt template for the STS-Benchmark dataset. 
+
+Dataset: SICKR-STS System Prompt You are an expert annotator for semantic textual similarity (STS) for Sentences Involving Compositional Knowledge. You will see sentence pairs and judge how similar in MEANING they are. Scoring instructions: - Output a real-valued similarity score from 1.000 to 5.000, inclusive. - 5.000 = same meaning / paraphrases; 1.000 = completely unrelated. CRITICAL FORMAT RULE: Return ONLY the numeric score, with EXACTLY three digits after the decimal point (e.g., 3.000). Do NOT include any words, punctuation, units, labels, or explanation. 
+
+User Message Sentence A: {sentence_a} Sentence B: {sentence_b} Score (1.000 to 5.000 only): 
+
+Table 10: Full prompt template for the SICKR-STS dataset. 32 Preprint. Under review. 
+
+Dataset: WMT EN ZH System Prompt You are an expert human annotator for translation quality / semantic textual similarity (STS). You will see sentence pairs where Sentence A is in English (source) and Sentence B is in Chinese (translation). You must judge how well the meaning is preserved from English to Chinese. Scoring instructions: - Output a real-valued translation quality / similarity score from 0.000 to 100.000. - 100.000 = perfect meaning preservation (excellent translation /paraphrases). - 50.000 = partially similar meaning but with important differences or missing info. - 0.000 = completely unrelated or very bad translation. CRITICAL FORMAT RULE: Return ONLY the numeric score with EXACTLY three digits after the decimal point. Do NOT include any words, punctuation, units, labels, or explanation. 
+
+User Message Sentence A (English source): {sentence_a} Sentence B (Chinese translation): {sentence_b} Score (0.000 to 100.000 only): 
+
+Table 11: Full prompt template for the WMT English-Chinese quality estimation task. 
+
+Dataset: WMT RU EN System Prompt You are an expert human annotator for translation quality / semantic textual similarity (STS). You will see sentence pairs where Sentence A is in Russian (source) and Sentence B is in English (translation). You must judge how well the meaning is preserved from Russian to English. Scoring instructions: - Output a real-valued translation quality / similarity score from 0.000 to 100.000. - 100.000 = perfect meaning preservation (excellent translation /paraphrases). - 50.000 = partially similar meaning but with important differences or missing info. - 0.000 = completely unrelated or very bad translation. CRITICAL FORMAT RULE: Return ONLY the numeric score with EXACTLY three digits after the decimal point. Do NOT include any words, punctuation, units, labels, or explanation. 
+
+User Message Sentence A (Russian source): {sentence_a} Sentence B (English translation): {sentence_b} Score (0.000 to 100.000 only): 
+
+Table 12: Full prompt template for the WMT Russian-English quality estimation task. 33 Preprint. Under review. 
+
+Dataset: WMT SI EN System Prompt You are an expert human annotator for translation quality / semantic textual similarity (STS). You will see sentence pairs where Sentence A is in Sinhala (source) and Sentence B is in English (translation). You must judge how well the meaning is preserved from Sinhala to English. Scoring instructions: - Output a real-valued translation quality / similarity score from 0.000 to 100.000. - 100.000 = perfect meaning preservation (excellent translation /paraphrases). - 50.000 = partially similar meaning but with important differences or missing info. - 0.000 = completely unrelated or very bad translation. CRITICAL FORMAT RULE: Return ONLY the numeric score with EXACTLY three digits after the decimal point. Do NOT include any words, punctuation, units, labels, or explanation. 
+
+User Message Sentence A (Sinhala source): {sentence_a} Sentence B (English translation): {sentence_b} Score (0.000 to 100.000 only): 
+
+Table 13: Full prompt template for the WMT Sinhala-English quality estimation task. 34 Preprint. Under review. Table 14: Comparison on STS-B (Semantic Textual Similarity Benchmark). Metrics are mean 
+
+± std over 3 seeds and rounded to 3 decimals. Lower is better for RMSE ( ↓); higher is better for correlations ( ↑). 
+
+Dataset: STS-Benchmark (Semantic Textual Similarity Benchmark) 
+
+LLM encoder Inference RMSE ↓ Pearson ↑ Spearman ↑
+
+LLAMA 3.1 8B Instruct Zero Shot 1.215 ±0.010 0.717 ±0.006 0.688 ±0.010 
+
+Many Shot 1.235 ±0.045 0.675 ±0.031 0.635 ±0.030 
+
+Linear 1.323 ±0.000 0.632 ±0.000 0.637 ±0.000 
+
+MLP 1.051 ±0.015 0.732 ±0.009 0.725 ±0.010 
+
+RAIL 1.252 ±0.007 0.743 ±0.002 0.771 ±0.003 
+
+LoRA + Zero Shot 0.788 ±0.032 0.858 ±0.014 0.853 ±0.017 
+
+LoRA + Linear 1.294 ±0.004 0.647 ±0.002 0.651 ±0.002 
+
+LoRA + MLP 1.030 ±0.015 0.745 ±0.006 0.738 ±0.007 
+
+LoRA + RAIL 1.041 ±0.029 0.788 ±0.026 0.785 ±0.021 
+
+RAFT 1.142 ±0.052 0.861 ±0.006 0.873 ±0.004 
+
+RELISH (Ours) 0.669 ±0.004 0.905 ±0.002 0.904 ±0.002 
+
+QWEN 3 8B Zero Shot 0.935 ±0.008 0.857 ±0.002 0.864 ±0.002 
+
+Many Shot 1.140 ±0.029 0.833 ±0.008 0.854 ±0.003 
+
+Linear 1.241 ±0.000 0.667 ±0.000 0.683 ±0.000 
+
+MLP 0.938 ±0.008 0.792 ±0.002 0.794 ±0.001 
+
+RAIL 0.941 ±0.000 0.861 ±0.000 0.868 ±0.000 
+
+LoRA + Zero Shot 0.793 ±0.014 0.857 ±0.006 0.853 ±0.010 
+
+LoRA + Linear 1.235 ±0.004 0.670 ±0.001 0.682 ±0.001 
+
+LoRA + MLP 0.945 ±0.008 0.788 ±0.002 0.790 ±0.003 
+
+LoRA + RAIL 0.857 ±0.032 0.841 ±0.011 0.872 ±0.010 
+
+RAFT 0.754 ±0.018 0.874 ±0.005 0.894 ±0.003 
+
+RELISH (Ours) 0.638 ±0.015 0.912 ±0.005 0.911 ±0.005 
+
+GEMMA 3 27b Instruct Zero Shot 0.721 ±0.002 0.890 ±0.001 0.883 ±0.000 
+
+Many Shot 0.841 ±0.022 0.884 ±0.009 0.885 ±0.009 
+
+Linear 1.477 ±0.000 0.632 ±0.000 0.655 ±0.000 
+
+MLP 0.875 ±0.004 0.822 ±0.002 0.817 ±0.003 
+
+RAIL 0.719 ±0.000 0.884 ±0.000 0.878 ±0.000 
+
+LoRA + Zero Shot 0.720 ±0.009 0.884 ±0.006 0.884 ±0.002 
+
+LoRA + Linear 1.460 ±0.028 0.637 ±0.010 0.657 ±0.011 
+
+LoRA + MLP 0.878 ±0.010 0.818 ±0.005 0.814 ±0.005 
+
+LoRA + RAIL 0.603 ±0.025 0.924 ±0.003 0.923 ±0.003 
+
+RAFT 0.615 ±0.015 0.920 ±0.002 0.920 ±0.000 
+
+RELISH (Ours) 0.589 ±0.013 0.926 ±0.003 0.923 ±0.002 
+
+QWEN 3 32B Zero Shot 0.796 ±0.001 0.876 ±0.001 0.874 ±0.001 
+
+Many Shot 0.892 ±0.016 0.866 ±0.004 0.865 ±0.007 
+
+Linear 1.408 ±0.000 0.627 ±0.000 0.639 ±0.000 
+
+MLP 0.909 ±0.003 0.805 ±0.002 0.803 ±0.002 
+
+RAIL 0.774 ±0.001 0.882 ±0.000 0.888 ±0.000 
+
+LoRA + Zero Shot 0.838 ±0.012 0.842 ±0.004 0.837 ±0.005 
+
+LoRA + Linear 1.414 ±0.002 0.628 ±0.001 0.643 ±0.002 
+
+LoRA + MLP 0.907 ±0.011 0.807 ±0.005 0.803 ±0.005 
+
+LoRA + RAIL 0.730 ±0.001 0.891 ±0.000 0.890 ±0.001 
+
+RAFT 0.699 ±0.003 0.897 ±0.000 0.895 ±0.000 
+
+RELISH (Ours) 0.595 ±0.024 0.925 ±0.003 0.924 ±0.002 
+
+35 Preprint. Under review. Table 15: Comparison on SICKR STS (Sentences Involving Compositional Knowledge, Revised). Metrics are mean ± std over 3 seeds and rounded to 3 decimals. Lower is better for RMSE ( ↓); higher is better for correlations ( ↑). 
+
+Dataset: SICKR STS (Sentences Involving Compositional Knowledge, Revised) 
+
+LLM encoder Inference RMSE ↓ Pearson ↑ Spearman ↑
+
+LLAMA 3.1 8B Instruct Zero Shot 1.095 ±0.012 0.666 ±0.015 0.650 ±0.014 
+
+Many Shot 0.918 ±0.090 0.608 ±0.019 0.477 ±0.036 
+
+Linear 0.612 ±0.000 0.807 ±0.000 0.764 ±0.000 
+
+MLP 0.509 ±0.007 0.858 ±0.004 0.809 ±0.007 
+
+RAIL 1.126 ±0.003 0.686 ±0.002 0.746 ±0.002 
+
+LoRA + Zero Shot 0.489 ±0.017 0.878 ±0.008 0.822 ±0.007 
+
+LoRA + Linear 0.581 ±0.004 0.826 ±0.001 0.787 ±0.002 
+
+LoRA + MLP 0.488 ±0.005 0.869 ±0.004 0.824 ±0.007 
+
+LoRA + RAIL 0.656 ±0.045 0.825 ±0.011 0.762 ±0.015 
+
+RAFT 0.754 ±0.021 0.879 ±0.008 0.847 ±0.009 
+
+RELISH (Ours) 0.413 ±0.027 0.924 ±0.001 0.881 ±0.002 
+
+QWEN 3 8B Zero Shot 1.216 ±0.005 0.708 ±0.002 0.752 ±0.001 
+
+Many Shot 0.679 ±0.027 0.820 ±0.011 0.801 ±0.019 
+
+Linear 0.579 ±0.000 0.829 ±0.000 0.778 ±0.000 
+
+MLP 0.483 ±0.007 0.877 ±0.002 0.829 ±0.002 
+
+RAIL 1.204 ±0.001 0.717 ±0.000 0.763 ±0.001 
+
+LoRA + Zero Shot 0.727 ±0.034 0.789 ±0.050 0.732 ±0.064 
+
+LoRA + Linear 0.575 ±0.002 0.831 ±0.001 0.782 ±0.002 
+
+LoRA + MLP 0.484 ±0.008 0.876 ±0.002 0.828 ±0.002 
+
+LoRA + RAIL 0.774 ±0.065 0.738 ±0.110 0.732 ±0.065 
+
+RAFT 0.484 ±0.049 0.904 ±0.010 0.869 ±0.005 
+
+RELISH (Ours) 0.389 ±0.008 0.918 ±0.002 0.874 ±0.003 
+
+GEMMA 3 27b Instruct Zero Shot 1.241 ±0.005 0.727 ±0.002 0.746 ±0.002 
+
+Many Shot 0.501 ±0.011 0.875 ±0.007 0.838 ±0.005 
+
+Linear 0.633 ±0.000 0.808 ±0.000 0.758 ±0.000 
+
+MLP 0.479 ±0.013 0.876 ±0.006 0.829 ±0.007 
+
+RAIL 1.214 ±0.000 0.715 ±0.000 0.730 ±0.000 
+
+LoRA + Zero Shot 0.458 ±0.017 0.886 ±0.011 0.830 ±0.008 
+
+LoRA + Linear 0.618 ±0.002 0.815 ±0.001 0.770 ±0.002 
+
+LoRA + MLP 0.472 ±0.013 0.880 ±0.006 0.832 ±0.007 
+
+LoRA + RAIL 0.362 ±0.002 0.929 ±0.001 0.883 ±0.001 
+
+RAFT 0.368 ±0.004 0.929 ±0.002 0.883 ±0.001 
+
+RELISH (Ours) 0.359 ±0.004 0.930 ±0.001 0.885 ±0.001 
+
+QWEN 3 32B Zero Shot 1.231 ±0.008 0.708 ±0.003 0.727 ±0.005 
+
+Many Shot 0.564 ±0.064 0.849 ±0.016 0.820 ±0.012 
+
+Linear 0.602 ±0.000 0.813 ±0.000 0.755 ±0.000 
+
+MLP 0.484 ±0.005 0.873 ±0.003 0.826 ±0.008 
+
+RAIL 1.170 ±0.000 0.726 ±0.001 0.747 ±0.001 
+
+LoRA + Zero Shot 0.497 ±0.024 0.874 ±0.014 0.820 ±0.007 
+
+LoRA + Linear 0.602 ±0.002 0.816 ±0.002 0.758 ±0.005 
+
+LoRA + MLP 0.493 ±0.016 0.868 ±0.006 0.820 ±0.008 
+
+LoRA + RAIL 0.528 ±0.180 0.885 ±0.060 0.859 ±0.041 
+
+RAFT 0.398 ±0.023 0.894 ±0.049 0.860 ±0.040 
+
+RELISH (Ours) 0.393 ±0.006 0.924 ±0.002 0.888 ±0.003 
+
+36 Preprint. Under review. Table 16: Comparison on WMT RU EN (Russian → English). Metrics are mean ± std over 3 seeds and rounded to 3 decimals. Lower is better for RMSE ( ↓); higher is better for correlations ( ↑). 
+
+Dataset: WMT RU EN (Russian → English) 
+
+LLM encoder Inference RMSE ↓ Pearson ↑ Spearman ↑
+
+LLAMA 3.1 8B Instruct Zero Shot 32.853 ±0.160 0.473 ±0.008 0.409 ±0.012 
+
+Many Shot 31.481 ±1.342 0.198 ±0.106 0.133 ±0.098 
+
+Linear 22.637 ±0.000 0.619 ±0.000 0.567 ±0.000 
+
+MLP 19.161 ±0.045 0.695 ±0.001 0.646 ±0.004 
+
+RAIL 33.237 ±0.175 0.528 ±0.005 0.530 ±0.007 
+
+LoRA + Zero Shot 20.264 ±0.426 0.718 ±0.018 0.633 ±0.018 
+
+LoRA + Linear 22.385 ±0.101 0.627 ±0.001 0.575 ±0.001 
+
+LoRA + MLP 18.910 ±0.076 0.704 ±0.001 0.655 ±0.005 
+
+LoRA + RAIL 19.661 ±1.973 0.706 ±0.048 0.672 ±0.026 
+
+RAFT 23.410 ±0.572 0.740 ±0.018 0.719 ±0.027 
+
+RELISH (Ours) 16.711 ±1.219 0.796 ±0.010 0.752 ±0.004 
+
+QWEN 3 8B Zero Shot 27.977 ±0.052 0.556 ±0.008 0.625 ±0.007 
+
+Many Shot 31.292 ±0.658 0.490 ±0.054 0.574 ±0.090 
+
+Linear 22.492 ±0.000 0.636 ±0.000 0.592 ±0.000 
+
+MLP 19.336 ±0.142 0.695 ±0.007 0.644 ±0.002 
+
+RAIL 28.246 ±0.012 0.574 ±0.001 0.663 ±0.003 
+
+LoRA + Zero Shot 24.112 ±0.256 0.565 ±0.012 0.541 ±0.007 
+
+LoRA + Linear 22.376 ±0.042 0.640 ±0.001 0.595 ±0.000 
+
+LoRA + MLP 19.210 ±0.158 0.699 ±0.007 0.648 ±0.002 
+
+LoRA + RAIL 18.203 ±0.640 0.745 ±0.023 0.717 ±0.027 
+
+RAFT 20.834 ±0.809 0.647 ±0.033 0.522 ±0.041 
+
+RELISH (Ours) 16.560 ±0.144 0.785 ±0.015 0.749 ±0.013 
+
+GEMMA 3 27b Instruct Zero Shot 27.124 ±0.113 0.692 ±0.005 0.694 ±0.002 
+
+Many Shot 19.757 ±1.330 0.754 ±0.021 0.721 ±0.027 
+
+Linear 25.315 ±0.000 0.599 ±0.000 0.539 ±0.000 
+
+MLP 17.273 ±0.043 0.759 ±0.003 0.706 ±0.005 
+
+RAIL 27.445 ±0.028 0.687 ±0.001 0.720 ±0.001 
+
+LoRA + Zero Shot 19.241 ±0.185 0.729 ±0.007 0.680 ±0.003 
+
+LoRA + Linear 25.625 ±0.043 0.597 ±0.003 0.555 ±0.008 
+
+LoRA + MLP 17.300 ±0.059 0.759 ±0.001 0.700 ±0.002 
+
+LoRA + RAIL 16.709 ±0.336 0.766 ±0.030 0.763 ±0.016 
+
+RAFT 15.545 ±0.223 0.813 ±0.002 0.771 ±0.023 
+
+RELISH (Ours) 15.126 ±0.320 0.830 ±0.003 0.807 ±0.001 
+
+QWEN 3 32B Zero Shot 26.487 ±0.220 0.699 ±0.009 0.703 ±0.003 
+
+Many Shot 21.403 ±1.086 0.763 ±0.014 0.746 ±0.012 
+
+Linear 24.908 ±0.000 0.602 ±0.000 0.564 ±0.000 
+
+MLP 18.346 ±0.036 0.725 ±0.002 0.687 ±0.003 
+
+RAIL 26.402 ±0.024 0.721 ±0.001 0.749 ±0.001 
+
+LoRA + Zero Shot 22.409 ±0.353 0.639 ±0.014 0.601 ±0.019 
+
+LoRA + Linear 24.970 ±0.114 0.597 ±0.003 0.569 ±0.002 
+
+LoRA + MLP 18.419 ±0.103 0.723 ±0.003 0.689 ±0.002 
+
+LoRA + RAIL 22.618 ±0.014 0.740 ±0.002 0.728 ±0.000 
+
+RAFT 20.373 ±0.101 0.759 ±0.001 0.740 ±0.001 
+
+RELISH (Ours) 14.464 ±1.328 0.856 ±0.008 0.816 ±0.001 
+
+37 Preprint. Under review. Table 17: Comparison on WMT EN ZH (English → Chinese). Metrics are mean ± std over 3 seeds and rounded to 3 decimals. Lower is better for RMSE ( ↓); higher is better for correlations ( ↑). 
+
+Dataset: WMT EN ZH (English → Chinese) 
+
+LLM encoder Inference RMSE ↓ Pearson ↑ Spearman ↑
+
+LLAMA 3.1 8B Instruct Zero Shot 33.543 ±0.217 0.348 ±0.013 0.276 ±0.018 
+
+Many Shot 26.312 ±1.674 0.075 ±0.010 0.042 ±0.013 
+
+Linear 19.648 ±0.000 0.277 ±0.000 0.253 ±0.000 
+
+MLP 14.198 ±0.057 0.331 ±0.012 0.321 ±0.011 
+
+RAIL 38.840 ±0.096 0.345 ±0.004 0.367 ±0.002 
+
+LoRA + Zero Shot 17.827 ±0.338 0.345 ±0.033 0.335 ±0.003 
+
+LoRA + Linear 19.434 ±0.034 0.285 ±0.001 0.259 ±0.001 
+
+LoRA + MLP 14.183 ±0.040 0.341 ±0.010 0.329 ±0.010 
+
+LoRA + RAIL 15.238 ±1.016 0.347 ±0.037 0.368 ±0.008 
+
+RAFT 13.060 ±0.169 0.497 ±0.012 0.499 ±0.012 
+
+RELISH (Ours) 9.555 ±0.062 0.524 ±0.006 0.521 ±0.007 
+
+QWEN 3 8B Zero Shot 28.012 ±0.156 0.381 ±0.004 0.433 ±0.007 
+
+Many Shot 27.780 ±0.743 0.370 ±0.012 0.389 ±0.030 
+
+Linear 19.608 ±0.000 0.291 ±0.000 0.283 ±0.000 
+
+MLP 14.459 ±0.126 0.325 ±0.009 0.315 ±0.008 
+
+RAIL 28.603 ±0.025 0.384 ±0.001 0.450 ±0.003 
+
+LoRA + Zero Shot 19.322 ±0.203 0.279 ±0.026 0.261 ±0.004 
+
+LoRA + Linear 19.539 ±0.043 0.295 ±0.002 0.285 ±0.001 
+
+LoRA + MLP 14.395 ±0.088 0.323 ±0.010 0.313 ±0.009 
+
+LoRA + RAIL 17.809 ±1.278 0.409 ±0.025 0.430 ±0.033 
+
+RAFT 19.431 ±0.139 0.376 ±0.007 0.346 ±0.007 
+
+RELISH (Ours) 12.386 ±0.921 0.464 ±0.010 0.478 ±0.018 
+
+GEMMA 3 27b Instruct Zero Shot 28.496 ±0.006 0.389 ±0.006 0.394 ±0.002 
+
+Many Shot 21.105 ±0.975 0.396 ±0.019 0.406 ±0.016 
+
+Linear 25.082 ±0.000 0.160 ±0.000 0.116 ±0.000 
+
+MLP 14.567 ±0.076 0.305 ±0.006 0.295 ±0.005 
+
+RAIL 27.340 ±0.009 0.373 ±0.002 0.372 ±0.001 
+
+LoRA + Zero Shot 19.245 ±0.327 0.322 ±0.028 0.306 ±0.029 
+
+LoRA + Linear 25.617 ±0.360 0.174 ±0.009 0.159 ±0.008 
+
+LoRA + MLP 14.626 ±0.054 0.310 ±0.008 0.298 ±0.007 
+
+LoRA + RAIL 17.318 ±1.510 0.457 ±0.029 0.493 ±0.008 
+
+RAFT 13.242 ±1.656 0.529 ±0.006 0.521 ±0.006 
+
+RELISH (Ours) 11.941 ±2.003 0.541 ±0.009 0.530 ±0.005 
+
+QWEN 3 32B Zero Shot 27.628 ±0.056 0.421 ±0.006 0.432 ±0.007 
+
+Many Shot 25.149 ±0.998 0.433 ±0.025 0.434 ±0.018 
+
+Linear 22.955 ±0.000 0.246 ±0.000 0.236 ±0.000 
+
+MLP 14.048 ±0.134 0.372 ±0.015 0.354 ±0.011 
+
+RAIL 27.796 ±0.023 0.419 ±0.001 0.456 ±0.002 
+
+LoRA + Zero Shot 19.358 ±0.410 0.272 ±0.022 0.237 ±0.019 
+
+LoRA + Linear 22.394 ±0.086 0.270 ±0.002 0.241 ±0.001 
+
+LoRA + MLP 14.037 ±0.179 0.361 ±0.030 0.344 ±0.024 
+
+LoRA + RAIL 23.888 ±0.141 0.465 ±0.001 0.462 ±0.001 
+
+RAFT 13.012 ±1.022 0.477 ±0.001 0.472 ±0.000 
+
+RELISH (Ours) 11.759 ±0.812 0.567 ±0.004 0.554 ±0.004 
+
+38 Preprint. Under review. Table 18: Comparison on WMT SI EN (Sinhala → English). Metrics are mean ± std over 3 seeds and rounded to 3 decimals. Lower is better for RMSE ( ↓); higher is better for correlations ( ↑). 
+
+Dataset: WMT SI EN (Sinhala → English) 
+
+LLM encoder Inference RMSE ↓ Pearson ↑ Spearman ↑
+
+LLAMA 3.1 8B Instruct Zero Shot 40.343 ±0.720 0.433 ±0.028 0.427 ±0.020 
+
+Many Shot 35.311 ±3.971 0.186 ±0.020 0.149 ±0.054 
+
+Linear 29.768 ±0.000 0.368 ±0.000 0.348 ±0.000 
+
+MLP 19.460 ±0.198 0.521 ±0.004 0.477 ±0.004 
+
+RAIL 44.966 ±0.055 0.438 ±0.001 0.481 ±0.010 
+
+LoRA + Zero Shot 28.894 ±1.483 0.448 ±0.041 0.438 ±0.046 
+
+LoRA + Linear 30.483 ±0.089 0.361 ±0.001 0.348 ±0.002 
+
+LoRA + MLP 19.570 ±0.275 0.518 ±0.006 0.475 ±0.004 
+
+LoRA + RAIL 34.396 ±4.982 0.315 ±0.018 0.319 ±0.021 
+
+RAFT 18.411 ±1.496 0.507 ±0.012 0.476 ±0.010 
+
+RELISH (Ours) 18.152 ±0.474 0.630 ±0.016 0.600 ±0.008 
+
+QWEN 3 8B Zero Shot 28.314 ±0.161 0.472 ±0.007 0.471 ±0.008 
+
+Many Shot 38.964 ±1.962 0.383 ±0.035 0.376 ±0.046 
+
+Linear 30.422 ±0.000 0.345 ±0.000 0.313 ±0.000 
+
+MLP 20.558 ±0.108 0.483 ±0.005 0.436 ±0.006 
+
+RAIL 28.305 ±0.034 0.493 ±0.000 0.516 ±0.002 
+
+LoRA + Zero Shot 29.880 ±0.190 0.334 ±0.021 0.319 ±0.023 
+
+LoRA + Linear 30.448 ±0.121 0.349 ±0.004 0.318 ±0.004 
+
+LoRA + MLP 20.553 ±0.120 0.482 ±0.006 0.435 ±0.005 
+
+LoRA + RAIL 27.689 ±0.447 0.432 ±0.015 0.435 ±0.014 
+
+RAFT 21.034 ±3.215 0.564 ±0.017 0.529 ±0.002 
+
+RELISH (Ours) 17.506 ±0.286 0.586 ±0.011 0.545 ±0.007 
+
+GEMMA 3 27b Instruct Zero Shot 21.685 ±0.137 0.612 ±0.003 0.587 ±0.004 
+
+Many Shot 25.006 ±1.386 0.587 ±0.012 0.576 ±0.011 
+
+Linear 39.492 ±0.000 0.298 ±0.000 0.286 ±0.000 
+
+MLP 19.024 ±0.067 0.558 ±0.003 0.523 ±0.003 
+
+RAIL 22.617 ±0.009 0.583 ±0.002 0.570 ±0.002 
+
+LoRA + Zero Shot 29.368 ±0.522 0.410 ±0.017 0.401 ±0.014 
+
+LoRA + Linear 38.217 ±0.058 0.307 ±0.004 0.298 ±0.002 
+
+LoRA + MLP 19.048 ±0.051 0.561 ±0.001 0.522 ±0.003 
+
+LoRA + RAIL 21.554 ±0.063 0.591 ±0.002 0.566 ±0.003 
+
+RAFT 19.892 ±0.004 0.623 ±0.000 0.592 ±0.000 
+
+RELISH (Ours) 16.384 ±0.555 0.669 ±0.005 0.633 ±0.005 
+
+QWEN 3 32B Zero Shot 21.809 ±0.411 0.568 ±0.019 0.536 ±0.020 
+
+Many Shot 26.538 ±0.839 0.524 ±0.008 0.505 ±0.009 
+
+Linear 36.996 ±0.000 0.314 ±0.000 0.298 ±0.000 
+
+MLP 19.405 ±0.066 0.541 ±0.004 0.496 ±0.003 
+
+RAIL 20.587 ±0.031 0.570 ±0.001 0.556 ±0.004 
+
+LoRA + Zero Shot 29.508 ±0.120 0.407 ±0.009 0.399 ±0.008 
+
+LoRA + Linear 37.975 ±0.099 0.298 ±0.001 0.277 ±0.001 
+
+LoRA + MLP 19.504 ±0.025 0.533 ±0.005 0.489 ±0.003 
+
+LoRA + RAIL 22.659 ±0.117 0.587 ±0.002 0.557 ±0.001 
+
+RAFT 19.616 ±0.045 0.610 ±0.000 0.569 ±0.000 
+
+RELISH (Ours) 17.110 ±0.148 0.658 ±0.004 0.621 ±0.003 
+
+39

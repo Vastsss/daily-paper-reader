@@ -6,89 +6,88 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-04-05
-- 运行时间：2026-04-05 19:30:04 UTC
+- 最新运行日期：2026-04-06
+- 运行时间：2026-04-06 20:19:31 UTC
 - 运行状态：成功
-- 本次总论文数：23
-- 精读区：9
+- 本次总论文数：22
+- 精读区：8
 - 速读区：14
 
 ### 今日简报（AI）
-今日深度研读 23 篇前沿成果，聚焦自然语言驱动的多智能体强化学习与电力系统智能化控制。
-- 详情：[/202604/05/README](/202604/05/README)
+今日深度解析 22 篇前沿成果，重点聚焦医疗心电与传感器行为识别领域的基座模型演进。
+核心结论揭示了医疗大模型在边缘侧心血管智能的巨大潜力，以及基座模型对传感器感知范式的重塑。
+建议关注大模型与可穿戴设备的结合，探索 AI 在个人健康管理与边缘计算中的落地机会。
+- 详情：[/202604/06/README](/202604/06/README)
 
 ### 精读区论文标签
-1. [LangMARL: Natural Language Multi-Agent Reinforcement Learning](/202604/05/2604.00722v1-langmarl-natural-language-multi-agent-reinforcement-learning)  
+1. [ECG Foundation Models and Medical LLMs for Agentic Cardiovascular Intelligence at the Edge: A Review and Outlook](/202604/06/2604.02501v1-ecg-foundation-models-and-medical-llms-for-agentic-cardiovascular-intelligence-at-the-edge-a-review-and-outlook)  
+   标签：评分：9.0/10、query:llm-ts
+   evidence：用于波形数据的心电图基础模型和医疗大语言模型
+2. [Foundation Models Defining A New Era In Sensor-based Human Activity Recognition: A Survey And Outlook](/202604/06/2604.02711v1-foundation-models-defining-a-new-era-in-sensor-based-human-activity-recognition-a-survey-and-outlook)  
+   标签：评分：9.0/10、query:ts-fm
+   evidence：基于传感器的时序数据基础模型综述
+3. [Structure-Aware Commitment Reduction for Network-Constrained Unit Commitment with Solver-Preserving Guarantees](/202604/06/2604.02788v1-structure-aware-commitment-reduction-for-network-constrained-unit-commitment-with-solver-preserving-guarantees)  
    标签：评分：9.0/10、query:llm
-   evidence：基于大语言模型智能体的多智能体强化学习
-2. [Model-Free Fast Frequency Support of Wind Farms for Tracking Optimal Frequency Trajectory](/202604/05/2604.01945v1-model-free-fast-frequency-support-of-wind-farms-for-tracking-optimal-frequency-trajectory)  
-   标签：评分：9.0/10、query:llm-wd
-   evidence：风电场快速频率支撑与轨迹优化
-3. [Time Series Correlations and Kolmogorov Complexity: A Hausdorff Dimension Perspective](/202604/05/2603.28375v1-time-series-correlations-and-kolmogorov-complexity-a-hausdorff-dimension-perspective)  
+   evidence：大语言模型预测电力系统中的机组组合计划
+4. [Debiasing LLMs by Fine-tuning](/202604/06/2604.02921v1-debiasing-llms-by-fine-tuning)  
+   标签：评分：9.0/10、query:llm-ts
+   evidence：使用 LoRA 微调大语言模型以减轻预测任务中的外推偏差
+5. [Brainstacks: Cross-Domain Cognitive Capabilities via Frozen MoE-LoRA Stacks for Continual LLM Learning](/202604/06/2604.01152v1-brainstacks-cross-domain-cognitive-capabilities-via-frozen-moe-lora-stacks-for-continual-llm-learning)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：防止时间序列分析中的伪相关性
-4. [IMPACT: Influence Modeling for Open-Set Time Series Anomaly Detection](/202604/05/2603.29183v1-impact-influence-modeling-for-open-set-time-series-anomaly-detection)  
-   标签：评分：8.0/10、query:ts-fm
-   evidence：开集时间序列异常检测框架
-5. [Agent Q-Mix: Selecting the Right Action for LLM Multi-Agent Systems through Reinforcement Learning](/202604/05/2604.00344v1-agent-q-mix-selecting-the-right-action-for-llm-multi-agent-systems-through-reinforcement-learning)  
+   evidence：大语言模型持续多领域微调的模块化架构
+6. [LLM REgression with a Latent Iterative State Head](/202604/06/2604.01206v1-llm-regression-with-a-latent-iterative-state-head)  
+   标签：评分：8.0/10、query:llm-ts
+   evidence：直接从冻结的大模型表示中预测标量值以进行回归
+7. [Truthful Production Uncertainty in Electricity Markets: A Two-Stage Mechanism](/202604/06/2604.02455v1-truthful-production-uncertainty-in-electricity-markets-a-two-stage-mechanism)  
    标签：评分：8.0/10、query:llm
-   evidence：LLM系统的多智能体强化学习
-6. [Execution-Verified Reinforcement Learning for Optimization Modeling](/202604/05/2604.00442v1-execution-verified-reinforcement-learning-for-optimization-modeling)  
+   evidence：可再生能源生产不确定性与市场调度
+8. [Multi-agent Reinforcement Learning-based Joint Design of Low-Carbon P2P Market and Bidding Strategy in Microgrids](/202604/06/2604.02728v1-multi-agent-reinforcement-learning-based-joint-design-of-low-carbon-p2p-market-and-bidding-strategy-in-microgrids)  
    标签：评分：8.0/10、query:llm
-   evidence：使用大语言模型自动化优化建模以实现决策智能
-7. [PHMForge: A Scenario-Driven Agentic Benchmark for Industrial Asset Lifecycle Maintenance](/202604/05/2604.01532v1-phmforge-a-scenario-driven-agentic-benchmark-for-industrial-asset-lifecycle-maintenance)  
-   标签：评分：8.0/10、query:llm-ts
-   evidence：用于工业故障预测与健康管理（含剩余寿命预测）的大模型智能体
-8. [Bridging Deep Learning and Integer Linear Programming: A Predictive-to-Prescriptive Framework for Supply Chain Analytics](/202604/05/2604.01775v1-bridging-deep-learning-and-integer-linear-programming-a-predictive-to-prescriptive-framework-for-supply-chain-analytics)  
-   标签：评分：8.0/10、query:llm-ts
-   evidence：N-BEATS和N-HiTS在零售数据上的预测性能
-9. [CANDI: Curated Test-Time Adaptation for Multivariate Time-Series Anomaly Detection Under Distribution Shift](/202604/05/2604.01845v1-candi-curated-test-time-adaptation-for-multivariate-time-series-anomaly-detection-under-distribution-shift)  
-   标签：评分：8.0/10、query:ts-fm
-   evidence：多变量时间序列异常检测
+   evidence：利用多智能体强化学习进行可再生能源发电与微网协调
 
 ### 速读区论文标签
-1. [Typical Scenarios Generation Method Considering System-level Characteristics of Power System](/202604/05/2604.00565v1-typical-scenarios-generation-method-considering-system-level-characteristics-of-power-system)  
-   标签：评分：8.0/10、query:llm
-   evidence：考虑电力系统中可再生能源的场景生成
-2. [Selective State-Space Models for Koopman-based Data-driven Distribution System State Estimation](/202604/05/2604.02273v1-selective-state-space-models-for-koopman-based-data-driven-distribution-system-state-estimation)  
-   标签：评分：8.0/10、query:ts-fm
-   evidence：用于时变行为的选择性状态空间模型
-3. [DSevolve: Enabling Real-Time Adaptive Scheduling on Dynamic Shop Floor with LLM-Evolved Heuristic Portfolios](/202604/05/2603.27628v1-dsevolve-enabling-real-time-adaptive-scheduling-on-dynamic-shop-floor-with-llm-evolved-heuristic-portfolios)  
-   标签：评分：7.0/10、query:llm
-   evidence：用于工业调度的 LLM 驱动自动启发式设计
-4. [Low-Rank Adaptation Reduces Catastrophic Forgetting in Sequential Transformer Encoder Fine-Tuning: Controlled Empirical Evidence and Frozen-Backbone Representation Probes](/202604/05/2603.27707v1-low-rank-adaptation-reduces-catastrophic-forgetting-in-sequential-transformer-encoder-fine-tuning-controlled-empirical-evidence-and-frozen-backbone-representation-probes)  
+1. [SHARP: Short-Window Streaming for Accurate and Robust Prediction in Motion Forecasting](/202604/06/2603.28091v1-sharp-short-window-streaming-for-accurate-and-robust-prediction-in-motion-forecasting)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：Transformer模型的参数高效微调
-5. [Impact of Inverter-Based Resources on the Protection of the Electrical Grid](/202604/05/2603.27816v1-impact-of-inverter-based-resources-on-the-protection-of-the-electrical-grid)  
+   evidence：交通环境中的运动预测和轨迹预测
+2. [Evolutionary Discovery of Reinforcement Learning Algorithms via Large Language Models](/202604/06/2603.28416v1-evolutionary-discovery-of-reinforcement-learning-algorithms-via-large-language-models)  
    标签：评分：7.0/10、query:llm
-   evidence：风能和太阳能资源对电网保护的影响
-6. [Self-Organizing Score-based Data Assimilation](/202604/05/2603.28048v1-self-organizing-score-based-data-assimilation)  
-   标签：评分：7.0/10、query:llm-ts
-   evidence：从观测到的时间序列数据中推断潜在状态
-7. [Differentiable Power-Flow Optimization](/202604/05/2603.28203v1-differentiable-power-flow-optimization)  
+   evidence：利用LLM作为变异算子进化发现强化学习算法
+3. [Coalition Formation with Limited Information Sharing for Local Energy Management](/202604/06/2603.28562v1-coalition-formation-with-limited-information-sharing-for-local-energy-management)  
    标签：评分：7.0/10、query:llm
-   evidence：可再生能源管理与潮流优化
-8. [OptiMer: Optimal Distribution Vector Merging Is Better than Data Mixing for Continual Pre-Training](/202604/05/2603.28858v1-optimer-optimal-distribution-vector-merging-is-better-than-data-mixing-for-continual-pre-training)  
-   标签：评分：7.0/10、query:llm-ts
-   evidence：大语言模型领域适应的持续预训练
-9. [Real-Time Surrogate Modeling for Fast Transient Prediction in Inverter-Based Microgrids Using CNN and LightGBM](/202604/05/2603.29255v1-real-time-surrogate-modeling-for-fast-transient-prediction-in-inverter-based-microgrids-using-cnn-and-lightgbm)  
+   evidence：本地能源管理与产消者间的协调
+4. [Survival In-Context: Prior-fitted In-context Learning Tabular Foundation Model for Survival Analysis](/202604/06/2603.29475v1-survival-in-context-prior-fitted-in-context-learning-tabular-foundation-model-for-survival-analysis)  
+   标签：评分：7.0/10、query:ts-fm
+   evidence：用于时间事件建模的先验拟合上下文学习表格基础模型
+5. [Stochastic Model Predictive Control based on Mixed Random Variables for Economic Energy Management](/202604/06/2603.29586v1-stochastic-model-predictive-control-based-on-mixed-random-variables-for-economic-energy-management)  
    标签：评分：7.0/10、query:llm
-   evidence：逆变器微电网的实时监测与预测
-10. [An Isotropic Approach to Efficient Uncertainty Quantification with Gradient Norms](/202604/05/2603.29466v1-an-isotropic-approach-to-efficient-uncertainty-quantification-with-gradient-norms)  
+   evidence：电网韧性的优化调度与能量管理
+6. [Central limit theorems for the outputs of fully convolutional neural networks with time series input](/202604/06/2603.29612v1-central-limit-theorems-for-the-outputs-of-fully-convolutional-neural-networks-with-time-series-input)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：大语言模型的高效不确定性量化
-11. [Stochastic coupling of climate variables and ice volume over the Late Pleistocene glacial cycles](/202604/05/2603.26937v1-stochastic-coupling-of-climate-variables-and-ice-volume-over-the-late-pleistocene-glacial-cycles)  
+   evidence：时间序列输入下卷积神经网络的理论分析
+7. [End-to-End Image Compression with Segmentation Guided Dual Coding for Wind Turbines](/202604/06/2603.29927v1-end-to-end-image-compression-with-segmentation-guided-dual-coding-for-wind-turbines)  
+   标签：评分：7.0/10、query:llm-wd
+   evidence：用于风力涡轮机巡检图像的深度学习
+8. [STRIDE: When to Speak Meets Sequence Denoising for Streaming Video Understanding](/202604/06/2603.27593v1-stride-when-to-speak-meets-sequence-denoising-for-streaming-video-understanding)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：古气候时间序列行为建模
-12. [Time Window-Based Netload Range Cost Curves for Coordinated Transmission and Distribution Planning Under Uncertainty](/202604/05/2603.27161v1-time-window-based-netload-range-cost-curves-for-coordinated-transmission-and-distribution-planning-under-uncertainty)  
+   evidence：视频LLM中的序列建模与时间转换
+9. [Emergent Social Intelligence Risks in Generative Multi-Agent Systems](/202604/06/2603.27771v1-emergent-social-intelligence-risks-in-generative-multi-agent-systems)  
    标签：评分：6.0/10、query:llm
-   evidence：净负荷不确定性下输配电规划的时间维度
-13. [E-TIDE: Fast, Structure-Preserving Motion Forecasting from Event Sequences](/202604/05/2603.27757v1-e-tide-fast-structure-preserving-motion-forecasting-from-event-sequences)  
+   evidence：包含大型生成模型和资源分配的多智能体系统
+10. [An Accurate and Fast Start-up Scheme for Power System Real-time Emergency Control](/202604/06/2603.28450v1-an-accurate-and-fast-start-up-scheme-for-power-system-real-time-emergency-control)  
+   标签：评分：6.0/10、query:llm
+   evidence：电力系统实时紧急控制与稳定性
+11. [Fine-Tuning Large Language Models for Cooperative Tactical Deconfliction of Small Unmanned Aerial Systems](/202604/06/2603.28561v1-fine-tuning-large-language-models-for-cooperative-tactical-deconfliction-of-small-unmanned-aerial-systems)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：从过去观测的时间序列中预测未来事件表征
-14. [Is One-Shot In-Context Learning Helpful for Data Selection in Task-Specific Fine-Tuning of Multimodal LLMs?](/202604/05/2603.28058v1-is-one-shot-in-context-learning-helpful-for-data-selection-in-task-specific-fine-tuning-of-multimodal-llms)  
+   evidence：针对多智能体环境中的战术决策微调LLM
+12. [Developing Adaptive Context Compression Techniques for Large Language Models (LLMs) in Long-Running Interactions](/202604/06/2603.29193v1-developing-adaptive-context-compression-techniques-for-large-language-models-llms-in-long-running-interactions)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：多模态大语言模型的特定任务微调
+   evidence：大语言模型的上下文压缩
+13. [MemRerank: Preference Memory for Personalized Product Reranking](/202604/06/2603.29247v1-memrerank-preference-memory-for-personalized-product-reranking)  
+   标签：评分：6.0/10、query:llm-ts
+   evidence：调整LLM用于时序用户历史挖掘
+14. [GraSP-STL: A Graph-Based Framework for Zero-Shot Signal Temporal Logic Planning via Offline Goal-Conditioned Reinforcement Learning](/202604/06/2603.29533v1-grasp-stl-a-graph-based-framework-for-zero-shot-signal-temporal-logic-planning-via-offline-goal-conditioned-reinforcement-learning)  
+   标签：评分：6.0/10、query:ts-fm
+   evidence：基于离线数据的信号时序逻辑规范下的零样本规划
 
 
 <div class="dpr-home-promo-card">
