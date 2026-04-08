@@ -6,91 +6,88 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-04-07
-- 运行时间：2026-04-07 20:22:15 UTC
+- 最新运行日期：2026-04-08
+- 运行时间：2026-04-08 20:17:28 UTC
 - 运行状态：成功
-- 本次总论文数：23
-- 精读区：9
+- 本次总论文数：22
+- 精读区：8
 - 速读区：14
 
 ### 今日简报（AI）
-今日聚焦 23 篇前沿论文，深度解析多模态视觉语言模型与联邦时间序列大模型的突破性进展。
-满分力作 Solar-VLM 显著提升了光伏预测精度，而离散原型记忆技术则为联邦学习下的时间序列建模提供了新范式。
-建议重点关注多模态技术在能源预测及分布式基础模型中的跨界融合趋势。
-- 详情：[/202604/07/README](/202604/07/README)
+今日深度研读 22 篇论文，聚焦多变量时序合成与跨机器异常检测的 SOTA 突破。
+满分论文揭示了动态线性共区域化在数据仿真中的潜力，以及预训练模型解决跨设备检测难题的高效路径。
+建议优先关注预训练时序模型在复杂工业场景下的迁移能力，并尝试利用合成数据提升模型鲁棒性。
+- 详情：[/202604/08/README](/202604/08/README)
 
 ### 精读区论文标签
-1. [Solar-VLM: Multimodal Vision-Language Models for Augmented Solar Power Forecasting](/202604/07/2604.04145v1-solar-vlm-multimodal-vision-language-models-for-augmented-solar-power-forecasting)  
-   标签：评分：10.0/10、query:llm-wd
-   evidence：大语言模型驱动的多模态光伏功率预测框架
-2. [Discrete Prototypical Memories for Federated Time Series Foundation Models](/202604/07/2604.04475v1-discrete-prototypical-memories-for-federated-time-series-foundation-models)  
+1. [Dynamic Linear Coregionalization for Realistic Synthetic Multivariate Time Series](/202604/08/2604.05064v1-dynamic-linear-coregionalization-for-realistic-synthetic-multivariate-time-series)  
+   标签：评分：10.0/10、query:ts-fm
+   evidence：用于训练时间序列基础模型（FMTS）的合成数据
+2. [Cross-Machine Anomaly Detection Leveraging Pre-trained Time-series Model](/202604/08/2604.05335v1-cross-machine-anomaly-detection-leveraging-pre-trained-time-series-model)  
+   标签：评分：10.0/10、query:ts-fm
+   evidence：利用预训练时序基础模型MOMENT进行异常检测
+3. [TFRBench: A Reasoning Benchmark for Evaluating Forecasting Systems](/202604/08/2604.05364v1-tfrbench-a-reasoning-benchmark-for-evaluating-forecasting-systems)  
    标签：评分：10.0/10、query:llm-ts
-   evidence：基于LLM的联邦时间序列基础模型
-3. [Enhancing 6G Wireless Intelligence: Do LLMs Work for CSI Prediction?](/202604/07/2604.04028v1-enhancing-6g-wireless-intelligence-do-llms-work-for-csi-prediction)  
-   标签：评分：9.0/10、query:llm-ts
-   evidence：基于大语言模型的信道状态信息 (CSI) 预测框架
-4. [TimeSeek: Temporal Reliability of Agentic Forecasters](/202604/07/2604.04220v1-timeseek-temporal-reliability-of-agentic-forecasters)  
-   标签：评分：9.0/10、query:llm-ts
-   evidence：代理型大语言模型预测器的时序可靠性
-5. [A Family of Open Time-Series Foundation Models for the Radio Access Network](/202604/07/2604.04271v1-a-family-of-open-time-series-foundation-models-for-the-radio-access-network)  
-   标签：评分：9.0/10、query:ts-fm
-   evidence：用于无线接入网任务的时间序列基础模型
-6. [HighFM: Towards a Foundation Model for Learning Representations from High-Frequency Earth Observation Data](/202604/07/2604.04306v1-highfm-towards-a-foundation-model-for-learning-representations-from-high-frequency-earth-observation-data)  
-   标签：评分：9.0/10、query:ts-fm
-   evidence：高时间分辨率地球观测数据的基础模型
-7. [Physics Informed Reinforcement Learning with Gibbs Priors for Topology Control in Power Grids](/202604/07/2604.01830v1-physics-informed-reinforcement-learning-with-gibbs-priors-for-topology-control-in-power-grids)  
-   标签：评分：8.0/10、query:llm
-   evidence：物理信息强化学习用于电网拓扑控制
-8. [A Multimodal Vision Transformer-based Modeling Framework for Prediction of Fluid Flows in Energy Systems](/202604/07/2604.02483v1-a-multimodal-vision-transformer-based-modeling-framework-for-prediction-of-fluid-flows-in-energy-systems)  
-   标签：评分：8.0/10、query:llm
-   evidence：基于Transformer的能源系统预测
-9. [On options-driven realized volatility forecasting: Information gains via rough volatility model](/202604/07/2604.02743v1-on-options-driven-realized-volatility-forecasting-information-gains-via-rough-volatility-model)  
+   evidence：评估时间序列预测基础模型的推理能力
+4. [Bridging Natural Language and Microgrid Dynamics: A Context-Aware Simulator and Dataset](/202604/08/2604.05429v1-bridging-natural-language-and-microgrid-dynamics-a-context-aware-simulator-and-dataset)  
+   标签：评分：10.0/10、query:llm
+   evidence：将语言上下文与微电网动态集成
+5. [CritBench: A Framework for Evaluating Cybersecurity Capabilities of Large Language Models in IEC 61850 Digital Substation Environments](/202604/08/2604.06019v1-critbench-a-framework-for-evaluating-cybersecurity-capabilities-of-large-language-models-in-iec-61850-digital-substation-environments)  
+   标签：评分：9.0/10、query:llm
+   evidence：评估大语言模型在数字变电站环境中的能力
+6. [Channel-wise Retrieval for Multivariate Time Series Forecasting](/202604/08/2604.05543v1-channel-wise-retrieval-for-multivariate-time-series-forecasting)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：使用深度学习代理进行已实现波动率预测
+   evidence：多变量时间序列预测的通道检索
+7. [LoRM: Learning the Language of Rotating Machinery for Self-Supervised Condition Monitoring](/202604/08/2604.05863v1-lorm-learning-the-language-of-rotating-machinery-for-self-supervised-condition-monitoring)  
+   标签：评分：8.0/10、query:ts-fm
+   evidence：用于机械信号标记化和预测的自监督框架
+8. [On Dominant Manifolds in Reservoir Computing Networks](/202604/08/2604.05967v1-on-dominant-manifolds-in-reservoir-computing-networks)  
+   标签：评分：8.0/10、query:llm-ts
+   evidence：用于时间预测任务的循环网络动力学
 
 ### 速读区论文标签
-1. [Matrix Profile for Time-Series Anomaly Detection: A Reproducible Open-Source Benchmark on TSB-AD](/202604/07/2604.02445v1-matrix-profile-for-time-series-anomaly-detection-a-reproducible-open-source-benchmark-on-tsb-ad)  
-   标签：评分：8.0/10、query:ts-fm
-   evidence：用于时间序列异常检测基准的矩阵轮廓法
-2. [Accelerated kriging interpolation for real-time grid frequency forecasting](/202604/07/2604.02932v1-accelerated-kriging-interpolation-for-real-time-grid-frequency-forecasting)  
-   标签：评分：8.0/10、query:llm
-   evidence：新能源并网的电网频率预测
-3. [Generative Unsupervised Downscaling of Climate Models via Domain Alignment: Application to Wind Fields](/202604/07/2604.03341v1-generative-unsupervised-downscaling-of-climate-models-via-domain-alignment-application-to-wind-fields)  
-   标签：评分：8.0/10、query:llm-wd
-   evidence：用于风能领域风场降尺度的生成式机器学习
-4. [Adversarial Robustness of Deep State Space Models for Forecasting](/202604/07/2604.03427v1-adversarial-robustness-of-deep-state-space-models-for-forecasting)  
-   标签：评分：8.0/10、query:llm-ts
-   evidence：用于时间序列预测的状态空间模型及对抗鲁棒性
-5. [VectraFlow: Long-Horizon Semantic Processing over Data and Event Streams with LLMs](/202604/07/2604.03855v1-vectraflow-long-horizon-semantic-processing-over-data-and-event-streams-with-llms)  
-   标签：评分：8.0/10、query:llm-ts
-   evidence：利用LLM对数据流进行长周期语义处理
-6. [Variational Neurons in Transformers for Language Modeling](/202604/07/2603.28219v1-variational-neurons-in-transformers-for-language-modeling)  
-   标签：评分：7.0/10、query:llm-ts
-   evidence：Transformer架构中用于语言建模的变分神经元
-7. [Nonlinear Factor Decomposition via Kolmogorov-Arnold Networks: A Spectral Approach to Asset Return Analysis](/202604/07/2603.28257v1-nonlinear-factor-decomposition-via-kolmogorov-arnold-networks-a-spectral-approach-to-asset-return-analysis)  
-   标签：评分：7.0/10、query:llm-ts
-   evidence：资产收益时间序列的非线性因子分解
-8. [Multi-Agent LLMs for Adaptive Acquisition in Bayesian Optimization](/202604/07/2603.28959v1-multi-agent-llms-for-adaptive-acquisition-in-bayesian-optimization)  
+1. [Causality-inspired Federated Learning for Dynamic Spatio-Temporal Graphs](/202604/08/2603.29384v1-causality-inspired-federated-learning-for-dynamic-spatio-temporal-graphs)  
+   标签：评分：7.0/10、query:ts-fm
+   evidence：动态时空图的联邦学习
+2. [Model-Free Coordinated Optimization of IBR Controllers for Enhanced Grid-Level Transient Dynamic Performance](/202604/08/2603.29995v2-model-free-coordinated-optimization-of-ibr-controllers-for-enhanced-grid-level-transient-dynamic-performance)  
    标签：评分：7.0/10、query:llm
-   evidence：用于顺序决策和优化的多智能体LLM
-9. [Diversity-Aware Reverse Kullback-Leibler Divergence for Large Language Model Distillation](/202604/07/2604.00223v1-diversity-aware-reverse-kullback-leibler-divergence-for-large-language-model-distillation)  
+   evidence：针对电网稳定性的并网逆变器控制器优化
+3. [Super-Resolving Coarse-Resolution Weather Forecasts With Flow Matching](/202604/08/2604.00897v1-super-resolving-coarse-resolution-weather-forecasts-with-flow-matching)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：大语言模型蒸馏中的逆KL散度研究
-10. [Forecasting duration in high-frequency financial data using a self-exciting flexible residual point process](/202604/07/2604.00346v1-forecasting-duration-in-high-frequency-financial-data-using-a-self-exciting-flexible-residual-point-process)  
+   evidence：天气预报轨迹的生成式超分辨率处理
+4. [Dispatch-Embedded Long-Term Tail Risk Assessment and Mitigation via CVaR for Renewable Power Systems](/202604/08/2604.00926v1-dispatch-embedded-long-term-tail-risk-assessment-and-mitigation-via-cvar-for-renewable-power-systems)  
+   标签：评分：7.0/10、query:llm
+   evidence：可再生能源电力系统的调度策略与风险评估
+5. [NeuroDDAF: Neural Dynamic Diffusion-Advection Fields with Evidential Fusion for Air Quality Forecasting](/202604/08/2604.01175v1-neuroddaf-neural-dynamic-diffusion-advection-fields-with-evidential-fusion-for-air-quality-forecasting)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：预测高频金融时间序列中的持续时间
-11. [Meta-Harness: End-to-End Optimization of Model Harnesses](/202604/07/2603.28052v1-meta-harness-end-to-end-optimization-of-model-harnesses)  
-   标签：评分：6.0/10、query:llm-ts
-   evidence：大语言模型系统模型套件的优化
-12. [Critic-Free Deep Reinforcement Learning for Maritime Coverage Path Planning on Irregular Hexagonal Grids](/202604/07/2603.28385v1-critic-free-deep-reinforcement-learning-for-maritime-coverage-path-planning-on-irregular-hexagonal-grids)  
+   evidence：具有风驱动传输和时空动态的空气质量预测
+6. [An Online Machine Learning Multi-resolution Optimization Framework for Energy System Design Limit of Performance Analysis](/202604/08/2604.01308v1-an-online-machine-learning-multi-resolution-optimization-framework-for-energy-system-design-limit-of-performance-analysis)  
+   标签：评分：7.0/10、query:llm
+   evidence：集成能源系统设计的优化框架
+7. [Nonlinear Methods for Analyzing Pose in Behavioral Research](/202604/08/2604.01453v1-nonlinear-methods-for-analyzing-pose-in-behavioral-research)  
+   标签：评分：7.0/10、query:llm-ts
+   evidence：基于递归的时间序列分析
+8. [Capturing Multivariate Dependencies of EV Charging Events: From Parametric Copulas to Neural Density Estimation](/202604/08/2603.29554v1-capturing-multivariate-dependencies-of-ev-charging-events-from-parametric-copulas-to-neural-density-estimation)  
    标签：评分：6.0/10、query:llm
-   evidence：基于Transformer的组合优化策略
-13. [HISA: Efficient Hierarchical Indexing for Fine-Grained Sparse Attention](/202604/07/2603.28458v1-hisa-efficient-hierarchical-indexing-for-fine-grained-sparse-attention)  
+   evidence：为电网可靠性建模电动汽车充电事件
+9. [SkeletonContext: Skeleton-side Context Prompt Learning for Zero-Shot Skeleton-based Action Recognition](/202604/08/2603.29692v1-skeletoncontext-skeleton-side-context-prompt-learning-for-zero-shot-skeleton-based-action-recognition)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：大语言模型的高效稀疏注意力机制
-14. [HISA: Efficient Hierarchical Indexing for Fine-Grained Sparse Attention](/202604/07/2603.28458v2-hisa-efficient-hierarchical-indexing-for-fine-grained-sparse-attention)  
+   evidence：骨架运动与语言驱动上下文语义之间的跨模态学习
+10. [Real-Time Explanations for Tabular Foundation Models](/202604/08/2603.29946v1-real-time-explanations-for-tabular-foundation-models)  
+   标签：评分：6.0/10、query:ts-fm
+   evidence：表格基础模型架构与性能
+11. [From Net Load Modifiers to Firm Capacity: The Role of Distributed Energy Resources in Resource Adequacy](/202604/08/2604.00287v1-from-net-load-modifiers-to-firm-capacity-the-role-of-distributed-energy-resources-in-resource-adequacy)  
+   标签：评分：6.0/10、query:llm
+   evidence：集成分布式能源与上游预测
+12. [Real Time Local Wind Inference for Robust Autonomous Navigation](/202604/08/2604.00343v1-real-time-local-wind-inference-for-robust-autonomous-navigation)  
+   标签：评分：6.0/10、query:llm-wd
+   evidence：使用深度学习进行风流场预测
+13. [Adapting Text LLMs to Speech via Multimodal Depth Up-Scaling](/202604/08/2604.00489v1-adapting-text-llms-to-speech-via-multimodal-depth-up-scaling)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：大语言模型中稀疏注意力的层级索引优化
+   evidence：通过深度上采样将文本大模型适配到语音领域
+14. [Learning from Many and Adapting to the Unknown in Open-set Test Streams](/202604/08/2604.00533v1-learning-from-many-and-adapting-to-the-unknown-in-open-set-test-streams)  
+   标签：评分：6.0/10、query:llm-ts
+   evidence：针对演化任务的参数高效LLM适配
 
 
 <div class="dpr-home-promo-card">
