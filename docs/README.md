@@ -6,88 +6,91 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-04-08
-- 运行时间：2026-04-08 20:17:28 UTC
+- 最新运行日期：2026-04-09
+- 运行时间：2026-04-09 20:53:30 UTC
 - 运行状态：成功
-- 本次总论文数：22
-- 精读区：8
+- 本次总论文数：23
+- 精读区：9
 - 速读区：14
 
 ### 今日简报（AI）
-今日深度研读 22 篇论文，聚焦多变量时序合成与跨机器异常检测的 SOTA 突破。
-满分论文揭示了动态线性共区域化在数据仿真中的潜力，以及预训练模型解决跨设备检测难题的高效路径。
-建议优先关注预训练时序模型在复杂工业场景下的迁移能力，并尝试利用合成数据提升模型鲁棒性。
-- 详情：[/202604/08/README](/202604/08/README)
+今日深度研读 23 篇论文，聚焦时间序列大模型与能源系统优化，满分论文揭示了联邦学习在异构数据下的巨大潜力。
+重点关注双层异构学习如何赋能时序基础模型，以及动态资源协调对提升电网承载力的关键作用。
+建议优先探索大模型在医疗临床与跨模态适配中的落地应用，把握垂直领域 AI 的演进趋势。
+- 详情：[/202604/09/README](/202604/09/README)
 
 ### 精读区论文标签
-1. [Dynamic Linear Coregionalization for Realistic Synthetic Multivariate Time Series](/202604/08/2604.05064v1-dynamic-linear-coregionalization-for-realistic-synthetic-multivariate-time-series)  
+1. [Bi-level Heterogeneous Learning for Time Series Foundation Models: A Federated Learning Approach](/202604/09/2604.06727v1-bi-level-heterogeneous-learning-for-time-series-foundation-models-a-federated-learning-approach)  
    标签：评分：10.0/10、query:ts-fm
-   evidence：用于训练时间序列基础模型（FMTS）的合成数据
-2. [Cross-Machine Anomaly Detection Leveraging Pre-trained Time-series Model](/202604/08/2604.05335v1-cross-machine-anomaly-detection-leveraging-pre-trained-time-series-model)  
-   标签：评分：10.0/10、query:ts-fm
-   evidence：利用预训练时序基础模型MOMENT进行异常检测
-3. [TFRBench: A Reasoning Benchmark for Evaluating Forecasting Systems](/202604/08/2604.05364v1-tfrbench-a-reasoning-benchmark-for-evaluating-forecasting-systems)  
-   标签：评分：10.0/10、query:llm-ts
-   evidence：评估时间序列预测基础模型的推理能力
-4. [Bridging Natural Language and Microgrid Dynamics: A Context-Aware Simulator and Dataset](/202604/08/2604.05429v1-bridging-natural-language-and-microgrid-dynamics-a-context-aware-simulator-and-dataset)  
-   标签：评分：10.0/10、query:llm
-   evidence：将语言上下文与微电网动态集成
-5. [CritBench: A Framework for Evaluating Cybersecurity Capabilities of Large Language Models in IEC 61850 Digital Substation Environments](/202604/08/2604.06019v1-critbench-a-framework-for-evaluating-cybersecurity-capabilities-of-large-language-models-in-iec-61850-digital-substation-environments)  
+   evidence：时序基础模型的双层学习方法
+2. [Dynamic resource coordination can increase grid hosting capacity to support more renewables, storage, and electrified load growth](/202604/09/2604.02170v1-dynamic-resource-coordination-can-increase-grid-hosting-capacity-to-support-more-renewables-storage-and-electrified-load-growth)  
    标签：评分：9.0/10、query:llm
-   evidence：评估大语言模型在数字变电站环境中的能力
-6. [Channel-wise Retrieval for Multivariate Time Series Forecasting](/202604/08/2604.05543v1-channel-wise-retrieval-for-multivariate-time-series-forecasting)  
+   evidence：可再生能源集成与电网接纳能力优化
+3. [Bridging Natural Language and Microgrid Dynamics: A Context-Aware Simulator and Dataset](/202604/09/2604.05429v2-bridging-natural-language-and-microgrid-dynamics-a-context-aware-simulator-and-dataset)  
+   标签：评分：9.0/10、query:llm
+   evidence：将非结构化上下文信息与定量可再生能源动态相结合
+4. [MICA: Multivariate Infini Compressive Attention for Time Series Forecasting](/202604/09/2604.06473v1-mica-multivariate-infini-compressive-attention-for-time-series-forecasting)  
+   标签：评分：9.0/10、query:ts-fm
+   evidence：用于多元时间序列预测的Transformer架构
+5. [How Does LLM Help Regional CPI Forecast: An LLM-powered Deep Panel Modeling Framework](/202604/09/2604.06894v1-how-does-llm-help-regional-cpi-forecast-an-llm-powered-deep-panel-modeling-framework)  
+   标签：评分：9.0/10、query:llm-ts
+   evidence：集成大语言模型分析与社交媒体叙事进行预测
+6. [MATA-Former & SIICU: Semantic Aware Temporal Alignment for High-Fidelity ICU Risk Prediction](/202604/09/2604.01727v1-mata-former--siicu-semantic-aware-temporal-alignment-for-high-fidelity-icu-risk-prediction)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：多变量时间序列预测的通道检索
-7. [LoRM: Learning the Language of Rotating Machinery for Self-Supervised Condition Monitoring](/202604/08/2604.05863v1-lorm-learning-the-language-of-rotating-machinery-for-self-supervised-condition-monitoring)  
-   标签：评分：8.0/10、query:ts-fm
-   evidence：用于机械信号标记化和预测的自监督框架
-8. [On Dominant Manifolds in Reservoir Computing Networks](/202604/08/2604.05967v1-on-dominant-manifolds-in-reservoir-computing-networks)  
+   evidence：使用时间对齐Transformer预测演变的临床风险
+7. [ROMAN: A Multiscale Routing Operator for Convolutional Time Series Models](/202604/09/2604.02577v1-roman-a-multiscale-routing-operator-for-convolutional-time-series-models)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：用于时间预测任务的循环网络动力学
+   evidence：时间序列模型的多尺度路由算子
+8. [Distributed Snitch Digital Twin-Based Anomaly Detection for Smart Voltage Source Converter-Enabled Wind Power Systems](/202604/09/2604.03123v1-distributed-snitch-digital-twin-based-anomaly-detection-for-smart-voltage-source-converter-enabled-wind-power-systems)  
+   标签：评分：8.0/10、query:llm-wd
+   evidence：风力发电系统的异常检测
+9. [End-to-End Learning of Correlated Operating Reserve Requirements in Security-Constrained Economic Dispatch](/202604/09/2604.05167v1-end-to-end-learning-of-correlated-operating-reserve-requirements-in-security-constrained-economic-dispatch)  
+   标签：评分：8.0/10、query:llm
+   evidence：经济调度与可再生能源预测误差
 
 ### 速读区论文标签
-1. [Causality-inspired Federated Learning for Dynamic Spatio-Temporal Graphs](/202604/08/2603.29384v1-causality-inspired-federated-learning-for-dynamic-spatio-temporal-graphs)  
-   标签：评分：7.0/10、query:ts-fm
-   evidence：动态时空图的联邦学习
-2. [Model-Free Coordinated Optimization of IBR Controllers for Enhanced Grid-Level Transient Dynamic Performance](/202604/08/2603.29995v2-model-free-coordinated-optimization-of-ibr-controllers-for-enhanced-grid-level-transient-dynamic-performance)  
-   标签：评分：7.0/10、query:llm
-   evidence：针对电网稳定性的并网逆变器控制器优化
-3. [Super-Resolving Coarse-Resolution Weather Forecasts With Flow Matching](/202604/08/2604.00897v1-super-resolving-coarse-resolution-weather-forecasts-with-flow-matching)  
+1. [CoLA: Cross-Modal Low-rank Adaptation for Multimodal Downstream Tasks](/202604/09/2604.03314v1-cola-cross-modal-low-rank-adaptation-for-multimodal-downstream-tasks)  
+   标签：评分：8.0/10、query:llm-ts
+   evidence：多模态基础模型的跨模态适配
+2. [Uncertainty-Aware Foundation Models for Clinical Data](/202604/09/2604.04175v1-uncertainty-aware-foundation-models-for-clinical-data)  
+   标签：评分：8.0/10、query:ts-fm
+   evidence：临床时间序列数据的基座模型
+3. [Learning Nonlinear Regime Transitions via Semi-Parametric State-Space Models](/202604/09/2604.04963v1-learning-nonlinear-regime-transitions-via-semi-parametric-state-space-models)  
+   标签：评分：8.0/10、query:llm-ts
+   evidence：用于时间序列数据的半参数状态空间模型
+4. [Extending Tabular Denoising Diffusion Probabilistic Models for Time-Series Data Generation](/202604/09/2604.05257v1-extending-tabular-denoising-diffusion-probabilistic-models-for-time-series-data-generation)  
+   标签：评分：8.0/10、query:ts-fm
+   evidence：使用扩散模型和时间适配器生成时间序列数据
+5. [An Additional Resonance Damping Control for Grey-Box D-PMSG Wind Farm Integrated Weak Grid](/202604/09/2604.05579v1-an-additional-resonance-damping-control-for-grey-box-d-pmsg-wind-farm-integrated-weak-grid)  
+   标签：评分：8.0/10、query:llm-wd
+   evidence：风电场并网电力系统的谐振抑制
+6. [Spectral Compact Training: Pre-Training Large Language Models via Permanent Truncated SVD and Stiefel QR Retraction](/202604/09/2604.00733v1-spectral-compact-training-pre-training-large-language-models-via-permanent-truncated-svd-and-stiefel-qr-retraction)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：天气预报轨迹的生成式超分辨率处理
-4. [Dispatch-Embedded Long-Term Tail Risk Assessment and Mitigation via CVaR for Renewable Power Systems](/202604/08/2604.00926v1-dispatch-embedded-long-term-tail-risk-assessment-and-mitigation-via-cvar-for-renewable-power-systems)  
+   evidence：具有内存效率的大语言模型预训练
+7. [Multi-Agent LLM Governance for Safe Two-Timescale Reinforcement Learning in SDN-IoT Defense](/202604/09/2604.01127v1-multi-agent-llm-governance-for-safe-two-timescale-reinforcement-learning-in-sdn-iot-defense)  
    标签：评分：7.0/10、query:llm
-   evidence：可再生能源电力系统的调度策略与风险评估
-5. [NeuroDDAF: Neural Dynamic Diffusion-Advection Fields with Evidential Fusion for Air Quality Forecasting](/202604/08/2604.01175v1-neuroddaf-neural-dynamic-diffusion-advection-fields-with-evidential-fusion-for-air-quality-forecasting)  
+   evidence：用于网络控制强化学习的多智能体大语言模型
+8. [Semantic Compensation via Adversarial Removal for Robust Zero-Shot ECG Diagnosis](/202604/09/2604.01498v1-semantic-compensation-via-adversarial-removal-for-robust-zero-shot-ecg-diagnosis)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：具有风驱动传输和时空动态的空气质量预测
-6. [An Online Machine Learning Multi-resolution Optimization Framework for Energy System Design Limit of Performance Analysis](/202604/08/2604.01308v1-an-online-machine-learning-multi-resolution-optimization-framework-for-energy-system-design-limit-of-performance-analysis)  
+   evidence：心电信号与临床文本之间的跨模态语义对齐
+9. [Thinking While Listening: Fast-Slow Recurrence for Long-Horizon Sequential Modeling](/202604/09/2604.01577v1-thinking-while-listening-fast-slow-recurrence-for-long-horizon-sequential-modeling)  
+   标签：评分：7.0/10、query:llm-ts
+   evidence：长时序建模与潜变量循环更新
+10. [NED-Tree: Bridging the Semantic Gap with Nonlinear Element Decomposition Tree for LLM Nonlinear Optimization Modeling](/202604/09/2604.01588v1-ned-tree-bridging-the-semantic-gap-with-nonlinear-element-decomposition-tree-for-llm-nonlinear-optimization-modeling)  
    标签：评分：7.0/10、query:llm
-   evidence：集成能源系统设计的优化框架
-7. [Nonlinear Methods for Analyzing Pose in Behavioral Research](/202604/08/2604.01453v1-nonlinear-methods-for-analyzing-pose-in-behavioral-research)  
-   标签：评分：7.0/10、query:llm-ts
-   evidence：基于递归的时间序列分析
-8. [Capturing Multivariate Dependencies of EV Charging Events: From Parametric Copulas to Neural Density Estimation](/202604/08/2603.29554v1-capturing-multivariate-dependencies-of-ev-charging-events-from-parametric-copulas-to-neural-density-estimation)  
-   标签：评分：6.0/10、query:llm
-   evidence：为电网可靠性建模电动汽车充电事件
-9. [SkeletonContext: Skeleton-side Context Prompt Learning for Zero-Shot Skeleton-based Action Recognition](/202604/08/2603.29692v1-skeletoncontext-skeleton-side-context-prompt-learning-for-zero-shot-skeleton-based-action-recognition)  
+   evidence：大语言模型用于运筹学中的非线性优化建模
+11. [Structure- and Event-Driven Frameworks for State Machine Modeling with Large Language Models](/202604/09/2604.00275v1-structure--and-event-driven-frameworks-for-state-machine-modeling-with-large-language-models)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：骨架运动与语言驱动上下文语义之间的跨模态学习
-10. [Real-Time Explanations for Tabular Foundation Models](/202604/08/2603.29946v1-real-time-explanations-for-tabular-foundation-models)  
+   evidence：使用大语言模型建模状态机
+12. [Theoretical Perspectives on Jabr-Type Convex Relaxations for AC Optimal Power Flow](/202604/09/2604.00664v1-theoretical-perspectives-on-jabr-type-convex-relaxations-for-ac-optimal-power-flow)  
+   标签：评分：6.0/10、query:llm
+   evidence：交流最优潮流的凸松弛研究
+13. [TRACE: Training-Free Partial Audio Deepfake Detection via Embedding Trajectory Analysis of Speech Foundation Models](/202604/09/2604.01083v1-trace-training-free-partial-audio-deepfake-detection-via-embedding-trajectory-analysis-of-speech-foundation-models)  
    标签：评分：6.0/10、query:ts-fm
-   evidence：表格基础模型架构与性能
-11. [From Net Load Modifiers to Firm Capacity: The Role of Distributed Energy Resources in Resource Adequacy](/202604/08/2604.00287v1-from-net-load-modifiers-to-firm-capacity-the-role-of-distributed-energy-resources-in-resource-adequacy)  
-   标签：评分：6.0/10、query:llm
-   evidence：集成分布式能源与上游预测
-12. [Real Time Local Wind Inference for Robust Autonomous Navigation](/202604/08/2604.00343v1-real-time-local-wind-inference-for-robust-autonomous-navigation)  
-   标签：评分：6.0/10、query:llm-wd
-   evidence：使用深度学习进行风流场预测
-13. [Adapting Text LLMs to Speech via Multimodal Depth Up-Scaling](/202604/08/2604.00489v1-adapting-text-llms-to-speech-via-multimodal-depth-up-scaling)  
-   标签：评分：6.0/10、query:llm-ts
-   evidence：通过深度上采样将文本大模型适配到语音领域
-14. [Learning from Many and Adapting to the Unknown in Open-set Test Streams](/202604/08/2604.00533v1-learning-from-many-and-adapting-to-the-unknown-in-open-set-test-streams)  
-   标签：评分：6.0/10、query:llm-ts
-   evidence：针对演化任务的参数高效LLM适配
+   evidence：用于音频时序数据分析的基础模型
+14. [The Recipe Matters More Than the Kitchen:Mathematical Foundations of the AI Weather Prediction Pipeline](/202604/09/2604.01215v1-the-recipe-matters-more-than-the-kitchenmathematical-foundations-of-the-ai-weather-prediction-pipeline)  
+   标签：评分：6.0/10、query:ts-fm
+   evidence：AI天气预测流水线的数学基础
 
 
 <div class="dpr-home-promo-card">
