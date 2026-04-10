@@ -1,0 +1,262 @@
+Title: Matrix Profile for Time-Series Anomaly Detection: A Reproducible Open-Source Benchmark on TSB-AD
+
+URL Source: https://arxiv.org/pdf/2604.02445v2
+
+Published Time: Thu, 09 Apr 2026 00:16:12 GMT
+
+Number of Pages: 10
+
+Markdown Content:
+# Matrix Profile for Time-Series Anomaly Detection: A Reproducible Open-Source Benchmark on TSB-AD 
+
+Chin-Chia Michael Yeh 
+
+myeh003@ucr.edu 
+
+## Abstract 
+
+Matrix Profile (MP) methods are an interpretable and scalable family of distance-based methods for time-series anomaly detection, but strong benchmark perfor-mance still depends on design choices beyond a vanilla nearest-neighbor profile. This technical report documents an open-source Matrix Profile for Anomaly De-tection (MMPAD) submission to TSB-AD, a benchmark that covers both uni-variate and multivariate time series. The submitted system combines pre-sorted multidimensional aggregation, efficient exclusion-zone-aware k-nearest-neighbor (kNN) retrieval for repeated anomalies, and moving-average post-processing. To serve as a reproducible reference for MP-based anomaly detection on TSB-AD, we detail the released implementation, the hyperparameter settings for the uni-variate and multivariate tracks, and the corresponding benchmark results. We further analyze how the system performs on the aggregate leaderboard and across specific dataset characteristics. The open-source implementation is available at 
+
+https://github.com/mcyeh/mmpad_tsb .
+
+## 1 Introduction 
+
+Time-series anomaly detection is a fundamental problem because real systems often fail through rare, structured, and temporally localized events [ 2]. Among distance-based approaches, the Matrix Profile (MP) is especially attractive because it is exact, interpretable, and scalable [ 7, 9 , 11 ]. It supports anomaly detection through nearest-neighbor discord scoring and has become a widely used reference baseline in benchmark studies [2]. This report documents how that basic idea is turned into a reproducible submission on TSB-AD [ 2 ], a benchmark covering both univariate and multivariate time-series anomaly detection. The aim is not to propose a new anomaly detector from scratch, but to document the concrete design choices required for a benchmark-ready open-source MP-based system. In practice, a benchmark-ready submission depends on several ingredients beyond the vanilla one-nearest-neighbor profile, including multidimensional aggregation, efficient k-nearest-neighbor ( kNN) retrieval, and moving-average post-processing. A central challenge arises in the multivariate setting. In the univariate case, comparing all subse-quences yields a 2D nsub × nsub pairwise distance matrix. 1 However, in the d-dimensional case, each subsequence pair contributes one distance per dimension, expanding the representation into an nsub × nsub × d comparison tensor. The key difficulty is not the pairwise comparison itself, but deciding how to aggregate across that dimension axis to produce an anomaly score. If an anomalous signal appears in only K out of the d dimensions at a given moment, naive all-dimension aggregation can wash out the anomaly beneath the noise of the remaining d − K normal dimensions. This creates the K-of-N anomaly problem [ 11 ]. Figure 1 illustrates this failure mode on a toy eight-dimensional series, where naive aggregation peaks away from the anomalous interval, whereas the pre-sorting profile peaks near it.                  
+
+> 1For a time series of length nand subsequence length m, the number of subsequences is nsub =n−m+ 1 .Preprint.
+> arXiv:2604.02445v2 [cs.LG] 7 Apr 2026 0200 400 600 800 1000 1200 1400 1600
+> Time Step
+> Time Series
+> Anomaly
+> Max Matrix Profile (naive)
+> Max Matrix Profile (pre-sorting)
+
+Figure 1: Toy illustration of the K-of-N anomaly problem. The time series contains an anomaly in only one of the eight dimensions. The naive all-dimension matrix profile reaches its maximum away from the anomalous interval, whereas the pre-sorting matrix profile reaches its maximum near that interval. The orange X marks the maximum value of each profile. As a result, dimensional aggregation is not a minor implementation detail, but one of the central algorithmic decisions in multidimensional MP [ 8, 11 ]. This report follows the pre-sorting design, which sorts the dimension-wise comparison scores for each subsequence pair before nearest-neighbor selection [ 8 , 11 ]. For contrast, the alternative post-sorting design applies dimensional ordering only after dimension-wise nearest neighbors have already been fixed. This matters because pre-sorting allows dimensional ordering to influence neighbor selection itself, rather than only reordering evidence after the neighbors have already been chosen. The rationale for adopting pre-sorting, together with a brief contrast against post-sorting, is discussed in Section 2.2. The source paper [ 11 ]recommends pre-sorting and reports stronger average benchmark performance for the pre-sorting variants it evaluates. A second key ingredient is efficient kNN retrieval. This matters because recurrent anomalies can defeat one-nearest-neighbor scoring when an anomalous subsequence finds another anomalous subsequence as its closest match. A major contribution of [ 11 ] is the efficient exclusion-zone-aware 
+
+kNN algorithm. Rather than relying on brute-force repeated minimum search or naive full sorting, that algorithm first narrows the candidate set through linear-time selection in the spirit of QuickSelect and introselect [ 1 , 4 ] and then sorts only the reduced candidates [ 11 ]. This avoids the extra cost of repeated full-array scans or full sorting and is one reason kNN-based matrix-profile scoring remains practical at benchmark scale. Finally, the submission follows [ 11 ] in applying moving-average post-processing to the anomaly score curve. In the implementation studied here, this step is the final score-reduction stage and returns a score vector with the same length as the input time series. Although simple, it is part of the full pipeline and therefore needs to be documented together with the multidimensional aggregation and 
+
+kNN components. This report serves both as a method document and as an empirical benchmark study for MP-based anomaly detection on TSB-AD. Methodologically, it gives a reproducible account of how the released Matrix Profile for Anomaly Detection (MMPAD) implementation turns multidimensional MP into a benchmark-ready detector. Empirically, it records the benchmark configuration and results of that implementation and then analyzes where MMPAD is competitive on the leaderboard and where it gains or loses ground in the later dataset-characteristic comparisons. The open-source implementation is available at https://github.com/mcyeh/mmpad_tsb . The remainder of the paper is organized as follows. Section 2 details the computational pipeline. Section 3 presents the benchmark protocol and results, distilling the main empirical takeaways before Section 4 concludes. 22 Methodology 
+
+This section describes the Matrix Profile for Anomaly Detection (MMPAD) pipeline evaluated on TSB-AD. For an input time series X ∈ Rn×d and subsequence length m, let nsub = n − m + 1 
+
+denote the number of subsequences. Throughout this section, we describe the multivariate case, with the univariate case recovered by setting d = 1 . We begin with an end-to-end overview and then detail the aggregation, retrieval, and post-processing stages in the same order. The reported results correspond to the unsupervised evaluation protocol defined by the TSB-AD benchmark [ 2]. Under this protocol, MMPAD is applied to each time series in a self-join fashion. In this setting, an exclusion zone is used to avoid self-matches and their trivial matches. 
+
+2.1 Pipeline Overview 
+
+The method can be summarized as a four-stage conceptual pipeline. These stages summarize how the input time series is transformed into the final anomaly score vector. Stage 1 computes the dimension-wise pairwise z-normalized Euclidean distances between subsequence pairs. The resulting pairwise distance tensor has shape nsub × nsub × d, and we denote it by D. This tensor is a conceptual object used to describe the computation, not a tensor that is explicitly materialized in memory by the implementation. Stage 2 applies pre-sorting to D. The purpose and effect of this step are explained in Section 2.2. Stage 3 performs efficient exclusion-zone-aware kNN selection on the pre-sorted distances to produce the multidimensional profile tensor P ∈ Rnsub ×d×k, whose axes correspond to subsequence, ordered profile dimension, and neighbor order. The retrieval step is explained in Section 2.3. Stage 4 reduces P to a one-dimensional subsequence score vector s and then applies moving-average smoothing to obtain the final anomaly score vector y. The reduction and smoothing step is explained in Section 2.4. The overall data flow can be summarized compactly as 
+
+X → D → P → s → y
+
+The next three subsections explain these aggregation, retrieval, and post-processing stages in detail. 
+
+2.2 Multidimensional Aggregation by Pre-Sorting 
+
+The first two stages of the pipeline organize pairwise subsequence comparisons into a multidimen-sional representation that supports anomaly-oriented neighbor selection. In the univariate case, the matrix profile summarizes a pairwise subsequence comparison matrix by retaining, for each query subsequence, the distance to its nearest match [ 7 , 9]. In the multivariate case, the pairwise comparison object becomes a tensor because each subsequence pair produces one distance per dimension [ 8, 11 ]. If a univariate time series yields an nsub × nsub comparison matrix, then a d-dimensional time series yields an nsub × nsub × d comparison tensor. In practice, the implementation does not store this full tensor. Instead, it computes the required pairwise distances for one query subsequence at a time and updates the profile on the fly. For anomaly detection, naive aggregation across all dimensions can fail. The reason is the K-of-N anomaly problem introduced in Section 1: only a subset of dimensions may carry the anomalous signal at a given time, so averaging or summing across all dimensions can hide the anomaly under the remaining normal dimensions [ 11 ]. Figure 1 in the introduction illustrates this failure mode on a toy example. The submission therefore follows the pre-sorting strategy introduced for multidimensional MP in [8] and adapted to anomaly detection in [11]. Under pre-sorting, the d dimension-wise distances for each subsequence pair are sorted in the anomaly-oriented order used by the detector. This local dimensional ranking is performed before nearest-neighbor selection, at the level of subsequence pairs rather than after a multidimensional profile has already been formed. As described in [ 11 ], the i-th dimension of the resulting multidimensional profile can be used to detect anomalies that span at least i dimensions. Figure 2 summarizes the pre-sorting design adopted in this report. The dimension-wise pairwise distances are ordered first, and nearest-neighbor selection is then performed on these ordered distances. For visual simplicity, Figures 2 and 3 illustrate the one-nearest-neighbor case, so the output is shown as an nsub × d matrix rather than a tensor with an additional neighbor axis. For contrast, Figure 3 shows the alternative post-sorting design. There, nearest neighbors are identified independently for each dimension first, and dimensional ordering is applied only afterward. 3…
+
+> 2. find nearest
+> neighbor
+> d
+> 1. sort
+> … … …
+> …
+> …
+> …
+> …
+> n1-m+1
+> n2-m+1
+> Matrix
+> Profile
+> Pairwise
+> Distance
+> Tensor
+
+Figure 2: The pre-sorting strategy sorts dimension-wise pairwise distances before nearest-neighbor selection in the multidimensional matrix profile. This ordering lets the sorted dimension-wise distances influence neighbor selection itself, which helps preserve anomalies that appear in only a subset of dimensions. …
+
+…
+
+1. find nearest 
+
+neighbor 
+
+d
+
+2. sort 
+
+> … … …
+
+n1-m+1 
+
+> n2-m+1
+
+Matrix 
+
+Profile 
+
+Pairwise 
+
+Distance 
+
+Tensor 
+
+Figure 3: The post-sorting strategy sorts dimension-wise matrix-profile values after nearest-neighbor selection. As a result, dimensional ordering is applied only after the neighbors have already been chosen. This ordering difference helps align pre-sorting with the K-of-N anomaly problem. It allows di-mensional ordering to influence neighbor selection itself, rather than being applied only after the nearest neighbors for each dimension have already been chosen. This is consistent with the source paper’s conclusion that the pre-sorting variants it evaluates are generally more desirable for anomaly detection [11]. 
+
+2.3 Efficient kNN Retrieval 
+
+Classical matrix profile scoring uses only the nearest neighbor of each subsequence. For anomaly detection, this can be brittle when anomalous patterns recur, because an anomalous subsequence may find another anomalous subsequence as its closest match [ 11 ]. The submission therefore uses the efficient exclusion-zone-aware kNN algorithm proposed in [11]. The key constraint is that kNN retrieval in matrix-profile computation must exclude trivial matches [ 7]. Once a neighbor is selected, nearby subsequences within the exclusion zone must be ignored when searching for later neighbors. As a result, the k-th valid neighbor is not simply the k-th element of the raw distance array, so a single standard linear-time selection routine such as QuickSelect or introselect cannot be applied directly [ 1 , 4 , 11 ]. The naive alternatives are repeated minimum search with exclusion after each accepted neighbor or full sorting followed by exclusion checks, both of which become inefficient at benchmark scale [ 11 ]. To describe the selection kernel in a join-agnostic way, let nquery and nref denote the numbers of query and reference subsequences, respectively. In the self-join case, both reduce to nsub .The algorithm used here addresses that issue by first applying linear-time selection to keep only a reduced candidate set before sorting [ 1, 4 ]. Following the presentation in [ 11 ], this reduced set has size km . In the implementation, the same idea is parameterized by the explicit exclusion-zone length 
+
+ℓex = ⌊0.5m⌋, so the reduced candidate count remains proportional to km under the default self-join setting. It then sorts only that reduced candidate set rather than the full set of nref candidates [ 11 ]. When nref is much larger than km log( km ), this yields the same overall scaling reported in [ 11 ]: 
+
+O(nquery nref d) instead of O(kn query nref d) for brute force or O(nquery nref log nref d) for naive 4sorting. This algorithmic improvement is a key reason the kNN extension in [ 11 ] reduces the asymptotic cost of multidimensional matrix-profile scoring. Algorithm 1 summarizes the inner 
+
+k-th-neighbor selection kernel used in the submission. 
+
+Algorithm 1 Efficient exclusion-zone-aware kNN selection 
+
+Require: Pairwise score tensor D ∈ Rnquery ×nref ×d, number of neighbors k ∈ N, exclusion-zone length 
+
+ℓex ∈ N
+
+Ensure: k-th neighbor index matrix I ∈ Nnquery ×d 
+
+> 1:
+
+function FIND kNN( D, k, ℓ ex ) 
+
+> 2:
+
+I ← zero matrix with size nquery × d 
+
+> 3:
+
+for i ← 1 to nquery do  
+
+> 4:
+
+for j ← 1 to d do  
+
+> 5:
+
+ineighbors ← ARG SELECT (D[i, :, j ], min(2 kℓ ex , n ref − 1)) ▷ O (nref ) 
+
+> 6:
+
+iorder ← ARG SORT (D[i, ineighbors , j ]) ▷ O (kℓ ex log( kℓ ex ))  
+
+> 7:
+
+ineighbors ← ineighbors [iorder ] 
+
+> 8:
+
+l ← 0 
+
+> 9:
+
+for all ineighbor ∈ ineighbors do ▷ O (kℓ ex ) 
+
+> 10:
+
+if ineighbor is a trivial match of a previously accepted neighbor then  
+
+> 11:
+
+continue  
+
+> 12:
+
+l ← l + 1  
+
+> 13:
+
+if l = k then  
+
+> 14:
+
+break  
+
+> 15:
+
+I[i, j ] ← ineighbor  
+
+> 16:
+
+return I ▷ Overall: O(nquery nref d) when nref dominates kℓ ex log( kℓ ex )
+
+For each subsequence and each ordered profile dimension, the retrieval step records the first through 
+
+k-th neighbors, yielding the multidimensional profile tensor P. This tensor is the input to the post-processing stage. 
+
+2.4 Post-Processing 
+
+The output of the retrieval stage is the profile tensor P, not yet the final anomaly score curve used for evaluation. This tensor must be reduced to a one-dimensional score sequence before benchmark evaluation. Let d∗ denote the selected cutoff on the ordered profile-dimension axis and k∗ denote the selected neighbor order. This reduction can be viewed in three stages. First, it keeps only the first d∗ dimensions and the first k∗ neighbors. Second, if a later dimension or later neighbor contains a non-finite value, the implementation backs off to the preceding valid dimension or preceding valid neighbor. This prevents exclusion-induced missing values from propagating into the final score. Third, it takes the score at ordered profile dimension d∗ and neighbor order k∗ as the subsequence anomaly score and flips the sign so that larger values correspond to more anomalous behavior. At this point, the score vector still has length nsub because it is defined over subsequences rather than timestamps. Following [ 11 ], the submission then applies moving-average post-processing to the anomaly score curve. In the implementation, the subsequence score vector is padded with m − 1
+
+NaN values on both ends, and a sliding mean over windows of length m is then computed while ignoring the padded NaN values. This produces a final anomaly score vector of length n, which matches the length of the input time series. Operationally, each timestamp-level score is the mean of the subsequence scores whose windows cover that timestamp, which smooths the final anomaly curve. Algorithm 2 summarizes the post-processing pipeline used after multidimensional kNN retrieval. In the implementation, the selected cutoff d∗ can be specified either as an integer or as a fraction of the total dimensionality, in which case the fraction is converted to an integer by ceiling. This allows the benchmark configuration to search over either absolute dimensional cutoffs or proportional dimensional cutoffs without changing the core method. The implementation also supports optional budget-aware downsampling for long sequences. When that path is used during fitting, the working series is repeatedly downsampled by a factor of two by keeping every other timestamp until a proxy runtime cost falls below the configured time budget. After each reduction, the subsequence length is re-inferred on the downsampled series. The detector is then run on this downsampled working series, and the final anomaly score vector is linearly 5Algorithm 2 Post-processing                                                                                 
+
+> Require: Profile tensor P∈Rnsub ×ndim ×nneighbor , selected dimension d∗, selected neighbor order k∗, subse-quence length m
+> Ensure: Final anomaly score vector y∈Rn
+> 1: function POST PROCESS (P, d ∗, k ∗, m )
+> 2: P←P[: ,1 : d∗,1 : k∗]
+> 3: for i←2to d∗do
+> 4: Replace non-finite entries in P[: , i, :] with the corresponding entries in P[: , i −1,:]
+> 5: S←P[: , d ∗,:]
+> 6: for j←2to k∗do
+> 7: Replace non-finite entries in S[: , j ]with the corresponding entries in S[: , j −1]
+> 8: s← − S[: , k ∗]
+> 9: ˜s←PAD NAN(s, m −1, m −1)
+> 10: for t←1to ndo
+> 11: yt←NANM EAN (˜ s[t:t+m−1])
+> 12: return y
+
+interpolated back to the original sequence length before evaluation. This preserves the benchmark evaluation interface while allowing the implementation to respect a fixed runtime budget. Under the released default time budget used in the reported experiments, this path is triggered for no univariate evaluation files and for one multivariate evaluation file. With the full MMPAD pipeline now defined, we turn to its empirical evaluation on the TSB-AD benchmark. 
+
+## 3 Experiment 
+
+This section documents the benchmark protocol, the hyperparameter selection procedure, the evaluation-set results, and the performance of MMPAD across dataset characteristics on TSB-AD. 
+
+3.1 Evaluation Protocol 
+
+The results reported here follow the unsupervised evaluation protocol defined by TSB-AD [ 2, 3]. The official evaluation lists contain 350 univariate time series and 180 multivariate time series, while the official tuning lists contain 48 univariate time series and 20 multivariate time series [ 2 , 3 ]. Within that protocol, the benchmark reports separate univariate and multivariate tracks. We use the tuning split only for hyperparameter selection and reserve the evaluation split for the final benchmark comparison. The benchmark documentation states that the evaluation results use time series that are z-score normalized by default, and the official runners evaluate each score sequence with the released metric implementation [ 3, 5]. In those runners, the sliding-window length used by the range-aware metrics is inferred from the first dimension by the same autocorrelation-based period estimator used elsewhere in the benchmark codebase [5]. TSB-AD reports nine metrics in total: AUC-PR, AUC-ROC, VUS-PR, VUS-ROC, Standard-F1, PA-F1, Event-based-F1, R-based-F1, and Affiliation-F. This report focuses on VUS-PR because the benchmark paper identifies it as the primary comparison metric [2]. We summarize performance in two ways. The first is the average VUS-PR over the evaluation files. The second is an average per-dataset VUS-PR rank. To compute that second summary, we take the released per-dataset VUS-PR tables [ 5], add the MMPAD settings studied here, rank methods by VUS-PR within each dataset, and then average those ranks across datasets, so lower is better. 
+
+3.2 Hyperparameter Tuning 
+
+The submission includes two selected hyperparameter settings. One is chosen by maximizing average VUS-PR on the tuning split, and the other is chosen by minimizing the average per-dataset VUS-PR rank on the same split. The subsequence length m is not tuned as a free hyperparameter in these runs. Instead, it is inferred from the first dimension by the same autocorrelation-based period estimator used to set the evaluation window in the benchmark runners. For the univariate track, the main hyperparameter search varies k ∈ { 1, 5, 10 , 15 }. For the multivariate track, it additionally varies 6d∗ ∈ { 1, 0.1, 0.3, 0.5, 0.7}. When d∗ < 1, it is interpreted as a fraction of the total dimensionality and converted to an integer cutoff by ceiling. The two tracks differ because dimensional selection is meaningful only in the multivariate case. Table 1 shows the resulting selections together with their average tuning-split VUS-PR and average tuning-split rank. In the univariate track, the two criteria differ only in the selected neighbor count. The VUS-PR criterion selects k = 5 , while the rank criterion selects k = 10 . In the multivariate track, both criteria agree on k = 15 and differ only in the selected dimensional cutoff. The VUS-PR criterion selects d∗ = 0 .7, while the rank criterion selects d∗ = 0 .5. This agreement shows that the stronger submission settings are not based on the vanilla one-nearest-neighbor profile. Throughout these experiments, pre-sorting and moving-average post-processing remain fixed design choices, so the tuning evidence reported below pertains only to k and, in the multivariate track, d∗. Because VUS-PR is the benchmark’s primary comparison metric [ 2], the remaining experiment subsections focus on the submission setting selected by average VUS-PR on the tuning split. Table 1: Hyperparameter selections from the tuning split. The VUS-PR and Rank columns report the average tuning-split VUS-PR and the average tuning-split per-dataset VUS-PR rank.                     
+
+> Track Rule HP VUS-PR Rank Univariate VUS-selected k=5 0.4256 4.9688 Univariate rank-selected k=10 0.4038 4.8958 Multivariate VUS-selected d=0.7, k=15 0.3879 23.1750 Multivariate rank-selected d=0.5, k=15 0.3597 19.7000
+
+3.3 Main Benchmark Results 
+
+Table 2 focuses on the submission configuration selected on the tuning split by average VUS-PR. For the benchmark baselines, both the average VUS-PR values and the rank column are recomputed from the released per-dataset VUS-PR tables [ 5 ] after adding the MMPAD setting studied here. In the univariate track, MMPAD reaches an average VUS-PR of 0.4100, second only to Sub-PCA at 0.4234. Its average per-dataset rank is 13.9829, which is also the second best among all compared methods. This places MMPAD among the strongest univariate methods in the benchmark comparison even though it does not take the top mean VUS-PR. In the multivariate track, MMPAD achieves the highest average VUS-PR at 0.3548, ahead of CNN at 0.3130. However, its average per-dataset rank is 11.2833, which is much weaker than its headline score. This contrast between average score and average rank motivates the dataset-level comparison below. 
+
+3.4 Performance by Dataset Characteristics 
+
+To look beyond the aggregate leaderboard, Table 3 regroups the evaluation data by coarse dataset characteristics: the number of anomaly segments, point versus sequence anomalies, series length, anomaly ratio, and anomaly duration. These tables are meant to answer a narrower question than the leaderboard: against the strongest fixed baseline in each track, on what kinds of datasets does MMPAD gain or lose ground? The membership of each setting is determined directly from the dataset-level annotations and summary statistics included in the released per-dataset TSB-AD benchmark tables [ 5]. Single versus multiple anomaly is defined by whether the benchmark metadata records one anomaly segment or more than one. Point versus sequence anomaly follows the benchmark’s anomaly-type label for each dataset. Shorter versus longer series, low versus high anomaly ratio, and short versus long anomaly duration are each defined by a track-wise median threshold. These settings are overlapping attribute-based groups rather than one mutually exclusive partition, so a dataset can, for example, be simultaneously single-anomaly, sequence-anomaly, low-ratio, and long-series. For the univariate track, the median thresholds are series length = 18227 .5, anomaly ratio = 0 .0215 , and average anomaly duration 
+
+= 116 .2292 . For the multivariate track, the corresponding thresholds are series length = 46655 ,anomaly ratio = 0 .0375 , and average anomaly duration = 241 .25 . For the separate multivariate dimensionality breakdown discussed later in this subsection, the datasets are grouped into quartile-7Table 2: Top-10 benchmark comparison in each track, showing MMPAD together with the nine strongest baselines by average VUS-PR and average per-dataset VUS-PR rank.                                           
+
+> Method VUS-PR ( ↑)Rank ( ↓)Univariate Sub-PCA 0.4234 14.2229
+> MMPAD 0.4100 13.9829
+> KShapeAD 0.4008 15.4871 POLY 0.3898 13.0286 Series2Graph 0.3881 14.0314 MOMENT (FT) 0.3857 14.3357 MOMENT (ZS) 0.3790 15.0314 KMeansAD 0.3664 15.4143 USAD 0.3612 16.7671 Sub-KNN 0.3501 15.3857 Multivariate
+> MMPAD 0.3548 11.2833
+> CNN 0.3130 8.1667 OmniAnomaly 0.3122 10.9306 PCA 0.3096 10.2417 LSTMAD 0.3066 9.1333 USAD 0.3041 11.1861 AutoEncoder 0.2950 11.4583 KMeansAD 0.2949 9.2278 CBLOF 0.2731 11.9667 MCD 0.2711 12.3611
+
+like bins by channel count, which yields the four observed ranges 2–3, 4–19, 20–31, and 32–248 dimensions. In each track, we compare MMPAD against the strongest non-MMP baseline in the aggregate benchmark table above. That baseline is Sub-PCA in the univariate track and CNN in the multivariate track. Positive mean gaps indicate that MMPAD is, on average, better than that fixed rival within the subset. This fixed-rival design is meant to provide a stable subgroup comparison, not to decompose the average-rank metric from Table 2. Table 3: Performance by dataset characteristic. The univariate comparison is MMPAD versus Sub-PCA, and the multivariate comparison is MMPAD versus CNN. Positive gaps favor MMPAD. Short/long series, short/long anomalies, and low/high anomaly ratio are defined by track-wise median thresholds.                                                                    
+
+> Univariate Multivariate Split Gap Win rate # series Gap Win rate # series Single anomaly +0.1282 0.6335 161 -0.0904 0.3617 47 Multiple anomalies -0.1340 0.4180 189 +0.0885 0.5113 133 Point anomaly +0.2975 0.7143 49 -0.1368 0.0000 13 Sequence anomaly -0.0636 0.4814 322 +0.0418 0.4722 180 Short series +0.0891 0.5943 175 -0.1274 0.2527 91 Long series -0.1160 0.4400 175 +0.2149 0.6966 89 Low anomaly ratio +0.1975 0.7371 175 +0.0575 0.5000 90 High anomaly ratio -0.2243 0.2971 175 +0.0261 0.4444 90 Short anomalies +0.1621 0.6743 175 -0.0394 0.2889 90 Long anomalies -0.1889 0.3600 175 +0.1230 0.6556 90
+
+The univariate and multivariate tracks show different patterns. In the univariate track, relative to Sub-PCA, MMPAD is strongest on single-anomaly, point-anomaly, low-anomaly-ratio, short-anomaly, and shorter-series subsets, and it loses ground on multiple-anomaly, sequence-anomaly, high-anomaly-ratio, long-anomaly, and longer-series subsets. These results suggest that broader and more repeated anomalous behavior remains a useful univariate target for future variants. These univariate patterns highlight an open opportunity to test whether compact dictionary representations of time series [ 10 ]can be incorporated into the current discord pipeline, allowing the system to better capture broader, 8more recurrent anomalous behaviors, such as those found in the multiple-anomaly and long-anomaly subsets. In the multivariate track, relative to CNN, MMPAD is strongest on longer-series, longer-anomaly, and multiple-anomaly subsets, and it is weakest on single-anomaly, point-anomaly, shorter-series, and shorter-anomaly subsets. The aggregate leaderboard adds useful context. Among the strongest multivariate baselines in Table 2 are CNN, LSTMAD, OmniAnomaly, PCA, USAD, and AutoEn-coder, all of which rely on forecasting, reconstruction, or subspace modeling rather than only local subsequence matching. Taken together, these results suggest that factors beyond local subsequence matching may contribute to the remaining multivariate gaps. In other words, pre-sorting addresses the K-of-N aggregation problem, but it does not by itself remove all of the multivariate weaknesses observed on TSB-AD-M. The same contrast appears when the evaluation datasets are grouped by dimensionality. Relative to CNN, the mean MMPAD gap is: • 2–3 dimensions: +0 .2595 .• 4–19 dimensions: +0 .0750 .• 20–31 dimensions: −0.0806 .• 32–248 dimensions: −0.1725 .This trend suggests that the multivariate advantage of MMPAD is concentrated on lower-dimensional datasets and erodes as dimensionality increases. A promising direction for future work is applying PCA whitening [ 6 ] prior to the MMPAD pipeline, providing a direct way to test whether decorrelating and rescaling cross-channel structures successfully narrows the remaining gaps in the point-anomaly and short-anomaly subsets. 
+
+3.5 CPU–GPU Comparison 
+
+At the aggregate level, the open-source CPU and GPU implementations produce very similar bench-mark results. In the univariate track, the average VUS-PR difference is below 0.0001, and the largest absolute difference on any evaluation dataset is 0.0055. The same conclusion holds in the multivariate track. The average VUS-PR is 0.3548 on GPU and 0.3540 on CPU, with a mean absolute per-dataset difference of 0.0024 and a maximum absolute difference of 0.0692. Taken together, these results provide a useful implementation check: the CPU and GPU versions agree closely in aggregate, even though some individual datasets differ more noticeably. 
+
+3.6 Key Takeaways 
+
+• Matrix-profile-based anomaly detection remains highly competitive on TSB-AD. MMPAD is second on the univariate leaderboard by average VUS-PR and first on the multivariate leaderboard by the same metric. • The tuning results consistently prefer k > 1. Benchmark-ready MMPAD is therefore more than the vanilla one-nearest-neighbor profile. • The univariate results by dataset characteristics suggest that broader, longer, and repeated anomalies remain a useful target for future variants. A promising direction for future research is testing whether compact dictionary representations of time series [ 10 ] can augment the current discord pipeline, allowing for a direct re-evaluation of the high-ratio and long-anomaly subsets. • The multivariate results suggest a different direction. The multivariate leaderboard and the dimensionality breakdown both point to cross-channel structure as a plausible contributor to the remaining multivariate gaps. To address this, an open avenue for future work is applying PCA whitening [ 6 ] prior to MMPAD, providing a direct way to test whether decorrelating cross-channel structures improves performance on the point-anomaly and short-anomaly subsets. 
+
+## 4 Conclusion 
+
+This report documented the MMPAD submission to TSB-AD from method design through benchmark evaluation. MMPAD is second on the univariate leaderboard by average VUS-PR and first on the 9multivariate leaderboard by the same metric. The dataset-characteristic analysis also highlights two open challenges for future MP-based anomaly detection. In the univariate track, one recurring gap relative to a strong subspace baseline is broader or repeated anomalous behavior, which suggests testing whether compact dictionary representations of time series [ 10 ] can augment the current discord pipeline. In the multivariate track, weaker results on point-anomaly, short-anomaly, and higher-dimensional subsets suggest testing preprocessing that makes normal cross-channel structure more explicit, such as PCA whitening before running MMPAD [6]. 
+
+## References 
+
+[1] C. A. Hoare. Algorithm 65: find. Communications of the ACM , 4(7):321–322, 1961. [2] Q. Liu and J. Paparrizos. The elephant in the room: Towards a reliable time-series anomaly detection benchmark. Advances in Neural Information Processing Systems , 37:108231–108261, 2024. [3] Q. Liu and J. Paparrizos. The elephant in the room: Towards a reliable time-series anomaly detection benchmark. https://thedatumorg.github.io/TSB-AD/ , 2026. Benchmark website, last updated April 1, 2026, accessed April 1, 2026. [4] D. R. Musser. Introspective sorting and selection algorithms. Software: Practice and Experience ,27(8):983–993, 1997. [5] TheDatumOrg. Tsb-ad benchmark repository. https://github.com/TheDatumOrg/ TSB-AD , 2026. GitHub repository, accessed April 2, 2026. [6] Wikipedia contributors. Whitening transformation. https://en.wikipedia.org/wiki/ Whitening_transformation , 2025. Wikipedia, last edited August 28, 2025, accessed April 2, 2026. [7] C.-C. M. Yeh, Y. Zhu, L. Ulanova, N. Begum, Y. Ding, H. A. Dau, D. F. Silva, A. Mueen, and E. Keogh. Matrix profile i: all pairs similarity joins for time series: a unifying view that includes motifs, discords and shapelets. In 2016 IEEE 16th international conference on data mining (ICDM) , pages 1317–1322. Ieee, 2016. [8] C.-C. M. Yeh, N. Kavantzas, and E. Keogh. Matrix profile vi: Meaningful multidimensional motif discovery. In 2017 IEEE international conference on data mining (ICDM) , pages 565–574. IEEE, 2017. [9] C.-C. M. Yeh, Y. Zhu, L. Ulanova, N. Begum, Y. Ding, H. A. Dau, Z. Zimmerman, D. F. Silva, A. Mueen, and E. Keogh. Time series joins, motifs, discords and shapelets: a unifying view that exploits the matrix profile. Data Mining and Knowledge Discovery , 32(1):83–123, 2018. [10] C.-C. M. Yeh, Y. Zheng, J. Wang, H. Chen, Z. Zhuang, W. Zhang, and E. Keogh. Error-bounded approximate time series joins using compact dictionary representations of time series. In Proceedings of the 2022 SIAM International Conference on Data Mining (SDM) , pages 181–189. SIAM, 2022. [11] C.-C. M. Yeh, A. Der, U. S. Saini, V. Lai, Y. Zheng, J. Wang, X. Dai, Z. Zhuang, Y. Fan, H. Chen, et al. Matrix profile for anomaly detection on multidimensional time series. In 2024 IEEE International Conference on Data Mining (ICDM) , pages 911–916. IEEE, 2024. 10

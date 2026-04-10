@@ -1,0 +1,959 @@
+Title: FourierMoE: Fourier Mixture-of-Experts Adaptation of Large Language Models
+
+URL Source: https://arxiv.org/pdf/2604.01762v1
+
+Published Time: Fri, 03 Apr 2026 00:38:52 GMT
+
+Number of Pages: 21
+
+Markdown Content:
+# FourierMoE: Fourier Mixture-of-Experts Adaptation of Large Language Models 
+
+Juyong Jiang 1 2 * Fan Wang 1 * Hong Qi 1 Sunghun Kim 1 Jing Tang 1 2 † 
+
+# Abstract 
+
+Parameter-efficient fine-tuning (PEFT) has emerged as a crucial paradigm for adapting large language models (LLMs) under constrained computational budgets. However, standard PEFT methods often struggle in multi-task fine-tuning settings, where diverse optimization objectives induce task interference and limited parameter budgets lead to representational deficiency. While recent approaches incorporate mixture-of-experts (MoE) to alleviate these issues, they predomi-nantly operate in the spatial domain, which may introduce structural redundancy and parameter overhead. To overcome these limitations, we reformulate adaptation in the spectral domain. Our spectral analysis reveals that different tasks exhibit distinct frequency energy distributions, and that LLM layers display heterogeneous fre-quency sensitivities. Motivated by these insights, we propose FourierMoE , which integrates the MoE architecture with the inverse discrete Fourier transform (IDFT) for frequency-aware adaptation. Specifically, FourierMoE employs a frequency-adaptive router to dispatch tokens to experts specialized in distinct frequency bands. Each expert learns a set of conjugate-symmetric complex coefficients, preserving complete phase and amplitude information while theoretically guaranteeing lossless IDFT reconstruction into real-valued spatial weights. Extensive evaluations across 28 benchmarks, multiple model architectures, and scales demonstrate that FourierMoE consistently outperforms competitive baselines in both single-task and multi-task settings while using significantly fewer trainable parameters. These results highlight the promise of spectral-domain expert adaptation as an effective and parameter-efficient paradigm for LLM fine-tuning. 
+
+> *
+
+Equal contribution 1The Hong Kong University of Science and Technology (Guangzhou) 2The Hong Kong University of Science and Technology. Correspondence to: Jing Tang <jing-tang@ust.hk >.
+
+Preprint. April 3, 2026. 
+
+# 1. Introduction 
+
+The advent of large language models (LLMs) (Dubey et al., 2024; Gemma Team, 2024; Yang et al., 2025) has reshaped the landscape of natural language processing (NLP). How-ever, as model sizes escalate to hundreds of billions of pa-rameters, full fine-tuning (FFT) becomes increasingly pro-hibitive due to exorbitant computational and memory over-heads. Parameter-efficient fine-tuning (PEFT) (Hu et al., 2021; Liu et al., 2024b) has emerged as a crucial paradigm, adapting pretrained models by updating a minimum set of parameters (Zi et al., 2023; Lialin et al., 2023). While methods like LoRA (Hu et al., 2021) demonstrate efficacy in single-task adaptation, their performance of-ten degrades in multi-task scenarios (Li et al., 2024; Tian et al., 2024). We attribute this degradation to two primary challenges: task interference and representation deficiency. Given the data heterogeneity inherent in multi-task learning, distinct tasks often dictate conflicting optimization objec-tives (Yu et al., 2020). When forcing diverse tasks to share a monolithic set of adaptable parameters, gradient updates can exhibit orthogonal or opposing directions, leading to negative transfer (Zhang et al., 2025a; Liu et al., 2024a). Furthermore, the restricted parameter budget of the conven-tional single-PEFT methods, which rely on a single tunable module, may limit their capacity to model the fine-grained and diverse structural features required for simultaneous generalization across multiple tasks (Valipour et al., 2023; Liu et al., 2024b; Zhang et al., 2022; Park et al., 2025). This challenge in balancing parameter efficiency with repre-sentational capacity for multi-task generalization has moti-vated recent advances in more dynamic and compositional architectures. A promising direction integrates the mixture-of-experts (MoE) architecture with PEFT, leading to mixture of parameter-efficient experts (MoPE) approaches (Zadouri et al., 2023; Dou et al., 2023). These methods utilize a router to dynamically select experts instantiated as PEFT modules conditioned on inputs, enabling a flexible alloca-tion of task-specific capacity and potentially reducing task interference (Cai et al., 2024). Despite their promise, exist-ing MoPE methods suffer from structural redundancy (Tian et al., 2024; Gao et al., 2024a) due to the lack of explicit mechanisms to encourage orthogonality or diversity among experts. Furthermore, maintaining multiple spatial experts 1
+
+> arXiv:2604.01762v1 [cs.LG] 2 Apr 2026
+
+FourierMoE: Fourier Mixture-of-Experts Adaptation of Large Language Models Frequency Bins                   
+
+> 020 40 60 80 100
+> Layer
+> 1
+> 8
+> 16
+> 24
+> Power
+> 10 3
+> 10 2
+> 10 1Layer 24
+> Layer 16
+> Layer 8
+> Layer 1
+> Frequency Bins
+> 020 40 60 80 100
+> Task
+> COLA
+> SST2
+> QQP
+> MRPC
+> Power
+> 10 3
+> 10 2
+> 10 1MRPC
+> QQP
+> SST2
+> COLA
+
+Figure 1. Spectral analysis across layers and tasks. (Left) The power spectral density of the RoBERTa-large weights shows layer-wise differences, with early layers exhibiting clear high-frequency spikes and deeper layers showing a progressively smoother spectrum. 
+
+(Right) For different GLUE tasks (CoLA, SST-2, QQP, and MRPC), the spectra of hidden representations from the eighth layer of RoBERTa-large display distinct frequency energy distributions, revealing task-specific preferences. These observations suggest that effective adaptation requires frequency-specific modulation tailored to different layers and downstream tasks. 
+
+incurs additional parameter overhead, which partially com-promises the efficiency goals of PEFT. In this work, we diverge from the spatial-centric convention and explore solutions through the lens of frequency. We conduct a spectral analysis, as shown in Figure 1, revealing heterogeneity in frequency sensitivity across both model layers and downstream tasks. While early layers exhibit high-frequency spikes, deeper layers manifest a progres-sively smoother spectrum with attenuated high-frequency components, suggesting a transition from local feature ex-traction to global semantic integration. Furthermore, dif-ferent tasks exhibit distinct frequency energy distributions. For instance, MRPC displays a notable energy plateau in the mid-frequency range (bins 15-40), while SST-2 demon-strates a relatively smoother decay. These observations imply that effective adaptation requires frequency-specific modulation tailored to layers and tasks, whereas uniform adaptation may be inefficient and suboptimal. Building upon these insights, we propose FourierMoE 
+
+(Fourier M ixture-of-Experts), a novel method that inte-grates MoE architecture with the inverse discrete Fourier transform (IDFT) for flexible, frequency-aware adaptation. Our approach incorporates a frequency-adaptive router and a set of experts specialized in distinct spectral bands. Each expert learns a small set of conjugate-symmetric complex coefficients, enabling effective adaptation in the Fourier domain while theoretically ensuring reconstruction into real-valued spatial weights. FourierMoE achieves strong expres-sivity and theoretical soundness along three dimensions: (1) It partitions the spectrum into distinct frequency bands to facilitate expert specialization. (2) Prior spectral PEFT meth-ods (Gao et al., 2024b; Kim, 2025) instantiate the learnable coefficients as real-valued, but we argue that ignoring the imaginary component limits the ability to represent phase and amplitude information. In contrast, FourierMoE learns both real and imaginary components to enable a complete spectral representation. (3) By enforcing conjugate symme-try on the coefficients, our method theoretically ensures that IDFT reconstruction yields real-valued updates, maintaining consistency with the spatial model weights while avoiding information loss. We validate the effectiveness of FourierMoE across 28 benchmarks spanning commonsense reasoning, math rea-soning, image classification, and natural language un-derstanding (NLU). Our method achieves state-of-the-art (SOTA) results compared with FFT, PEFT, and MoPE base-lines in both single-task and multi-task setups (Li et al., 2024), while using significantly fewer trainable parameters. Our main contributions are summarized as follows: • We propose FourierMoE, a novel MoPE approach that employs frequency-specialized experts with a frequency-adaptive router to facilitate flexible and fine-grained adaptation for LLMs. • We provide a theoretical analysis of spectral PEFT, un-covering the representation limitations of real-only co-efficient learning and asymmetric frequency sampling in prior methods (Gao et al., 2024b; Kim, 2025). De-rived from this analysis, FourierMoE’s design choice is theoretically grounded to address these limitations. • Extensive experiments show that FourierMoE consis-tently outperforms competitive baselines across vari-ous model architectures and scales on 28 benchmarks in both single-task and multi-task scenarios, thereby validating its effectiveness and robustness. 
+
+# 2. Related Work 
+
+PEFT has emerged as a crucial paradigm for adapting LLMs to downstream tasks (Lialin et al., 2023; Han et al., 2024), with numerous methods consistently improving efficiency or adaptation quality (Hu et al., 2021; Liu et al., 2024b; Zhang 2FourierMoE: Fourier Mixture-of-Experts Adaptation of Large Language Models 
+
+et al., 2022; Dettmers et al., 2023; Meng et al., 2024). Re-cently, the spectral domain has emerged as a PEFT frontier. FourierFT (Gao et al., 2024b) and LFMA (Kim, 2025) learn Fourier coefficients and map them back to the spatial model weights via IDFT. However, they rely on static coefficient positions and neglect the imaginary components, restricting expressive capacity. FourierMoE addresses these constraints by combining MoE with carefully structured coefficients, enhancing flexibility and representational power. Further discussions of related works are presented in Appendix B. 
+
+# 3. Methodology 
+
+In this section, we formally introduce FourierMoE, a novel MoPE framework that reparameterizes the weight adapta-tion of LLMs into the spectral domain. Our approach is motivated by the observation that LLMs exhibit heteroge-neous frequency sensitivities across layers and downstream tasks. By leveraging the orthogonality of the Fourier basis (Davis, 2012) and the divide-and-conquer principle of MoE (Masoudnia & Ebrahimpour, 2014), FourierMoE achieves fine-grained, frequency-aware optimization. We first outline the spectral reparameterization formulation, followed by the design of frequency-specialized experts, and finally provide a rigorous theoretical analysis of the conjugate symmetry constraints required for lossless adaptation. 
+
+3.1. Spectral Reparameterization 
+
+Motivated by the low intrinsic dimension of pretrained LLMs (Aghajanyan et al., 2021), LoRA (Hu et al., 2021) models ∆W using a low-rank structure in the spatial do-main. In the spectral domain, the informational signals within neural network weights exhibit spectral sparsity, with the important adaptation information concentrated in a small subset of dominant frequency components (Kim, 2025). In addition, FourierFT empirically shows that sparse spectral coefficients can recover high-quality weight updates (Gao et al., 2024b). Based on these insights and observations, we assume that learning ∆W within a sparse spectral subspace is sufficiently expressive for downstream adaptation. Let W0 ∈ RM ×N denote the frozen pretrained weights. We aim to learn an update ∆W such that the forward pass becomes h = ( W0 + ∆ W)x. We model any spatial weight update ∆W as the inverse discrete Fourier transform (IDFT) of a spectral signal F ∈ CM ×N . The transformation from the spectral domain back to the spatial domain is defined as: 
+
+∆W = F−1(F) = 1
+
+M N  
+
+> M−1
+
+X 
+
+> u=0
+> N−1
+
+X
+
+> v=0
+
+F(u, v ) · Bu,v ,
+
+Bu,v (q, y ) = exp 
+
+
+
+j2π
+
+ uq M + vy N
+
+ 
+
+,q ∈ { 0, . . . ,M − 1}, y ∈ { 0, . . . , N − 1} (1) where Bu,v ∈ CM ×N represents the 2D Fourier basis ker-nel. Unlike prior approaches (Gao et al., 2024b; Kim, 2025) that instantiate F(u, v ) as real-valued, we strictly model 
+
+F(u, v ) in the complex domain C.
+
+3.2. Fourier Mixture-of-Experts 
+
+To address the multi-task conflict and limited capacity of existing single-PEFT methods, FourierMoE utilizes a sparse ensemble of Z experts gated by a router GΦ(x) parameter-ized by Φ. Instead of aggregating experts in the frequency domain, we transform each expert’s spectral representa-tion Ei ∈ CM ×N into the spatial domain to obtain expert-specific updates ∆Wi. To ensure computational efficiency, we employ a token-level Top-k routing strategy, activating only the subset of experts with the highest gating scores. The final composite update is formulated as: 
+
+∆W = X
+
+> i∈S (x)
+
+GΦ(x)i · ∆Wi, ∆Wi = F−1(Ei), (2) where S(x) denotes the set of k indices corresponding to the top-k elements of the router output, and GΦ(x)i represents the gating weights for the selected i-th experts. This formu-lation ensures that the gating mechanism selects among the realized spatial weights, allowing for dynamic and input-dependent adaptation. Notably, although FourierMoE adopts token-level routing (Lepikhin et al., 2020; Fedus et al., 2022), the IDFT is not recomputed per token. Specifically, each active expert’s spatial update, ∆Wi = F−1(Ei), is reconstructed once per layer in each forward pass and then reused for all tokens assigned to that expert. Therefore, the reconstruction cost scales with the number of active experts k, rather than with the number of tokens. 
+
+Band-Limited Spectral Experts. Each expert Ei is de-signed to specialize in a particular frequency band, captur-ing distinct features ranging from global semantics (low-frequency) to local syntactic variations (high-frequency). An expert is defined by a learnable parameter set Θi com-prising n active frequency coordinates defined by an index set Ωi = {(uk, v k)}nk=1 . For each active frequency (u, v ) ∈
+
+Ωi, we learn a complex coefficient Ci(u, v ) = au,v + jb u,v .The necessity of learning both real and imaginary compo-nents is proven below. 
+
+Proposition 3.1 (Phase-Amplitude Completeness ). Re-stricting spectral coefficients to R (i.e., bu,v = 0 ) forces the phase Φu,v = atan2( b, a ) to be either 0 or π. This constrains the resulting spatial signal to be an even function (symmetric around the origin), rendering the model inca-pable of representing spatial shifts or asymmetric features in ∆W. By learning Ci ∈ C, FourierMoE maintains full expressivity over amplitude A = √a2 + b2 and phase Φ.
+
+3FourierMoE: Fourier Mixture-of-Experts Adaptation of Large Language Models Pretrained 
+
+Weights 
+
+𝑾 0 ∈ ℝ𝑀 ×𝑁 
+
+Re 𝑪 
+
+Im 𝑪  Im 𝑪 
+
+Re 𝑪  Re 𝑪 
+
+Im 𝑪 
+
+. . .
+
+Expert  1 (Low -Freq)  Expert  2 (Mid -Freq)  Expert 𝒵 (High -Freq) 
+
+IDFT ℱ−1(𝑬 𝛩 1 )
+
+Input 𝑥 ∈ ℝ𝑀 
+
+IDFT ℱ−1(𝑬 𝛩 2 ) IDFT ℱ−1(𝑬 𝛩 𝒵 )
+
+∆𝑾 𝑥 = 𝜂 ෍
+
+> 𝑖 ∈𝒮 (𝑥 )
+
+𝒢 Φ 𝑥 𝑖 (ℱ−1(𝑬 𝛩 𝑖 )𝑥 )𝑾 0𝑥 
+
+Out put ℎ = 𝑾 0𝑥 + ∆𝑾𝒙 
+
+Frozen 
+
+Learnable 
+
+Fourier Mixture -of -Experts 
+
+Router 𝒢 Φ 𝑥 … 
+
+> Conjugate Symmetry
+
+# Σ
+
+Figure 2. The overall framework of FourierMoE, which reparameterizes LLM weight updates ∆W in the spectral domain. A frequency-adaptive router GΦ(x) dynamically assigns tokens to experts specialized in distinct frequency bands, which mitigates task interference via parameter isolation. Each expert learns conjugate-symmetric complex coefficients, enabling complete spectral representation while theoretically guaranteeing real-valued weight updates after IDFT. 
+
+Gaussian Spectral Initialization. To enforce spectral spe-cialization, we utilize a Gaussian bandpass filter (Gonzales & Wintz, 1987) to initialize the active indices Ωi. The prob-ability of assigning a frequency coordinate (u, v ) to expert 
+
+i is governed by: 
+
+Pi(u, v ) = exp 
+
+
+
+−
+
+ D(u, v )2 − D 2
+
+> c,i
+
+D(u, v ) · W i
+
+2
+
+, (3) where D(u, v ) is the Euclidean distance from the DC com-ponent (origin), Dc,i is the center frequency, and Wi is the bandwidth. This mechanism can ensure minimal spectral overlap, allowing the router to dispatch tokens based on their required frequency resolution. 
+
+3.3. Theoretical Analysis 
+
+Given that the LLM weights W0 and the input x are real-valued, the resulting update ∆W must theoretically lie in 
+
+RM ×N . Moreover, since ∆W is a linear combination of expert updates ∆Wi, each expert update must likewise be real-valued. We provide the theoretical guarantee that ensures ∆Wi ∈ R without heuristic truncation. 
+
+Theorem 3.2 (Conjugate Symmetry Condition ). Let 
+
+F ∈ CM ×N be a spectral matrix (representing any expert 
+
+Ei). The inverse discrete Fourier transform S = F−1(F)
+
+satisfies S ∈ RM ×N (i.e., Im( S) = 0) if and only if F
+
+satisfies Hermitian symmetry: 
+
+F(u, v ) = F∗(⟨− u⟩M , ⟨− v⟩N ), ∀(u, v ), (4) 
+
+where ⟨·⟩ M denotes the modulo M operation and (·)∗ de-notes the complex conjugate. Proof. Consider the IDFT definition for an entry S(q, y ):
+
+S(q, y ) = 1
+
+M N  
+
+> M−1
+
+X 
+
+> u=0
+> N−1
+
+X
+
+> v=0
+
+F(u, v )ej 2πuq M ej 2πvy N . (5) Let θu,v = 2 π( uq M + vy N ). We split the summation into the DC component, the Nyquist components (if any), and pairs of indices (u, v ) and their reflection (u′, v ′) = (⟨− u⟩M , ⟨− v⟩N ). Assume the symmetry condition holds: 
+
+F(u′, v ′) = F∗(u, v ). The contribution of this pair to the sum is: 
+
+T = F(u, v )ejθ u,v + F(u′, v ′)ejθ u′,v ′ (6) 
+
+= F(u, v )ejθ u,v + F∗(u, v )ej(2 πk −θu,v ) (k ∈ Z) (7) 
+
+= F(u, v )ejθ u,v +  F(u, v )ejθ u,v ∗ (8) 
+
+= 2 Re F(u, v )ejθ u,v . (9) Since 2 Re {·} is strictly real, the total sum S(q, y ) com-prises only the real terms. Conversely, if symmetry is violated, the imaginary terms fail to cancel, resulting in 
+
+S(q, y ) ∈ C.
+
+Necessity of Symmetry Constraints. Prior works (Gao et al., 2024b; Kim, 2025) often neglect the conjugate sym-metry, computing ∆Wtrunc = Re( F−1(Funsym )) . We demonstrate that this leads to a representation error. 
+
+Corollary 3.3 (Truncation Error Bound ). Let Funsym 
+
+be a spectral matrix violating Theorem 3.2. The effective weight update for the model is Wef f =
+
+4FourierMoE: Fourier Mixture-of-Experts Adaptation of Large Language Models 
+
+Re( F−1(Funsym )) . The information loss due to the trun-cation of imaginary parts, defined as the energy of the dis-carded signal, is given by: 
+
+Lerror = ∥F −1(Funsym ) − Wef f ∥2
+
+> F
+
+= X
+
+> q,y
+
+ Im( F−1(Funsym )) q,y 
+
+2 . (10) 
+
+By Parseval’s theorem (Oppenheim, 1999), the truncation error can be equivalently characterized in the spectral do-main, up to a DFT-dependent normalization constant: 
+
+Lerror ∝ X
+
+> u,v
+
+∥Funsym (u, v )−F∗
+
+> unsym
+
+(⟨− u⟩M , ⟨− v⟩N )∥2.
+
+(11) Without enforcing conjugate symmetry, updates fall into imaginary subspace that are discarded, causing information loss. FourierMoE enforces the constraint in Theorem 3.2 for each expert Ei during the learning of coefficients Θi,ensuring the update contributed by each expert is strictly real-valued, eliminating the truncation error. 
+
+3.4. Optimization Objective 
+
+The forward pass for the l-th layer is formulated as: 
+
+h = W0x + η X
+
+> i∈S (x)
+
+GΦ(x)i
+
+ F−1(EΘi )x , (12) where η denotes a predefined scaling factor, Θ = {Θi}Zi=1 
+
+represents the ensemble of learnable spectral coefficients for all experts, and Φ denotes the trainable parameters of the frequency-adaptive router G. We optimize the joint parameter set {Θ, Φ} by minimizing a composite objective function that balances task performance with architectural stability. Formally, the optimization problem is defined as the minimization of the expected loss over the training distribution Dtrain :
+
+min  
+
+> Θ,Φ
+
+Ex∼D train [Ltask (x; Θ , Φ) + λLaux (x; Φ)] , (13) where Ltask is the standard autoregressive cross-entropy loss. To mitigate the risk of expert collapse, a common failure mode in sparse MoE where the router over-selects a small subset of experts, we define the auxiliary load-balancing loss Laux following prior works (Lepikhin et al., 2020; Fedus et al., 2022): 
+
+Laux = Z
+
+> Z
+
+X
+
+> i=1
+
+fi · Pi, fi = 1
+
+B
+
+X
+
+> x∈B
+
+1{i ∈ S (x)} (14) where fi is the fraction of tokens in a batch B assigned to expert i (i.e., expert i is in the top-k set for x), and Pi is the mean routing probability for expert i across the batch. This formulation balances expert optimization for broad spectral coverage and diverse representations. For clarity, we present the detailed algorithm in Appendix A. 
+
+# 4. Experiments 
+
+4.1. Experiment Setting Baselines. We compare FourierMoE against FFT, single-PEFT, and MoPE baselines. For a fair and comprehen-sive evaluation, we follow the configurations used in prior works and reuse their reported results. We select compet-itive single-PEFT methods as baselines, including LoRA (Hu et al., 2021), rsLoRA (Kalajdzievski, 2023), DoRA (Liu et al., 2024b), PiSSA (Meng et al., 2024), MiLoRA (Wang et al., 2024b), KaSA (Wang et al., 2024a), LoRA-Dash (Si et al., 2025), NEAT (Zhong et al., 2024), TopLoRA (Li et al., 2025), MELoRA (Ren et al., 2024), and FourierFT (Gao et al., 2024b). In addition, we include comparisons against several MoPE baselines: MoLoRA (Zadouri et al., 2023), AdaMoLE (Liu & Luo, 2024), HydraLoRA (Tian et al., 2024), and GOAT (Fan et al., 2025a). The detailed introduction of baselines is presented in Appendix C. 
+
+Model and Datasets. We evaluate the efficiency of Fourier-MoE across multi-task and single-task scenarios spanning NLP and computer vision (CV) domains. For the multi-task setup (Li et al., 2024), we train models on mixed tasks and evaluate them on the individual test set, including: (1) Commonsense reasoning: we fine-tune LLaMA-2 7B (Tou-vron et al., 2023) and Gemma 7B (Gemma Team, 2024) on the Commonsense170K dataset (Hu et al., 2023), and evaluate on the test sets of its constituent subsets. (2) Math reasoning: we fine-tune LLaMA-3 8B (Grattafiori et al., 2024) and Qwen2.5-14B (Yang et al., 2025) on Math10K (Hu et al., 2023), and evaluate them on GSM8K (Cobbe et al., 2021), SVAMP (Patel et al., 2021), MultiArith (Roy & Roth, 2016), AddSub (Hosseini et al., 2014), AQuA (Ling et al., 2017), and SingleEq (Koncel-Kedziorski et al., 2015). For the single-task setup, we train and evaluate models on each task, including: (3) Image classification: we fine-tune and evaluate CLIP ViT-B/32 (Radford et al., 2021) on Cars (Krause et al., 2013), DTD (Cimpoi et al., 2014), EuroSAT (Helber et al., 2019), GTSRB (Houben et al., 2013), RE-SISC45 (Cheng et al., 2017), SUN397 (Xiao et al., 2010), and SVHN (Netzer et al., 2011). (4) Natural language un-derstanding: we fine-tune and evaluate RoBERTa-large (Liu et al., 2019) on the CoLA, SST-2, MRPC, QQP, MNLI, QNLI, and RTE subsets from GLUE (Wang et al., 2018). We present detailed statistics and hyperparameter configu-rations for all datasets and benchmarks in Appendix D and Appendix E. All experiments are conducted on NVIDIA H100 (80GB) GPUs. 
+
+4.2. Main Results Commonsense Reasoning. As shown in Table 1, Fourier-MoE consistently surpasses the baselines across all bench-marks and models, while using minimal trainable parame-ters. On LLaMA-2 7B, it outperforms the strongest MoPE 5FourierMoE: Fourier Mixture-of-Experts Adaptation of Large Language Models 
+
+Table 1. Performance comparison of single-PEFT and MoPE methods on eight commonsense reasoning benchmarks using LLaMA-2 7B and Gemma 7B in a multi-task setting. Accuracy is reported for all benchmarks. Bold denotes the best result.                                                                                                                                                                                       
+
+> Model Method # Params(%) BoolQ PIQA SIQA HellaSwag WinoGrande ARC-e ARC-c OBQA Average
+> ChatGPT //73.10 85.40 68.50 78.50 66.10 89.80 79.90 74.80 77.01 LLaMA-2 7B LoRA 0.84 69.80 79.90 79.50 83.60 82.60 79.80 64.70 81.00 77.61 DoRA 0.84 71.80 83.10 79.90 89.10 83.00 84.50 71.00 81.20 80.45 PiSSA 0.84 67.60 78.10 78.40 76.60 78.00 75.80 60.20 75.60 73.79 MiLoRA 0.84 67.60 83.80 80.10 88.20 82.00 82.80 68.80 80.60 79.24 LoRA-Dash 0.84 71.00 75.70 79.30 91.10 78.60 84.20 69.80 78.80 78.56 NEAT 0.84 71.70 83.90 80.20 88.90 84.30 86.30 71.40 83.00 81.21 KaSA 0.84 73.60 84.40 80.20 91.50 84.50 84.70 72.10 81.20 81.53 HydraLoRA 0.84 72.78 84.06 79.68 80.34 86.66 87.12 72.35 86.00 81.12 MoLoRA 0.96 73.15 83.68 80.09 74.57 85.95 87.33 72.53 86.20 80.43 GOAT 0.96 73.60 83.95 80.50 87.12 85.00 87.79 76.88 87.00 82.73
+> FourierMoE 0.06 73.73 84.60 81.27 92.33 86.82 88.24 77.21 87.40 83.95
+> Gemma 7B LoRA 0.14 75.17 88.74 77.58 95.21 89.11 92.93 84.73 88.00 86.43 DoRA 0.14 73.49 90.44 79.19 95.03 90.00 93.79 84.73 88.67 86.92 MELoRA 0.14 73.49 89.50 79.99 94.60 89.90 93.18 84.30 89.40 86.79 HydraLoRA 0.16 72.14 89.21 81.30 95.11 89.45 94.56 85.32 89.00 87.01
+> FourierMoE 0.03 75.26 91.05 82.55 95.81 90.21 95.44 85.62 89.60 88.19
+
+Table 2. Performance comparison of single-PEFT and MoPE methods on six math reasoning benchmarks using LLaMA-3 8B and Qwen2.5-14B in a multi-task setting. Accuracy is reported for all benchmarks. Bold denotes the best result. 
+
+Model Method # Params(%) AddSub AQuA GSM8K MultiArith SingleEQ SVAMP AVG. 
+
+LLaMA-3 8B LoRA 0.12 84.56 25.72 57.22 91.22 92.26 70.17 70.19 DoRA 0.12 85.95 26.19 56.52 89.67 92.62 70.40 70.23 MELoRA 0.12 85.82 24.41 55.34 87.83 91.54 71.20 69.36 HydraLoRA 0.11 86.08 25.98 55.50 91.00 91.14 68.10 69.63 
+
+FourierMoE 0.01 87.85 33.07 60.80 93.16 91.54 73.00 73.24 
+
+Qwen2.5-14B LoRA 0.12 91.90 34.65 74.37 96.33 92.91 86.40 79.43 DoRA 0.13 92.41 36.22 75.92 96.39 92.39 86.80 80.02 TopLoRA 0.10 91.31 35.96 77.31 97.67 93.44 87.43 80.52 MELoRA 0.12 92.91 33.86 75.89 97.33 92.13 85.60 79.62 HydraLoRA 0.12 92.41 36.61 76.32 96.22 92.45 86.97 80.16 
+
+FourierMoE 0.05 94.68 41.34 78.09 97.33 95.87 91.80 83.19 
+
+baseline, GOAT, by 1.22%, while using 16 × fewer trainable parameters. On Gemma 7B, our method achieves the best performance of 88.19 with 0.03% of parameters, demon-strating its superior efficiency in the multi-task setup. 
+
+Math Reasoning. We evaluate FourierMoE on larger LLMs to validate its scalability. As presented in Table 2, our method consistently attains the highest average accuracy across both backbone models. On LLaMA-3 8B, it improves accuracy by 3.01% over the strongest single-PEFT baseline (DoRA) and by 3.61% over the best MoPE method (Hy-draLoRA). It also achieves notable gains over the second-best results on AQuA (+6.88%), GSM8K (+3.58%), and SVAMP (+1.8%). On Qwen2.5-14B, FourierMoE achieves SOTA performance across 5/6 benchmarks, demonstrating effectiveness and robust scalability across models. 
+
+Image Classification. Table 3 demonstrates that Fourier-MoE surpasses all PEFT and MoPE baselines across seven CV benchmarks. Notably, it outperforms FFT by 2.85% and FFT MoE by 0.7%, while reducing trainable parameters from 100% and 770% to just 0.42%, significantly lowering adaptation costs. The consistent improvements underscore the versatility and cross-modal generalizability of Fourier-MoE beyond NLP tasks. In addition, our method consis-tently outperforms the spatial MoPE baselines, including MoLoRA, AdaMoLE, HydraLoRA, and GOAT, indicating the effectiveness of the spectral reparameterization. 
+
+Natural Language Understanding. Table 4 shows that our method outstrips all baselines across 6/7 benchmarks using 0.42% of trainable parameters. It exceeds the best single-PEFT baseline, MiLoRA (89.51), by 1.89%, and the best MoPE method, GOAT (89.76), by 1.64%. Moreover, Fouri-erMoE outperforms the spectral PEFT method FourierFT (91.40 vs. 86.73) under the same parameter budget. These outcomes suggest the efficiency of our proposed method in the single-task fine-tuning scenario. 
+
+4.3. In-depth Analysis and Insights 
+
+In the following sections, we present an in-depth analysis of FourierMoE, covering its component contributions, expert scalability, expert frequency, hyperparameter sensitivity, and computation efficiency. 6FourierMoE: Fourier Mixture-of-Experts Adaptation of Large Language Models 
+
+Table 3. Performance comparison of FFT, single-PEFT, and MoPE methods on seven image classification benchmarks using CLIP ViT-B/32 in a single-task setting. Accuracy is reported for all benchmarks. Bold denotes the best result.                                                                                                                                        
+
+> Method # Params (%) Cars DTD EuroSAT GTSRB RESISC45 SUN397 SVHN Average
+> FFT 100 60.33 73.88 98.96 98.30 93.65 53.84 96.78 82.25 FFT MoE 770 66.39 75.53 98.59 98.50 94.38 60.34 97.09 84.40 LoRA (rank8) 1.49 41.02 70.15 98.66 96.51 90.38 47.51 95.39 77.09 LoRA (rank16) 2.99 46.51 72.07 98.74 98.04 92.08 51.63 96.00 79.30 LoRA (rank32) 5.98 50.13 72.87 98.88 98.13 92.87 53.65 96.55 80.44 DoRA 1.49 40.75 71.91 98.89 97.71 90.19 47.54 95.46 77.49 PiSSA 1.49 40.41 69.62 98.48 95.84 90.58 47.21 95.84 76.85 MiLoRA 1.49 39.77 70.48 98.19 97.52 89.92 45.38 95.49 76.68 FourierFT 0.22 39.20 70.58 98.02 97.93 91.58 61.92 91.14 78.62 MoLoRA 2.24 50.83 73.51 98.63 97.72 92.58 52.55 96.00 80.26 AdaMoLE 2.33 49.47 71.65 98.52 97.73 91.95 52.29 95.82 79.63 HydraLoRA 1.58 48.42 72.18 98.40 97.28 92.93 51.80 96.06 79.58 GOAT 2.24 53.50 75.32 98.82 98.17 93.46 54.53 96.62 81.49
+> FourierMoE 0.42 64.44 77.18 98.93 98.28 93.65 66.41 96.78 85.10
+
+Table 4. Performance comparison of FFT, single-PEFT, and MoPE methods on seven benchmarks from GLUE using RoBERTa-large in a single-task setting. Accuracy is reported for all benchmarks. Bold denotes the best result.                                                                                                                               
+
+> Method # Params (%) CoLA SST-2 MRPC QQP MNLI QNLI RTE Average
+> FFT 100 84.27 95.98 85.29 91.58 89.83 94.49 84.84 89.47 FFT MoE 698 86.02 96.22 85.05 92.20 90.20 95.10 84.48 89.90 LoRA 4.00 83.41 95.64 83.33 90.06 89.00 93.28 84.47 88.46 DoRA 4.00 85.33 95.99 84.07 91.24 89.52 93.54 84.48 89.17 PiSSA 4.00 69.12 95.98 82.84 91.24 88.94 93.59 73.29 85.00 MiLoRA 4.00 84.65 96.10 86.02 91.33 89.51 94.12 84.83 89.51 rsLoRA 4.00 83.51 95.98 86.02 90.75 88.97 93.84 84.12 89.03 FourierFT 0.42 78.01 95.20 86.27 85.48 87.19 91.59 83.39 86.73 MoLoRA 4.50 83.94 96.10 87.75 91.45 89.36 93.90 84.11 89.52 AdaMoLE 4.56 83.99 95.76 86.03 91.48 89.21 93.64 83.75 89.12 GOAT 4.50 86.86 96.21 84.55 91.40 89.55 94.19 85.56 89.76 HydraLoRA 2.75 83.89 95.52 85.04 91.02 89.34 93.87 81.22 88.56
+> FourierMoE 0.42 85.52 96.33 91.91 91.52 90.33 94.66 89.53 91.40
+
+Ablation Study. We assess the contribution of each com-ponent of FourierMoE across the Cars, DTD, and SUN397 benchmarks using CLIP ViT-B/32. Specifically, the w/o imaginary part variant learns only the real component of the Fourier coefficients, while the w/o real part variant learns only the imaginary component. The w/o frequency bias vari-ant randomly samples the frequency coordinates for each ex-pert. The w/o conjugate symmetry variant removes the con-jugate symmetry constraints. As shown in Figure 3, the full implementation of FourierMoE consistently achieves the best performance across the evaluated benchmarks, whereas ablating any component leads to performance degradation, validating the effectiveness of the core design choices. 
+
+Expert Scalability. We evaluate the scalability of Fouri-erMoE in terms of coefficient amount, expert amount, and activation count on MRPC, QNLI, and RTE using RoBERTa-large. As illustrated in Figure 4 (left), the model perfor-mance initially scales with the coefficient count and peaks at n = 1008 , beyond which further increases lead to perfor-mance degradation. A similar trend is observed for the total number of experts Z (center), where accuracy improves up to Z = 8 before declining. Regarding the expert activa-tion count k (right), our results indicate that activating the top-2 experts yields the best performance, while excessively sparse or dense activation tends to be suboptimal. These findings indicate that FourierMoE balances performance with structural sparsity, achieving high parameter efficiency. 
+
+Expert Frequency. We visualize the expert-wise coeffi-cient distributions of FourierMoE in Figure 5. Our empir-ical results reveal that each expert’s learned coefficients consistently cluster within a distinct and coherent spectral region across different layers. This phenomenon suggests that FourierMoE effectively maintains spectral specializa-tion throughout the fine-tuning process. Such specialized behavior not only enhances the model’s expressive diversity but also characterizes its structural advantage in navigating the complexities of multi-task fine-tuning scenarios. 7FourierMoE: Fourier Mixture-of-Experts Adaptation of Large Language Models 62.5%     
+
+> 63.0%
+> 63.5%
+> 64.0%
+> 64.5%
+> Accuracy
+> Cars
+> 76.6%
+> 76.8%
+> 77.0%
+> 77.2%
+> 77.4%
+> Accuracy
+> DTD
+> 65.5%
+> 65.8%
+> 66.0%
+> 66.2%
+> 66.5%
+> Accuracy
+> SUN397
+> w/o Imaginary Part w/o Real Part w/o Frequency Bias w/o Conjugate Symmetry FourierMoE
+
+Figure 3. Component ablation study of FourierMoE on Cars, DTD, and SUN397. Accuracy is reported to assess the contribution of each component. Removing any component results in a performance drop compared to the full FourierMoE implementation. 512 1008 2016 3024 6048           
+
+> Coefficient Amount ( n)
+> 85%
+> 90%
+> 95%
+> Accuracy
+> 24816 32
+> Number of Experts ( Z)
+> 85%
+> 90%
+> 95%
+> Accuracy
+> 12468
+> Active Experts ( k)
+> 85%
+> 90%
+> 95%
+> Accuracy
+> MRPC QNLI RTE
+
+Figure 4. Expert scaling analysis on the MRPC, QNLI, and RTE datasets. We report the accuracy scores for each dataset. Left: Impact of the trainable coefficient count n per expert. Center: Scalability with respect to the total number of experts Z (fixed activation k = 2 ). 
+
+Right: Effect of the active expert count k given a fixed total pool size of Z = 8 .
+
+Figure 5. Visualization of expert-wise coefficient distributions across different layers of the fine-tuned model. Each expert’s coef-ficients consistently exhibit concentrations across layers, indicating stable specialization. 
+
+Hyperparameter Sensitivity. We evaluate the impact of two core hyperparameters, including the frequency band-width W and load balancing loss weight λ. As shown in Table 5, expanding W from 0.06 to 0.12 improves perfor-mance across benchmarks, while a further increase beyond this point causes accuracy degradation. We speculate that this is related to the role of W in determining the specializa-tion of experts, consequently shaping model performance. We provide a detailed analysis of frequency bandwidth in Appendix F.1. Furthermore, Table 6 shows variations in λ
+
+Table 5. Performance comparison of FourierMoE under different frequency bandwidths ( W) on CoLA, MRPC, and RTE. 
+
+Setting CoLA MRPC RTE 
+
+0.06 83.03 90.44 86.28 0.12 85.52 91.91 89.53 0.24 83.89 89.71 87.36 0.48 83.31 88.48 86.28 0.96 82.74 88.95 84.47 
+
+Table 6. Performance comparison of FourierMoE using various load balancing loss weight ( λ) on Cars, DTD, and SUN397. 
+
+Setting Cars DTD SUN397 
+
+0.001 64.44 77.18 66.41 0.005 64.32 77.44 65.88 0.01 64.25 77.12 66.00 0.05 64.00 76.91 65.96 0.1 64.32 76.80 65.81 
+
+lead to marginal fluctuations in performance. This suggests that FourierMoE maintains a stable optimization trajectory, indicating that the auxiliary routing regularization does not significantly interfere with the task learning objective. 
+
+Computation Efficiency. Table 7 compares the efficiency of FourierMoE with single-PEFT baselines (LoRA and TopLoRA) and a MoPE baseline (GOAT). While LoRA ex-8FourierMoE: Fourier Mixture-of-Experts Adaptation of Large Language Models                              
+
+> Table 7. Efficiency comparison of methods fine-tuning RoBERTa-large on RTE using a single NVIDIA H100 (80GB) GPU. Note that training FLOPs ( ×10 9) are calculated per sample, training latency is reported per epoch, and inference latency is measured with a batch size of 32.
+> Metric LoRA TopLoRA GOAT FourierMoE
+> # Trainable Params 2.38 M 2.36 M 16.98 M 1.49 M # GPU Memory 12.24 GB 16.90 GB 17.12 GB 11.61 GB # Training FLOPs 340.02 258.84 163.46 235.23 Training Latency 13.13 s 145.69 s 867 s 58 s Inference Latency 53.4 ms 397 ms 840 ms 313 ms Performance 82.31 85.20 85.56 89.53
+
+hibits low training and inference latency, its performance re-mains limited (82.31). TopLoRA and GOAT improve model performance over LoRA but introduce a significant increase in both training and inference latencies. In contrast, Fourier-MoE attains the best performance (89.53) while using only 1.49M trainable parameters, achieving an 11.4 × trainable parameter reduction compared to GOAT. Although the train-ing and inference latencies of FourierMoE are higher than those of LoRA (58 s vs. 13.13 s; 313 ms vs. 53.4 ms), they remain moderate in absolute terms and are still much lower than those of TopLoRA (145.69 s; 397 ms) and GOAT (867 s; 840 ms). These results highlight that our FourierMoE offers a favorable performance-efficiency trade-off. 
+
+# 5. Conclusion 
+
+In this work, we first conduct a spectral analysis that reveals heterogeneity in frequency sensitivity across both model layers and downstream tasks, suggesting the necessity of fine-grained adaptation in the spectral domain. Based on these observations, we propose FourierMoE, a frequency-aware MoPE framework for adapting LLMs. Specifically, FourierMoE departs from spatial-domain adaptation by routing tokens to experts specialized in distinct frequency bands, with each expert learning conjugate-symmetric com-plex coefficients in the Fourier domain. This design helps reduce inter-expert redundancy and task interference un-der limited parameter budgets, while encouraging diverse frequency representations and theoretically ensuring real-valued weight updates. Extensive evaluations across 28 benchmarks show that FourierMoE consistently outper-forms competitive PEFT and MoPE baselines with superior parameter efficiency, highlighting the potential of spectral modulation for scalable LLM adaptation. 
+
+# References 
+
+Aghajanyan, A., Gupta, S., and Zettlemoyer, L. Intrin-sic dimensionality explains the effectiveness of language model fine-tuning. In Proceedings of the 59th Annual Meeting of the Association for Computational Linguistics and the 11th International Joint Conference on Natural Language Processing (Volume 1: Long Papers) , pp. 7319– 7328, 2021. Bisk, Y., Zellers, R., Gao, J., Choi, Y., et al. Piqa: Reasoning about physical commonsense in natural language. In Pro-ceedings of the AAAI conference on artificial intelligence ,volume 34, pp. 7432–7439, 2020. Cai, W., Jiang, J., Wang, F., Tang, J., Kim, S., and Huang, J. A survey on mixture of experts. arXiv preprint arXiv:2407.06204 , 2024. Cheng, G., Han, J., and Lu, X. Remote sensing image scene classification: Benchmark and state of the art. Proceed-ings of the IEEE , 105(10):1865–1883, 2017. Cimpoi, M., Maji, S., Kokkinos, I., Mohamed, S., and Vedaldi, A. Describing textures in the wild. In Pro-ceedings of the IEEE conference on computer vision and pattern recognition , pp. 3606–3613, 2014. Clark, C., Lee, K., Chang, M.-W., Kwiatkowski, T., Collins, M., and Toutanova, K. Boolq: Exploring the surprising difficulty of natural yes/no questions. In Proceedings of the 2019 Conference of the North American Chapter of the Association for Computational Linguistics: Hu-man Language Technologies, Volume 1 (Long and Short Papers) , pp. 2924–2936, 2019. Clark, P., Cowhey, I., Etzioni, O., Khot, T., Sabharwal, A., Schoenick, C., and Tafjord, O. Think you have solved question answering? try arc, the ai2 reasoning challenge. 
+
+arXiv preprint arXiv:1803.05457 , 2018. Cobbe, K., Kosaraju, V., Bavarian, M., Chen, M., Jun, H., Kaiser, L., Plappert, M., Tworek, J., Hilton, J., Nakano, R., et al. Training verifiers to solve math word problems. 
+
+arXiv preprint arXiv:2110.14168 , 2021. Davis, H. F. Fourier series and orthogonal functions .Courier Corporation, 2012. Dettmers, T., Pagnoni, A., Holtzman, A., and Zettlemoyer, L. Qlora: Efficient finetuning of quantized llms. arXiv preprint arXiv:2305.14314 , 2023. Dou, S., Zhou, E., Liu, Y., Gao, S., Zhao, J., Shen, W., Zhou, Y., Xi, Z., Wang, X., Fan, X., et al. Loramoe: Revolutionizing mixture of experts for maintaining world knowledge in language model alignment. arXiv preprint arXiv:2312.09979 , 4(7), 2023. Dubey, A., Jauhri, A., Pandey, A., Kadian, A., Al-Dahle, A., Letman, A., Mathur, A., Schelten, A., Yang, A., Fan, A., et al. The llama 3 herd of models. arXiv preprint arXiv:2407.21783 , 2024. 9FourierMoE: Fourier Mixture-of-Experts Adaptation of Large Language Models 
+
+Fan, C., Lu, Z., Liu, S., Gu, C., Qu, X., Wei, W., and Cheng, Y. Make lora great again: Boosting lora with adaptive singular values and mixture-of-experts optimization align-ment. arXiv preprint arXiv:2502.16894 , 2025a. Fan, Y., Zhang, J., and Wang, K. Towards more efficient post-training via fourier domain adapter framework. In 
+
+Findings of the Association for Computational Linguis-tics: EMNLP 2025 , pp. 6175–6193, 2025b. Fedus, W., Zoph, B., and Shazeer, N. Switch transformers: Scaling to trillion parameter models with simple and ef-ficient sparsity. Journal of Machine Learning Research ,23(120):1–39, 2022. Feng, W., Hao, C., Zhang, Y., Han, Y., and Wang, H. Mixture-of-loras: An efficient multitask tuning for large language models. arXiv preprint arXiv:2403.03432 ,2024. Gao, C., Chen, K., Rao, J., Sun, B., Liu, R., Peng, D., Zhang, Y., Guo, X., Yang, J., and Subrahmanian, V. Higher layers need more lora experts. arXiv preprint arXiv:2402.08562 ,2024a. Gao, Z., Wang, Q., Chen, A., Liu, Z., Wu, B., Chen, L., and Li, J. Parameter-efficient fine-tuning with discrete fourier transform. arXiv preprint arXiv:2405.03003 , 2024b. Gemma Team. Gemma: Open models based on gemini re-search and technology. arXiv preprint arXiv:2403.08295 ,2024. Gonzales, R. C. and Wintz, P. Digital image processing .Addison-Wesley Longman Publishing Co., Inc., 1987. Grattafiori, A., Dubey, A., Jauhri, A., Pandey, A., Kadian, A., Al-Dahle, A., Letman, A., Mathur, A., Schelten, A., Vaughan, A., et al. The llama 3 herd of models. arXiv preprint arXiv:2407.21783 , 2024. Guibas, J., Mardani, M., Li, Z., Tao, A., Anandkumar, A., and Catanzaro, B. Adaptive fourier neural operators: Efficient token mixers for transformers. arXiv preprint arXiv:2111.13587 , 2021. Han, Z., Gao, C., Liu, J., Zhang, S. Q., et al. Parameter-efficient fine-tuning for large models: A comprehensive survey. arXiv preprint arXiv:2403.14608 , 2024. He, Z., Yang, M., Feng, M., Yin, J., Wang, X., Leng, J., and Lin, Z. Fourier transformer: Fast long range modeling by removing sequence redundancy with fft operator. arXiv preprint arXiv:2305.15099 , 2023. Helber, P., Bischke, B., Dengel, A., and Borth, D. Eurosat: A novel dataset and deep learning benchmark for land use and land cover classification. IEEE Journal of Se-lected Topics in Applied Earth Observations and Remote Sensing , 12(7):2217–2226, 2019. Hosseini, M. J., Hajishirzi, H., Etzioni, O., and Kushman, N. Learning to solve arithmetic word problems with verb categorization. In Proceedings of the 2014 Conference on Empirical Methods in Natural Language Processing (EMNLP) , pp. 523–533, 2014. Houben, S., Stallkamp, J., Salmen, J., Schlipsing, M., and Igel, C. Detection of traffic signs in real-world images: The german traffic sign detection benchmark. In The 2013 international joint conference on neural networks (IJCNN) , pp. 1–8. Ieee, 2013. Hu, E. J., Wallis, P., Allen-Zhu, Z., Li, Y., Wang, S., Wang, L., Chen, W., et al. Lora: Low-rank adaptation of large language models. In International Conference on Learn-ing Representations , 2021. Hu, Z., Wang, L., Lan, Y., Xu, W., Lim, E.-P., Bing, L., Xu, X., Poria, S., and Lee, R. Llm-adapters: An adapter family for parameter-efficient fine-tuning of large lan-guage models. In Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing , pp. 5254–5276, 2023. Kalajdzievski, D. A rank stabilization scaling factor for fine-tuning with lora. arXiv preprint arXiv:2312.03732 ,2023. Kim, S. Y. LFMA: Parameter-efficient fine-tuning via lay-erwise fourier masked adapter with top-k frequency se-lection. In NeurIPS 2025 Workshop on Symmetry and Geometry in Neural Representations , 2025. URL https: //openreview.net/forum?id=dBRaAOncLD .Koncel-Kedziorski, R., Hajishirzi, H., Sabharwal, A., Et-zioni, O., and Ang, S. D. Parsing algebraic word prob-lems into equations. Transactions of the Association for Computational Linguistics , 3:585–597, 2015. Krause, J., Stark, M., Deng, J., and Fei-Fei, L. 3d object rep-resentations for fine-grained categorization. In Proceed-ings of the IEEE international conference on computer vision workshops , pp. 554–561, 2013. Lee-Thorp, J., Ainslie, J., Eckstein, I., and Ontanon, S. Fnet: Mixing tokens with fourier transforms. In Proceedings of the 2022 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies , pp. 4296–4313, 2022. Lepikhin, D., Lee, H., Xu, Y., Chen, D., Firat, O., Huang, Y., Krikun, M., Shazeer, N., and Chen, Z. Gshard: Scaling giant models with conditional computation and automatic sharding. arXiv preprint arXiv:2006.16668 , 2020. Li, D., Ma, Y., Wang, N., Cheng, Z., Duan, L., Zuo, J., Yang, C., and Tang, M. Mixlora: Enhancing large language models fine-tuning with lora based mixture of experts. 
+
+arXiv preprint arXiv:2404.15159 , 2024. 10 FourierMoE: Fourier Mixture-of-Experts Adaptation of Large Language Models 
+
+Li, S., Luo, X., Wang, H., Tang, X., Cui, Z., Liu, D., Li, Y., He, X., and Li, R. Beyond higher rank: Token-wise input-output projections for efficient low-rank adaptation. 
+
+arXiv preprint arXiv:2510.23123 , 2025. Lialin, V., Deshpande, V., and Rumshisky, A. Scaling down to scale up: A guide to parameter-efficient fine-tuning. 
+
+arXiv preprint arXiv:2303.15647 , 2023. Ling, W., Yogatama, D., Dyer, C., and Blunsom, P. Pro-gram induction by rationale generation: Learning to solve and explain algebraic word problems. arXiv preprint arXiv:1705.04146 , 2017. Liu, Q., Wu, X., Zhao, X., Zhu, Y., Xu, D., Tian, F., and Zheng, Y. When moe meets llms: Parameter efficient fine-tuning for multi-task medical applications. In Proceed-ings of the 47th International ACM SIGIR Conference on Research and Development in Information Retrieval , pp. 1104–1114, 2024a. Liu, S.-Y., Wang, C.-Y., Yin, H., Molchanov, P., Wang, Y.-C. F., Cheng, K.-T., and Chen, M.-H. Dora: Weight-decomposed low-rank adaptation. In Forty-first Interna-tional Conference on Machine Learning , 2024b. Liu, Y., Ott, M., Goyal, N., Du, J., Joshi, M., Chen, D., Levy, O., Lewis, M., Zettlemoyer, L., and Stoyanov, V. Roberta: A robustly optimized bert pretraining approach. 
+
+arXiv preprint arXiv:1907.11692 , 2019. Liu, Z. and Luo, J. Adamole: Fine-tuning large language models with adaptive mixture of low-rank adaptation experts. arXiv preprint arXiv:2405.00361 , 2024. Ma, J., Lyu, X., Jiang, J., Zou, L., Ren, C., Cui, Q., and Tao, X. Fouriercompress: Layer-aware spectral activation compression for efficient and accurate collaborative llm inference. arXiv preprint arXiv:2510.16418 , 2025. Masoudnia, S. and Ebrahimpour, R. Mixture of experts: a literature survey. Artificial Intelligence Review , 42(2): 275–293, 2014. Meng, F., Wang, Z., and Zhang, M. Pissa: Principal singular values and singular vectors adaptation of large language models. arXiv preprint arXiv:2404.02948 , 2024. Mihaylov, T., Clark, P., Khot, T., and Sabharwal, A. Can a suit of armor conduct electricity? a new dataset for open book question answering. In Proceedings of the 2018 Conference on Empirical Methods in Natural Language Processing , pp. 2381–2391, 2018. Netzer, Y., Wang, T., Coates, A., Bissacco, A., Wu, B., Ng, A. Y., et al. Reading digits in natural images with unsupervised feature learning. In NIPS workshop on deep learning and unsupervised feature learning , volume 2011, pp. 7. Granada, 2011. Oppenheim, A. V. Discrete-time signal processing . Pearson Education India, 1999. Park, C., Jiang, J., Wang, F., Paul, S., and Tang, J. Llamaduo: Llmops pipeline for seamless migration from service llms to small-scale local llms. In Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pp. 33194–33215, 2025. Patel, A., Bhattamishra, S., and Goyal, N. Are nlp models really able to solve simple math word problems? arXiv preprint arXiv:2103.07191 , 2021. Radford, A., Kim, J. W., Hallacy, C., Ramesh, A., Goh, G., Agarwal, S., Sastry, G., Askell, A., Mishkin, P., Clark, J., et al. Learning transferable visual models from natural language supervision. In International conference on machine learning , pp. 8748–8763. PmLR, 2021. Ren, P., Shi, C., Wu, S., Zhang, M., Ren, Z., de Rijke, M., Chen, Z., and Pei, J. Melora: Mini-ensemble low-rank adapters for parameter-efficient fine-tuning. In Proceed-ings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pp. 3052–3064, 2024. Roy, S. and Roth, D. Solving general arithmetic word problems. arXiv preprint arXiv:1608.01413 , 2016. Sakaguchi, K., Bras, R. L., Bhagavatula, C., and Choi, Y. Winogrande: An adversarial winograd schema challenge at scale. Communications of the ACM , 64(9):99–106, 2021. Sap, M., Rashkin, H., Chen, D., Le Bras, R., and Choi, Y. Social iqa: Commonsense reasoning about social interactions. In Proceedings of the 2019 Conference on Empirical Methods in Natural Language Processing and the 9th International Joint Conference on Natural Language Processing (EMNLP-IJCNLP) , pp. 4463–4473, 2019. Si, C., Shi, Z., Zhang, S., Yang, X., Pfister, H., and Shen, W. Unleashing the power of task-specific directions in parameter efficient fine-tuning. In The Thirteenth International Conference on Learning Representations ,2025. URL https://openreview.net/forum? id=RYrJqz44p4 .Sun, M., Wang, Y., Feng, T., Zhang, D., Zhu, Y., and Tang, J. A stronger mixture of low-rank experts for fine-tuning foundation models. arXiv preprint arXiv:2502.15828 ,2025. Tian, C., Shi, Z., Guo, Z., Li, L., and Xu, C. Hydralora: An asymmetric lora architecture for efficient fine-tuning. 
+
+arXiv preprint arXiv:2404.19245 , 2024. 11 FourierMoE: Fourier Mixture-of-Experts Adaptation of Large Language Models 
+
+Touvron, H., Martin, L., Stone, K., Albert, P., Almahairi, A., Babaei, Y., Bashlykov, N., Batra, S., Bhargava, P., Bhosale, S., et al. Llama 2: Open foundation and fine-tuned chat models. arXiv preprint arXiv:2307.09288 ,2023. Valipour, M., Rezagholizadeh, M., Kobyzev, I., and Gh-odsi, A. Dylora: Parameter-efficient tuning of pre-trained models using dynamic search-free low-rank adaptation. In Proceedings of the 17th Conference of the European Chapter of the Association for Computational Linguistics ,pp. 3266–3279, 2023. Wang, A., Singh, A., Michael, J., Hill, F., Levy, O., and Bowman, S. R. Glue: A multi-task benchmark and anal-ysis platform for natural language understanding. In 
+
+International Conference on Learning Representations ,2018. Wang, F., Jiang, J., Park, C., Kim, S., and Tang, J. Kasa: Knowledge-aware singular-value adaptation of large lan-guage models. arXiv preprint arXiv:2412.06071 , 2024a. Wang, H., Xiao, Z., Li, Y., Wang, S., Chen, G., and Chen, Y. Milora: Harnessing minor singular components for parameter-efficient llm finetuning. arXiv preprint arXiv:2406.09044 , 2024b. Wang, Y., Agarwal, S., Mukherjee, S., Liu, X., Gao, J., Awadallah, A. H., and Gao, J. Adamix: Mixture-of-adaptations for parameter-efficient model tuning. arXiv preprint arXiv:2205.12410 , 2022. Xiao, J., Hays, J., Ehinger, K. A., Oliva, A., and Torralba, A. Sun database: Large-scale scene recognition from abbey to zoo. In 2010 IEEE computer society conference on computer vision and pattern recognition , pp. 3485–3492. IEEE, 2010. Yang, A., Li, A., Yang, B., Zhang, B., Hui, B., Zheng, B., Yu, B., Gao, C., Huang, C., Lv, C., et al. Qwen3 technical report. arXiv preprint arXiv:2505.09388 , 2025. Yu, T., Kumar, S., Gupta, A., Levine, S., Hausman, K., and Finn, C. Gradient surgery for multi-task learning. 
+
+Advances in neural information processing systems , 33: 5824–5836, 2020. Zadouri, T., ¨Ust ¨un, A., Ahmadian, A., Ermi s¸ , B., Locatelli, A., and Hooker, S. Pushing mixture of experts to the limit: Extremely parameter efficient moe for instruction tuning. arXiv preprint arXiv:2309.05444 , 2023. Zellers, R., Holtzman, A., Bisk, Y., Farhadi, A., and Choi, Y. Hellaswag: Can a machine really finish your sentence? In Proceedings of the 57th Annual Meeting of the Asso-ciation for Computational Linguistics , pp. 4791–4800, 2019. Zhang, D., Zhang, K., Chu, S., Wu, L., Li, X., and Wei, S. More: A mixture of low-rank experts for adaptive multi-task learning. arXiv preprint arXiv:2505.22694 ,2025a. Zhang, Q., Chen, M., Bukharin, A., He, P., Cheng, Y., Chen, W., and Zhao, T. Adaptive budget allocation for parameter-efficient fine-tuning. In The Eleventh Interna-tional Conference on Learning Representations , 2022. Zhang, Q., Yang, P., Wen, H., Li, X., Wang, H., Sun, F., Song, Z., Lai, Z., Ma, R., Han, R., et al. Beyond the time domain: Recent advances on frequency transforms in time series analysis. arXiv preprint arXiv:2504.07099 ,2025b. Zhong, Y., Jiang, H., Li, L., Nakada, R., Liu, T., Zhang, L., Yao, H., and Wang, H. Neat: Nonlinear parameter-efficient adaptation of pre-trained models. arXiv preprint arXiv:2410.01870 , 2024. Zhuang, Y., Zhang, J., and Tu, M. Long-range sequence modeling with predictable sparse attention. In Proceed-ings of the 60th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pp. 234–243, 2022. Zi, B., Qi, X., Wang, L., Wang, J., Wong, K.-F., and Zhang, L. Delta-lora: Fine-tuning high-rank parame-ters with the delta of low-rank matrices. arXiv preprint arXiv:2309.02411 , 2023. 12 FourierMoE: Fourier Mixture-of-Experts Adaptation of Large Language Models 
+
+# A. Algorithm for FourierMoE 
+
+Algorithm 1 FourierMoE: Fourier Mixture-of-Experts Adaptation 
+
+Require: Pretrained weights W0 ∈ RM ×N , Training dataset Dtrain , scaling factor η.
+
+Require: Number of experts Z, active experts k, frequency count n, bandwidth W. 
+
+> 1:
+
+Initialize Router: Φ ← random initialization.  
+
+> 2:
+
+Initialize Experts: For each expert i ∈ { 1, . . . , Z }: 
+
+> 3:
+
+Sample active frequency indices Ωi = {(u, v )}n 
+
+> 1
+
+via Gaussian distribution Pi(u, v ) (Eq. 3).  
+
+> 4:
+
+Initialize complex coefficients Θi = {Ci(u, v ) ∈ C | (u, v ) ∈ Ωi}. 
+
+> 5:
+
+while not converged do  
+
+> 6:
+
+Sample batch of inputs x ∼ D train . 
+
+> 7:
+
+1. Gating & Routing:  
+
+> 8:
+
+Compute gating scores: g = Softmax (GΦ(x)) . 
+
+> 9:
+
+Select Top-k experts: S(x) = Top-k(g). 
+
+> 10:
+
+2. Spectral-to-Spatial Expert Construction:  
+
+> 11:
+
+Initialize composite update ∆W ← 0M ×N . 
+
+> 12:
+
+for each selected expert i ∈ S (x) do  
+
+> 13:
+
+Construct sparse spectral matrix Ei ∈ CM ×N from Θi. 
+
+> 14:
+
+// Enforce Conjugate Symmetry (Theorem 3.2) for lossless real-valued adaptation  
+
+> 15:
+
+Ei(−u, −v) ← E∗ 
+
+> i
+
+(u, v ), ∀(u, v ) ∈ Ωi. 
+
+> 16:
+
+Compute spatial expert update via IDFT:  
+
+> 17:
+
+∆Wi ← F −1(Ei) (Eq. 1).  
+
+> 18:
+
+Accumulate: ∆W ← ∆W + gi · ∆Wi. 
+
+> 19:
+
+end for  
+
+> 20:
+
+3. Forward Pass:  
+
+> 21:
+
+Compute output: h = W0x + η∆Wx (Eq. 12).  
+
+> 22:
+
+4. Optimization:  
+
+> 23:
+
+Calculate Loss: L = Ltask (h) + λLaux (g) (Eq. 13 and Eq. 14).  
+
+> 24:
+
+Update parameters {Θ, Φ} via gradient descent.  
+
+> 25:
+
+end while Ensure: Adapted parameters {Θ, Φ}.
+
+# B. More Related Works 
+
+B.1. Parameter-efficient Fine-tuning 
+
+The escalating scale of LLMs renders FFT, a commonly used adaptation paradigm, computationally prohibitive (Zi et al., 2023; Han et al., 2024). PEFT addresses this bottleneck by freezing the pretrained backbone and updating only a minimal set of added or existing parameters (Lialin et al., 2023). For instance, LoRA (Hu et al., 2021) employs a pair of learnable low-rank matrices to approximate the learned weight updates. While effective for single-task adaptation, such single-PEFT methods that rely on a single tunable module often suffer from capacity constraints and task interference in multi-task scenarios due to limited parameter sharing across diverse or conflicting objectives (Li et al., 2024; Tian et al., 2024). To alleviate these limitations, recent works incorporate the MoE architecture into PEFT, giving rise to MoPE methods (Fan et al., 2025a; Sun et al., 2025; Wang et al., 2022; Feng et al., 2024; Zadouri et al., 2023). These approaches employ a router to dynamically select lightweight expert modules conditioned on input tokens (Cai et al., 2024), enabling a more flexible allocation of task-specific capacity and potentially reducing task interference. However, existing MoPE methods primarily operate in the spatial domain where experts are constructed as parallel instantiations of lightweight PEFT modules. Such designs lack explicit mechanisms to encourage orthogonality or diversity among experts, which can lead to structural redundancy (Gao et al., 2024a; Tian et al., 2024). Moreover, maintaining multiple spatial experts incurs additional parameter overhead, which partially compromises the fundamental efficiency goals of PEFT. Unlike prior MoPE methods, FourierMoE utilizes a router to dispatch tokens to experts specialized in distinct frequency bands, with each expert learning conjugate-symmetric complex coefficients in the Fourier domain. 13 FourierMoE: Fourier Mixture-of-Experts Adaptation of Large Language Models 
+
+B.2. Fourier Transform 
+
+Fourier transform has provided a powerful tool for analyzing global correlations and structural patterns in the frequency domain (Zhang et al., 2025b; Fan et al., 2025b). It has been widely explored and used in various domains, such as optimizing long-sequence modeling (Zhuang et al., 2022; Guibas et al., 2021; He et al., 2023), compressing activation (Ma et al., 2025), and improving the efficiency of the Transformer architecture (Lee-Thorp et al., 2022). Fourier transform and spectral adaptation have recently attracted increasing attention in the PEFT regime. FourierFT (Gao et al., 2024b) pioneers this line of research by parameterizing weight updates in the spectral domain. It learns a set of coefficients within a sparse spectral matrix and reconstructs it via IDFT to obtain the weight updates. While achieving performance competitive with LoRA, FourierFT treats spectral components uniformly and does not explicitly account for the varying importance of different frequency bands, which may lead to suboptimal parameter allocation (Kim, 2025). To refine this, LFMA (Kim, 2025) optimizes only the top-k coefficient coordinates with the largest magnitudes. However, these methods rely on static coefficient locations that cannot adapt to the dynamic evolution of gradients during fine-tuning or the distinct frequency signatures inherent in input tokens. Furthermore, they truncate the imaginary components of the complex spectrum, restricting the representation power of the learned updates. In contrast to prior works, FourierMoE integrates a frequency-adaptive router with specialized experts, enabling dynamic, frequency-aware adaptation for models. Furthermore, by enforcing complex coefficient learning and conjugate symmetry, FourierMoE bridges the gap between spectral-domain efficiency and spatial-domain expressivity, achieving superior performance while maintaining high efficiency. 
+
+# C. Baselines 
+
+To evaluate our method’s effectiveness, we compare FourierMoE against FFT, single PEFT, and MoPE baselines, including: 
+
+FFT initializes the foundation model with its pretrained weights and updates all parameters. 
+
+FFT MoE fully fine-tunes the upcycled MoE, which transforms the pretrained dense model into a MoE architecture by duplicating pretrained weights to create multiple experts and integrating a learnable router. 
+
+LoRA (Hu et al., 2021) reparameterizes the weight updates into a pair of tunable low-rank matrices, which can be merged with the foundation model after fine-tuning. 
+
+rsLoRA (Kalajdzievski, 2023) analyzes the scaling factor of LoRA and proposes to stabilize LoRA’s learning trajectory with a factor of α√r instead of αr .
+
+DoRA (Liu et al., 2024b) factorizes pretrained weights into magnitude and direction, updating only the magnitude via low-rank adaptation while keeping the direction fixed. 
+
+PiSSA (Meng et al., 2024) performs singular value decomposition (SVD) on pretrained weights to obtain a principled low-rank initialization for fine-tuning. 
+
+MiLoRA (Wang et al., 2024b) also leverages SVD on pretrained weights, but freezes the principal components and fine-tunes only the minor low-rank components. 
+
+KaSA (Wang et al., 2024a) applies SVD to the pretrained weights, truncates the minor components, and subsequently learns the weight updates in the SVD space. 
+
+LoRA-Dash (Si et al., 2025) first runs a short LoRA warm-up to identify task-specific directions by projecting the learned updates onto the singular directions of pretrained weights, and then jointly learns the corresponding coordinate scalars together with the low-rank adapters during fine-tuning. 
+
+NEAT (Zhong et al., 2024) introduces a lightweight network that takes the pretrained model weights as input and learns a nonlinear transformation to approximate the weight updates during fine-tuning. 
+
+TopLoRA (Li et al., 2025) dynamically adjusts the LoRA weights by using a token-wise diagonal matrix generated by an additional, tunable projector network. 
+
+MELoRA (Ren et al., 2024) concatenates multiple mini LoRA modules in parallel along the diagonal to construct a block diagonal LoRA matrix, achieving higher effective rank without additional parameter overhead. 
+
+FourierFT (Gao et al., 2024b) learns the Fourier coefficients in the spectral domain, then converts them back to the time domain via the IDFT to produce model weight updates. 
+
+MoLoRA (Zadouri et al., 2023) integrates the MoE framework with PEFT by replacing the experts (usually initialized as the feed-forward network copies) with lightweight LoRA modules, which are selectively activated for each token via a routing mechanism. 
+
+AdaMoLE (Liu & Luo, 2024) replaces the static top-k selection in the LoRA-MoE framework with dynamic thresholding mechanism to adaptively activate the most relevant experts based on input context. 
+
+HydraLoRA (Tian et al., 2024) introduces an asymmetric LoRA-MoE framework, characterized by a shared A matrix 14 FourierMoE: Fourier Mixture-of-Experts Adaptation of Large Language Models 
+
+to capture general knowledge and multiple task-specific matrices B that are dynamically combined through a routing mechanism. 
+
+GOAT (Fan et al., 2025a) proposes a SVD-structured MoE framework that adaptively activates the experts initialized with distinct singular-value segments derived from the pretrained weights. In addition, it employs a theoretical scaling scheme to align the low-rank adaptation trajectories with those of fully fine-tuned MoE. 
+
+# D. Details of Datasets and Benchmarks 
+
+D.1. Commonsense Reasoning Datasets 
+
+For the commonsense reasoning tasks, we fine-tune LLMs on the Commonsense170K dataset (Hu et al., 2023). It contains data samples from eight datasets: ARC-e, ARC-c (Clark et al., 2018), OBQA (Mihaylov et al., 2018), SIQA (Sap et al., 2019), WinoGrande (Sakaguchi et al., 2021), HellaSwag (Zellers et al., 2019), BoolQ (Clark et al., 2019), and PIQA (Bisk et al., 2020). We evaluate the fine-tuned models on the test splits of each dataset and report accuracy. The statistics of the datasets are presented in Table 8.  
+
+> Table 8. Statistics of the sub-datasets comprising the Commonsense170K dataset used for multi-task fine-tuning.
+
+Dataset Domain # Train # Test Task Type Answer 
+
+ARC-E Natural Science 2.3K 2.3k Question Answering Option ARC-C Natural Science 1.1K 1.1k Question Answering Option BoolQ Wikipedia 9.4K 3.2k Text Classification Yes/No OpenBookQA Science Facts 5.0K 500 Question Answering Option PIQA Physical Interaction 16.1K 1.8k Question Answering Option SIQA Social Interaction 33.4K 1.9k Question Answering Option HellaSwag Video Caption 39.9K 10k Sentence Completion Option WinoGrande Winograd Schemas 63.2K 1.2k Fill in the Blank Option 
+
+D.2. Math Reasoning Datasets 
+
+We adopt the Math10K dataset (Hu et al., 2023) to adapt LLMs for math reasoning tasks. This dataset consists of training data from AQuA (Ling et al., 2017) and GSM8K (Cobbe et al., 2021). In addition, we evaluate the fine-tuned models on six math benchmarks: GSM8K (Cobbe et al., 2021), SVAMP (Patel et al., 2021), MultiArith (Roy & Roth, 2016), AddSub (Hosseini et al., 2014), AQuA (Ling et al., 2017), and SingleEq (Koncel-Kedziorski et al., 2015). We report accuracy for all benchmarks. The statistics of the datasets and benchmarks are shown in Table 9.                                     
+
+> Table 9. Statistics of sub-datasets comprising the Math10K dataset used for multi-task fine-tuning. In the Math10K dataset, only GSM8K and AQuA provide training samples. The training sample counts of other datasets are marked with the “-” symbol, indicating that we do not use their training data for fine-tuning.
+> Dataset Domain # Train # Test Task Type Answer
+> AddSub Arithmetic Word Problems -395 Math Word Problem Solving Number AQuA GRE/GMAT Math 100K 254 Multiple-Choice Question Answering Option GSM8K Grade School Math Word Problems 8.8K 1.3k Math Word Problem Solving Number MultiArith Multi-step Math Word Problems -600 Math Word Problem Solving Number SingleEQ Grade School Algebra Word Problems -508 Math Word Problem Solving Number SVAMP Arithmetic Word Problems -1k Math Word Problem Solving Number
+
+D.3. GLUE Dataset 
+
+For NLU tasks, we fine-tune RoBERTa-large on seven datasets from GLUE (Wang et al., 2018), including CoLA, SST-2, MRPC, QQP, MNLI, QNLI, and RTE. We evaluate the fine-tuned model on the test splits of each dataset and report accuracy. The statistics of each dataset is shown in Table 10. 15 FourierMoE: Fourier Mixture-of-Experts Adaptation of Large Language Models                                          
+
+> Table 10. Statistics of the seven GLUE datasets for single-task fine-tuning.
+> Dataset Domain # Train # Test Task Type Answer
+> CoLA Miscellaneous 8.5K 1.0k Acceptability Label Text SST-2 Movie Reviews 67.3K 1.8k Sentiment Analysis Label Text MRPC News 3.6K 1.7k Paraphrase Label Text QQP Social QA 364K 391K Paraphrase Label Text MNLI Miscellaneous 393K 19.6K Natural Language Inference Label Text QNLI Wikipedia 105K 5.4k Natural Language Inference Label Text RTE News & Wikipedia 2.4K 3k Natural Language Inference Label Text
+
+D.4. Image Classification Datasets 
+
+For image classification tasks, we fine-tune CLIP ViT-B/32 on seven datasets, including Cars (Krause et al., 2013), DTD (Cimpoi et al., 2014), EuroSAT (Helber et al., 2019), GTSRB (Houben et al., 2013), RESISC45 (Cheng et al., 2017), SUN397 (Xiao et al., 2010), and SVHN (Netzer et al., 2011). We evaluate the fine-tuned model on the test splits of each dataset and report accuracy. The statistics of datasets and benchmarks are shown in Table 11  
+
+> Table 11. Statistics of the seven image classification datasets for single-task fine-tuning.
+
+Dataset Domain # Train # Test Task Type Answer 
+
+StanfordCars Automobiles 8.1K 8.0K Image Classification Class Label DTD Textures 3.7K 1.8K Image Classification Class Label EuroSAT Satellite 21.6K 2.7K Image Classification Class Label GTSRB Traffic Signs 26.6K 12.6K Image Classification Class Label RESISC45 Aerial Imagery 18.9K 6.3K Image Classification Class Label SUN397 Scenes 76.1K 21.7K Image Classification Class Label SVHN Street Digits 73.2K 26.0K Image Classification Class Label 
+
+# E. Training Details 
+
+We follow the prior works (Li et al., 2024) to adopt a multi-task training setup for commonsense and math reasoning tasks, where models are trained on a mixed dataset and evaluated on different benchmarks. In addition, we employ a single-task training setup for image classification and NLU tasks, in which models are trained and evaluated separately on each task. To ensure an optimal performance, we meticulously tune the hyperparameters, including the learning rate, batch size, number of epochs, scaling value η, and the load-balancing loss weight λ, and other hyperparameters. The full hyperparameter configurations for all experimental settings are provided: commonsense reasoning in Table 12, math reasoning in Table 13, image classification in Table 14, and NLU in Table 15. 
+
+# F. Additional Experimental Results 
+
+F.1. Effect of Frequency Bandwidth W on Expert Specialization 
+
+As defined in Eq. 3, each expert in FourierMoE is assigned within a specific frequency bandwidth W, which controls the range of spectral components it can access and thus governs the degree of expert specialization. To explain the non-monotonic performance trend observed in Section 4.3, we analyze how varying W shapes the spectral organization of experts, as visualized in Figure 6. When W = 0 .06 , experts are restricted to narrow low-frequency bands, preventing them from modeling informative high-frequency components and consequently limiting per-expert expressiveness. Increasing W
+
+to 0.12 expands frequency coverage while maintaining well-separated annular structures across experts. This regime strikes a favorable balance between expressiveness and specialization, enabling experts to capture richer spectral patterns without sacrificing functional diversity, which aligns with the performance reported in Table 5. In contrast, further increasing the bandwidth to 0.24 and beyond introduces spectral overlap across experts, weakening specialization and reducing parameter efficiency. In the extreme regime ( W ≥ 0.96 ), expert spectra become highly overlapping and near-uniform, collapsing the MoE into a collection of functionally similar modules. Such loss of specialization can lead to ambiguous routing decisions and unstable optimization, ultimately degrading model performance. These observations reveal a trade-off in FourierMoE: 16 FourierMoE: Fourier Mixture-of-Experts Adaptation of Large Language Models 
+
+Table 12. Detailed configurations used for fine-tuning LLaMA-2 7B and Gemma 7B models on commonsense reasoning tasks. 
+
+Hyperparameters Commonsense Reasoning LLaMA-2 7B Gemma 7B 
+
+Optimizer AdamW LR 8e-2 1.5e-1 LR Scheduler Linear Max Seq. Len. 256 Batch Size 16 Accumulation Steps 16 Dropout 0.05 Warmup Ratio 0.03 0.05 # Epochs 1Spectral Coefficients n 8192 Placement Q,K,V,Up,Down,Gate Scaling Value η 96 128 Load-balancing Scaling λ 0.002 0.001 # Experts 8Top-k 4
+
+Table 13. Detailed configurations used for fine-tuning LLaMA-3 8B and Qwen2.5-14B models on math reasoning tasks.                        
+
+> Hyperparameters Math Reasoning LLaMA-3 8B Qwen2.5-14B
+> Optimizer AdamW LR 2e-4 1e-4 LR Scheduler Linear Max Seq. Len. 1024 Batch Size 8Accumulation Steps 16 Dropout 0.05 Warmup Ratio 0.05 # Epochs 1Spectral Coefficients n8192 Placement Q, K, V, O, Up, Down, Gate Scaling Value η128 2Load-balancing Scaling λ0.001 0.002 # Experts 8Top-k 2
+
+while increasing W enhances per-expert expressiveness, excessively wide bandwidths undermine cross-expert spectral specialization. 
+
+# G. Complexity Analysis 
+
+We analyze the computational and memory complexity of FourierMoE compared to standard FFT and LoRA fine-tuning. Let M, N denote the weight matrix dimensions, Z the total number of experts, k the number of active experts, and n the number of active spectral coefficients per expert (where n ≪ M N ). 
+
+Parameter Efficiency. Standard FFT requires updating O(M N ) parameters per layer. LoRA reduces this to O(r(M +N )) 
+
+where r is the rank of the lightweight tunable matrices. FourierMoE achieves sparsity by learning only the active spectral coefficients and the router. The total trainable parameter count is: 
+
+PFourierMoE = O(Z · n + Z · N ). (15) Since the crucial adaptation information is concentrated in a small subset of dominant frequency components (Kim, 2025; Gao et al., 2024b), we can set n such that Z · n ≪ r(M + N ), allowing us to scale the number of experts Z without incurring significant memory overhead. 17 FourierMoE: Fourier Mixture-of-Experts Adaptation of Large Language Models 
+
+Table 14. Detailed configurations used for fine-tuning CLIP ViT-B/32 on image classification tasks.                                                                        
+
+> Hyperparameters Cars DTD EuroSAT GTSRB RESISC45 SUN397 SVHN
+> Optimizer AdamW Expert LR 8e-5 1e-2 5e-2 2e-1 5e-2 5e-2 1.5e-1 Router LR 5e-5 1e-4 2e-4 2e-4 2e-4 2e-4 2e-4 Head LR 3e-4 1e-3 1e-3 1e-3 5e-3 1e-3 1e-3 LR Scheduler Cosine Max Seq. Len. 50 Batch Size 512 128 512 512 512 512 512 Accumulation Steps 1Dropout 0.0 Warmup Ratio 0.03 0.03 0.05 0.05 0.03 0.05 0.05 # Epochs 280 100 30 50 45 20 20 Spectral Coefficients n3008 Placement Q,V Scaling Value η192 32 32 256 32 32 192 Load-balancing Scaling λ1e-3 # Experts 8Top-k 2025 50
+
+U
+
+> −50
+> −25
+> 0
+> 25
+> 50
+> V
+
+w=0.06   
+
+> 025 50
+
+U
+
+> −50
+> −25
+> 0
+> 25
+> 50
+> V
+
+w=0.12   
+
+> 025 50
+
+U
+
+> −50
+> −25
+> 0
+> 25
+> 50
+> V
+
+w=0.24   
+
+> 025 50
+
+U
+
+> −50
+> −25
+> 0
+> 25
+> 50
+> V
+
+w=0.48   
+
+> 025 50
+
+U
+
+> −50
+> −25
+> 0
+> 25
+> 50
+> V
+
+w=0.96   
+
+> 025 50
+
+U
+
+> −50
+> −25
+> 0
+> 25
+> 50
+> V
+
+w=1 
+
+Expert 0 
+
+Expert 1 
+
+Expert 2 
+
+Expert 3 
+
+Expert 4 
+
+Expert 5 
+
+Expert 6 
+
+Expert 7 
+
+Figure 6. Distributions of expert spectral coefficients under different frequency bandwidths W. Moderate bandwidths expand per-expert frequency coverage while preserving well-separated spectral structures, whereas overly large W induces substantial overlap, leading to degraded specialization. 
+
+Inference Latency. The computational cost of FourierMoE during inference consists of the routing operation and the expert reconstruction. • Routing Overhead: The gating mechanism requires a lightweight projection O(N · Z), which is negligible compared to the forward pass of the LLM layers. • Reconstruction Cost: Constructing the update ∆W requires summing k experts. Utilizing the Fast Fourier Transform, the reconstruction complexity is O(k · M N log( M N )) .Crucially, the inference cost depends only on the active set size k, not the total expert pool Z. This allows FourierMoE to increase model capacity (via larger Z) while maintaining constant-time inference complexity, satisfying the condition 
+
+O(k) ≈ const with respect to Z. Furthermore, by caching the reconstructed ∆W for static tasks or utilizing parallelized GPU-optimized FFT kernels, the latency overhead remains within a tractable margin for real-time deployment. 18 FourierMoE: Fourier Mixture-of-Experts Adaptation of Large Language Models  
+
+> Table 15. Detailed configurations used for fine-tuning RoBERTa-large on NLU tasks.
+
+Hyperparameters CoLA SST-2 MRPC QQP MNLI QNLI RTE 
+
+Optimizer AdamW Expert LR 5e-2 1.2e-1 9e-2 1e-1 1e-5 9e-2 1e-1 Router LR 1.5e-4 1e-4 2e-4 3.9e-4 2e-4 1.5e-4 1.5e-4 Head LR 1e-2 5e-4 1e-3 8.4e-4 5e-3 1e-3 6.5e-3 LR Scheduler Linear Max Seq. Len. 256 128 512 128 512 512 512 Batch Size 32 Accumulation Steps 1Dropout 0.0 Warmup Ratio 0.06 # Epochs 80 10 30 15 10 30 60 Spectral Coefficients n 1008 Placement Q,V Scaling Value η 115 138 160 64 96 72 136 Load-balancing Scaling λ 1.5e-3 1.5e-3 2e-3 2.5e-3 3.5e-3 2.5e-3 1.7e-3 # Experts 8Top-k 2
+
+# H. Spectral-Spatial Rank Duality 
+
+In this section, we establish a rigorous theoretical connection between the spectral composition of our experts and the algebraic properties of the resulting weight updates in the spatial domain. Specifically, we investigate the relationship between the spectral sparsity of an expert Ei and the matrix rank of its spatial counterpart ∆Wi.We demonstrate that FourierMoE generalizes low-rank adaptation methods (e.g., LoRA) by enabling dynamic rank allocation. Unlike static low-rank methods that fix the rank r globally, FourierMoE allows the router to dynamically assign a specific rank capacity to each token by selecting experts with varying spectral densities. 
+
+H.1. Rank Properties of the Fourier Basis 
+
+To analyze the rank of the model’s weight update ∆W, we examine the algebraic structure of the Fourier basis kernel Bu,v 
+
+defined in Eq. (1). 
+
+Lemma H.1 (Rank-1 Property of Fourier Kernels ). For any frequency coordinate (u, v ), the Fourier basis kernel 
+
+Bu,v ∈ CM ×N is a rank-1 matrix. Proof. Recall the definition of the kernel entry at spatial index (q, y ):
+
+Bu,v (q, y ) = exp 
+
+
+
+j2π uq M
+
+
+
+· exp 
+
+
+
+j2π vy N
+
+
+
+. (16) Let fu ∈ CM and gv ∈ CN be vectors such that the entries are defined as fu(x) = ej2πuq/M and gv (y) = ej2πvy/N . We can express the matrix Bu,v as the outer product: 
+
+Bu,v = fugTv . (17) Since Bu,v is formed by the outer product of two non-zero vectors, it possesses exactly one non-zero singular value. Thus, 
+
+rank( Bu,v ) = 1 .
+
+H.2. Spectral Sparsity Bounds Spatial Rank 
+
+Building on Lemma H.1, we derive the upper bound on the rank of the spatial update generated by an expert defined by a sparse set of active frequencies. 
+
+Theorem H.2 (Spectral Sparsity-Rank Inequality ). Let Ei be a frequency-specialized expert with a set of active frequencies Ωi satisfying the conjugate symmetry condition (Theorem 3.2). Let K = |Ωi| be the spectral sparsity (the total 
+
+19 FourierMoE: Fourier Mixture-of-Experts Adaptation of Large Language Models 
+
+number of non-zero frequency coefficients). The rank of the resulting spatial update ∆Wi is bounded by: 
+
+rank(∆ Wi) ≤ min( M, N, K ). (18) 
+
+Proof. From Eq. (1), the spatial update is a linear combination of basis kernels: 
+
+∆Wi = 1
+
+M N 
+
+X
+
+> (u,v )∈Ωi
+
+F(u, v ) · Bu,v . (19) Using the subadditivity property of matrix rank (the rank of a sum is less than or equal to the sum of the ranks), we have: 
+
+rank(∆ Wi) = rank 
+
+ X
+
+> (u,v )∈Ωi
+
+cu,v Bu,v 
+
+
+
+≤ X
+
+> (u,v )∈Ωi
+
+rank( cu,v Bu,v ). (20) By Lemma H.1, rank( Bu,v ) = 1 . Therefore: 
+
+rank(∆ Wi) ≤ X
+
+> (u,v )∈Ωi
+
+1 = |Ωi| = K. (21) Since the rank of any matrix in RM ×N cannot exceed its dimensions, it holds that rank(∆ Wi) ≤ min( M, N, K ).
+
+Remark on Real-Valued Updates. Due to the Conjugate Symmetry Condition (Theorem 3.2), active frequencies must appear in pairs (( u, v ), (⟨− u⟩M , ⟨− v⟩N )) to ensure ∆Wi ∈ RM ×N . A symmetric pair combines to form a real-valued sinusoidal wave: 
+
+cBu,v + c∗B⟨− u⟩M ,⟨− v⟩N = 2 |c| cos 
+
+
+
+2π
+
+ uq M + vy N
+
+
+
++ ∠c
+
+
+
+. (22) While this sum is real-valued, it is formed by the sum of two rank-1 complex matrices. Thus, each symmetric pair contributes at most 2 to the rank of the spatial matrix. 
+
+H.3. Input-Dependent Dynamic Rank Allocation 
+
+The insights from Theorem H.2 reveal the fundamental mechanism of FourierMoE. By initializing experts with Gaussian filters of varying bandwidths Wi (Eq. 3), we effectively create a bank of experts with different rank capacities. 
+
+Corollary H.3 (Router as a Rank Selector ). Let the router G(x) select a subset of experts S(x). The effective rank of the update applied to input x is: 
+
+ref f (x) = rank 
+
+ X
+
+> i∈S (x)
+
+G(x)i∆Wi
+
+ ≤ X
+
+> i∈S (x)
+
+|Ωi|. (23) This leads to a critical theoretical distinction between FourierMoE and standard LoRA: • LoRA (Static Rank): Forces a fixed rank r for all inputs, i.e., ∆W = BA . The expressivity is static regardless of input complexity. • FourierMoE (Dynamic Rank): The router dynamically determines the required complexity. For “easy” tokens (e.g., stop words), the router may select Low-Bandwidth Experts (small |Ωi|), applying a Low-Rank update. For “hard” tokens (e.g., reasoning steps), it may select High-Bandwidth Experts (large |Ωi|), applying a High-Rank update. 20 FourierMoE: Fourier Mixture-of-Experts Adaptation of Large Language Models 
+
+H.4. Orthogonality and Global Receptive Field 
+
+Finally, we address why spectral rank-1 updates differ from spatial rank-1 updates. In standard low-rank adaptation, the basis vectors (columns of A and B) are often learned to be sparse or localized in the spatial domain. In contrast, the Fourier basis vectors fu and gv are dense in the spatial domain; every element has magnitude 1/√M .
+
+Proposition H.4 (Global Information Flow ). A rank-1 update in the Fourier domain effects a global update in the spatial domain. Specifically, modifying a single spectral coefficient F(u, v ) updates every weight in ∆W simultaneously with constant magnitude, merely shifting the phase. 
+
+This property implies that our FourierMoE is exceptionally efficient at learning global features (via low frequencies) and 
+
+distributed patterns, whereas standard spatial sparsity methods struggle to propagate information globally without increasing parameter density. The Fourier transform acts as a maximally incoherent basis change, allowing sparse spectral experts to model dense spatial correlations efficiently. 21
