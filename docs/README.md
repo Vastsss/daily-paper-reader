@@ -6,79 +6,85 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-04-11
-- 运行时间：2026-04-11 19:25:29 UTC
+- 最新运行日期：2026-04-12
+- 运行时间：2026-04-12 20:23:43 UTC
 - 运行状态：成功
-- 本次总论文数：19
-- 精读区：5
+- 本次总论文数：21
+- 精读区：7
 - 速读区：14
 
 ### 今日简报（AI）
-今日精选 19 篇前沿成果，深度聚焦 LLM 交互式优化与可持续能源系统的智能设计。
-重点推荐 LLM 智能体在复杂决策中的对话式引导作用，以及针对非洲离网社区的高效微电网调度方案。
-建议读者关注大模型如何重塑传统优化流程，并探索其在异常检测与电网控制中的跨界应用。
-- 详情：[/202604/11/README](/202604/11/README)
+今日深度研读 21 篇前沿论文，重点聚焦 LLM 赋能工业巡检与深度学习预测太阳活动。
+核心突破在于利用 LLM 提升无人机电力线分割的语义评判精度，并借助 LSTM 实现太阳磁通量演化的可靠预测。
+建议关注大模型如何从通用对话转向垂直工业质检及复杂物理系统建模中的跨界应用潜力。
+- 详情：[/202604/12/README](/202604/12/README)
 
 ### 精读区论文标签
-1. [Let's Have a Conversation: Designing and Evaluating LLM Agents for Interactive Optimization](/202604/11/2604.02666v1-lets-have-a-conversation-designing-and-evaluating-llm-agents-for-interactive-optimization)  
-   标签：评分：8.0/10、query:llm
-   evidence：用于交互式优化和决策支持的 LLM 智能体
-2. [Multiobjective optimization-based design and dispatch of islanded, hybrid microgrids for remote, off-grid communities in sub-Saharan Africa](/202604/11/2604.06371v1-multiobjective-optimization-based-design-and-dispatch-of-islanded-hybrid-microgrids-for-remote-off-grid-communities-in-sub-saharan-africa)  
-   标签：评分：8.0/10、query:llm
-   evidence：具有可再生能源渗透的混合微电网优化调度
-3. [SBBTS: A Unified Schrödinger-Bass Framework for Synthetic Financial Time Series](/202604/11/2604.07159v1-sbbts-a-unified-schrdinger-bass-framework-for-synthetic-financial-time-series)  
+1. [LLM-as-Judge for Semantic Judging of Powerline Segmentation in UAV Inspection](/202604/12/2604.05371v1-llm-as-judge-for-semantic-judging-of-powerline-segmentation-in-uav-inspection)  
+   标签：评分：9.0/10、query:llm
+   evidence：大语言模型用于电力系统中的输电线路巡检
+2. [Prediction of Magnetic Flux Evolution During Solar Active Region Emergence using Long Short-Term Memory Networks](/202604/12/2604.03507v1-prediction-of-magnetic-flux-evolution-during-solar-active-region-emergence-using-long-short-term-memory-networks)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：生成合成时间序列与时间动态
-4. [GRASS: Gradient-based Adaptive Layer-wise Importance Sampling for Memory-efficient Large Language Model Fine-tuning](/202604/11/2604.07808v1-grass-gradient-based-adaptive-layer-wise-importance-sampling-for-memory-efficient-large-language-model-fine-tuning)  
+   evidence：使用LSTM和编码器-解码器模型进行一维时间序列预测
+3. [Learning to Query History: Nonstationary Classification via Learned Retrieval](/202604/12/2604.07027v1-learning-to-query-history-nonstationary-classification-via-learned-retrieval)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：大语言模型的高效内存微调
-5. [Beyond Static Forecasting: Unleashing the Power of World Models for Mobile Traffic Extrapolation](/202604/11/2604.08199v1-beyond-static-forecasting-unleashing-the-power-of-world-models-for-mobile-traffic-extrapolation)  
+   evidence：将非平稳分类重新定义为时间序列预测
+4. [Seasonality in Mixed Causal-Noncausal Processes](/202604/12/2604.07040v1-seasonality-in-mixed-causal-noncausal-processes)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：用于移动流量时间序列预测的世界模型
+   evidence：混合因果-非因果时间序列模型中的季节性
+5. [Private Federated Learning for High-dimensional Time Series](/202604/12/2604.07135v1-private-federated-learning-for-high-dimensional-time-series)  
+   标签：评分：8.0/10、query:ts-fm
+   evidence：高维时间序列模型的联邦学习
+6. [Spatio-Temporal Grounding of Large Language Models from Perception Streams](/202604/12/2604.07592v1-spatio-temporal-grounding-of-large-language-models-from-perception-streams)  
+   标签：评分：8.0/10、query:llm-ts
+   evidence：从感知流中向LLM注入时空监督信息
+7. [From Cut-In to Rated: Multi-Region Floating Offshore Wind Farm Control for Secondary Frequency Regulation](/202604/12/2604.08240v1-from-cut-in-to-rated-multi-region-floating-offshore-wind-farm-control-for-secondary-frequency-regulation)  
+   标签：评分：8.0/10、query:llm-wd
+   evidence：海上风电场控制与功率跟踪
 
 ### 速读区论文标签
-1. [SPG: Sparse-Projected Guides with Sparse Autoencoders for Zero-Shot Anomaly Detection](/202604/11/2604.02871v1-spg-sparse-projected-guides-with-sparse-autoencoders-for-zero-shot-anomaly-detection)  
-   标签：评分：7.0/10、query:ts-fm
-   evidence：利用基础模型特征进行零样本异常检测
-2. [Self-Supervised Graph Neural Networks for Full-Scale Tertiary Voltage Control](/202604/11/2604.03087v1-self-supervised-graph-neural-networks-for-full-scale-tertiary-voltage-control)  
-   标签：评分：7.0/10、query:llm
-   evidence：用于电力系统电压控制的自监督图神经网络
-3. [Multi-Aspect Knowledge Distillation for Language Model with Low-rank Factorization](/202604/11/2604.03110v1-multi-aspect-knowledge-distillation-for-language-model-with-low-rank-factorization)  
+1. [Fusion and Alignment Enhancement with Large Language Models for Tail-item Sequential Recommendation](/202604/12/2604.03688v1-fusion-and-alignment-enhancement-with-large-language-models-for-tail-item-sequential-recommendation)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：用于语言模型压缩的知识蒸馏
-4. [Scheduling Electricity Production Units to Mitigate Severe Weather Impact: An Efficient Computational Implementation](/202604/11/2604.03475v1-scheduling-electricity-production-units-to-mitigate-severe-weather-impact-an-efficient-computational-implementation)  
+   evidence：大语言模型在序列推荐中捕捉语义关系
+2. [A Process-Aware Demand Response Framework for Hydrogen-Integrated Zero-Carbon Steel Plants Coupled with Methanol Production](/202604/12/2604.04486v1-a-process-aware-demand-response-framework-for-hydrogen-integrated-zero-carbon-steel-plants-coupled-with-methanol-production)  
    标签：评分：7.0/10、query:llm
-   evidence：电力生产单元调度与电力系统调度
-5. [Spherically Embedded Time Series with Unknown Trend and Periodic Components](/202604/11/2604.03574v1-spherically-embedded-time-series-with-unknown-trend-and-periodic-components)  
+   evidence：电力系统中间歇性可再生能源的整合与需求响应
+3. [Dynamic Factor Stochastic Volatility-in-Mean VAR for Large Macroeconomic Panels](/202604/12/2604.04529v1-dynamic-factor-stochastic-volatility-in-mean-var-for-large-macroeconomic-panels)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：分析非平稳球面嵌入时间序列的几何框架
-6. [Reinforcement Learning-Based Energy Management for Industrial Park with Heterogeneous Batteries under Demand Response](/202604/11/2604.03655v1-reinforcement-learning-based-energy-management-for-industrial-park-with-heterogeneous-batteries-under-demand-response)  
-   标签：评分：7.0/10、query:llm
-   evidence：工业园区可再生能源利用与能量管理
-7. [Next-Scale Autoregressive Models for Text-to-Motion Generation](/202604/11/2604.03799v1-next-scale-autoregressive-models-for-text-to-motion-generation)  
+   evidence：大型宏观经济面板的时间序列分析
+4. [Evaluation of Embedding-Based and Generative Methods for LLM-Driven Document Classification: Opportunities and Challenges](/202604/12/2604.04997v1-evaluation-of-embedding-based-and-generative-methods-for-llm-driven-document-classification-opportunities-and-challenges)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：文本与时间运动序列之间的跨模态学习
-8. [On options-driven realized volatility forecasting: Information gains via rough volatility model](/202604/11/2604.02743v2-on-options-driven-realized-volatility-forecasting-information-gains-via-rough-volatility-model)  
+   evidence：评估LLM在地球科学文档分类中的应用
+5. [El Nino Prediction Based on Weather Forecast and Geographical Time-series Data](/202604/12/2604.04998v1-el-nino-prediction-based-on-weather-forecast-and-geographical-time-series-data)  
+   标签：评分：7.0/10、query:llm-ts
+   evidence：地理时间序列数据和使用LSTM进行时间特征提取
+6. [RAG or Learning? Understanding the Limits of LLM Adaptation under Continuous Knowledge Drift in the Real World](/202604/12/2604.05096v1-rag-or-learning-understanding-the-limits-of-llm-adaptation-under-continuous-knowledge-drift-in-the-real-world)  
+   标签：评分：7.0/10、query:llm-ts
+   evidence：持续知识漂移和时间推理下的LLM适配
+7. [EAGLE: Edge-Aware Graph Learning for Proactive Delivery Delay Prediction in Smart Logistics Networks](/202604/12/2604.05254v1-eagle-edge-aware-graph-learning-for-proactive-delivery-delay-prediction-in-smart-logistics-networks)  
+   标签：评分：7.0/10、query:llm-ts
+   evidence：用于时间订单流动态的Transformer补丁编码器
+8. [CAGMamba: Context-Aware Gated Cross-Modal Mamba Network for Multimodal Sentiment Analysis](/202604/12/2604.03650v1-cagmamba-context-aware-gated-cross-modal-mamba-network-for-multimodal-sentiment-analysis)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：使用深度学习代理进行已实现波动率预测
-9. [Transfer Learning for Loan Recovery Prediction under Distribution Shifts with Heterogeneous Feature Spaces](/202604/11/2604.02832v1-transfer-learning-for-loan-recovery-prediction-under-distribution-shifts-with-heterogeneous-feature-spaces)  
+   evidence：跨模态建模与时序情感演化
+9. [TransGP: Task-Conditioned Transformer-Guided Genetic Programming for Multitask Dynamic Flexible Job Shop Scheduling](/202604/12/2604.03705v1-transgp-task-conditioned-transformer-guided-genetic-programming-for-multitask-dynamic-flexible-job-shop-scheduling)  
    标签：评分：6.0/10、query:llm
-   evidence：用于异构特征集预测的Transformer架构
-10. [A Paradigm Shift: Fully End-to-End Training for Temporal Sentence Grounding in Videos](/202604/11/2604.02860v1-a-paradigm-shift-fully-end-to-end-training-for-temporal-sentence-grounding-in-videos)  
+   evidence：Transformer引导的柔性作业车间调度
+10. [Improving Model Performance by Adapting the KGE Metric to Account for System Non-Stationarity](/202604/12/2604.03906v1-improving-model-performance-by-adapting-the-kge-metric-to-account-for-system-non-stationarity)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：时间定位与跨模态学习
-11. [New Robust Streaming DMD with Forecasting](/202604/11/2604.02928v1-new-robust-streaming-dmd-with-forecasting)  
-   标签：评分：6.0/10、query:llm-ts
-   evidence：动力系统的数据驱动预测
-12. [Querying Structured Data Through Natural Language Using Language Models](/202604/11/2604.03057v1-querying-structured-data-through-natural-language-using-language-models)  
-   标签：评分：6.0/10、query:llm-ts
-   evidence：微调大语言模型以通过自然语言查询结构化非文本数据集
-13. [Understanding the complexity of frequency and phase angle fluctuations in power grids](/202604/11/2604.03133v1-understanding-the-complexity-of-frequency-and-phase-angle-fluctuations-in-power-grids)  
+   evidence：考虑地球科学时间序列数据中的非平稳性
+11. [Reimagining RAN Automation in 6G: An Agentic AI Framework with Hierarchical Online Decision Transformer](/202604/12/2604.03908v1-reimagining-ran-automation-in-6g-an-agentic-ai-framework-with-hierarchical-online-decision-transformer)  
    标签：评分：6.0/10、query:llm
-   evidence：可再生能源发电对电网波动的影响
-14. [Gradient Boosting within a Single Attention Layer](/202604/11/2604.03190v1-gradient-boosting-within-a-single-attention-layer)  
-   标签：评分：6.0/10、query:llm-ts
-   evidence：Transformer模型中的梯度增强注意力机制
+   evidence：基于决策Transformer的智能体AI框架
+12. [The Geometric Alignment Tax: Tokenization vs. Continuous Geometry in Scientific Foundation Models](/202604/12/2604.04155v1-the-geometric-alignment-tax-tokenization-vs-continuous-geometry-in-scientific-foundation-models)  
+   标签：评分：6.0/10、query:ts-fm
+   evidence：科学基础模型与动力系统中的连续几何
+13. [DriveVA: Video Action Models are Zero-Shot Drivers](/202604/12/2604.04198v1-driveva-video-action-models-are-zero-shot-drivers)  
+   标签：评分：6.0/10、query:ts-fm
+   evidence：用于未来视觉预测和动作序列的世界模型
+14. [Optimizing Service Operations via LLM-Powered Multi-Agent Simulation](/202604/12/2604.04383v1-optimizing-service-operations-via-llm-powered-multi-agent-simulation)  
+   标签：评分：6.0/10、query:llm
+   evidence：基于LLM的多智能体模拟用于随机优化
 
 
 <div class="dpr-home-promo-card">
