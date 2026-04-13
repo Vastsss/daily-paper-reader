@@ -1,0 +1,1214 @@
+Title: HYVE: Hybrid Views for LLM Context Engineering over Machine Data
+
+URL Source: https://arxiv.org/pdf/2604.05400v1
+
+Published Time: Wed, 08 Apr 2026 00:29:24 GMT
+
+Number of Pages: 22
+
+Markdown Content:
+# HYVE: Hybrid Views for LLM Context Engineering over Machine Data 
+
+Jian Tan ∗, Fan Bu ∗, Yuqing Gao, Dev Khanolkar, Jason Mackay, Boris Sobolev, Lei Jin, Li Zhang 
+
+Cisco Systems, Inc., San Jose, California, USA 
+
+{jianta,fabu,yuqingga,jasmacka,dkhanolk,bsobolev,leiji2,liz4 }@cisco.com 
+
+Abstract —Machine data is central to observability and diag-nosis in modern computing systems, appearing in logs, metrics, telemetry traces, and configuration snapshots. When provided to large language models (LLMs), this data typically arrives as a mixture of natural language and structured payloads such as JSON or Python/AST literals. Yet LLMs remain brittle on such inputs, particularly when they are long, deeply nested, and dominated by repetitive structure. We present HYVE (HYbrid ViEw), a framework for LLM context engineering for inputs containing large machine-data payloads, inspired by database management principles. HYVE surrounds model invocation with coordinated preprocessing and postprocessing, centered on a request-scoped datastore aug-mented with schema information. During preprocessing, HYVE detects repetitive structure in raw inputs, materializes it in the datastore, transforms it into hybrid columnar and row-oriented views, and selectively exposes only the most relevant representation to the LLM. During postprocessing, HYVE either returns the model output directly, queries the datastore to recover omitted information, or performs a bounded additional LLM call for SQL-augmented semantic synthesis. We evaluate HYVE on diverse real-world workloads spanning knowledge QA, chart generation, anomaly detection, and multi-step network troubleshooting. Across these benchmarks, HYVE reduces token usage by 50–90% while maintaining or improving output quality. On structured generation tasks, it improves chart-generation accuracy by up to 132% and reduces latency by up to 83%. Overall, HYVE offers a practical approximation to an effectively unbounded context window for prompts dominated by large machine-data payloads. 
+
+I. I NTRODUCTION 
+
+Machine data, such as logs, metrics, telemetry traces, and configuration snapshots, is ubiquitous in modern computing systems and underpins observability. When fed into LLM prompts or carried across multi-turn interactions, it often appears as an interleaving of natural language and large structured payloads. LLMs continue to struggle with such inputs for three recurring reasons:  
+
+> •
+
+Token explosion from verbosity: Nested keys and re-peated schema consume the context window, fragmenting relevant evidence and crowding out useful data.  
+
+> •
+
+Context rot: The model misses the “needle” buried in large payloads and drifts from the instruction, losing track of task-relevant signals.  
+
+> •
+
+Weaknesses in numeric and categorical sequence reasoning: Long sequences obscure patterns such as 
+
+> ∗
+
+Equal contribution. 
+
+anomalies, trends, and entity relationships that are critical for data analytics. 
+
+Fig. 1. HYVE architecture. The preprocessor parses input strings with embedded structured segments into hybrid tabular views; the request-scoped datastore retains the full data; and the postprocessor inspects LLM outputs and, when needed, queries the datastore to enrich the response. 
+
+Machine data often becomes long because system code naturally emits repeated structures: loops generate arrays, repeated keys, and nested records in the observable repre-sentation. The bottleneck is therefore not raw length alone. Effective use of such data requires structural transformation 
+
+and signal enhancement , so that the same information is presented in forms better aligned with the reasoning strengths of LLMs [1] 1. Empirically, we observe that, in long-context settings, LLMs still make errors when correlating multiple arrays through their indices, whereas a row-oriented view makes this easier by presenting related values side by side. Conversely, LLMs often struggle to extract values from the same field across a list of dictionaries, such as when generating a line chart, whereas a column-oriented view places those values consecutively in order. 
+
+A. Motivating examples 
+
+We illustrate the problem with two real examples. Figure 2 shows a slot-filling task, i.e., semantic querying over network telemetry data subject to specified requirements. Baseline GPT-4.1 consumes more than 5,000 tokens per request yet fails on 30.6% of samples (scores ≤2), showing that naively embedding raw machine data in prompts is both inefficient 
+
+> 1
+
+HYVE was initially developed as DNM-ACE (Analytics Context Engi-neering for the Cisco Deep Network Model) and later renamed DNM-HYVE. Section V-F discusses its synergy with the DNM model.    
+
+> arXiv:2604.05400v1 [cs.AI] 7 Apr 2026 Fig. 2. Slot-filling tasks over 700 network telemetry samples. Top: baseline GPT-4.1 consumes ∼5000 tokens per request; HYVE reduces usage by 53%. Bottom: baseline GPT-4.1 fails on 30.6% of samples (scores ≤2); HYVE achieves almost perfect scores on all samples.
+
+and unreliable. In contrast, HYVE reduces token usage by 53% while achieving near-perfect quality (mean score 4.98) on all 700 test cases. Figure 3 shows a second example: when asked to generate a line chart from 778 exchange-rate points, baseline GPT-4.1 truncates output arrays to 40–120 points, causing most of the data to disappear and collapsing detailed time series into sparse straight-line segments. With HYVE, all 778 points are recovered, producing a faithful chart. HYVE has been deployed in Cisco AI products and is effective across a broad range of machine-data analytics tasks. 
+
+B. Guiding principles 
+
+HYVE is guided by database-inspired principles for analytics-oriented context engineering. It treats prompt con-struction not as ad hoc compression, but as a disciplined process of structure discovery, information preservation, and queryable representation.  
+
+> •
+
+Guarantee data fidelity: Context reduction must not lose information. Every part of the raw input is either preserved verbatim in the visible LLM context or retained in a request-scoped datastore with explicit schema infor-mation, so that omitted content remains fully recoverable.  
+
+> •
+
+Avoid semantic compression: Context reduction does not rely on LLM-based summarization, which may be ineffective for machine data. Instead, HYVE detects repetitive structures, organizes them into tables with precise schema, and exposes only a subset of entries selected by statistical ranking, while explicitly indicating that additional data remain available in the datastore. When hidden data are needed, the LLM can generate SQL over the provided schema, after which the postprocessor 
+
+> Fig. 3. Line chart over three years of USD exchange-rate data (778 points per series). Baseline GPT-4.1 truncates output arrays to 40–120 points, collapsing detailed time series into sparse straight-line segments. HYVE recovers all 778 points through data backfilling.
+
+either backfills the result into a template or performs one additional synthesis step.  
+
+> •
+
+Limit LLM calls: HYVE is not an open-ended iterative agent. Instead, it operates as a service that preserves the same interface as a standard LLM endpoint. Beyond the primary LLM call, the system makes at most one additional LLM call by default; this can be configured to a small fixed number for SQL refinement, and is only needed when semantic synthesis over the retrieved evidence is required. Accurately generating SQL in a general open-ended envi-ronment remains challenging for LLMs. Our setting, however, is controlled: the preprocessor and postprocessor are tightly coupled within the scope of a single request. HYVE exploits this local request context to guide the LLM toward generating high-quality SQL queries tailored to each request. Because this scope is intentionally confined to a single request, HYVE pro-vides only short-term memory. Section VI-B further discusses the distinction between short- and long-term memory. Unlike long-horizon agent memory in systems such as OpenClaw [2], Claude Code [3], Codex [4], Gemini CLI [5], OpenCode [6], and Pi [7], which often compress prior in-teraction history through summarization, HYVE uses exact request-scoped state for query-based recovery, making it a complementary approach. 
+
+C. High-level design 
+
+As illustrated in Figure 1, HYVE wraps a primary LLM call with a preprocessor and a postprocessor. By default, the postprocessor may trigger at most one additional LLM call. The preprocessor performs three tasks: (1) parse the raw input and detect repetitive structures in embedded JSON/AST literals; (2) build an in-memory datastore that retains the full data together with inferred schema; and (3) transform the data into hybrid column and row views, exposing only a selected subset of table entries to the LLM. The postprocessor 
+
+then operates in one of three modes: (1) return the LLM output directly when the visible context is sufficient; (2) query the datastore and backfill the retrieved data into an LLM-generated template via schema-aware mappings; or (3) query the datastore, append the results to the context, and make one additional LLM call to synthesize the final answer. The result is a compact prompt that still preserves task-critical information: although some table entries are hidden from the visible context, the schema, selected entries, surrounding instructions, and non-tabular key-value pairs remain available to the model. 
+
+D. “Everything Is a File,” and Some Are Databases 
+
+Although HYVE is not itself an agent, we have built a network troubleshooting agent on top of it [1]. That system combines a virtual file system, which maps observability endpoints to files and transparently intercepts Bash tools, with database-style management of structured data. The file-system abstraction provides intuitive and stateful high-level organization, while the datastore provides precise control over fine-grained structured entries. This paper focuses exclusively on HYVE. Anthropic [8] and Vercel [9] popularized the idea that “bash is all you need” and, more broadly, a CLI-native approach to agentic workflows built on the file system and composable shell tools. In machine-data-heavy settings, however, database principles become equally important. Shell tools such as grep 
+
+and awk are useful for pattern matching, but they are poorly suited to structured search involving filtering, aggregation, and joins over multiple nested machine-data segments scattered across the input. HYVE therefore stores full-fidelity copies in a datastore that supports formal query processing, while presenting hybrid views better aligned with LLM reasoning. II. M AIN DESIGN 
+
+We formalize analytics-oriented context engineering for LLM inputs containing embedded semi-structured segments, using hybrid views and an on-demand delayed query process implemented through coupled preprocessors and postproces-sors around an LLM call. 
+
+A. Preprocessor design 
+
+The preprocessor uses a robust parser to detect repetitive structures together with their schemas, transform them into column and row views, and selectively expose only a subset of table entries to the LLM. The full dataset remains available in a queryable datastore. 
+
+a) Raw input: The input is a single opaque string s2
+
+that may contain an arbitrary mixture of natural language and machine data, such as job descriptions, instructions, command outputs, log fragments, and configuration snippets. No explicit structural boundary markers are guaranteed: JSON or AST literals may appear inline, span multiple lines, be partially malformed, or be string-encoded within other JSON fields. 
+
+b) Parsing and structure detection: A resilient parser decomposes s into an interleaved sequence of free-form text segments and structured objects: 
+
+Parse (s) = ( t1, J 1, t 2, J 2, . . . , t m, J m, t m+1 ),
+
+where each ti is a text segment and each Ji is a JSON or Python literal object. The parser handles deeply nested ob-jects, heterogeneous arrays, partially malformed JSON, string-encoded nested blobs, and Python AST literals (Section III). We write J = ( J1, . . . , J m) for the extracted objects and 
+
+t = ( t1, . . . , t m+1 ) for the text segments. Using JSON’s key-value structure together with JSON-Path [10], a standard path notation for addressing values inside nested JSON objects, we identify repetitive patterns , such as collections of dictionaries or lists that share a common JSONPath prefix and a common inferred schema. For example, in a JSON object whose field items stores a list of records, the path $.items[0].name refers to the name field of the first record, starting from the root node $ and traversing through the items field. These patterns can be organized into tables with well-defined column names and value types; they form the basis of both the hybrid view and the queryable datastore. We use JSONPath notation as a compact way to refer to values inside nested JSON objects, and write Val (J, p )
+
+for the value at path p when it exists. The key requirement is that entries grouped into the same table or column family must be structurally compatible. We therefore formalize the notion of schema consistency , which determines when multiple JSON values may be safely aligned and merged: 
+
+Definition 1 (Schema Consistency) . Let L = [ e1, . . . , e n] be a list of structured JSON values. We say that L is schema-consistent if all elements of L share the same recursive schema signature, i.e., they have the same field structure and compatible leaf types at corresponding positions. In particular, for object-valued elements, this requires that they have the same key set and that corresponding child fields are them-selves schema-consistent recursively. Otherwise, L is schema-inconsistent .c) Representation operator: Let Tok (·) denote the token-count function under the target tokenizer. The system trans-forms the raw input s into a prompt string π that preserves 
+
+> 2At the API level, inputs are often represented as structured objects, for example as JSON messages conforming to the interaction schema of the target LLM service. Before inference, the provider serializes this structure into a single token stream, potentially inserting vendor-specific control or delimiter tokens. As this serialization detail does not affect the design of HYVE, we omit it for simplicity.
+
+sufficient information for the LLM while substantially reduc-ing token count. We denote this preprocessing step by the 
+
+representation operator 
+
+Rep : s 7 → π, 
+
+which operates on s via Parse (s). It is governed by subset-selection parameters, such as the number of list items retained per array and the number of top-ranked records surfaced in the row view. In our implementation these are fixed thresholds rather than an explicit token budget, yet the resulting Tok (π) is consistently 50–90% smaller than Tok (s) across all evaluated workloads (Section V). 
+
+d) Hybrid View: For each object Ji, the preprocessor generates an ordered column view Col (Ji). The sequence 
+
+Col (J1), Col (J2), . . . is interleaved with the text segments t
+
+in original order. It also generates a combined, unordered row view Row (J) across all extracted objects. As illustrated in Figure 4, the resulting prompt Rep (s) is assembled as the following hybrid view :
+
+t1 ⊕ Col (J1) ⊕ t2 ⊕ Col (J2) ⊕ · · · ⊕ tm+1 ⊕ Row (J),
+
+where ⊕ denotes string concatenation.   
+
+> Fig. 4. Layout of Rep (s). If table truncation is triggered, SQL query prompt is automatically generated.
+
+To make these two views precise, we define them for-mally below. The column view groups schema-aligned value sequences for analytics-oriented operations, whereas the row view preserves complete records for entity-level correlation. 
+
+Definition 2 (Column-Oriented Representation) . Given aJSON object J, let S(J) be the set of scalar-value occurrences in J. Each occurrence is represented as a tuple (c, p, v ), where 
+
+v is the scalar value, p is its flattened field path relative to its enclosing repeated record, and c is its repeated-context path, defined as the ordered sequence of array-valued ancestor paths from the root of J to that enclosing record. The column-oriented representation of J is 
+
+Col (J) = {(( ci, p i), V i)}mi=1 ,
+
+where each (ci, p i) is a column identifier, and Vi =[v1, . . . , v ni ] is the ordered list of all scalar values whose occurrences in S(J) have the same repeated-context path ci
+
+and the same relative flattened field path pi. The ordering of 
+
+Vi follows the original traversal order of the corresponding occurrences in J. Thus, two values are placed in the same column iff they are from schema-consistent repeated records, share the same repeated-context path, and have the same relative flattened field path. 
+
+A simple example clarifies this. Consider the path 
+
+clusters[].nodes[].metrics[].cpu and a corre-sponding one clusters[].nodes[].metrics[].mem .They both have the same repeated-context path 
+
+clusters[].nodes[].metrics[] , but with different relative flattened field paths, i.e., cpu and mem , respectively. Therefore, their column identifiers can be represented as tuples (clusters[].nodes[].metrics[] , cpu ) and 
+
+(clusters[].nodes[].metrics[] , mem ). By contrast, for a path clusters[].nodes[].status , the enclosing repeated record is an element of nodes[] , so its column identifier is (clusters[].nodes[] , status ).We transform nested JSON objects into a column-oriented representation suitable for analytics operators. The key idea is to distinguish schema-consistent lists, whose elements share the same recursive schema signature as defined in Definition 1, from schema-inconsistent lists, whose elements differ in field structure or compatible leaf types. In the implementation, this check is performed bottom-up over the JSON tree (Section III). This distinction enables safe columnar merging without con-flating incompatible records. 
+
+Definition 3 (Row-Oriented Representation) . Given a col-lection of JSON objects J = ( J1, . . . , J m), its row-oriented representation is a set of records 
+
+Row (J) = {r1, . . . , r n},
+
+where each ri is a complete schema-consistent repeated record extracted from some Jk. Each row corresponds to one original occurrence of that record in the input and retains all of its fields together as a single tuple, preserving the co-occurrence relationships among those fields. The row view may aggregate records from multiple objects and rank them by relevance to the request context; unlike the column view, it does not preserve the original global ordering of records. 
+
+Consider the following example for illustration. If clusters[].nodes[] is a schema-consistent repeated record, then one row could be ( id ="node-1" ,
+
+status ="healthy" , zone ="us-west" ) and another row could be (id ="node-2" , status ="degraded" ,
+
+zone ="us-east" ). Each row keeps the fields of a single original node record together, so correlations such as which 
+
+status belongs to which id remain explicit. These two representations are complementary. The column view groups homogeneous values to support extraction and numerical analysis across fields, while the row view preserves record boundaries so that correlations among fields remain ex-plicit. Together, they address the reasoning failures highlighted in Section I. 
+
+e) Table Entry Truncation: The challenge is that both 
+
+Col (Ji) and Row (J) may still be too large to expose in full. HYVE therefore truncates only table entries while preserving schema. For the column view, the retained subset must pre-serve the original order to maintain semantic continuity. For the row view, ordering is not needed, because its primary pur-pose is to expose representative entities and their relationships. HYVE uses reference-aware term-weighting methods from information retrieval to decide which entries in Col (Ji) and 
+
+Row (J) are most relevant to the task. To do so, it constructs a 
+
+query string q by concatenating the surrounding text segments 
+
+t1, . . . , t m+1 , which typically contain the user’s question or instruction, with a slim representation Slim (J) that retains all key-value pairs outside the detected tables. The role of 
+
+Slim (J) is important: non-tabular key-value pairs often en-code request-level semantics that are needed to rank table entries correctly. Specifically, HYVE truncates table entries as follows:  
+
+> •
+
+Col (Ji): Long columns are truncated to a fixed-length prefix and postfix, together with additional items selected by a reference-aware ranking score with respect to q,while preserving the original order.  
+
+> •
+
+Row (J): Only a subset of complete records is presented, ranked by the same method to highlight entities and their correlations without preserving the original order. To preserve access to the full dataset, the preprocessor builds a datastore D(J), in which the untruncated data are loaded into in-memory relational tables with schemas inferred from the input, including column names, value types, and parent-child foreign keys for nested arrays. Specifically, the repeated-context path c helps determine the relational table to which a value belongs, while the flattened field path p determines the corresponding field name; nested arrays are normalized into parent-child tables. 
+
+B. Datastore and SQL Query 
+
+When table entry truncation is triggered, HYVE automati-cally injects tool-call prompts to guide SQL generation. 
+
+a) SQL Prompt Auto-Generation: Reliable SQL genera-tion remains challenging for LLMs in open-ended settings, but our environment is controlled and provides exact knowledge of the schema and parent-child relationships among tables. HYVE synthesizes a schema-aware tool prompt from D(J ),listing the available tables, columns, parent-child keys, and the output contract of the permitted tool call. It also constructs tar-geted few-shot examples to guide the LLM toward generating high-quality SQL queries for each request. Because these prompts are generated per request and may include corner-case details, HYVE adopts a gradual-disclosure design. In the primary LLM call, the model only needs to identify the task intent and choose the appropriate tool. When a follow-up call is needed, HYVE provides more contextualized prompts to guide SQL generation and data backfilling. Thus, HYVE incurs at most one additional LLM call by default. In practice, such guidance can be supplied, for example, through the instructions field in the OpenAI Responses API [11] or the Chat Completions API [12]; alternatively, the same design can be implemented through Anthropic’s API or its OpenAI SDK compatibility layer [13], [14]. We illustrate this process with a real example. The following snippet shows Rep (s) after preprocessing the input s. For clarity, we retain only the first three data entries in the column view and omit non-essential descriptions. The transformed prompt π exposes only a small visible slice of the original chart while injecting relational metadata for SQL generation. In this example, the user asks for a multi-series line chart over path-performance telemetry, and the preprocessor retains truncated column views, presents a short row-view sample, and then appends the tool-selection prompt and datastore schema:                                                                                                                         
+
+> <language descriptions/instructions omitted...> "(CARD 1)": {"name": "CDSAILineChart", "props": {"data": {"id": ["Newark, NJ", "pdx-linux-ea", "New York, NY" ], "data": {"x": [[1770163200000,1770163500000,1770163800000], [1770163200000,1770163500000,1770163800000], [1770163200000,1770163500000,1770163800000] ], "y": [[2.1, 1.8, 2.2], [17.7, 18.0, 16.0], [28.1, 26.3, 22.9] ]}}, "axes": {"xAxis": {"type": "time" }}}}<other instructions/intents/questions omitted...> ### Row View: data: x|y_0 |y_1 |y_2 ------------------1770163200000 |2.1 |17.7 |28.1 1770163500000 |1.8 |18.0 |26.3 1770163800000 |2.2 |16.0 |22.9 1770164100000 |2.1 |15.3 |23.1 1770164400000 |2.4 |16.1 |24.7 1770164700000 |2.0 |15.9 |24.0 ... (762 more rows) ###Tool Selection (data is truncated, with the complete data in datastore): <tool call specifications omitted...> Available tables in datastore: Table: data Source: CARD 1.props.data.data Total rows: 2304 Rows per series: 768 series_idx values: 0=’Newark, NJ’, 1=’pdx-linux-ea’, 2=’ New York, NY’ Columns: -series_idx (int) -x(int) -y(float) -_row_id (int) ### Few-Shot Query Examples: <auto-gen to guide LLM SQL generation; details omitted...>
+
+This excerpt clarifies the role of π: it is not merely a compressed serialization of the raw input, but a hy-brid prompt that combines visible evidence with trunca-tion metadata. When data-entry truncation is triggered, ad-ditional SQL-generation prompts, table-schema information, and few-shot guidance are also provided. The LLM there-fore reasons over the visible slice while using the in-jected table description to decide whether it can answer directly, should call QueryDatastore , or should initiate 
+
+GenTemplateAndBackfill .
+
+C. LLM Call and Postprocessor 
+
+If the visible prompt is insufficient for the primary LLM call, HYVE completes the result through either template-based data backfilling or query-based evidence augmentation. 
+
+a) LLM Output: Given a prompt π, the LLM generates 
+
+LLM (π) → y, where y may be either a free-form answer or a structured object conforming to a schema, such as a tool-call output or a visualization specification. Below is an illustrative output for the preceding example, produced in response to GenTemplateAndBackfill . It contains an answer template derived from the visible data together with a BackfillData tool call. This tool call includes SQL statements and mappings that specify how the query results should be backfilled into the template. By default, this process uses one additional SQL query.                                                       
+
+> The answer template generated by the LLM
+> {
+> "CDSAILineChart": {
+> "data": {
+> "list": [
+> {
+> "series_name": "Newark, NJ", "data": [
+> {
+> "x": 1770163200000, "y": 2.1
+> }
+> // ... will be filled in for Newark, NJ ]
+> },
+> {
+> "series_name": "pdx-linux-ea", "data": [// ... will be filled in for pdx-linux-ea ]
+> },
+> {
+> "series_name": "New York, NY", "data": [// ... will be filled in for New York, NY ]
+> }
+> ]
+> },"axes": {
+> "xAxis": {
+> "type": "time"
+> }}}}
+> The SQL tool-call specification
+> {
+> "tool_name": "BackfillData", "query": "SELECT x, y, series_idx FROM data ORDER BY series_idx, _row_id", "mappings": [
+> {
+> "sql_column": "x", "template_path": "CDSAILineChart.data.list.( series_idx).data.(_row_id).x"
+> },
+> {
+> "sql_column": "y", "template_path": "CDSAILineChart.data.list.( series_idx).data.(_row_id).y"
+> }
+> ]
+> }
+
+This output requests a BackfillData operation over the full datastore. The SQL query retrieves the complete x and 
+
+y series together with series_idx and _row_id , ordered so that each series can be reconstructed in its original order. Each mapping specifies how one SQL column should be written back into the output template. Here, (series_idx) 
+
+identifies the target series, while the final indexed position 
+
+(_row_id) denotes the element within that series. The postprocessor can therefore reconstruct the full chart data while preserving the schema produced by the LLM. 
+
+b) Postprocessor Working Modes: If preprocessing does not trigger truncation, the LLM operates directly on π and produces the final result y; no datastore access or postprocess-ing is required. If truncation does occur, however, part of the request-side evidence is no longer visible to the LLM. HYVE therefore synthesizes a schema-aware SQL prompt from D,enabling the model to emit SQL statements that are executed by the postprocessor. This yields three operating modes:  
+
+> •
+
+Mode 1 (Direct Output). When the visible context is sufficient, for example for a point lookup, the LLM output 
+
+y is returned directly.  
+
+> •
+
+Mode 2 (Template Backfill). This mode corresponds to the GenTemplateAndBackfill branch introduced above and targets rendering tasks in which the LLM first generates the schema of a structured answer, typ-ically under a JSON specification. HYVE uses gradual disclosure in this branch: the primary prompt presents 
+
+GenTemplateAndBackfill only as a routing choice, while the detailed BackfillData tool contract is re-vealed only after Mode 2 has been selected. The follow-up prompt then instructs the LLM to produce both the answer template and a BackfillData tool call containing SQL queries together with column-to-path mappings. The postprocessor executes the query against 
+
+D and injects the full result into the template according to those mappings. In this way, the visible portion is generated by the LLM, while the hidden portion is restored through template-based expansion that preserves the model-generated schema.  
+
+> •
+
+Mode 3 (SQL-Augmented Synthesis). This mode cor-responds to the QueryDatastore branch introduced above. Unlike Mode 2, the primary prompt already in-cludes the full QueryDatastore tool specification, so no second tool-disclosure step is required. When the task requires semantic synthesis over both the queried data and the natural-language prompt, such as aggregation, count-ing, filtering, or joins across multiple tables, the primary LLM emits a QueryDatastore tool call containing one or more SQL queries. The postprocessor executes these queries against D, appends the formatted results to the conversation context, and makes one bounded additional LLM call to produce a synthesized answer grounded in the complete evidence. Under the default design, HYVE requires only the primary LLM call in Mode 1 and at most one additional LLM call in Modes 2 and 3. As discussed in Appendix C-C, Mode 3 can also be configured to allow a bounded number of additional calls to improve the fidelity of the final answer. The previous example operates in Mode 2. III. S YSTEM ARCHITECTURE AND IMPLEMENTATION 
+
+This section presents the system architecture and the main implementation details. 
+
+A. System design 
+
+At a high level, HYVE consists of three coordinated components (Figure 1) that operate within an isolated per-request scope. Each request is fully isolated, and the lifecycles of all components are confined to that scope. To support an in-memory datastore and expressive SQL features (e.g., extraction operators for nested JSON objects), HYVE uses DuckDB [15]. Concretely, it instantiates an unnamed in-memory DuckDB database for each request via the special 
+
+:memory: target. This yields an efficient transient datastore. No data are written to disk, the database is discarded when the request finishes, and separate unnamed :memory: con-nections prevent cross-request state sharing by construction. HYVE can be integrated with standard LLM APIs in a provider-agnostic manner, for example through OpenAI-style interfaces such as the Responses API [11] or Chat Comple-tions API [12], as well as Anthropic’s Messages API [13]. HYVE remains responsible for structured parsing, datastore construction, truncation-aware representation, and query-based output repair, while the underlying LLM API handles request execution and tool-calling transport. 
+
+B. Preprocessor Implementation 
+
+Given a raw input string, HYVE extracts structured text seg-ments and parses each into a canonical object. It materializes these objects in the datastore before any truncation. HYVE then builds the column view by constructing a JSON tree, flattening it into JSONPath-like dotted keys, and clustering paths that share the same repetitive structural pattern after abstracting away index values. These clusters are merged into schema-aware columns whose values are reshaped into ordered lists. When lists are large, HYVE applies truncation and ranking so that high-signal table entries can still appear in the visible prompt. HYVE similarly derives the row view by ranking records against the request context, selecting a small representative subset, and rendering the result as a compact pipe-delimited table. Algorithm 1 summarizes this workflow. 
+
+Algorithm 1 Pre-processing and Hybrid-View Construction  
+
+> 1:
+
+Input: Raw input string s, query text q for ranking  
+
+> 2:
+
+Output: Prompt-ready hybrid view and full datastore  
+
+> 3:
+
+(T, O ) ← EXTRACT TEXT AND JSONO BJECTS (s) 
+
+> 4:
+
+D ← NEW DATASTORE ()  
+
+> 5:
+
+C ← [ ]  
+
+> 6:
+
+for each object o ∈ O do  
+
+> 7:
+
+Jo ← PARSE (o) 
+
+> 8:
+
+BUILD DATASTORE FROM OBJECT (D, J o) 
+
+> 9:
+
+τ ← BUILD JSONT REE (Jo) 
+
+> 10:
+
+NORMALIZE EXPANDED UNPARSED NODES (τ ) 
+
+> 11:
+
+MARK SCHEMA INCONSISTENCY (τ ) 
+
+> 12:
+
+C ← CLUSTER BYJSONP ATH PATTERN (τ ) 
+
+> 13:
+
+E ← MERGE AND RESHAPE COLUMNS (C) 
+
+> 14:
+
+R ← RANK SCHEMA COMPATIBLE INDEXES (E, q ) 
+
+> 15:
+
+E′ ← APPLY TRUNCATION AND RANKING (E, R ) 
+
+> 16:
+
+C.APPEND (RENDER COLUMN VIEW (E′))  
+
+> 17:
+
+end for  
+
+> 18:
+
+Row (J) ← RENDER RANKED ROWS (D, q ) 
+
+> 19:
+
+π ← ASSEMBLE PROMPT (T, C, Row (J))  
+
+> 20:
+
+return (π, D)
+
+a) JSON Tree and Schema Consistency: The JSON tree is the intermediate representation that makes this transfor-mation precise. Each node stores a key, a value, whether it originated from a dictionary or a list, and links to its children. Dictionary edges preserve semantic field names, whereas list edges are represented by numeric child keys. During tree construction, HYVE also attempts to expand long string values that themselves contain JSON or Python-literal payloads, so that nested structure is exposed rather than treated as opaque text. Flattening the tree then yields dotted paths such as data.0.x , data.1.x , and data.2.x . Clustering collapses these paths to a shared pattern such as data.*.x ,while retaining capture cardinalities so that the collected values can be reshaped into aligned lists. Schema consistency is required because clustering is valid only when different list items instantiate the same record schema. HYVE therefore performs a bottom-up check over every list node. For each list item, it computes a deep schema signature that recursively records child keys and normalized leaf types, treating int and float uniformly as number .A list is declared schema-consistent only if all items share the same signature and no descendant leaf exceeds a config-ured maximum length for column-view rendering. This check prevents false alignment. Without it, unrelated objects such as {x,y } and {name,status,error } could be merged into the same column family simply because they occupy the same list position, producing malformed columns and invalid row correspondences. When this check fails, HYVE marks the list node as schema-inconsistent and preserves the numeric indices of all list items explicitly. This disables clustering across those items and ensures that only entries with the same inferred schema are merged into a single logical table or column family. The same safeguard applies to enumerated dictionary children when they contain sufficiently long payloads, as determined by a configuration parameter. HYVE preserves their indices rather than forcing them into a shared columnar pattern. As a result, schema-consistent regions are compressed into tables, whereas schema-inconsistent regions remain as indexed records. 
+
+b) Relationalization of Nested Lists: Datastore construc-tion follows a complementary invariant. HYVE recursively scans the parsed object and promotes sufficiently large lists of dictionaries to parent tables. Inside each parent row, list-valued fields are split into child tables using foreign keys of the form parent_<id> ; if those child rows still contain nested lists, the same rule is applied recursively to produce grandchild tables. Flat one-to-one dictionaries are expanded into columns of the current table, while residual nested objects are serialized as JSON strings when they cannot be normalized safely. The implementation also handles two important multi-series cases. First, for column-store dictionaries whose values are parallel lists of lists, HYVE converts them into a single flat table with a series_idx column and attaches sibling label arrays as series metadata. Second, when a list of sibling objects contains parallel sublists under the same key, HYVE combines those sublists into one shared table, again indexed by series_idx . These rules ensure that lists at different depths are either mapped to legitimate relational tables with explicit join keys or preserved as indexed nested structures when no sound relational alignment exists. 
+
+c) Robust Parsing: Given the raw input string s, the preprocessor first identifies candidate structured segments as part of the Parse operator (Section II). Each candidate segment is then passed to a multi-strategy robust parser that attempts to recover a canonical structured object. This parser is designed to handle malformed JSON, string-encoded nested objects, and Python AST literals. The parser follows a two-stage design. The fast parsing stage targets common cases with low overhead. It first strips surrounding Markdown code fences, then tries a small se-quence of lightweight parsers that move from strict to more permissive formats: canonical JSON parsing, followed by Python-literal parsing with only minimal syntax normalization needed to expose the literal itself. This stage does not attempt broad repair. Whenever one of these parsers succeeds, HYVE recursively traverses the resulting dict/list structure. If a string-valued field itself parses as a JSON object or array, HYVE replaces that string with the parsed structure and continues the traversal on the newly exposed subtree until no further expansion applies. This recursive expansion is necessary be-cause real inputs often contain nested payloads that are string-encoded inside outer JSON fields; without it, deeper records would remain opaque text and could not be normalized into the hybrid view or datastore. This stage covers many practical inputs, including code-fenced JSON, Python dict/list literals, and stringified nested payloads. If the fast stage fails, HYVE enters a repair stage . Be-fore invoking more permissive recovery, the parser applies 
+
+Algorithm 2 Robust Parsing of a Candidate Segment  
+
+> 1:
+
+Input: Candidate structured segment s 
+
+> 2:
+
+Output: Parsed structured object O or the original seg-ment s 
+
+> 3:
+
+s0 ← STRIP MARKDOWN FENCES (s) 
+
+> 4:
+
+Stage 1: Fast parsing  
+
+> 5:
+
+Try, in order: P ARSE CANONICAL JSON, P ARSE PYTHON -LITERAL 6: for each parser P in the above order do  
+
+> 7:
+
+O ← P (s0) 
+
+> 8:
+
+if O̸ = f ailure then  
+
+> 9:
+
+O ← EXPAND NESTED JSON (O) 
+
+> 10:
+
+if VALIDATE SOURCE COVERAGE (O, s 0) then  
+
+> 11:
+
+return O 
+
+> 12:
+
+end if  
+
+> 13:
+
+end if  
+
+> 14:
+
+end for  
+
+> 15:
+
+s1 ← NORMALIZE CONTROL CHARACTERS (s0) 
+
+> 16:
+
+s1 ← NORMALIZE KEY QUOTING (s1) 
+
+> 17:
+
+s1 ← STABILIZE NESTED JSONS TRING SYNTAX (s1) 
+
+> 18:
+
+Stage 2: Repair-oriented recovery  
+
+> 19:
+
+Try, in order: R EPAIR MALFORMED JSON, D ECODE EN-
+
+> CODED
+
+JSON, R ECOVER EMBEDDED JSONS PAN 20: for each repairer R in the above order do  
+
+> 21:
+
+O ← R(s1) 
+
+> 22:
+
+if O̸ = f ailure then  
+
+> 23:
+
+RECONCILE WITH ORIGINAL (O, s 0) 
+
+> 24:
+
+PRESERVE UNRECOVERED CONTENT (O, s 0) 
+
+> 25:
+
+O ← EXPAND NESTED JSON (O) 
+
+> 26:
+
+if VALIDATE SOURCE COVERAGE (O, s 0) then  
+
+> 27:
+
+return O 
+
+> 28:
+
+end if  
+
+> 29:
+
+end if  
+
+> 30:
+
+end for  
+
+> 31:
+
+return s
+
+targeted normalization to make the candidate structurally co-herent: it normalizes control characters that would invalidate JSON strings, inserts quotes around unquoted field names, and escapes quotes inside nested JSON fragments embedded within string values. HYVE then proceeds through a small sequence of increasingly permissive recovery strategies. It first attempts structural repair of malformed JSON. If that still fails, it handles wrapper cases in which the payload is itself encoded as a quoted or escaped JSON string. Finally, when the candidate contains surrounding free-form text, HYVE extracts the most plausible embedded JSON span and, when necessary, restores missing closing or opening braces/brackets so that the recovered span forms a complete object or array. Because permissive recovery may silently drop or rewrite malformed content, each recovered candidate is reconciled against the original segment: content that is confidently recovered is kept in structured form, while any unrecovered residue is retained under a dedicated unparsed_string field rather than discarded. Finally, each candidate parse is validated against the original input by measuring overlap in alphabetic-word substrings. HYVE rejects parses that violate the word-overlap coverage criterion, thereby reducing silent truncation. Algorithm 2 summarizes this control flow. IV. O PERATOR DESIGN 
+
+HYVE includes both generic and specialized operators, including ranking, rendering, and time-series analysis. 
+
+A. Ranking-Based Subset Selection 
+
+HYVE uses ranking in two settings. The row view supports 
+
+retrieval-oriented tasks, where the goal is to select the most relevant records from a large collection. The column view preserves a prefix and suffix together with a small number of additional elements selected by a ranking function, while maintaining the original order. HYVE uses two related ranking procedures with different candidate corpora. For the column view, ranking is performed independently within each schema-compatible group. Each list position defines one candidate record, and ranking statistics are computed using only the records in that group. Because all records in the same group share the same field paths, schema tokens contribute no discriminative signal. Accord-ingly, column-view ranking uses only value tokens. For the row view, the candidate corpus is the union of candidate rows from the request-scoped datastore. Here, each candidate is represented by both schema tokens and value tokens. Value tokens provide the fine-grained matching signal, while schema tokens identify the table and field family from which the values originate. This distinction matters when the same request contains multiple heterogeneous tables or repeated structures whose values may overlap lexically. We score these candidates with a standard BM25-style ranker [16]. The query is a reference string formed from the surrounding input context together with Slim (J). The key point is not the scoring function itself, but how HYVE maps structured data into retrieval units. BM25 is applied not to free-form documents, but to structured records. For column-view ranking, IDF is computed within each schema-compatible group; for row-view ranking, it is computed over the cross-table candidate set. Token overlap with the reference context determines relevance, and repeated occurrences in the reference are saturated in the usual BM25 manner. Relative to standard document retrieval, HYVE differs in two respects. First, its retrieval units are structured records augmented with schema information rather than free-form documents. Second, ranking is performed against a reference string derived from the request context. HYVE therefore applies BM25 in a structured setting, matching request-derived context to candidate records rather than ranking free-text documents. 
+
+B. Time-Series Analysis Operators 
+
+For structured inputs containing numerical time series or metric sequences, we provide optional statistical and anomaly-detection operators that convert raw numerical arrays into compact, high-signal natural-language summaries. Long metric sequences, such as per-node network delays collected along a path, can consume substantial tokens while hiding the few data points that matter most. Blind truncation may discard the rare high-latency events that determine the diagnosis. HYVE therefore supports time-series analysis oper-ators that compress such sequences into compact, semantically meaningful evidence, such as anomaly reports and trend descriptions. As a simple illustration, we implement an n-sigma anomaly detector. Given a numerical sequence X = [ x1, . . . , x n], it flags observations whose deviation from the mean exceeds a fixed multiple of the standard deviation (with default threshold 
+
+k = 2 ), while applying a lightweight periodicity check to sup-press false positives [17]. We expose this analysis as a query operator over the datastore. For instance, an LLM can invoke a custom SQL-style function, DETECT_ANOMALY(data, y) , to identify abnormal behavior in metric column y of table data . Rather than returning the full raw time series, the operator produces compact textual evidence. For example, it may return a concise summary such as:                   
+
+> Anomaly detected in data.y: latency: 293.0 ms Normal observation: mean: 3.08 ms, max: 11.19 ms Context: timestamp: 2025-07-15T10:30:00 pathTrace: 4, round: 9, hop: 4node: "pdx-linux-ea"
+
+This summary surfaces the anomalous value together with relevant contextual fields and a brief statistical characterization of normal behavior. By transforming raw numerical sequences into compact, semantically meaningful summaries, such oper-ators help the LLM focus on the most salient evidence without being overwhelmed by token-intensive raw data. 
+
+C. Rendering Operators 
+
+After flattening and truncation, we reconstruct a serialized representation suitable for the LLM prompt. This rendering step converts the internal column-oriented representation into a human-readable, LLM-consumable format. We explored multiple output formats:  
+
+> •
+
+Beautified JSON (default): Reconstruct the nested JSON object with consistent indentation for readability.  
+
+> •
+
+Raw JSON: Preserve the JSON in minified form, elimi-nating unnecessary whitespace to maximize token density at the expense of readability.  
+
+> •
+
+TOON encoding: Use a compact, lossless representation of the JSON data model for LLM input [18], combining YAML-like indentation with CSV-style tabular layouts for uniform arrays of objects. TOON encoding offers strong token efficiency for table-like structured data. Our ablation study (Section V-E) shows that it yields up to 31% token savings, with the largest gains on chart generation and slot-filling tasks (18–31%), though savings are smaller (6–15%) or negligible on other workloads. However, TOON can degrade structured-generation quality. We therefore use beautified JSON as the default rendering format, prioritizing broad task compatibility over maximum token savings. TOON remains a viable option when stronger token efficiency is desired. As work orthogonal to the main theme of this paper, we also introduce operators for other input formats. For example, an HTML operator can transform HTML-formatted text into a browser-like rendered view, reducing formatting metadata that might otherwise obscure the key information for the LLM. V. E XPERIMENTAL EVALUATION 
+
+We evaluate HYVE on a diverse collection of real-world networking datasets involving machine data and structured outputs. Most of these datasets are proprietary, so we describe them in the appendix. We also evaluate HYVE on the public TOON-QA benchmark [18]. 
+
+A. Datasets 
+
+The datasets include expert-authored and workflow-oriented benchmarks spanning question answering, slot filling, anomaly detection, chart generation, and network troubleshooting. We group our benchmarks into the following categories:  
+
+> •
+
+Cert-QA: A collection of 3,524 network engineering questions spanning Cisco certification levels. This in-cludes CCNA-level entry questions on basic commands and protocols, CCNP-level questions on advanced routing (OSPF, BGP) and switching (STP, MST), and CCIE-level expert questions covering unified communications, wireless security (802.1X, WPA2/3), and network ana-lytics. The dataset combines both multiple-choice exam questions with detailed feedback and open-ended ques-tions requiring precise technical answers. Representative examples are provided in Appendix A-A.  
+
+> •
+
+Runbook: A collection of 260 network-operations trou-bleshooting scenarios derived from real-world support workflows. Each example contains a problem description, such as a stack upgrade failure or port connectivity issue, together with a ground-truth runbook specifying step-by-step diagnosis and verification procedures. The task requires the model to generate or complete a structured troubleshooting playbook from the problem context. A representative example is provided in Appendix A-B.  
+
+> •
+
+Line: 100 line-chart generation tasks that require the model to transform time-series network telemetry, such as latency, jitter, packet loss, and goodput, into multi-series line-chart JSON specifications with appropriate axis configurations and data mappings. A representative example is provided in Appendix A-C.  
+
+> •
+
+Bar: 100 bar chart generation tasks requiring the model to convert categorical key-value data into bar-chart JSON schemas with stacks and category labels. A representative example is provided in Appendix A-D.  
+
+> •
+
+Anom: 797 anomaly detection tasks requiring the model to analyze network path visibility data and identify high-latency nodes. Each entry contains hop-by-hop response times from synthetic network tests, and the model must apply a latency threshold (e.g., >10ms) to flag anomalous nodes, then provide structured reasoning and a summary of impacted hosts. A representative example is provided in Appendix A-E.  
+
+> •
+
+Sum: 84 report generation tasks requiring the model to synthesize structured board/canvas data into compre-hensive Markdown reports. Each entry contains a JSON object with board metadata, canvas details, cards, and conversation history; the model must produce a well-organized report with a table of contents, key insights, incident timelines, and root cause analysis where ap-plicable. A representative example is provided in Ap-pendix A-F.  
+
+> •
+
+Canvas: 4,096 slot-filling tasks aggregated from 8 run-book step scenarios. Each entry simulates a CCIE-level network troubleshooting workflow where the model re-ceives a deeply nested board context (metadata, canvas, cards, conversation history) along with a runbook step instruction, and must extract or compute the required variables (e.g., orgId , networkId , time ranges, API query parameters) to proceed. A representative example is provided in Appendix A-G.  
+
+> •
+
+RB-Text: A collection of API response summarization tasks derived from network troubleshooting runbook ex-ecutions. Each entry contains a raw API response from commercial network management and monitoring plat-forms (e.g., device alerts, monitored targets, connectivity status) along with a CCIE-expert system prompt; the model must produce a concise, well-structured Markdown summary that highlights critical information such as alert severity, affected devices, and actionable insights. A representative example is provided in Appendix A-H.  
+
+> •
+
+RB-JSON: Representative conditional expression evalu-ation tasks requiring the model to assess boolean predi-cates over runbook execution context. Each entry presents a condition (e.g., “Location is set”, “Fault Domain is local-network”, “Any of the alerts are critical”) along with structured context data from network troubleshooting workflows; the model must output a JSON object contain-ing a step-by-step reasoning array and a boolean decision indicating whether the condition holds. A representative example is provided in Appendix A-I.  
+
+> •
+
+Hard: A curated set of challenging multi-hop reasoning problems designed to stress-test structured data compre-hension. Each entry presents a complex query (e.g., “find a DNS test related to SharePoint running from an agent in San Francisco”) over deeply nested JSON payloads containing network test configurations, agent metadata, and location hierarchies. The model must perform multi-step filtering and cross-referencing to produce a detailed reasoning chain and the correct answer. A representative example is provided in Appendix A-K.  
+
+> •
+
+TOON-QA: A subset of 154 question-answer pairs over JSON data selected from the TOON Retrieval Accu-racy Benchmark [18]. Questions span three categories: 
+
+field retrieval (direct value lookups, 25%), aggregation 
+
+(counting, averaging, and statistical computation across records, 58%), and multi-condition filtering (compound queries requiring cross-field logic, 17%). Prompt lengths range from 10K to 43K characters (mean 26K), making this benchmark a stress test of LLM analytical reasoning over large structured contexts where the answer cannot be obtained by locating a single datum. A representative example is provided in Appendix A-J. 
+
+B. Metrics 
+
+We evaluate system performance along three dimensions: 
+
+answer quality , token efficiency , and latency . All evaluations are conducted using an automated evaluation pipeline built on LangSmith [19]. 
+
+a) Quality Metrics: We employ task-appropriate quality metrics tailored to each dataset’s characteristics:  
+
+> •
+
+GenericJudge (5-point scale): An LLM-as-a-judge eval-uator that compares the generated answer against aground-truth reference. A GPT-4o judge assigns an in-teger score from 1 to 5 based on factual correctness, completeness, and clarity: 5 (Excellent) —fully correct and complete; 4 (Good) —mostly correct with minor omissions; 3 (Fair) —partially correct with notable gaps; 
+
+2 (Poor) —largely incorrect or incomplete; 1 (Inade-quate) —completely incorrect or irrelevant. This metric is applied to Cert-QA , Runbook , Sum , and RB-Text 
+
+datasets.  
+
+> •
+
+Similarity (0–1 scale): For chart generation tasks, we compute a composite similarity score between the model’s output data series and the ground-truth series. The metric combines three components: (1) normalized Dynamic Time Warping (nDTW) similarity, which mea-sures sequence alignment under temporal distortion; (2) cosine similarity, which captures directional agreement between value vectors; and (3) Pearson correlation, which measures linear relationship strength. The final score is the geometric mean of these three components (each normalized to [0 , 1] ), producing a holistic measure of data fidelity. This metric is applied to Line and Bar chart generation tasks, where the model must produce JSON specifications containing numerical data arrays.  
+
+> •
+
+ReasoningJudge (5-point scale): A specialized LLM-as-a-judge evaluator for structured JSON outputs. A GPT-4.1 judge first validates that the model’s output is well-formed JSON conforming to a provided schema, then performs field-by-field comparison against the ground truth. String fields require exact matches; reasoning arrays allow semantic equivalence with paraphrasing permitted if all factual points are preserved. Schema violations cap the maximum score at 2. This metric is applied to Anom 
+
+anomaly detection, Canvas slot-filling, RB-JSON con-ditional evaluation, and Hard multi-hop reasoning tasks, which require structured outputs with explicit reasoning chains.  
+
+> •
+
+ExactMatch (0–1 scale): A deterministic evaluator that compares the model’s answer against the ground truth via exact string matching (case-insensitive, after whitespace trimming). A score of 1.0 is assigned if the answer matches exactly, and 0.0 otherwise. The final score is the mean accuracy across all examples. This metric requires no LLM judge and is fully reproducible. It is applied to 
+
+TOON-QA , where answers are short deterministic values (integers, floats, or short strings) that admit unambiguous verification. The complete evaluation prompts are provided in Appendix B. 
+
+b) Token Usage: We measure the total token consump-tion for each method by summing the prompt and comple-tion tokens across all examples in a dataset. Token counts are obtained directly from the model’s API response. This metric captures the end-to-end cost of processing an entire benchmark, enabling direct comparison of encoding efficiency across methods. 
+
+c) Latency: We report the mean end-to-end latency per query, measured as the wall-clock time from request submis-sion to response completion. For each dataset, we compute the average latency across all examples, providing a practical measure of user-perceived response time under each encoding strategy. 
+
+C. Baselines 
+
+We evaluate HYVE by applying it on top of two OpenAI baselines in their default configurations, i.e., without HYVE preprocessing or postprocessing:  
+
+> •
+
+GPT-4.1: OpenAI’s GPT-4.1 model, a strong low-latency non-reasoning model for instruction following and cod-ing, with standard JSON input serialization and no output recovery.  
+
+> •
+
+GPT-5: OpenAI’s GPT-5 model, a newer general-purpose model designed for more complex tasks, under the same configuration. These baselines reflect common practice: structured data are serialized directly as JSON and passed to the LLM. We compare performance with and without HYVE. We additionally conduct ablation experiments to isolate the contribution of individual HYVE components (truncation strategies, rendering formats, and postprocessing recovery); these are detailed in Section V-E. 
+
+D. Main Results 
+
+Table I summarizes our main results across 11 benchmarks. Overall, HYVE reduces token consumption by 50–90% on datasets with large structured inputs, while maintaining or improving answer quality across all tasks. Latency reductions generally follow, with two exceptions where Mode 3’s addi-tional LLM call increases latency: TOON-QA and RB-Text (discussed below). We organize our analysis by task category below. 
+
+a) Knowledge QA and Text Summarization: The Cert-QA, Runbook, Sum, and RB-Text datasets evaluate domain knowl-edge and text-generation capabilities, where inputs contain moderate context and outputs are free-form text. On these TABLE I COMPARISON OF ANSWER QUALITY , TOKEN USAGE , AND LATENCY ACROSS BENCHMARKS 
+
+Model Cert-QA G Runbook G Line S Bar S Anom R Sum G Canvas R RB-Text G RB-JSON R Hard R TOON-QA E
+
+> Score ↑
+
+GPT-5 4.49 4.55 0.68 0.85 3.28 3.82 4.96 4.67 4.84 4.33 0.96 GPT-5 + HYVE 4.49 4.58 0.97 1.00 3.77 3.85 4.96 4.77 4.92 5.00 0.98 
+
+GPT-4.1 4.36 4.26 0.41 0.99 3.22 4.43 4.94 4.88 4.78 4.04 0.47 GPT-4.1 + HYVE 4.38 4.32 0.95 0.99 4.03 4.46 4.95 4.89 4.92 5.00 0.93 
+
+> Token ↓
+
+GPT-5 3.1M 1.1M 4.2M 1.8M 18.5M 381.3K 122.8M 71.7K 142.8K 80.5K 1.4M GPT-5 + HYVE 3.1M 1.1M 748.0K 251.8K 10.9M 372.4K 38.2M 56.8K 132.7K 20.3K 182.4K 
+
+GPT-4.1 1.1M 289.7K 3.0M 1.5M 15.8M 209.2K 123.4M 61.5K 116.1K 75.1K 1.3M GPT-4.1 + HYVE 1.1M 286.9K 369.4K 132.5K 8.9M 206.0K 35.1M 48.4K 107.3K 15.1K 153.8K 
+
+> Lat.(s) ↓
+
+GPT-5 8.10 38.89 125.11 75.27 28.73 23.66 10.45 20.60 7.39 19.45 5.48 GPT-5 + HYVE 7.34 36.79 39.79 12.73 20.71 22.23 8.99 12.73 7.19 16.96 2.71 
+
+GPT-4.1 3.21 7.58 47.86 32.91 7.49 5.57 3.22 2.74 2.40 8.07 1.35 
+
+GPT-4.1 + HYVE 2.91 7.18 8.93 3.11 4.38 4.99 3.00 4.53 2.11 5.43 2.33       
+
+> GPT-5 / GPT-4.1 : Baseline models with standard JSON serialization; structured data passed directly to the LLM without optimization. + HYVE : Models augmented with the full HYVE pipeline (hybrid-view transformation, reference-guided truncation, queryable data backfilling and bounded SQL-augmented reasoning).
+> SSimilarity (max 1.0); EExactMatch (max 1.0); GGenericJudge, RReasoningJudge (max 5.0). Token values in K (thousands) or M (millions) with 1 decimal precision.
+
+tasks, HYVE achieves comparable quality to the baselines: for GPT-5, Cert-QA remains at 4.49 and Runbook improves slightly from 4.55 to 4.58; for GPT-4.1, Cert-QA changes from 4.36 to 4.38 and Runbook from 4.26 to 4.32. These differences are small and well within the range of normal LLM output variance. Token usage and latency show minimal change on Cert-QA, Runbook, and Sum, as these datasets do not contain the long arrays that benefit from hybrid-view compression. RB-Text is the exception: while quality remains comparable, GPT-4.1 latency increases from 2.74s to 4.53s due to Mode 3 overhead (discussed below). These results confirm that HYVE introduces no regression on standard QA tasks, validating the safety of our preprocessing and postprocessing pipeline. 
+
+b) Structured Chart Generation: The Line and Bar datasets require generating JSON chart specifications contain-ing long data-point arrays. Here HYVE yields substantial im-provements across all metrics. For GPT-5, Line chart similarity increases from 0.68 to 0.97 (+43%), and Bar chart similarity from 0.85 to 1.00 (+18%). Token usage drops dramatically: Line from 4.2M to 0.75M tokens (–82%), Bar from 1.8M to 0.25M tokens (–86%). Latency decreases as well: Line from 125s to 40s (–68%), and Bar from 75s to 13s (–83%). The quality gains come from data backfilling, which restores arrays that would otherwise be truncated during generation. Figure 5 illustrates the per-sample distributions on the Line dataset: HYVE concentrates 76% of samples at perfect similarity (1.0), whereas the baseline shows a bimodal distribution with 44% of samples failing entirely (similarity 0.0). Latency distri-butions exhibit similar concentration, with HYVE achieving consistently low response times (median 8.9s) compared to the baseline’s long-tailed distribution (median 47.9s). 
+
+c) Reasoning over Large Structured Context: The Anom, Canvas, RB-JSON, and Hard datasets involve deeply nested JSON inputs and require structured reasoning outputs. For   
+
+> Fig. 5. Per-sample distributions on the Line chart dataset ( n= 100 ). HYVE raises 76% of samples to perfect similarity (1.0), compared with 17% for the baseline, while reducing median latency from 47.9s to 8.9s.
+
+GPT-5, Anom increases from 3.28 to 3.77, benefiting from the anomaly operator that extracts high-signal summaries from raw time-series data, and Hard improves from 4.33 to 5.00, attributing to the relational structure preserved in the row view for multi-hop reasoning. On Canvas and RB-JSON, quality remains broadly stable: Canvas stays in the 4.94–4.96 range, and RB-JSON improves modestly from 4.84 to 4.92. Token savings are substantial: Canvas drops from 122.8M to 38.2M tokens (–69%), Anom from 18.5M to 10.9M (–41%), and Hard from 80.5K to 20.3K (–75%). These results demonstrate that hybrid-view compression effectively reduces large nested contexts without sacrificing the information needed for accu-rate reasoning. Figure 6 shows per-sample distributions on the Anom dataset: HYVE shifts reasoning scores toward higher values while using significantly fewer tokens per sample. 
+
+d) Range-Query Reasoning with Exact-Match Evaluation: 
+
+While the preceding benchmarks mainly test point-query behavior, where retrieving a single record or field is often sufficient, TOON-QA [18] targets range-query reasoning and is evaluated with a deterministic exact-match metric that requires no LLM judge. Of its 154 questions, 75% require scanning, filtering, or aggregating over the entire structured payload, while the remaining 25% serve as field-retrieval baselines. TOON-QA highlights two complementary benefits of HYVE. For GPT-4.1, HYVE raises exact-match accuracy from 0.47 to 0.93 (+98%) while reducing token usage from 1.3M to 153.8K ( −88%). For GPT-5, the quality gain is smaller, from 0.96 to 0.98, because the baseline is already near ceiling. Even so, HYVE still substantially improves efficiency: token usage drops from 1.4M to 182.4K ( −87%), and latency falls from 5.48s to 2.71s ( −51%). These results show that HYVE helps in two regimes: it can dramatically improve answer accuracy for weaker models on range-query reasoning, and it can substantially reduce latency and token cost even when stronger models already achieve high baseline accuracy. Notably, GPT-4.1 + HYVE (0.93) approaches GPT-5 without HYVE (0.96), suggesting that structured context engineering can partially offset model-capability differences on aggregation-style tasks. The ablation study (Table II) confirms that SQL-augmented reasoning (Mode 3) is the decisive component for TOON-QA: disabling all postprocessing (Full − post) drops accuracy to 0.38 ( −59%). In contrast, preprocessing ablations have milder effects: removing ranking yields 0.91 ( −2%) and disabling truncation yields 0.87 ( −6%). This pattern suggests that the model can still perform aggregation with imperfect context, but the additional LLM call over queried evidence is essential for closing the remaining accuracy gap to 0.93. TOON-QA also illustrates the latency trade-off of Mode 3. For GPT-5, HYVE reduces latency from 5.48s to 2.71s (−51%) because token savings outweigh the cost of the extra LLM call. For GPT-4.1, however, latency rises from 1.35s to 2.33s because the baseline is already fast and the second call dominates. A similar trade-off appears on RB-Text, where HYVE’s latency (4.53s) exceeds the baseline (2.74s) for the same reason; on all remaining benchmarks, HYVE consistently reduces latency. 
+
+E. Ablation Study 
+
+We conduct ablation studies to isolate the contribution of each HYVE component. Table II organizes ablations along two dimensions. Preprocessing ablation : we selectively disable ranking (Full − rank), truncation (Full − trunc), or swap the serialization format (Full + TOON), while keeping the full postprocessing pipeline (Mode 1+2+3) active. Postprocessing ablation : we disable all postprocessing (Full − post). We 
+
+Fig. 6. Per-sample distributions on the Anom dataset (n=797). HYVE improves reasoning quality while reducing token consumption through the anomaly operator’s high-signal summarization. TABLE II ABLATION STUDY OF HYVE WITH GPT-4.1                                                                                                                                        
+
+> Variant Bar SAnom RCanvas RRB-Text GHard RTOON-QA E
+> Score ↑ Full 0.99 4.03 4.95 4.89 5.00 0.93
+> Full −rank 0.99 4.03 4.95 4.56 5.00 0.91 Full −trunc 0.73 3.83 4.93 4.56 4.10 0.87 Full +TOON 0.97 4.02 4.85 4.67 5.00 0.92 Full −post 0.06 3.41 4.94 4.78 3.93 0.38 Token ↓ Full 132.5K 8.9M 35.1M 48.4K 15.1K 153.8K Full −rank 115.1K 8.9M 37.8M 48.5K 16.2K 255.8K Full −trunc 928.7K 15.7M 118.8M 57.8K 74.7K 361.2K Full +TOON 91.7K 8.9M 28.9M 45.5K 12.8K 143.2K Full −post 132.3K 6.2M 34.2M 33.7K 14.8K 94.5K
+> Lat.(s) ↓ Full 3.11 4.38 3.00 4.53 5.43 2.33 Full −rank 2.65 4.91 4.12 2.39 8.54 2.56 Full −trunc 24.48 5.73 3.33 3.31 10.80 1.91 Full +TOON 3.94 4.76 3.03 3.27 5.39 1.86 Full −post 3.14 3.20 2.98 2.68 5.25 0.97
+> Each variant changes one component; all others remain at their defaults.
+> Full : Complete HYVE pipeline (Mode 1+2+3).
+> Full −rank : Ranking disabled; postprocessing SQL queries remain enabled; truncation keeps only the first kelements (prefix-only).
+> Full −trunc : Truncation disabled; full-length arrays passed to the LLM.
+> Full +TOON : TOON encoding [18] instead of beautified JSON.
+> Full −post : Postprocessing disabled; preprocessing, including ranking, remains enabled; output is taken directly from the LLM.
+> SSimilarity (max 1.0); EExactMatch (max 1.0); GGenericJudge, RReasoningJudge (max 5.0). Tokens in K/M.
+
+evaluate on tasks where these components have measurable impact: chart generation (Bar), anomaly detection (Anom), slot-filling (Canvas), text summarization (RB-Text), multi-hop reasoning (Hard), and range-query reasoning (TOON-QA). 
+
+a) Ranking: Disabling reference-guided ranking reduces quality on tasks that require selective attention to relevant data. Without ranking, query-relevant records are less likely to appear in the visible context, so the system must rely more heavily on SQL-based recovery when the needed evidence lies beyond the retained subset. RB-Text drops from 4.89 to 4.56 (–7%) and TOON-QA from 0.93 to 0.91 (–2%), indicating that exposing the most relevant records directly in context is slightly more robust than recovering them indirectly through additional SQL queries. Token usage changes less consistently. It decreases slightly on Bar (132.5K →115.1K) but increases on Can-vas (35.1M →37.8M), Hard (15.1K →16.2K), and especially TOON-QA (153.8K →255.8K), likely because more cases re-quire SQL-based recovery once relevant records are no longer surfaced in the prompt. 
+
+b) Truncation: Without truncation, token usage increases dramatically: Canvas rises from 35.1M to 118.8M (+239%), Bar from 132.5K to 928.7K (+601%), Hard from 15.1K to 74.7K (+395%), and Anom from 8.9M to 15.7M (+76%). La-tency increases accordingly. Disabling truncation also degrades quality on Bar (0.73 vs. 0.99) and Hard (4.10 vs. 5.00, –18%), suggesting that overly long contexts may induce context rot, causing the model to miss relevant structure. On Canvas, by contrast, the no-truncation variant nearly matches HYVE’s quality (4.93 vs. 4.95) despite substantial token increases, likely because Canvas inputs often contain relatively clear answers. These results confirm that truncation primarily serves token efficiency; the large overhead on data-intensive tasks (3–7 × increases) underscores the cost of removing it in long-context settings. 
+
+c) Encoding: Replacing beautified JSON with TOON encoding yields token savings: Canvas (-18%, 35M →29M), RB-Text (-6%, 48K →46K), and Hard (-15%, 15K →13K). However, TOON can degrade output quality. We attribute this to training-data bias: current LLMs are predominantly trained on JSON-rich corpora, such as code repositories, API responses, and configuration files. HYVE therefore uses beautified JSON by default. 
+
+d) Postprocessing: Disabling all postprocessing (Full −
+
+post, i.e., Mode 1 only) reveals the combined impact of Mode 2 and Mode 3. Chart generation degrades severely: Bar chart similarity drops from 0.99 to 0.06 (–94%), con-firming that LLMs often preserve the overall output schema while truncating data arrays mid-generation; without Mode 2’s template-based backfilling, the missing values cannot be re-covered. Tasks relying on SQL-augmented reasoning (Mode 3) also degrade substantially: Anom drops from 4.03 to 3.41 (–15%), as the anomaly-detection operator (exposed as a
+
+DETECT_ANOMALY SQL function; see Section IV-B) is no longer available. Hard drops from 5.00 to 3.93 (–21%), con-firming that multi-hop reasoning benefits from the SQL query interface. TOON-QA, which requires range-query reasoning over the datastore, falls from 0.93 to 0.38 (–59%). Because Anom triggers Mode 3 on nearly every sample, disabling postprocessing also reduces token usage from 8.9M to 6.2M (–30%) and latency from 4.38s to 3.20s (–27%), reflecting the overhead of the additional LLM call. 
+
+F. Aligning Context Engineering and Domain Adaptation 
+
+The preceding experiments pair HYVE with general-purpose LLMs. A complementary direction is to combine HYVE with domain-adaptive post-training. DNM (Deep Network Model) is a proprietary LLM devel-oped at Cisco on networking data. Even without HYVE, it outperforms frontier general-purpose models on representative networking benchmarks, with especially strong results on the CCIE (Cisco Certified Internetwork Expert) dataset (91% vs. 88% for GPT-5) [20]. This advantage is consistent with its domain-specialized training corpus. Adding HYVE on top of DNM yields further gains, espe-cially on analytics-intensive benchmarks. On Runbook, DNM + HYVE reaches 4.61, compared with 4.58 for GPT-5 + HYVE and 4.32 for GPT-4.1 + HYVE. These results sug-gest that context engineering at inference time and domain-adaptive training at training time are complementary. HYVE restructures the input representation, while post-training equips the model with priors that better exploit that representation. This alignment could be strengthened further by incorporat-ing HYVE-style intermediate representations directly into the post-training data. VI. R ELATED WORK AND LIMITATIONS 
+
+A. Related Work 
+
+We situate HYVE at the intersection of structured-data reasoning, prompt construction, and database-inspired data organization. The most relevant prior work falls into five threads. 
+
+LLMs for Structured Data Reasoning: Large language mod-els have been applied to a variety of structured-data tasks. Table question-answering systems such as TAPAS [21] and TaBERT [22] pre-train on table-text pairs to learn joint rep-resentations. Text-to-SQL benchmarks such as Spider [23] and BIRD [24] evaluate cross-domain semantic parsing, while recent prompting strategies [25] improve LLM performance on SQL generation. DATER [26] uses LLMs to decom-pose large tables and complex questions for more tractable reasoning. These works primarily study reasoning accuracy 
+
+over already structured inputs, typically tables or databases. HYVE addresses a complementary problem: how to transform raw prompt strings containing nested JSON/AST payloads into a representation that preserves completeness under token budgets, even when no pre-existing database is available. 
+
+Structured Data Serialization: The way structured data is serialized into text can strongly affect LLM performance. Sui et al. [27] systematically benchmark serialization formats such as Markdown, HTML, JSON, and CSV, showing that format choice affects both accuracy and token efficiency. TaBERT [22] linearizes tables row by row with special tokens to preserve structure. These approaches treat serialization largely as a fixed preprocessing step. By contrast, HYVE introduces a hybrid view that combines column-oriented or-ganization for analytics tasks with row-oriented sampling for retrieval tasks, enabling task-adaptive truncation rather than static formatting. Prompt Compression and Context Reduction: Several tech-niques reduce prompt length to fit within context windows. LLMLingua [28] and LongLLMLingua [29] use smaller lan-guage models to identify and prune less informative tokens, while Selective Context [30] applies entropy-based filtering to remove redundant content. These methods rely on semantic modeling to decide what to discard and therefore perform lossy compression : once content is removed, it cannot be recovered. HYVE instead adopts recoverable compression without LLM-based semantic compression, preserving a trusted visible sub-set while keeping the omitted portion accessible through the datastore for deterministic recovery when needed. 
+
+Compression-Based Agent Memory: Recent coding agents and agent runtimes, including OpenClaw [2], Claude Code [3], Codex [4], Gemini CLI [5], OpenCode [6], and the Pi project [7], manage growing interaction histories primar-ily through compaction by summarization. Older turns, tool traces, and intermediate results are compressed into shorter summaries so subsequent turns fit within the model’s context window. This approach is pragmatic and widely adopted. HYVE differs in both setting and mechanism: rather than summarizing machine-generated payloads, it reorganizes them into hybrid views and preserves omitted content in a datastore for exact recovery. 
+
+Constrained Generation and Output Repair: Ensuring well-formed structured outputs from LLMs has received signif-icant attention. Constrained decoding methods such as PI-CARD [31] enforce grammar constraints during autoregressive generation. LMQL [32] provides a query language for declara-tive prompting with type constraints, and grammar-constrained decoding [33] uses formal grammars to guide generation toward valid structured outputs. Synchromesh [34] focuses on repairing syntactic errors in generated code or JSON-like outputs. These approaches emphasize syntactic correctness 
+
+or schema conformance . HYVE addresses a different failure mode: outputs that are structurally valid yet data-incomplete 
+
+because arrays have been truncated. 
+
+Hybrid Storage in Database Systems: Column-oriented stor-age [35] organizes data by attribute rather than by record, enabling efficient analytical queries over large datasets. Hybrid transactional/analytical processing (HTAP) systems [36], [37], [38] combine row stores for transactional workloads with col-umn stores for analytical workloads, thereby avoiding costly ETL pipelines. HYVE draws inspiration from this principle of workload-adaptive data organization: its hybrid view uses a column-oriented representation for analytics-oriented tasks such as anomaly detection and statistical summarization, and a row-oriented representation for retrieval-oriented tasks such as selecting relevant entities and relationships. This parallel suggests that workload-aware data organization remains valu-able even when the execution engine is an LLM rather than a database system. 
+
+B. Limitations Short-Term vs. Long-Term Memory: HYVE is deliberately request-scoped and therefore provides only short-term mem-ory : its datastore, hybrid views, and postprocessing state exist only within a single request. By contrast, long-term memory systems such as LongMem [39], MemGPT [40], and Mem0 [41] maintain or retrieve information across longer horizons using external memory stores, controllers, or retrieval policies. These approaches are orthogonal to HYVE: HYVE focuses on faithful within-request organization, truncation, and recovery of machine data, while long-term memory focuses on persistence across sessions. A natural future direction is to combine the two. 
+
+Beyond JSON Objects: HYVE assumes that repetitive in-put structures are already represented as JSON objects or Python/AST literals. However, some system logs contain structured components embedded in free-form text. A useful extension would be to automatically convert such components into JSON so HYVE can process them more effectively. VII. C ONCLUSION 
+
+We presented HYVE (HYbrid ViEw), a framework for analytics-oriented context engineering over machine-data-heavy prompts. HYVE addresses a central mismatch between raw machine data and LLM reasoning by reorganizing nested payloads into hybrid row and column views, retaining full-fidelity data in a request-scoped datastore, and recovering omitted information through queryable data backfilling or bounded SQL-augmented reasoning. The key insight is that context reduction for machine data should be structural and recoverable , rather than semantic and lossy. HYVE preserves data fidelity while substantially reducing visible prompt size, enabling the LLM to reason over compact, high-signal representations without losing access to the complete underlying evidence. Across real-world networking workloads, HYVE reduces token usage by 50–90% while preserving or improving answer quality. HYVE shows that database-inspired organization and delayed querying provide a practical foundation for scalable LLM analytics over machine data. REFERENCES [1] “Analytics Context Engineering for LLM,” https://blogs.cisco.com/ai/ analytics-context-engineering-for-llm, 2024, february 3, 2026. [2] OpenClaw, “Openclaw,” https://openclaw.ai/, 2026, official website. Ac-cessed: 2026-03-30. [3] Anthropic, “Claude code overview,” https://docs.anthropic.com/en/docs/ claude-code/overview, 2026, official documentation. Accessed: 2026-03-30. [4] OpenAI, “OpenAI Codex CLI – Getting Started,” https://help.openai. com/en/articles/11096431, 2026, official help documentation. Accessed: 2026-03-30. [5] Google, “Gemini CLI,” https://github.com/google-gemini/gemini-cli, 2026, official repository. Accessed: 2026-03-30. [6] OpenCode, “OpenCode,” https://opencode.ai/, 2026, official website. Accessed: 2026-03-30. [7] Pi, “pi.dev,” https://buildwithpi.com/, 2026, official website for the Pi coding agent. Accessed: 2026-03-30. [8] Anthropic, “The Claude 3 model family: Opus, Sonnet, Haiku,” https://www-cdn.anthropic.com/ de8ba9b01c9ab7cbabf5c33b80b7bbc618857627/Model Card Claude 3.pdf, 2024. [9] Vercel, “Building filesystem agents,” https://vercel.com/academy/ filesystem-agents, 2025. [10] “JSONPath: Query Expressions for JSON,” https://www.rfc-editor.org/ rfc/rfc9535. [11] “OpenAI API Reference: Responses,” https://platform.openai.com/docs/ api-reference/responses, 2026, accessed: 2026-03-25. [12] “OpenAI API Reference: Chat Completions,” https://platform.openai. com/docs/api-reference/chat/create-chat-completion, 2026, accessed: 2026-03-25. [13] Anthropic, “Anthropic api: Messages examples,” https://docs.anthropic. com/en/api/messages-examples, 2026, accessed: 2026-03-25. [14] ——, “Openai sdk compatibility,” https://docs.anthropic.com/en/api/ openai-sdk, 2026, accessed: 2026-03-25. [15] H. M¨ uhleisen and M. Raasveldt, “Duckdb: An embeddable analytical database,” in Proceedings of the 2019 International Conference on Management of Data (SIGMOD ’19) . ACM, 2019. [16] S. Robertson and H. Zaragoza, “The probabilistic relevance framework: Bm25 and beyond,” Foundations and Trends in Information Retrieval ,vol. 3, no. 4, pp. 333–389, 2009. [Online]. Available: https: //doi.org/10.1561/1500000019 [17] V. Chandola, A. Banerjee, and V. Kumar, “Anomaly detection: A survey,” 
+
+ACM computing surveys (CSUR) , vol. 41, no. 3, pp. 1–58, 2009. [18] TOON Format Contributors, “TOON: Token-oriented object notation,” https://github.com/toon-format/toon, 2025, includes the TOON Retrieval Accuracy Benchmark. Accessed: 2026. [19] LangChain, Inc., “LangSmith,” https://www.langchain.com/langsmith, 2023, accessed: 2026. [20] “Cisco Deep Network Model: Purpose built intelligence for networking,” https://blogs.cisco.com/ai/cisco-deep-network-model-overview, 2026, february 5, 2026. [21] J. Herzig, P. K. Nowak, T. M¨ uller, F. Piccinno, and J. Eisenschlos, “TaPas: Weakly supervised table parsing via pre-training,” in 
+
+Proceedings of the 58th Annual Meeting of the Association for Computational Linguistics , D. Jurafsky, J. Chai, N. Schluter, and J. Tetreault, Eds. Online: Association for Computational Linguistics, Jul. 2020, pp. 4320–4333. [Online]. Available: https://aclanthology.org/ 2020.acl-main.398/ [22] P. Yin, G. Neubig, W.-t. Yih, and S. Riedel, “TaBERT: Pretraining for joint understanding of textual and tabular data,” in Proceedings of the 58th Annual Meeting of the Association for Computational Linguistics ,2020, pp. 8413–8426. [23] T. Yu, R. Zhang, K. Yang, M. Yasunaga, D. Wang, Z. Li, J. Ma, I. Li, Q. Yao, S. Roman, Z. Zhang, and D. Radev, “Spider: A large-scale human-labeled dataset for complex and cross-domain semantic parsing and text-to-SQL task,” in Proceedings of the 2018 Conference on Empirical Methods in Natural Language Processing ,E. Riloff, D. Chiang, J. Hockenmaier, and J. Tsujii, Eds. Brussels, Belgium: Association for Computational Linguistics, Oct.-Nov. 2018, pp. 3911–3921. [Online]. Available: https://aclanthology.org/D18-1425/ [24] J. Li, B. Hui, G. Qu, J. Yang, B. Li, B. Li, B. Wang, B. Qin, R. Geng, N. Huo, X. Zhou, C. Ma, G. Li, K. C. Chang, F. Huang, R. Cheng, and Y. Li, “Can llm already serve as a database interface? a big bench for large-scale database grounded text-to-sqls,” in Proceedings of the 37th International Conference on Neural Information Processing Systems , ser. NIPS ’23. Red Hook, NY, USA: Curran Associates Inc., 2023. [25] Z. Tan, X. Liu, Q. Shu, X. Li, C. Wan, D. Liu, Q. Wan, and G. Liao, “Enhancing text-to-SQL capabilities of large language models through tailored promptings,” in Proceedings of the 2024 Joint International Conference on Computational Linguistics, Language Resources and Evaluation (LREC-COLING 2024) , N. Calzolari, M.-Y. Kan, V. Hoste, A. Lenci, S. Sakti, and N. Xue, Eds. Torino, Italia: ELRA and ICCL, May 2024, pp. 6091–6109. [Online]. Available: https://aclanthology.org/2024.lrec-main.539/ [26] Y. Ye, B. Hui, M. Yang, B. Li, F. Huang, and Y. Li, “Large language models are versatile decomposers: Decomposing evidence and questions for table-based reasoning,” in Proceedings of the 46th International ACM SIGIR Conference on Research and Development in Information Retrieval , ser. SIGIR ’23. New York, NY, USA: Association for Computing Machinery, 2023, pp. 174–184. [Online]. Available: https://doi.org/10.1145/3539618.3591708 [27] Y. Sui, M. Zhou, M. Zhou, S. Han, and D. Zhang, “Table meets LLM: Can large language models understand structured table data? a benchmark and empirical study,” in Proceedings of the 17th ACM International Conference on Web Search and Data Mining , 2024, pp. 645–654. [28] H. Jiang, Q. Wu, C.-Y. Lin, Y. Yang, and L. Qiu, “LLMLingua: Com-pressing prompts for accelerated inference of large language models,” in 
+
+Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing , 2023, pp. 13 358–13 376. [29] H. Jiang, Q. Wu, X. Luo, D. Li, C.-Y. Lin, Y. Yang, and L. Qiu, “LongLLMLingua: Accelerating and enhancing LLMs in long context scenarios via prompt compression,” in Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , L.-W. Ku, A. Martins, and V. Srikumar, Eds. Bangkok, Thailand: Association for Computational Linguistics, Aug. 2024, pp. 1658–1677. [Online]. Available: https: //aclanthology.org/2024.acl-long.91/ [30] Y. Li, B. Dong, F. Guerin, and C. Lin, “Compressing context to enhance inference efficiency of large language models,” in Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing , H. Bouamor, J. Pino, and K. Bali, Eds. Singapore: Association for Computational Linguistics, Dec. 2023, pp. 6342–6353. [Online]. Available: https://aclanthology.org/2023.emnlp-main.391/ [31] T. Scholak, N. Schucher, and D. Bahdanau, “PICARD: Parsing in-crementally for constrained auto-regressive decoding from language models,” in Proceedings of the 2021 Conference on Empirical Methods in Natural Language Processing , 2021, pp. 9895–9901. [32] L. Beurer-Kellner, M. Fischer, and M. Vechev, “Prompting is program-ming: A query language for large language models,” Proceedings of the ACM on Programming Languages , vol. 7, no. PLDI, pp. 1946–1969, 2023. [33] S. Geng, M. Josifoski, M. Peyrard, and R. West, “Grammar-constrained decoding for structured NLP tasks without finetuning,” in Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing , H. Bouamor, J. Pino, and K. Bali, Eds. Singapore: Association for Computational Linguistics, Dec. 2023, pp. 10 932– 10 952. [Online]. Available: https://aclanthology.org/2023.emnlp-main. 674/ [34] G. Poesia, O. Polozov, V. Le, A. Tiwari, G. Soares, C. Meek, and S. Gulwani, “Synchromesh: Reliable code generation from pre-trained language models,” in International Conference on Learning Represen-tations , 2022. [35] M. Stonebraker, D. J. Abadi, A. Batkin, X. Chen, M. Cherniack, M. Fer-reira, E. Lau, A. Lin, S. Madden, E. O’Neil, P. O’Neil, A. Rasin, N. Tran, and S. Zdonik, “C-store: a column-oriented dbms,” in Proceedings of the 31st International Conference on Very Large Data Bases , ser. VLDB ’05. VLDB Endowment, 2005, pp. 553–564. [36] C. Zhang, G. Li, J. Zhang, X. Zhang, and J. Feng, “Htap databases: A survey,” IEEE Transactions on Knowledge and Data Engineering ,vol. 36, no. 11, pp. 6410–6429, 2024. [37] D. Huang, Q. Liu, Q. Cui, Z. Fang, X. Ma, F. Xu, L. Shen, L. Tang, Y. Zhou, M. Huang et al. , “Tidb: a raft-based htap database,” Proceed-ings of the VLDB Endowment , vol. 13, no. 12, pp. 3072–3084, 2020. [38] J. Yang, I. Rae, J. Xu, J. Shute, Z. Yuan, K. Lau, Q. Zeng, X. Zhao, J. Ma, Z. Chen et al. , “F1 lightning: Htap as a service,” Proceedings of the VLDB Endowment , vol. 13, no. 12, pp. 3313–3325, 2020. [39] W. Wang, L. Dong, H. Cheng, X. Liu, X. Yan, J. Gao, and F. Wei, “Augmenting language models with long-term memory,” arXiv preprint arXiv:2306.07174 , 2023. [40] C. Packer, V. Fang, S. G. Patil, K. Lin, S. Wooders, and J. E. Gonzalez, “Memgpt: Towards llms as operating systems,” arXiv preprint arXiv:2310.08560 , 2023. [41] P. Chhikara, D. Khant, S. Aryan, T. Singh, and D. Yadav, “Mem0: Building production-ready ai agents with scalable long-term memory,” 
+
+arXiv preprint arXiv:2504.19413 , 2025. 
+
+This appendix is organized into three parts. We first present representative benchmark examples to ground the tasks sum-marized in the main body, then list the evaluation prompts used in our experiments, and finally provide additional imple-mentation details on SQL prompt generation together with the execution logic of Modes 2 and 3. Unless otherwise noted, all snippets are shortened excerpts for presentation. APPENDIX AREPRESENTATIVE DATASET EXAMPLES 
+
+A. Cert-QA Dataset 
+
+This appendix provides representative examples from each certification level in the Cert-QA dataset. 
+
+1) CCNA-Level Example (Entry): Question: What com-mand is used on a Windows PC to display IP-to-MAC address mappings? 
+
+Answer: arp -a 
+
+2) CCNP-Level Example (Advanced): Question: What is Generic Routing Encapsulation (GRE), and what was its original purpose? 
+
+Answer: GRE is a tunneling protocol that encapsulates packets over an IP-based network. It was originally created to provide transport for non-routable legacy protocols (like IPX) across an IP network. 
+
+3) CCIE-Level Example (Expert, Open-Ended): Question: 
+
+Cisco Jabber clients need to be able to reach several different applications to provide access to services such as voicemail, meetings, directories, and other functions. Which profile must be configured to provide these services? 
+
+Answer: Service profile 
+
+4) CCIE-Level Example (Expert, Multiple-Choice): Ques-tion: What is the deployment model of the Cisco Secure Network Analytics Cognitive Analytics system? (a) as a plug-in in the Cisco Secure Network Analytics Management Console (b) in the public cloud (SaaS) (c) on-premise as a dedicated appliance (d) on-premise as a virtual machine 
+
+Answer: (b) in the public cloud (SaaS) 
+
+Explanation: Cisco Secure Network Analytics Cognitive Analysis is offered as a Software as a Service product. The service is deployed in the Cisco cloud and other deployment options are not possible. 
+
+5) Expert-Tiered Example (Advanced Topics): Question: 
+
+In BGP implementations, what attribute is used to influence inbound traffic from neighbouring ASes? 
+
+Answer: AS-PATH prepending. 
+
+B. Runbook Dataset 
+
+This appendix provides a representative example from the Runbook dataset. 
+
+1) StackWise Upgrade Troubleshooting: Problem Descrip-tion: 
+
+1) Install mode in stackwise standard upgrade procedure. 2) Install mode in stackwise, if one machine (non-active switch) prompts v-mismatch. How to correctly upgrade this device? 3) If using a 4-switch stack, but these 4 switches have different versions, can all switches be upgraded directly to the specified version through the active switch? 
+
+Ground-Truth Runbook (excerpt): StackWise Upgrade Troubleshooting 
+
+Summary: This playbook outlines the troubleshoot-ing steps for upgrading a Catalyst 9300 series switch stack. The focus is on addressing potential issues encountered during the upgrade process, such as ver-sion mismatches and ensuring successful upgrades across all stack members. 
+
+1. Initial Assessment:  
+
+> •
+
+Access the Active Switch CLI: Establish con-nectivity to the active switch within the stack. Use Telnet or SSH to access the CLI.  
+
+> •
+
+Verify Stack Status: Execute show stack status to confirm the operational state of the stack.  
+
+> •
+
+Check Software Versions: Run show version on the active switch to identify the current software version. 
+
+2. Version Mismatch Resolution:  
+
+> •
+
+If a non-active switch shows v-mismatch, use install add file <image> activate commit from the active switch.  
+
+> •
+
+The active switch will propagate the image to mismatched members automatically. 
+
+3. Multi-Version Stack Upgrade:  
+
+> •
+
+Yes, all switches can be upgraded from the active switch using install mode.  
+
+> •
+
+Execute install add file flash:<image> activate commit 
+
+to upgrade all stack members simultaneously. 
+
+C. Line Chart Dataset 
+
+This appendix provides a representative example from the Line chart dataset. 
+
+1) Line Chart Example: Input Data (excerpt):                 
+
+> [{"endTs": "2025-06-14T22:32:00Z", "jitter": 0.23, "goodput": 100000, "startTs": "2025-06-14T22:31:00Z", "latencyMs": 9.07, "lossPercent": 0}, {"endTs": "2025-06-14T22:34:00Z", "jitter": 0.11, "goodput": 100000, "startTs": "2025-06-14T22:33:00Z", "latencyMs": 9.02, "lossPercent": 0}, ... ]
+
+Expected Output (excerpt):                          
+
+> {"data": {"name": "CDSAILineChart", "props": {"id": "meraki-loss-latency-chart", "axes": {"xAxis": {"type": "time"}, "yAxis": {"format": {}}}, "data": [{"id": "loss", "data": [{"x": "2025-06-14T22:31:00Z", "y": 0}, {"x": "2025-06-14T22:33:00Z", "y": 0}, ...]}, {"id": "latency", "data": [{"x": "2025-06-14T22:31:00Z", "y": 9.07}, ...]} ]}}}
+
+D. Bar Chart Dataset 
+
+This appendix provides a representative example from the Bar chart dataset. 
+
+1) Bar Chart Example: Input Data (excerpt): 
+
+[{"peer": 59, "expansionism": "sediment"}, {"peer": 98, "expansionism": "nonsense"}, {"peer": 81, "expansionism": "cloud"}, ... ]
+
+Expected Output (excerpt): 
+
+{"data": {"props": {"data": [{"stacks": [{"key": "peer", "value": 59}], "category": "sediment"}, {"stacks": [{"key": "peer", "value": 98}], "category": "nonsense"}, {"stacks": [{"key": "peer", "value": 81}], "category": "cloud"}, ... ]}}} 
+
+E. Anomaly Detection Dataset 
+
+This appendix provides a representative example from the Anom dataset. 
+
+1) Network Path Latency Analysis: Task Instruction: 
+
+Use the Network path data to identify IF there are any specific high latency nodes. Provide a summary to the user of impacted nodes. 
+
+Input Data (excerpt): 
+
+{"test": {"testId": "281208", "testName": "Synthetic Network Test", "type": "network"}, "pathVis": [{ "agent": {"agentName": "agent-89", "countryId": "JP"}, "server": "service26.example.com:443", "pathTraces": [{ "hops": [{"hop": 1, "ipAddress": "180.137.137.113", "hostname": "srv-34.fernandez.com", "responseTime": 2}, {"hop": 2, "ipAddress": "132.239.231.168", "hostname": "lt-24.davies.com", "responseTime": 2}, ... ]}]}]} 
+
+Expected Output: 
+
+{"Reasoning": ["Each path trace contains hops with response times.", "Any node with responseTime > 10ms is high latency.", "Iterate through each path trace and check hops.", "No node has responseTime exceeding 10ms threshold.", "Based on the data, there are no high latency nodes." ], "variables": {"Summary of high latency nodes": "No nodes with high latency were detected." }} 
+
+F. Summarization Dataset 
+
+This appendix provides a representative example from the Sum dataset. 
+
+1) Board Report Generation: Task Instruction: 
+
+Given a JSON object that contains the current con-text of the ‘board’, generate a holistic report that derives key data points, insights, timelines, incident details, resolutions, or root cause analysis. Organize your response with clearly defined sections and a table of contents. 
+
+Input Data (excerpt): 
+
+{"board": {"name": "AIC 10 - Sep 27, 2025 5:42 PM", "metadata": {}, "canvas": {"id": "canvas-12345", ...}, "cards": [...], "conversations": [...] }} 
+
+Expected Output (excerpt): 
+
+# Report on Board "AIC 10 - Sep 27, 2025" ## Table of Contents 1. [Introduction](#introduction) 2. [Board Overview](#board-overview) 3. [Canvas Details](#canvas-details) 4. [Cards Analysis](#cards-analysis) 5. [Conversations Historical Context] 6. [Conclusion](#conclusion) ## Introduction This report presents an analysis of the board titled "AIC 10 - Sep 27, 2025 5:42 PM," providing insights into its components... ## Board Overview - **Name**: AIC 10 - Sep 27, 2025 5:42 PM - **Description**: The board is identified by its timestamp, suggesting it may be part of a series or larger project... 
+
+G. Canvas Dataset 
+
+This appendix provides a representative example from the Canvas slot-filling dataset. 
+
+1) Runbook Step: Network Identification: Task Context: 
+
+You are an expert in networking with a CCIE certification. You are helping with running a net-work troubleshooting run-book. Steps involve data gathering, analyzing the data and setting variables, running commands against the network, and making decisions based on the data. 
+
+Input Data (excerpt): 
+
+{"context": {"board": {"board_id": {"id": "cf53d6d9-ef2a-..."}, "name": {"name": "Paul Gomez - Aug 15, 2025"}, "metadata": {...}, "canvas": {...}, "cards": [...], "conversations": [...] }}, "runbook_step": "Get the list of all networks in the org. Find the network that best matches ’Seattle’ location and return the networkId and network name." }
+
+Expected Output: 
+
+{"core_skill_input": {"orgId": "928177", "query": "Get the list of all the networks in the org. Find the network that best matches ’Seattle’ location and return the networkId and network name.", "baseUrl": "https://dashboard.meraki.com/api/v1", "networkId": "L_4729533", "organizationId": "928177" }} H. RB-Text Dataset 
+
+This appendix provides a representative example from the RB-Text API response summarization dataset. 
+
+1) ThousandEyes Analysis Summary: Task Context: 
+
+You are an expert in networking with a CCIE certification. You are helping with running a network troubleshooting run-book. Please summarize the fol-lowing response that was obtained calling an API and output it in a markdown format. 
+
+API Response (excerpt):                                  
+
+> {"status": "success", "message": "The analysis cannot be completed due to invalid start or end timestamps. This typically occurs when the specified time range is not available in the test data or the timestamps are outside the valid data retention period..."}
+
+Expected Output:                                                        
+
+> **ThousandEyes Analysis Summary** -Analysis could not be completed due to invalid start or end timestamps. - The specified time range is either unavailable in test data or outside the data retention period. - To resolve: -Use the "Explain Selection" button in the ThousandEyes UI for valid timestamps. -Ensure test ID 7802744 has data for the selected period. -Verify timestamps are within your account’s data retention period.
+
+I. RB-JSON Dataset 
+
+This appendix provides a representative example from the RB-JSON conditional expression evaluation dataset. 
+
+1) Variable Existence Check: Task Context: 
+
+You are an expert in networking with a CCIE certification. We are executing a flow chart that corresponds to a run-book used for network trou-bleshooting. We need to figure out the truth value of the expression in the reasoning instruction to execute the flow chart. 
+
+Reasoning Instruction:        
+
+> If "Location" is set, go to step 3.
+
+Context Variables:      
+
+> {"Application": "video server", "Location": "San Francisco, CA", "StartTime": "2025-11-10T00:00:00Z"}
+
+Expected Output:                                  
+
+> {"Reasoning": ["The variable ’Location’ is present in the provided data.", "The value of ’Location’ is ’San Francisco, CA’, which means it is set (not null or empty).", "Therefore, the condition ’Location is set’ is true." ], "expression": "Location is set", "truth_value_of_expression": true}
+
+J. TOON-QA Dataset 
+
+This appendix provides representative examples from the TOON-QA dataset [18]. Questions span field retrieval, ag-gregation, and multi-condition filtering over structured JSON payloads. 
+
+1) Order Filtering and Counting: Input Data (excerpt):                          
+
+> {"orders": [{"orderId": "ORD-0001", "customer": {"id": 1, "name": "Valerie Braun", "email": "name.jones@gmail.com"}, "items": [{"sku": "SKU-OOH73G", "name": "Widget A", "quantity": 2, "price": 29.99}, {"sku": "SKU-PLM12X", "name": "Gadget B", "quantity": 1, "price": 49.99}, ... ], "status": "processing", "total": 109.97}, ... ]}
+
+Question: 
+
+How many orders have status “processing” and at least 3 items? Provide only the direct answer, without any additional explanation or formatting. 
+
+Expected Answer: 5
+
+2) Employee Aggregation: Question: 
+
+How many active employees have more than 5years of experience? Provide only the direct answer, without any additional explanation or formatting. 
+
+Expected Answer: 63 
+
+3) Time-Series Lookup: Question: 
+
+What was the revenue on 2025-01-04? Provide only the direct answer, without any additional explanation or formatting. 
+
+Expected Answer: 8357.79 
+
+K. Hard Reasoning Dataset 
+
+This appendix provides a representative example from the Hard multi-hop reasoning dataset. 
+
+1) Multi-Hop Test Discovery: Query: 
+
+Find a ThousandEyes DNS test (type: dns-server) that is related to the Application (SharePoint) and is run from an agent in the Location (San Francisco). 
+
+Input Data (excerpt):                                      
+
+> {"tests": [{"testId": 264343, "testName": "A -SharePoint -DNS -Internal", "type": "dns-server", "target": "cisco.sharepoint.com", "agents": [{"agentName": "pdx-linux-ea", "location": "Portland "}, {"agentName": "stg-teva", "location": "San Jose"}, {"agentName": "newark-agent", "location": "Newark, NJ "} ]}, {"testId": 264347, "testName": "A -SharePoint -DNS -External", "type": "dns-server", "target": "cisco.sharepoint.com", "agents": [{"agentName": "phoenix-agent", "location": "Phoenix, AZ"}, {"agentName": "sf-agent", "location": "San Francisco, CA"}
+
+]}, ... ]} 
+
+Expected Output (excerpt): 
+
+{"Reasoning": ["The instruction is to find a ThousandEyes DNS test (type: dns-server) related to SharePoint running from an agent in San Francisco.", "I found tests with ’SharePoint’ in the name: ’A - SharePoint - DNS - Internal’ (264343), ’A - SharePoint - DNS - External’ (264347).", "’A - SharePoint - DNS - Internal’ has agents in Portland, San Jose, Newark - none in SF.", "’A - SharePoint - DNS - External’ has agents in Phoenix and San Francisco. This matches!", "The matching test is testId 264347." ], "Answer": {"testId": "264347", "testName": "A - SharePoint - DNS - External" }} 
+
+APPENDIX BEVALUATION PROMPTS 
+
+This appendix provides the complete prompts used by our LLM-as-a-judge evaluators. 
+
+A. GenericJudge Prompt 
+
+The following prompt is used by the GenericJudge evaluator (GPT-4o) for open-ended quality assessment: 
+
+You are an evaluator tasked with comparing a Ground Truth Answer, which represents the correct solution, to a Generated Answer, which is the system’s response to a given input question. Follow these steps to conduct your evaluation: 1. **Read Carefully** Review the Question, Ground Truth Answer, and Generated Answer thoroughly. 2. **Assign a Score (1-5)** Evaluate the Generated Answer against the Ground Truth Answer using the following rubric: * **5 - Excellent**: Fully correct, complete, and clearly articulated. Matches the Ground Truth in factual content and intent with no significant errors or omissions. * **4 - Good**: Mostly correct and covers most key points. Minor inaccuracies or omissions that don’t significantly affect overall quality. * **3 - Fair**: Partially correct. Captures some key elements but misses others. May include inaccuracies or lack clarity. * **2 - Poor**: Largely incorrect or incomplete. Contains major errors, omissions, or misinterpretations. * **1 - Inadequate**: Completely incorrect, irrelevant, or nonsensical. Shows no meaningful understanding of the query. 3. **Output Final JSON** Return a valid JSON object with exactly two keys: * "score": an integer from 1 to 5* "justification": a brief explanation for the score Here are the inputs for you to conduct your evaluation: Question: [BEGIN QUESTION] {question} [END QUESTION] Ground Truth Answer: [BEGIN GROUND TRUTH ANSWER] {ground_truth} [END GROUND TRUTH ANSWER] Generated Answer: [BEGIN GENERATED ANSWER] {response} [END GENERATED ANSWER] 
+
+B. ReasoningJudge Prompt 
+
+The following prompt is used by the ReasoningJudge eval-uator (GPT-4.1) for structured JSON output assessment: 
+
+You are an evaluator tasked with assessing a System Under Test (SUT) JSON output against a Ground Truth JSON and a provided JSON Schema. Base your judgment strictly on the Ground Truth and Schema --do not use outside knowledge. Follow these steps: 1. **Parse and Validate JSON** * Extract JSON from the SUT Output (strip code fences if present). * If parsing fails, assign a score of 1. * If parsing succeeds, validate against the Schema. 2. **Compare to Ground Truth** * Ignore extra fields not in the Ground Truth. * For each Ground Truth field, check: * Field exists in the SUT. * Type matches. * Value matches, using these rules: - Strings: exact match after trimming whitespace. - Numbers/booleans: exact equality. - Arrays (structured data): same length, element-wise equality, same order. - Arrays (reasoning): allow grouping/splitting with semantic matching; penalize missing or contradictory points. - Objects: compare recursively. * For free-text fields: paraphrasing is acceptable only if all factual points are preserved and no contradictions are introduced. 3. **Assign a Score (1-5)** * **5 - Excellent**: Valid JSON; schema-valid; all fields match (or only negligible paraphrasing). * **4 - Good**: Valid JSON; schema-valid; most fields correct with minor omissions; no contradictions. * **3 - Fair**: Valid JSON; schema-valid; some fields correct, but notable errors or omissions. * **2 - Poor**: Valid JSON but major mismatches, schema invalid, or reasoning contradicts Ground Truth. * **1 - Inadequate**: Not valid JSON, or completely inconsistent. Note: Schema invalidation caps the score at 2 maximum. 4. **Output Final JSON** * "score": integer 1-5. * "justification": brief explanation citing specific issues. Here are the inputs for you to evaluate: Ground Truth JSON: [BEGIN GROUND TRUTH] {ground_truth} [END GROUND TRUTH] SUT Output (to be parsed and validated): [BEGIN SUT OUTPUT] {sut_output} [END SUT OUTPUT] JSON Schema to validate the SUT Output against: [BEGIN SCHEMA] {json_schema} [END SCHEMA] 
+
+APPENDIX CADDITIONAL IMPLEMENTATION DETAILS 
+
+A. SQL Prompt Auto-gen 
+
+HYVE generates SQL tool prompts directly from the request-scoped datastore rather than from hand-written tem-plates. This design keeps the prompt aligned with the actual 
+
+tables created during preprocessing and avoids inconsistent schema descriptions. At a high level, prompt generation has two goals: to expose the live relational structure that is avail-able for querying, and to provide task-appropriate guidance for the next tool-enabled LLM step. For the primary LLM call, HYVE appends a unified prompt that exposes the two high-level entry points available at that stage: GenTemplateAndBackfill , which enters Mode 2 template backfill, and QueryDatastore , which executes Mode 3 evidence-query reasoning. The prompt in-cludes a schema description derived from the live datastore together with guidance and examples grounded in the ta-bles, columns, and relations available in the current request. However, the two branches are not disclosed symmetrically. For QueryDatastore , the primary-call prompt already provides the full tool specification and the SQL-oriented guidance needed for the model to issue evidence queries immediately. By contrast, GenTemplateAndBackfill is exposed in the primary call only as an entry-point decision, not with its full backfill instructions. This asymmetry follows the gradual-disclosure design described earlier: detailed prompt instructions are revealed only when they are needed. If the primary call selects GenTemplateAndBackfill ,HYVE generates a second prompt specialized to Mode 2. This follow-up prompt introduces the BackfillData tool contract and provides the detailed instructions and auto-generated examples needed to map queried values back into the model-generated template in a schema-consistent way. If the primary call instead selects QueryDatastore , HYVE enters Mode 3. In this branch, no new SQL prompt is generated, because the full QueryDatastore specification and SQL guidance were already provided in the primary-call prompt. Instead, HYVE executes the SQL tool call, appends the returned evidence to the prior conversation context, and issues the bounded follow-up LLM call for final synthesis described in Section C-C. Because every prompt is synthesized from the same live schema, both the tool instructions and the few-shot examples 
+
+Algorithm 3 Request-Specific SQL Prompt Generation  
+
+> 1:
+
+Input: Datastore D, base message m, prompt stage σ ∈{primary-call , mode2 , mode3 } 
+
+> 2:
+
+Output: Tool prompt or follow-up context π 
+
+> 3:
+
+Extract the live schema and relational structure from D 
+
+> 4:
+
+Build a request-specific schema description for the current tables and relations  
+
+> 5:
+
+if σ = primary-call then  
+
+> 6:
+
+Expose GenTemplateAndBackfill as the Mode 2 entry-point choice  
+
+> 7:
+
+Specify the full QueryDatastore contract for Mode 3 evidence-query reasoning  
+
+> 8:
+
+Add guidance and examples for evidence-oriented SQL generation  
+
+> 9:
+
+else if σ = mode2 then  
+
+> 10:
+
+Specify the BackfillData tool contract  
+
+> 11:
+
+Add detailed guidance and examples for schema-consistent template backfilling  
+
+> 12:
+
+else  
+
+> 13:
+
+Execute the QueryDatastore SQL tool call  
+
+> 14:
+
+Append the returned evidence to the prior message context  
+
+> 15:
+
+Prepare the bounded follow-up LLM call for final synthesis  
+
+> 16:
+
+end if  
+
+> 17:
+
+Assemble the resulting prompt or follow-up context π 
+
+> 18:
+
+return π
+
+are grounded in the actual tables, columns, and relations available for the current request, rather than in generic place-holders. The prompt is therefore both schema-grounded and 
+
+branch-aware : the primary-call prompt fully supports Mode 3 evidence-query reasoning while exposing only the Mode 2 entry point, the Mode 2 follow-up prompt is disclosed only after template backfill has been selected, and the Mode 3 follow-up stage reuses the SQL guidance already provided in the primary call by appending queried evidence for final synthesis. Together, these features help HYVE guide the LLM toward richer and more accurate SQL tool calls. 
+
+B. Mode 2: BackfillData Execution 
+
+The postprocessor inspects the primary LLM output and, when the request enters Mode 2, executes the deterministic 
+
+BackfillData path. In this mode, the LLM generates both a partially visible answer template and the SQL-based backfill specification, including the query and its column-to-template mappings. The postprocessor then executes that specification against the datastore and restores the hidden values while preserving the template structure produced by the model. The task-specific prompt is synthesized from the actual datastore schema and teaches the model how SQL results should be mapped back into the partially visible template. If the datastore contains a multi-series table with a
+
+series_idx column and attached series labels, the prompt may include an example such as: {"tool_name": "BackfillData", "query": "SELECT x, y, series_idx FROM data ORDER BY series_idx, _row_id", "mappings": [{"sql_column": "x", "template_path": "path.to.list.(series_idx).data.(N).x" }, {"sql_column": "y", "template_path": "path.to.list.(series_idx).data.(N).y" }]}
+
+This means: execute the SQL query on the full datastore, group the returned rows by series_idx , navigate to the corresponding series object in the template, and rebuild its 
+
+data array from the SQL values. Here (series_idx) is not a literal field name in the output; it is a placeholder that the executor replaces with concrete group indices such as (0) ,
+
+(1) , and (2) . The token (N) denotes the list dimension that should be cleared and rebuilt in the order of the SQL result. This positional convention is necessary because, once the SQL query filters or reorders the original rows, the original 
+
+_row_id values no longer determine the correct positions in the partially visible template. Instead, backfilling must rely on the ordered result sequence itself to reconstruct the list faithfully. Because the rebuilt list items are cloned from the visible template items, the final result preserves the LLM-generated nested schema while replacing only the truncated arrays with full-fidelity datastore values. Line 4 detects whether the SQL result contains a grouping field, such as series_idx , that distinguishes multiple re-peated substructures. The algorithm then follows three cases: grouped backfill, flat backfill, or a fallback when grouping is ambiguous or unsupported. 
+
+C. Mode 3: Bounded LLM Invocations 
+
+HYVE provides an explicit architectural bound on model in-vocations. After the primary LLM call selects a postprocessing branch, Mode 3 performs, by default, at most one additional LLM call: the system executes the QueryDatastore tool call, appends the returned SQL evidence to a slim context, and asks the model for a final grounded synthesis. Consequently, HYVE uses at most two LLM calls per request by default: one primary call and, only when necessary, one follow-up call. This keeps latency predictable and is easier to operationalize than open-ended agentic loops, which may issue an unbounded number of tool calls. As an optional optimization, HYVE also allows a small con-figurable number of additional repair calls for SQL generation. For example, when a generated query fails due to an execution error or incomplete evidence, the system can supply the error message or missing-context hints and request a revised SQL query. This mechanism remains bounded and is used only to improve query quality under controlled retry limits. 
+
+Algorithm 4 Multi-Series BackfillData Execution  
+
+> 1:
+
+Input: Template JSON τ , SQL query q, mappings M 
+
+> 2:
+
+Output: Backfilled output τ 
+
+> 3:
+
+R ← EXECUTE SQL (q) 
+
+> 4:
+
+g ← DETECT GROUP COLUMN (M, COLUMNS (R))  
+
+> 5:
+
+if g = UNSUPPORTED then  
+
+> 6:
+
+return τ 
+
+> 7:
+
+else if g̸ = ∅ then  
+
+> 8:
+
+for each distinct group value u in R[g] do  
+
+> 9:
+
+Ru ← ROWS WHERE (R, g = u) 
+
+> 10:
+
+for each mapping (c, p ) ∈ M do  
+
+> 11:
+
+pu ← REPLACE (p, (g), (u))  
+
+> 12:
+
+pu ← VALIDATE AND CORRECT PATH (τ, p u) 
+
+> 13:
+
+V ← Ru[c] in SQL order  
+
+> 14:
+
+for each expanded path ˆp in EXPAND NESTED N(τ, p u, |V |) do  
+
+> 15:
+
+BACKFILL PATH WITH SCHEMA (τ, ˆp, V ) 
+
+> 16:
+
+end for  
+
+> 17:
+
+end for  
+
+> 18:
+
+end for  
+
+> 19:
+
+else  
+
+> 20:
+
+for each mapping (c, p ) ∈ M do  
+
+> 21:
+
+p ← VALIDATE AND CORRECT PATH (τ, p ) 
+
+> 22:
+
+V ← R[c] in SQL order  
+
+> 23:
+
+for each expanded path ˆp in EXPAND NESTED N(τ, p, |V |) do  
+
+> 24:
+
+BACKFILL PATH WITH SCHEMA (τ, ˆp, V ) 
+
+> 25:
+
+end for  
+
+> 26:
+
+end for  
+
+> 27:
+
+end if  
+
+> 28:
+
+return τ
