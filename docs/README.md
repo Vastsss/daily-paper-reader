@@ -6,91 +6,91 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-04-13
-- 运行时间：2026-04-13 20:07:50 UTC
+- 最新运行日期：2026-04-14
+- 运行时间：2026-04-14 20:03:31 UTC
 - 运行状态：成功
 - 本次总论文数：23
 - 精读区：9
 - 速读区：14
 
 ### 今日简报（AI）
-今日精研 23 篇前沿成果，重点突破量子时间序列分析与大模型专家剪枝效率。
-推荐关注 QARIMA 开启的量子预测新范式，以及通过模型合并优化 LLM 性能的 REAM 框架。
-建议普通读者留意 AI 在精准气象预报与低碳能源交易中的实战化趋势。
-- 详情：[/202604/13/README](/202604/13/README)
+今日精选 23 篇论文，重点突破时间序列推理基准的自动化构建与小波增强 MoE 预测架构。
+核心亮点在于 TimeSeriesExamAgent 实现的大规模推理评测，以及 WaveMoE 在复杂时序预测中的精度飞跃。
+建议关注时序模型向“逻辑推理”转型的趋势，并尝试将多尺度分析融入混合专家网络以优化预测性能。
+- 详情：[/202604/14/README](/202604/14/README)
 
 ### 精读区论文标签
-1. [QARIMA: A Quantum Approach To Classical Time Series Analysis](/202604/13/2604.08277v2-qarima-a-quantum-approach-to-classical-time-series-analysis)  
-   标签：评分：9.0/10、query:llm-ts
-   evidence：用于经典时间序列分析的量子启发方法
-2. [REAM: Merging Improves Pruning of Experts in LLMs](/202604/13/2604.04356v1-ream-merging-improves-pruning-of-experts-in-llms)  
+1. [TimeSeriesExamAgent: Creating Time Series Reasoning Benchmarks at Scale](/202604/14/2604.10291v1-timeseriesexamagent-creating-time-series-reasoning-benchmarks-at-scale)  
+   标签：评分：10.0/10、query:llm-ts
+   evidence：LLM在时间序列建模与推理中的表现
+2. [WaveMoE: A Wavelet-Enhanced Mixture-of-Experts Foundation Model for Time Series Forecasting](/202604/14/2604.10544v1-wavemoe-a-wavelet-enhanced-mixture-of-experts-foundation-model-for-time-series-forecasting)  
+   标签：评分：10.0/10、query:ts-fm
+   evidence：用于时间序列预测的小波增强混合专家基础模型
+3. [TempusBench: An Evaluation Framework for Time-Series Forecasting](/202604/14/2604.11529v1-tempusbench-an-evaluation-framework-for-time-series-forecasting)  
+   标签：评分：10.0/10、query:ts-fm
+   evidence：时序基础模型（TSFM）的评估框架
+4. [Agentic Workflows for Resolving Conflict Over Shared Resources: A Power Grid Application](/202604/14/2604.09823v1-agentic-workflows-for-resolving-conflict-over-shared-resources-a-power-grid-application)  
+   标签：评分：9.0/10、query:llm
+   evidence：基于大语言模型智能体的电网决策应用
+5. [Agentic Application in Power Grid Static Analysis: Automatic Code Generation and Error Correction](/202604/14/2604.09995v1-agentic-application-in-power-grid-static-analysis-automatic-code-generation-and-error-correction)  
+   标签：评分：9.0/10、query:llm
+   evidence：用于电网静态分析和代码生成的LLM智能体
+6. [PFAgent: A Tractable and Self-Evolving Power-Flow Agent for Interactive Grid Analysis](/202604/14/2604.10846v1-pfagent-a-tractable-and-self-evolving-power-flow-agent-for-interactive-grid-analysis)  
+   标签：评分：9.0/10、query:llm
+   evidence：基于LLM的电力系统分析决策支持
+7. [MAFIG: Multi-agent Driven Formal Instruction Generation Framework](/202604/14/2604.10989v1-mafig-multi-agent-driven-formal-instruction-generation-framework)  
+   标签：评分：9.0/10、query:llm
+   evidence：大语言模型用于复杂调度任务和电力系统指令生成
+8. [Conformal Prediction with Time-Series Data via Sequential Conformalized Density Regions](/202604/14/2604.07325v1-conformal-prediction-with-time-series-data-via-sequential-conformalized-density-regions)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：改进混合专家大语言模型中的专家剪枝与合并
-3. [To Defer or To Shift? The Role of AI Data Center Flexibility on Grid Interconnection](/202604/13/2604.05376v1-to-defer-or-to-shift-the-role-of-ai-data-center-flexibility-on-grid-interconnection)  
-   标签：评分：8.0/10、query:llm
-   evidence：AI数据中心并入电网
-4. [Time-Series Classification with Multivariate Statistical Dependence Features](/202604/13/2604.06537v1-time-series-classification-with-multivariate-statistical-dependence-features)  
+   evidence：具有覆盖保证的时间序列数据符合性预测方法
+9. [QARIMA: A Quantum Approach To Classical Time Series Analysis](/202604/14/2604.08277v1-qarima-a-quantum-approach-to-classical-time-series-analysis)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：非平稳时间序列分析与分类
-5. [TSO-DSO Coordinated Reactive Power Dispatch for Smart Inverters with Multiple Control Modes Real-Time Implementation](/202604/13/2604.07064v1-tso-dso-coordinated-reactive-power-dispatch-for-smart-inverters-with-multiple-control-modes-real-time-implementation)  
-   标签：评分：8.0/10、query:llm
-   evidence：智能逆变器的协调无功调度
-6. [PRAGMA: Revolut Foundation Model](/202604/13/2604.08649v1-pragma-revolut-foundation-model)  
-   标签：评分：8.0/10、query:ts-fm
-   evidence：银行事件序列的基础模型
-7. [Adversarial Sensor Errors for Safe and Robust Wind Turbine Fleet Control](/202604/13/2604.08750v1-adversarial-sensor-errors-for-safe-and-robust-wind-turbine-fleet-control)  
-   标签：评分：8.0/10、query:llm-wd
-   evidence：风机集群控制与风电场效率
-8. [PilotBench: A Benchmark for General Aviation Agents with Safety Constraints](/202604/13/2604.08987v1-pilotbench-a-benchmark-for-general-aviation-agents-with-safety-constraints)  
-   标签：评分：8.0/10、query:llm-ts
-   evidence：基于遥测时间序列的 LLM 飞行轨迹与姿态预测基准
-9. [Multimodal Large Language Model Enabled Robust Beamforming for HAP Downlink Communications](/202604/13/2604.09017v1-multimodal-large-language-model-enabled-robust-beamforming-for-hap-downlink-communications)  
-   标签：评分：8.0/10、query:llm-ts
-   evidence：多模态大语言模型从多元遥测数据中学习以预测短期姿态
+   evidence：用于经典时间序列分析的量子启发式ARIMA方法
 
 ### 速读区论文标签
-1. [Multi-agent Reinforcement Learning for Low-Carbon P2P Energy Trading among Self-Interested Microgrids](/202604/13/2604.08973v1-multi-agent-reinforcement-learning-for-low-carbon-p2p-energy-trading-among-self-interested-microgrids)  
-   标签：评分：8.0/10、query:llm
-   evidence：用于可再生能源发电和能源交易的多智能体强化学习
-2. [U-Cast: A Surprisingly Simple and Efficient Frontier Probabilistic AI Weather Forecaster](/202604/13/2604.09041v1-u-cast-a-surprisingly-simple-and-efficient-frontier-probabilistic-ai-weather-forecaster)  
+1. [Controller Design for Structured State-space Models via Contraction Theory](/202604/14/2604.07069v1-controller-design-for-structured-state-space-models-via-contraction-theory)  
+   标签：评分：8.0/10、query:ts-fm
+   evidence：结构化状态空间模型用于时间序列建模
+2. [STIndex: A Context-Aware Multi-Dimensional Spatiotemporal Information Extraction System](/202604/14/2604.08597v1-stindex-a-context-aware-multi-dimensional-spatiotemporal-information-extraction-system)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：使用微调的概率AI天气预报员
-3. [Temporal Patch Shuffle (TPS): Leveraging Patch-Level Shuffling to Boost Generalization and Robustness in Time Series Forecasting](/202604/13/2604.09067v1-temporal-patch-shuffle-tps-leveraging-patch-level-shuffling-to-boost-generalization-and-robustness-in-time-series-forecasting)  
+   evidence：大语言模型用于时空信息提取与接地
+3. [A Diffusion-Contrastive Graph Neural Network with Virtual Nodes for Wind Nowcasting in Unobserved Regions](/202604/14/2604.10328v1-a-diffusion-contrastive-graph-neural-network-with-virtual-nodes-for-wind-nowcasting-in-unobserved-regions)  
+   标签：评分：8.0/10、query:llm-wd
+   evidence：用于风力临近预报和能源安全的图神经网络
+4. [Sheaf Diffusion with Adaptive Local Structure for Spatio-Temporal Forecasting](/202604/14/2604.11275v1-sheaf-diffusion-with-adaptive-local-structure-for-spatio-temporal-forecasting)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：时间序列预测的数据增强
-4. [CCA Reimagined: An Exploratory Study of Large Language Models for Congestion Control](/202604/13/2604.03857v1-cca-reimagined-an-exploratory-study-of-large-language-models-for-congestion-control)  
+   evidence：使用层扩散图神经网络进行时空预测
+5. [Time is Not a Label: Continuous Phase Rotation for Temporal Knowledge Graphs and Agentic Memory](/202604/14/2604.11544v1-time-is-not-a-label-continuous-phase-rotation-for-temporal-knowledge-graphs-and-agentic-memory)  
+   标签：评分：8.0/10、query:llm-ts
+   evidence：用于LLM记忆的时间知识图谱模块
+6. [Improving Sparse Memory Finetuning](/202604/14/2604.05248v1-improving-sparse-memory-finetuning)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：大语言模型驱动的拥塞控制与策略制定
-5. [LACE-S: Toward Sensitivity-consistent Locational Average Carbon Emissions via Neural Representation](/202604/13/2604.04400v1-lace-s-toward-sensitivity-consistent-locational-average-carbon-emissions-via-neural-representation)  
+   evidence：微调LLM以实现持续适应
+7. [COSMO-Agent: Tool-Augmented Agent for Closed-loop Optimization,Simulation,and Modeling Orchestration](/202604/14/2604.05547v1-cosmo-agent-tool-augmented-agent-for-closed-loop-optimizationsimulationand-modeling-orchestration)  
    标签：评分：7.0/10、query:llm
-   evidence：碳感知电网优化与神经表示
-6. [Edge-Oriented Orchestration of Energy Services Using Graph-Driven Swarm Intelligence](/202604/13/2604.04645v1-edge-oriented-orchestration-of-energy-services-using-graph-driven-swarm-intelligence)  
-   标签：评分：7.0/10、query:llm
-   evidence：智能电网中能源服务的去中心化编排
-7. [MemMachine: A Ground-Truth-Preserving Memory System for Personalized AI Agents](/202604/13/2604.04853v1-memmachine-a-ground-truth-preserving-memory-system-for-personalized-ai-agents)  
+   evidence：基于LLM的闭环优化代理，利用强化学习进行编排
+8. [Attention Editing: A Versatile Framework for Cross-Architecture Attention Conversion](/202604/14/2604.05688v1-attention-editing-a-versatile-framework-for-cross-architecture-attention-conversion)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：大语言模型智能体的记忆系统
-8. [HYVE: Hybrid Views for LLM Context Engineering over Machine Data](/202604/13/2604.05400v1-hyve-hybrid-views-for-llm-context-engineering-over-machine-data)  
+   evidence：转换已训练大语言模型的架构
+9. [Late Breaking Results: Hardware-Efficient Quantum Reservoir Computing via Quantized Readout](/202604/14/2604.06075v1-late-breaking-results-hardware-efficient-quantum-reservoir-computing-via-quantized-readout)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：针对包含指标和遥测数据的机器数据的大语言模型上下文工程
-9. [Constraint-Driven Warm-Freeze for Efficient Transfer Learning in Photovoltaic Systems](/202604/13/2604.05807v1-constraint-driven-warm-freeze-for-efficient-transfer-learning-in-photovoltaic-systems)  
-   标签：评分：7.0/10、query:llm
-   evidence：光伏监测与控制信号的高效迁移学习
-10. [When Do We Need LLMs? A Diagnostic for Language-Driven Bandits](/202604/13/2604.05859v1-when-do-we-need-llms-a-diagnostic-for-language-driven-bandits)  
+   evidence：用于电网稳定的短期负荷预测
+10. [TalkLoRA: Communication-Aware Mixture of Low-Rank Adaptation for Large Language Models](/202604/14/2604.06291v1-talklora-communication-aware-mixture-of-low-rank-adaptation-for-large-language-models)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：LLM用于包含文本和数值背景的序列决策
-11. [Mechanism and Communication Co-Design for Differentially Private Energy Sharing](/202604/13/2604.04125v1-mechanism-and-communication-co-design-for-differentially-private-energy-sharing)  
-   标签：评分：6.0/10、query:llm
-   evidence：分布式能源资源与能源共享
-12. [Uncertainty-Aware Test-Time Adaptation for Cross-Region Spatio-Temporal Fusion of Land Surface Temperature](/202604/13/2604.04153v1-uncertainty-aware-test-time-adaptation-for-cross-region-spatio-temporal-fusion-of-land-surface-temperature)  
-   标签：评分：6.0/10、query:ts-fm
-   evidence：跨区域时空融合与领域偏移自适应
-13. [Entropy, Disagreement, and the Limits of Foundation Models in Genomics](/202604/13/2604.04287v1-entropy-disagreement-and-the-limits-of-foundation-models-in-genomics)  
-   标签：评分：6.0/10、query:ts-fm
-   evidence：基础模型在序列预测中的局限性
-14. [Unified Mixture Sampler for State-Space Models: Application to Stochastic Conditional Duration Models](/202604/13/2604.04517v1-unified-mixture-sampler-for-state-space-models-application-to-stochastic-conditional-duration-models)  
+   evidence：大语言模型的参数高效微调（LoRA）
+11. [CAWN: Continuous Acoustic Wave Networks for Autoregressive Language Modeling](/202604/14/2604.04250v1-cawn-continuous-acoustic-wave-networks-for-autoregressive-language-modeling)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：非线性状态空间模型的估计框架
+   evidence：用于语言建模的连续序列混合架构
+12. [Noise Immunity in In-Context Tabular Learning: An Empirical Robustness Analysis of TabPFN's Attention Mechanisms](/202604/14/2604.04868v1-noise-immunity-in-in-context-tabular-learning-an-empirical-robustness-analysis-of-tabpfns-attention-mechanisms)  
+   标签：评分：6.0/10、query:ts-fm
+   evidence：使用上下文学习的表格基础模型鲁棒性分析
+13. [Distributed Load Frequency Control of Multi-Area Smart Grid](/202604/14/2604.05390v1-distributed-load-frequency-control-of-multi-area-smart-grid)  
+   标签：评分：6.0/10、query:llm
+   evidence：智能电网中的分布式负荷频率控制
+14. [Semantic Communication with an LLM-enabled Knowledge Base](/202604/14/2604.05504v1-semantic-communication-with-an-llm-enabled-knowledge-base)  
+   标签：评分：6.0/10、query:llm-ts
+   evidence：利用大语言模型知识库进行语义通信
 
 
 <div class="dpr-home-promo-card">

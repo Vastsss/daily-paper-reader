@@ -1,0 +1,409 @@
+Title: Attention Editing: A Versatile Framework for Cross-Architecture Attention Conversion
+
+URL Source: https://arxiv.org/pdf/2604.05688v1
+
+Published Time: Wed, 08 Apr 2026 01:03:35 GMT
+
+Number of Pages: 14
+
+Markdown Content:
+# ATTENTION EDITING : A V ERSATILE FRAMEWORK FOR 
+
+# CROSS -A RCHITECTURE ATTENTION CONVERSION 
+
+TECHNICAL REPORT 
+
+Zhen Cheng Hao-Bo Yang Wan-Yi Huang Jin-Long Li 
+
+China Merchants Bank Artificial Intelligence Laboratory 
+
+{chengzhen1005, yanghaobo, huang_wanyi, lucida}@cmbchina.com 
+
+April 8, 2026 
+
+# ABSTRACT 
+
+Key–Value (KV) cache memory and bandwidth increasingly dominate large language model inference cost in long-context and long-generation regimes. Architectures such as multi-head latent attention (MLA) and hybrid sliding-window attention (SWA) can alleviate this bound, but integrating them into existing models remains difficult. Prior methods impose fine-grained structural requirements on both source and target attention modules, which cannot meet the feasible requirement in practical deployment. We present Attention Editing , a practical framework for converting already-trained large language models (LLMs) with new attention architectures without re-pretraining from scratch. Attention editing replaces the original attention with a learnable target module and trains it using 
+
+progressive distillation , consisting of (1) layer-wise teacher-forced optimization with intermediate activation supervision to prevent cold-start error accumulation, and (2) model-level distillation on next-token distributions, optionally regularized by weak feature matching. We instantiate the framework on two different targets—MLA and GateSWA , a gated hybrid SWA design, and apply it to Qwen3-8B and Qwen3-30B-A3B. The resulting models maintain competitive performance while delivering substantial efficiency improvements, demonstrating that large-scale attention conversion is both feasible and robust. Notably, experiments are conducted on an Ascend 910B clusters, offering a practical training case study on domestic hardware. 
+
+# 1 Introduction 
+
+Agentic large language model (LLM) applications, from tool-using assistants to end-to-end AGI agents, increasingly execute long interactive trajectories that interleave user instructions, intermediate reasoning, tool calls, and tool observations [Yao et al., 2022, Schick et al., 2023, OpenAI, 2025]. Such workflows naturally push both the input context (conversation history, retrieved evidence, and tool outputs) and the output length (multi-step plans, long-form explanations, and iterative self-correction) upward. Meanwhile, recent open-weight reasoning and agent-capable models explicitly target these use cases and emphasize controllable “reasoning effort” or “thinking” behavior [OpenAI, 2025, Yang et al., 2025a]. In this regime, the inference bottleneck is increasingly memory- and bandwidth-bound: autoregressive decoding caches per-layer keys and values for all previous tokens, and the KV cache grows with sequence length and batch size [Kwon et al., 2023]. To alleviate KV-cache overhead, the community has developed a wide spectrum of efficient attention mechanisms. At the architecture level, Multi-head Latent Attention (MLA) compresses key/value states into a low-rank latent representation, substantially reducing cached memory while retaining expressiveness [DeepSeek-AI, 2024a,b, 2025, Team, 2025a, 2026a]. Linear attention and its variants redesign attention to avoid quadratic scaling and can change the structure of state carried across long contexts [Katharopoulos et al., 2020, Choromanski et al., 2021, Peng et al., 2023, Gu and Dao, 2023, Yang et al., 2025b]. In parallel, sliding-window attention (SWA) restrict attention to a local window for most layers (often with periodic global layers), achieving favorable compute and cache scaling for long sequences [Beltagy et al., 2020, OpenAI, 2025, LLM-Core Xiaomi, 2026, Team, 2026b]. However, adopting a new architecture typically 
+
+> arXiv:2604.05688v1 [cs.CL] 7 Apr 2026
+
+Attention Editing: A Versatile Framework for Cross-Architecture Attention Conversion         
+
+> Input Embedding
+> Decoder Layers ×N
+> LM Head Output RMSNorm GQA Self-Attn +RMSNorm FFN +
+> MLA
+> Gated SWA
+> edit
+> Attention Editing
+
+Figure 1: Illustration of attention editing. Attention editing is a general framework for substantially modifying the attention architecture of an already-trained LLM without re-pretraining from scratch. It does not depend on delicate weight surgery, and treats the target attention modules as learnable replacements .requires training from scratch. This has motivated post-hoc conversion methods such as TransMLA and MHA2MLA that aim to obtain MLA’s KV-cache benefits while reusing existing model weights [Meng et al., 2025, Ji et al., 2025]. However, existing approaches face three practical limitations for real-world applications. First , many conversions impose fine-grained structural requirements on both source and target attention modules, because they rely on matrix factorization / low-rank linear approximations (e.g., SVD-based projections) and attention-specific handling of positional encoding (e.g., RoPE variants) to initialize or constrain transformed weights [Ji et al., 2025, Bercovich et al., 2025a, Koike-Akino et al., 2026]. In practice, deployed model implementations are often flexible (e.g., mixing kernel variants, hybrid attention patterns, MoE blocks, and serving-optimized layouts), which can deviate from the assumptions required by a given conversion recipe. Second , conversions are frequently demonstrated on base model checkpoints and require re-running substantial post-training (SFT/RL) to recover chat/reasoning behavior, potentially discarding expensive gains from post-training stage [Ouyang et al., 2022, Yang et al., 2025a, Meng et al., 2025]. Third , successful recovery can heavily depend on training data quality and distribution: Both TransMLA and MHA2MLA adopt the SmolLM series as their primary backbone models, owing to the availability of its open-source pretraining corpus. Since modern LLMs are pretrained on proprietary mixtures, practitioners often cannot obtain original pre-training corpus, making data-efficient and distribution-robust editing essential. To address these limitations, we introduce Attention Editing , shown in Figure 1, a general framework for substantially converting the attention architecture of an already-trained LLM without training from scratch. Unlike prior recipes that depend on delicate weight surgery, we treat the target attention modules as learnable replacements : we allow most parameters inside the new attention modules to be randomly initialized and then trained efficiently via progressive distillation . Concretely, we propose a two-stage recipe. (i) Layer-wise teacher forcing trains each decoder layer using teacher-provided intermediate activations to avoid deep error accumulation at cold start, bringing the newly initialized attention weights to a strong working point (intermediate “hints” style supervision) [Romero et al., 2014]. (ii) We then apply model-level distillation by matching teacher and student next-token distributions with KL divergence (knowledge distillation) [Hinton et al., 2015]. We optionally add weak intermediate-feature matching as regularization. We validate Attention Editing by converting GQA →MLA on Qwen3-8B and Qwen3-30B-A3B [Yang et al., 2025a]. To demonstrate generality beyond MLA, we also edit GQA into Gate Sliding-Window Attention (GateSWA) : a tiny-window sliding window attention (SWA) hybrid inspired by combining GPT-OSS and Qwen3-Next [OpenAI, 2025, Team, 2025b]. Motivated by recent evidence that a simple gate applied to the attention output can mitigate attention sinks and improve stability, we remove explicit learnable sink biases/tokens and instead adopt an element-wise gate on the SWA output[Xiao et al., 2023, Qiu et al., 2025]. We apply Attention Editing to convert GQA-based models into GateSWA-GQA using a 5:1 sliding-to-full schedule. Results indicate competitive quality with strong hardware-efficiency gains. All training runs are conducted on an Ascend 910B cluster, and our setup follows the growing evidence that large-scale model training on Ascend clusters is feasible in practice. These two targets (MLA and GateSWA) jointly support our claims that attention can be substantially refactored post-training and that progressive distillation enables data-efficient learning from random-init modules. Our contributions can be summarized as follows: • We formalize Attention Editing : fundamental attention-architecture changes are feasible for already-trained LLMs, without the requirement of delicate weight surgery. • We propose progressive distillation as a robust, structure-insensitive, and data-efficient method for attention editing. • We introduce GateSWA , an efficient hybrid attention variant that replaces learnable sink mechanisms in hybrid SWA models with an element-wise gate. • We present a practical case study of large-model attention editing trained entirely on Ascend 910B, providing an actionable recipe for large-scale training on domestic hardware. 2Attention Editing: A Versatile Framework for Cross-Architecture Attention Conversion 
+
+# 2 Related Works 
+
+Efficient attention architectures. To reduce the KV-cache memory occupied by MHA, MQA [Shazeer, 2019] and GQA [Ainslie et al., 2023] are designed to share KV heads to reduce decoding bandwidth. Furthermore, a large body of work studies the trade-off between model quality and inference efficiency by redesigning the attention mechanism, especially to reduce KV-cache memory and bandwidth during autoregressive decoding. Representative directions include linear attention , which replaces softmax attention with kernelized or recurrent formulations to improve scaling with sequence length [Katharopoulos et al., 2020, Choromanski et al., 2021, Peng et al., 2023, Gu and Dao, 2023, Yang et al., 2025b, Zhang et al., 2025]; Multi-head Latent Attention , which compresses key/value states into a low-rank latent representation and has been adopted in recent reasoning-oriented model families [DeepSeek-AI, 2024a,b, 2025]; and sliding-window or hybrid attention , which restricts most layers to local attention while retaining periodic global layers for long-context modeling [Beltagy et al., 2020, OpenAI, 2025, LLM-Core Xiaomi, 2026]. These approaches are complementary to other efficiency techniques like KV-cache quantization or system-level serving optimizations, which are important but orthogonal to the attention-architecture focus of this work. 
+
+Attention architecture conversion. Since replacing the attention module usually requires expensive re-training, recent work has explored post-hoc conversion from one attention architecture form to another. In particular, TransMLA and MHA2MLA study conversion from GQA/MHA to MLA in order to inherit MLA’s KV-cache advantages while reusing existing model weights [Meng et al., 2025, Ji et al., 2025]. Besides that, the other work from NVIDIA Nemotron treat attention configuration itself, reducing KV heads or modifying GQA layouts, as an important efficiency knob in deployment-oriented model design [Bercovich et al., 2025a,b]. Compared with these methods, our goal is different: rather than relying on attention-specific weight surgery or fine-grained structural assumptions, we view the target attention as a learnable replacement, enabling much greater architectural changes and making the approach applicable not only to base models but also to already post-trained chat or reasoning LLMs. 
+
+Knowledge distillation. Knowledge distillation transfers behavior by matching teacher and student output distri-butions [Hinton et al., 2015], while intermediate-feature or hint-based distillation supervises hidden representations to stabilize training when the student architecture differs substantially from the teacher [Romero et al., 2014]. For autoregressive language models, recent work further emphasizes on-policy or generation-aware distillation to reduce the mismatch between teacher-forced training and student-generated inference trajectories [Agarwal et al., 2024, Gu et al., 2023]. Our method combines these lines into a progressive recipe: hidden-state distillation first brings randomly initialized replacement modules to a workable regime, and output-level distillation then refines next-token behavior. 
+
+# 3 Preliminary 
+
+3.1 Multi Head Softmax Attention 
+
+Let ht ∈ Rd denote the input representation at position t, nh the number of attention heads, and dh the per-head dimension. In standard multi-head attention (MHA) [Vaswani et al., 2017], we first compute 
+
+qt = W Qht, (1) 
+
+kt = W K ht, (2) 
+
+vt = W V ht, (3) where qt, k t, v t ∈ Rnhdh . We then split them into nh heads, i.e., 
+
+[qt, 1; qt, 2; · · · ; qt,n h ] = qt, (4) 
+
+[kt, 1; kt, 2; · · · ; kt,n h ] = kt, (5) 
+
+[vt, 1; vt, 2; · · · ; vt,n h ] = vt, (6) with qt,i , k t,i , v t,i ∈ Rdh . For causal self-attention, the output of the i-th head at step t is 
+
+αt,i,j = exp (q⊤
+
+> t,i
+
+kj,i /√dh
+
+)∑ts=1 exp (q⊤
+
+> t,i
+
+ks,i /√dh
+
+) , 1 ≤ j ≤ t, (7) 
+
+ot,i =
+
+> t
+
+∑
+
+> j=1
+
+αt,i,j vj,i , (8) 3Attention Editing: A Versatile Framework for Cross-Architecture Attention Conversion and the final attention output is obtained by concatenating all heads and applying the output projection, 
+
+ut = W O [ot, 1; ot, 2; · · · ; ot,n h ]. (9) Equivalently, if we stack all positions into matrices Qi, Ki, and Vi for the i-th head, then Oi =softmax( QiK⊤ 
+
+> i
+
+/√dh)Vi, which matches the standard scaled dot-product attention form. 
+
+3.2 Efficient Attention Architectures 
+
+To reduce the decoding-time memory cost of KV-cache, several efficient attention variants modify the above computation while retaining the same head-level notation. We next review three efficient attention variants. 
+
+Multi-Head Latent Attention (MLA). Instead of caching all per-token keys and values, MLA compresses them into a shared latent representation: 
+
+cKV t = W DKV ht, (10) 
+
+kCt = W U K cKV t , (11) 
+
+vCt = W U V cKV t , (12) where cKV t ∈ Rdc is a low-dimensional latent code with dc ≪ nhdh. To remain compatible with rotary position embeddings, MLA further introduces decoupled positional components qRt and kRt , and computes attention with concatenated queries and keys, e.g., qt,i = [ qCt,i ; qRt,i ] and kj,i = [ kCj,i ; kRj ]. The key idea is to replace KV-cache of each token in the original head space by a shared low-rank latent cache, so that the per-token cache over ℓ layers becomes 
+
+(dc + dRh )ℓ rather than 2nhdhℓ.
+
+Linear hybrid attention. Linear attention replaces the growing prefix-wise KV cache with a fixed-size recurrent memory. For clarity, we write the update rule for a single head. A broad class of linear attention methods maintains a finite-state memory St instead of the full prefix KV cache: 
+
+St = AtSt−1 + ktv⊤ 
+
+> t
+
+, (13) 
+
+ot = S⊤ 
+
+> t
+
+qt, (14) where At is a data-dependent or data-independent transition matrix that controls forgetting and gating. Different linear attention variants mainly differ in how At is parameterized. In a hybrid architecture, linear-attention layers are interleaved with a subset of full-attention layers. The linear layers only maintain fixed-size recurrent states, whose memory cost does not grow with the context length, while only the full-attention layers keep token-wise KV caches. For example, Kimi Linear [Zhang et al., 2025] instantiates this design by interleaving Kimi Delta Attention (KDA) and MLA, and delivers substantial reductions in KV-cache memory relative to full attention. 
+
+Sliding-window attention (SWA). SWA restricts each query to a local window of size w, namely 
+
+oSWA  
+
+> t,i
+
+=
+
+> t
+
+∑
+
+> j=max(1 , t −w+1)
+
+αt,i,j vj,i , (15) where the softmax normalization is performed only over the visible window. After the cache is filled, SWA requires only a rolling buffer of size O(2 wn hdh) per layer, instead of a cache that grows linearly with the full prefix length. A practical challenge in streaming SWA is the attention sink , namely that certain early positions absorb disproportionate attention mass even when they carry little semantic information [Xiao et al., 2023, Gu et al., 2025]. To tackle the influence of attention sink, one remedy is to introduce a dedicated learnable sink token during training, so that excess attention mass is redirected to a parameterized placeholder rather than to ordinary context tokens. Another remedy is gated attention, which applies a query-dependent gate to the SDPA output, e.g., 
+
+˜ot,i = gt,i ⊙ ot,i , gt,i = σ(Wg ht), (16) thereby suppressing query-irrelevant attention outputs. Recent evidence shows that such post-SDPA gating can mitigate attention sink and improve long-context extrapolation [Qiu et al., 2025]. In the experimental setup of this work, we ultimately select GateSWA and MLA as the target architectures. On the one hand, these attentions have relatively stable inference implementations in the community. On the other hand, they are better aligned with the Ascend clusters we employ, thereby facilitating more efficient experimentation. 4Attention Editing: A Versatile Framework for Cross-Architecture Attention Conversion Norm 
+
+GQA 
+
+Norm 
+
+FFN 
+
+GateSWA 
+
+> Block -wise
+> distillation
+
+Norm 
+
+GQA 
+
+Norm 
+
+FFN 
+
+GateSWA 
+
+(a) (b) 
+
+Figure 2: Illustration of the forward propogation in two stages of progressive distillation. (a) Block-wise teacher forcing distillation: the inputs to each layer comes from the original model; (b) Model-level distillation: each architecture maintain its own inputs. The gray shading indicates that these two modules can be merged into a single model and trained efficiently using sharding strategies such as FSDP or DeepSpeed. 
+
+# 4 Method: Progressive Distillation for Attention Editing 
+
+We consider attention editing , where the chat/reasoning LLM is converted into a new architecture by replacing the attention architecture, while keeping the remainder of the network as intact as possible. Let T denote the original pretrained model (the teacher ) and S the edited model (the student ). We write the student parameters as 
+
+θS = θkeep ∪ θedit , (17) where θkeep contains parameters that remain structurally compatible with the teacher and are copied from T , and θedit 
+
+contains parameters introduced by the edited attention modules. We intentionally initialize θedit at random, rather than deriving them from a carefully structured matrix decomposition of pretrained attention weights. This design choice distinguishes our setting from prior conversion methods such as TransMLA and MHA2MLA, which exploit strong structural constraints and explicitly construct initial MLA parameters from the original attention weights via low-rank factorization or related decompositions [Meng et al., 2025, Ji et al., 2025]. While such initialization is elegant and effective when the source and target attention forms are tightly aligned, it becomes increasingly restrictive when the architectural edit is large. Our goal is therefore different: we seek an optimization procedure that remains effective even when the edited attention differs substantially from the original one. Randomly initializing the edited attention parameters avoids imposing a brittle source-to-target correspondence and allows the new attention modules to be optimized more freely. At the same time, we still preserve structurally compatible parameters whenever possible. The exact retained weights is described in Section 5.1. 
+
+4.1 Problem Setup 
+
+Let D = {x(i)}Ni=1 denote the training corpus, where each sequence 
+
+x(i) = ( x(i)1 , . . . , x (i) 
+
+> ni
+
+) (18) is presented in standard pre-training format. Unlike instruction-tuning distillation, our data do not contain an explicit prompt/answer split, and we therefore apply supervision to all valid next-token positions instead of restricting the loss to response spans only. Let L be the number of Transformer blocks, and let B ⊆ { 1, . . . , L } denote the set of layers whose attention modules are edited. For a token position t and layer ℓ, hT ,ℓ t and hS,ℓ t are denoted as the hidden states of the teacher and student, respectively. We further denote by 
+
+uT ,ℓ t , uS,ℓ t ∈ Rd (19) 5Attention Editing: A Versatile Framework for Cross-Architecture Attention Conversion the output of the attention branch after the output projection ( o_proj ) and before residual addition at layer ℓ. This quantity is the basic intermediate representation used in our first training stage. A natural way to recover the chat and reasoning ability of the teacher is to distill the student from the teacher by mini-mizing a token-level divergence between their output distributions, following standard knowledge distillation [Hinton et al., 2015]. However, in our setting, directly applying model-level distillation from the beginning is highly unstable. Since the edited attention parameters in shallow layers are randomly initialized, the student receives poor fine-grained signals, and the resulting representation error accumulates rapidly with depth. In practice, this causes the optimization of output-level distillation to stall. To address this issue, we propose progressive distillation : we first align intermediate representations under a block-wise teacher-forcing regime to obtain a reliable initialization, and only then transition to end-to-end distillation on the model outputs. 
+
+4.2 Progressive Distillation 
+
+Our training procedure consists of two stages: 1. Block-wise teacher-forcing distillation. Each edited attention block is trained independently using the teacher’s hidden state as input, so that early errors from an under-trained student block do not propagate to deeper layers. 2. Model-level distillation. After the edited blocks acquire a meaningful initialization, the entire student is trained end-to-end using token-level knowledge distillation, optionally augmented with a small intermediate-state similarity loss. The key idea is to move from local matching to global matching. Stage I turns the difficult problem of optimizing a randomly initialized edited network into a collection of well-conditioned local regression problems. Stage II then restores full autoregressive behavior by matching the teacher’s output distribution under the student’s own forward dynamics, as shown in Figure 2. 
+
+Stage I: Block-Wise Teacher-Forcing Distillation. For each edited layer ℓ ∈ B , we construct a block-wise training problem in which the input to the edited student attention block is clamped to the teacher hidden state. Concretely, let 
+
+HT ,ℓ −1 = [ hT ,ℓ −11 ; . . . ; hT ,ℓ −1 
+
+> n
+
+] ∈ Rn×d (20) be the teacher representation entering layer ℓ. We then feed HT ,ℓ −1 into the edited attention block of the student and obtain ̂
+
+U S,ℓ = AS 
+
+> ℓ
+
+(HT ,ℓ −1), (21) where AS 
+
+> ℓ
+
+denotes the edited attention branch up to and including o_proj . The corresponding target is the teacher attention-branch output 
+
+U T ,ℓ = AT 
+
+> ℓ
+
+(HT ,ℓ −1). (22) We supervise the edited block by matching these post-o_proj activations, using Mean Square Error (MSE) loss. To improve numerical stability, we normalize the MSE loss before computing the regression loss as [Bercovich et al., 2025a]. The block-wise loss for layer ℓ is 
+
+L(ℓ)blk =
+
+∥∥∥̂ U S,ℓ − U T ,ℓ 
+
+∥∥∥2
+
+> F
+
+∥U T ,ℓ ∥2 
+
+> F
+
++ ϵ . (23) In practice, we optimize each edited layer independently. That is, when training layer ℓ, the supervision signal is always computed from the teacher input HT ,ℓ −1 rather than from representations produced by previously edited student layers. This block-wise teacher-forcing strategy removes the main source of optimization failure in direct distillation: poor signals from shallow edited blocks can no longer cascade through the network and corrupt deeper targets. The choice of the post-o_proj output as the regression target is deliberate. First, it is the quantity that is directly injected into the residual stream, and therefore most immediately controls the downstream hidden-state trajectory. Second, unlike attention logits or head-wise QK ⊤ statistics, it remains well defined even when the source and target attention parameterizations differ substantially. This makes it a robust architecture-agnostic intermediate target for attention editing. 6Attention Editing: A Versatile Framework for Cross-Architecture Attention Conversion 
+
+Stage II: Model-Level Distillation. At this stage, the student is sufficiently well initialized for output-level distillation to become effective. Let zT 
+
+> t
+
+and zS 
+
+> t
+
+denote the teacher and student logits at position t, respectively. We use the standard token-level distillation objective [Hinton et al., 2015] 
+
+pT 
+
+> t
+
+= softmax (zT 
+
+> t
+
+/τ ) , (24) 
+
+pS 
+
+> t
+
+= softmax (zS 
+
+> t
+
+/τ ) , (25) and define 
+
+LKD = τ 2
+
+∑Ni=1 niN∑
+
+> i=1
+> ni
+
+∑
+
+> t=1
+
+KL (pT 
+
+> i,t
+
+∥ pS
+
+> i,t
+
+) . (26) Here τ > 0 is the distillation temperature. Since our corpus is in pre-training format, the loss in Eq. (26) is evaluated on all non-padding positions, rather than only on an answer segment. Empirically, we find that optimization becomes more reliable when a small intermediate-state regularizer is added on top of token-level distillation. Following distillation practices used in the Nemotron/Minitron line [Bercovich et al., 2025b], we introduce a low-weight cosine similarity loss on a selected set of intermediate layers M ⊆ { 1, . . . , L }:
+
+Lcos = 1
+
+∑Ni=1 ni|M| 
+
+> N
+
+∑
+
+> i=1
+> ni
+
+∑
+
+> t=1
+
+∑
+
+> ℓ∈M
+
+1 −
+
+〈
+
+hS,ℓ i,t , h T ,ℓ i,t 
+
+〉
+
+∥hS,ℓ i,t ∥2 ∥hT ,ℓ i,t ∥2
+
+ . (27) The final model-level objective is 
+
+Lmodel = LKD + λcos Lcos , (28) where λcos is a small coefficient. Intuitively, LKD restores the teacher’s predictive behavior at the token level, while 
+
+Lcos provides a weak geometric regularization on the internal representation trajectory, which is especially helpful during the early phase of end-to-end training. 
+
+Discussions. The overall procedure can be viewed as a progressive path from intermediate-state distillation to 
+
+output-level distillation . Stage I stabilizes optimization by solving local, feature matching problem for the edited attention blocks. Stage II then restores the student as a coherent autoregressive model under its own hidden-state dynamics. This design is particularly suitable for attention editing because the architectural perturbation is localized yet potentially severe: randomly initialized edited attention blocks are difficult to optimize from logits alone, but become trainable once they are first anchored to teacher-provided intermediate signals. Our training pipeline is inspired by that of Llama-Nemotron Bercovich et al. [2025b]. Although both approaches adopt distillation from the block level to the model level, several notable differences remain. Our objective is to introduce fundamental modifications to the attention architecture, and we retrain nearly all attention parameters from scratch, resulting in greater generality. In contrast, Llama-Nemotron prunes the existing number of heads in GQA, without making substantive structural changes. 
+
+# 5 Implementation Details 
+
+5.1 Instantiation with MLA and GateSWA 
+
+We instantiate our attention editing pipeline on Qwen3-8B and Qwen3-30B-A3B [Yang et al., 2025a], which together provide a representative pair of open-weight hybrid-thinking backbones. This choice allows us to evaluate the proposed training procedure under both dense and mixture-of-experts settings while keeping the post-training objective unchanged. One principle in all edited variants is that we always keep the original output projection (o_proj ) unchanged, which we find could perform better. To enable exact reuse of o_proj (i.e., W O ), we require the concatenated attention output is shape-compatible with the inherited o_proj . All remaining attention parameters, unless otherwise stated, are randomly initialized and subsequently optimized by the progressive distillation procedure described in Section 4. 
+
+MLA instantiation. We adopt a hardware-aware configuration tailored to FlashMLA kernels [Li and Liu, 2025]. Let dc denote the KV compression dimension and dr the RoPE dimension used in the key branch. We set dc = 512 ,
+
+dr = 64 . This choice is motivated by practical compatibility with FlashMLA kernels, whose decode path can be viewed as an MQA-style computation with a single KV head, key width 576 , and value width 512 . We therefore obtain an efficient MQA decode path with nq query heads and one shared KV head, while retaining the expressive advantages of multi-head queries. 7Attention Editing: A Versatile Framework for Cross-Architecture Attention Conversion Table 1: Comparison (%) of KV cache per token among GQA, MLA, and GateSWA. We follow the notations in DeepSeek-V2 [DeepSeek-AI, 2024a]. Here the approximation ignores the bounded local-window ( w = 128 ) cache in SWA layers and only accounts for the unbounded cache carried by full-attention layers. Under a 5:1 sliding-to-full schedule, one out of every six layers is a full-attention layer.                     
+
+> Attention Mechanisms KV cache per token KV memory Qwen3-8B Qwen3-30B-A3B GQA 2ngdhl100% 100%
+> MLA (dc+dRh)l28% 56% GateSWA ≈2ngdh·l
+> 617% 17%
+
+Unlike the original MLA parameterization, we discard the query down-projection bottleneck, and preserve the original number of query heads from Qwen3. The rationale is to avoid unnecessarily constraining query expressiveness after a substantial architectural edit. In other words, we compress K/V aggressively for decoding efficiency, but keep Q relatively unconstrained so that the edited attention can better recover the representational capacity of the teacher. In addition, to further improve inference speed, we set the non-positional key dimension to dNoPE  
+
+> k
+
+= 64 . Together, these choices yield an MLA configuration that is both kernel-friendly and sufficiently expressive: KV states are aggressively compressed for decoding, the query pathway remains high-capacity, and the inherited o_proj can still be reused exactly through the dimensionality constraint. 
+
+GateSWA instantiation. Most full-attention layers are replaced by sliding-window attention, and we introduce an 
+
+element-wise output gate [Qiu et al., 2025] for each attention layer. Specifically, let oℓt ∈ Rd denote the SDPA output of the attention branch at position t and layer ℓ, similar to notations in Section 3. We apply a learned gate 
+
+gℓt = σ(W ℓg hℓ−1 
+
+> t
+
+), gℓt ∈ Rd, (29) and define the gated output as 
+
+˜oℓt = gℓt ⊙ oℓt , (30) where σ(·) is the element-wise sigmoid function and ⊙ denotes element-wise multiplication. This gate is intentionally lightweight, yet it introduces additional nonlinearity at the attention output and eliminates attention sink. Aside from this gating operation, all attention-related architectural settings are kept identical to the original Qwen3 backbone. For the sliding-window component, we use a window size of w = 128 , following the same local-attention regime adopted in GPT-OSS and MiMo-V2-Flash [OpenAI, 2025, LLM-Core Xiaomi, 2026]. We further interleave sliding-window and full-attention layers with a ratio of SWA : Full = 5 : 1 . Besides that, we keep setting the first layer to full attention. Under the window size of 128, the overall KV cache is approximately reduced to one-sixth of that of the original model. The comparison of KV cache is listed in Table 1. 
+
+5.2 Data Construction 
+
+We emphasize that our distillation setup differs from the common <prompt, answer> pair used in instruction distillation. All training data are in pre-training format, and our objective does not isolate an answer span. Consequently, both the block-wise objective in Eq. (23) and the model-level objective in Eq. (28) are defined over the full sequence, making the procedure naturally compatible with continual pre-training or architecture conversion scenarios. Table 2: Data mix in stage I. 
+
+Data source Percentage General domain 40% Math & code 35% Chinese corpora 25% In Stages I and II, we employed entirely different dataset configura-tions. In Stage I, since the attention weights were randomly initialized, lower-difficulty data were more suitable; accordingly, we used a large amount of general-domain data. In Stage II, we progressively incor-porated a greater proportion of complex data related to mathematics, coding, and reasoning. These data were primarily drawn from YiZhao [HITsz-TMG, 2026] and community open-source datasets such as [Li et al., 2024], FineWeb [Penedo et al., 2024], Nemotron-CC [Su et al., 2024], MegaMath [Zhou et al., 2025], and StarCoder2 [Lozhkov et al., 2024]. It is worth noting that, because the full pretraining corpus of Qwen3 is not publicly available [Yang et al., 2025a], the data we use may differ substantially from the true distribution of its original pretraining data. This further 8Attention Editing: A Versatile Framework for Cross-Architecture Attention Conversion    
+
+> general domain math, code Chinese corpora reasoning
+
+Figure 3: Data mix in stage II. At this stage, curriculum learning was employed to control the data composition, gradually increasing the proportion of reasoning-related data while reducing that of general domains. During training, the optimizer state keeps preserved across changes in the data mixture. demonstrates the robustness of our method to variations in data quality. Our training data do not overlap with the following test set. In Stage I, the vast majority of the data consisted of general-domain content, and the overall proportions are shown in Table 2. Our data categories mainly include general-domain, mathematics and code, and Chinese corpora. These relatively simple data were used to enable the model to optimize smoothly from random initialization. At this stage, we used 2B tokens and trained with a sequence length of 8K. In Stage II, the dataset still comprised the same four categories as in Stage I. In our experiments, we found that if we directly used a larger proportion of more difficult corpora, such as complex mathematics, code, and reasoning data, the model was often difficult to optimize. Conversely, using a larger amount of easier data leads to inferior model performance. We therefore adopt a curriculum learning strategy, in which three groups of data with progressively increasing difficulty are concatenated, as illustrated in Figure 3, with the proportion of more challenging data gradually increasing. During training, when switching between datasets, the optimizer states are preserved. In this stage, we use a total of 6B tokens, arranged as three consecutive segments of 2B tokens each, as illustrated in Figure 3. It is noteworthy that the amount of training data used in our study is less than one-thousandth of that used for Qwen3. 
+
+# 6 Experimental Results 
+
+In this section, we present the experimental results, focusing on factors such as model performance, inference speed, and improvements in hardware utilization efficiency. Since the weights of the modified attention modules are randomly initialized, we first verify that the proposed method can recover the base-model performance, mainly through a set of few-shot evaluations of fundamental capabilities. In addition, because our target model is a hybrid reasoning model, we also report several chat- and reasoning-related benchmarks to assess its effectiveness. Finally, we provide a detailed analysis of the inference acceleration achieved by the modified architecture. 
+
+6.1 Model Performance Pre-training evaluation. To validate that the attention editing has recovered the basic capacity, we first test the few-shot performance. We conduct evaluation in a few-shot setting, requiring the model to directly output one token as the answer (e.g., one of “A”, “B”, “C”, or “D”), which is then extracted and matched against the ground truth [Zheng et al., 2024]. Since nearly all weights in the attention modules are randomly initialized, the model is initially unable to answer any questions. This evaluation therefore serves to verify whether the model parameters have been Table 3: Performance (%) of different attention variants under few-shot evaluation. The model is required to directly output the answer, and accuracy is computed by matching the predicted answer against the ground truth. 
+
+Models ARC-E ARC-C C-Eval MMLU Qwen3-8B 96.46 91.46 77.04 74.47 Qwen3-8B-GateSWA 96.54 90.35 76.82 73.26 Qwen3-8B-MLA 96.71 90.01 73.70 71.77 Qwen3-30B-A3B 96.89 92.58 83.06 78.68 Qwen3-30B-A3B-GateSWA 98.19 91.98 81.20 77.24 Qwen3-30B-A3B-MLA 98.15 93.77 81.05 76.99 9Attention Editing: A Versatile Framework for Cross-Architecture Attention Conversion effectively optimized, particularly with respect to its memory-related capabilities. Concretely, the few-shot performance benchmarks include ARC-asy, ARC-challenge [Clark et al., 2018], MMLU [Hendrycks et al., 2021], and C-Eval [Huang et al., 2023]. The results are listed in Table 3. As shown in Table 3, the fundamental capabilities are well preserved, particularly on relatively simple memory-related benchmarks. This demonstrates the effectiveness of the progressive distillation method proposed in this paper, indicating that it can indeed transform one attention architecture into another. For example, on ARC-Easy, Qwen3-8B-MLA outperforms the original Qwen3-8B by 0.25%. This is a rather interesting phenomenon, and we speculate that the following explanation may account for it: prior works [Geva et al., 2021, Dai et al., 2022, Meng et al., 2022, Niu et al., 2024] suggest that the attention module primarily serves as a mechanism for knowledge retrieval, whereas the FFN module is regarded as the locus of knowledge storage. Since we leave all FFN parameters frozen, the model’s knowledge storage remains intact, and only the retrieval functionality needs to be relearned. Gated attention is often considered to enhance nonlinearity and mitigate the attention sink phenomenon [Qiu et al., 2025], which may in some cases improve retrieval capability. MLA, in contrast, is generally regarded as having stronger expressive capacity than GQA, and may therefore also yield performance gains in certain settings [DeepSeek-AI, 2024a,b]. 
+
+Post-training evaluation. In this part, we evaluate the model’s chat and reasoning capabilities, noting that these are abilities not possessed by the previously converted models. We aim to examine whether the method proposed in this paper can recover, to some extent, the model’s capacity for chat and even reasoning. Specifically, we primarily adopt GSM8K [Cobbe et al., 2021], a mathematics benchmark of moderate difficulty, and C-Eval [Huang et al., 2023], a more diverse general-domain benchmark covering a broad range of subjects. In addition, we report results under both thinking-enabled modes. Table 4: Accuracy (%) of different attention-variant models on GSM8K and C-Eval in thinking-mode. 
+
+Models GSM8K (thinking) C-Eval (thinking) Qwen3-8B 95.98 83.80 Qwen3-8B-GateSWA 94.31 78.90 Qwen3-8B-MLA 95.00 79.20 Qwen3-30B 96.44 86.40 Qwen3-30B-A3B-GateSWA 95.15 81.28 Qwen3-30B-A3B-MLA 94.39 81.13 The results are listed in Table 4, and we adopt AIS-Bench 1 tool to conduct evaluation. To our surprise, on the GSM8K task, the model with the modified attention architecture is able to achieve an accuracy remarkably close to that of the original 8B model. Qwen3 series underwent 36 trillion tokens of pre-training, along with highly sophisticated post-training , whereas our method attains comparable performance using fewer than 10B tokens . Moreover, the training data we use are expected to differ substantially in distribution from those used for Qwen3. Although GSM8K is not considered as a challenging benchmark by current standards, these results nevertheless provide clear evidence for the suc-cess of our attention editing approach. On a general knowledge benchmark such as C-Eval, the converted model exhibits a certain performance gap. We attribute this to the fact that knowledge-oriented tasks depend more directly on the model’s internal knowledge, whereas mathematical tasks are more amenable to compensation through chain-of-thought reasoning. 
+
+6.2 Inference Speedup 
+
+In the previous part, we showed that progressive distillation enables the converted models to recover strong general-domain and reasoning capabilities. We now turn to evaluate whether attention conversion also delivers the intended 
+
+hardware-level inference benefits . Our goal in this part is to verify that, beyond maintaining model performance, the edited attention architectures substantially improve deployment efficiency. 
+
+Evaluation protocol. We evaluate inference performance under a controlled decoding setup and report two standard serving metrics: time to first token (TTFT) and output throughput . TTFT measures the elapsed time between the arrival of a request and the emission of its first output token, and therefore captures the latency perceived by the user before generation starts. Output throughput measures the total number of generated output tokens per unit time across all served requests, and reflects the steady-state decoding efficiency of the serving system. These two metrics are complementary: TTFT emphasizes responsiveness, whereas output throughput emphasizes sustained generation capacity under load. We benchmark the original and converted models under three input lengths, namely 3K/8K/16K tokens, while fixing the output length to 1K tokens. For each input length, we vary the request concurrency and record both TTFT and output throughput. 
+
+> 1https://github.com/AISBench/benchmark
+
+10 Attention Editing: A Versatile Framework for Cross-Architecture Attention Conversion 
+
+Figure 4: Performance under different concurrency levels for three input lengths. The upper row shows the variation in throughput , while the lower row shows the variation in TTFT. The experimental setup is as follows: inference is conducted on a single H800 GPU using vLLM version 0.16.0, with gpu-memory-utilization set to 0.8. Missing data in the figure indicate that the model is unable to handle that level of concurrency simultaneously. 
+
+Figure 5: Throughput under different concurrency levels. The experimental setup is as follows: inference is conducted on a single Ascend 910B using vLLM/vLLM-Ascend version 0.16.0. Missing data in the figure indicate that the model is unable to handle that level of concurrency simultaneously. The results about Qwen3-8B-MLA are missing, because the MLA kernels in higher-version vLLM-Ascend impose customized requirements on specific parameter configuration. 
+
+KV-cache reduction. The memory benefit of attention conversion is summarized in Table 1. For example, the converted models Qwen3-8B-GateSWA reduce KV-cache usage by approximately 80% relative to the original full-attention backbone, which is a substantial reduction. From a systems perspective, such a drop in KV-cache footprint directly increases the effective memory budget available for active requests and long contexts. In practice, this means that the same hardware can either accommodate more cached tokens per request or serve more concurrent requests before hitting memory limits, both of which translate into lower serving cost and improved deployment flexibility. 
+
+Decoding throughput and TTFT. The throughput and TTFT results are shown in Figure 4-5. The advantage of inference speed becomes increasingly pronounced as concurrency grows. This trend is consistent with the intended systems effect of attention conversion. When concurrency is low, the GPU is less constrained by KV-cache residency and memory traffic, so the benefit of reducing the attention-state footprint is present but limited. As concurrency increases, however, the decoding system must maintain more active sequences simultaneously, and KV-cache pressure 11 Attention Editing: A Versatile Framework for Cross-Architecture Attention Conversion becomes increasingly dominant. In this regime, the converted models enjoy a large advantage because they require substantially less memory per request and incur lower cache-management overhead. For TTFT, performance depends more heavily on input tokens processed during the prefill stage and is typically compute-bound. In the TTFT plot, the trends of MLA and the original model largely overlap. For MLA, the prefill stage follows an MHA-style computation, and although its FLOPs are lower than those of an MHA model of comparable size, they are not necessarily lower than those of GQA. Consequently, MLA does not exhibit a clear advantage in TTFT. By contrast, GateSWA substantially reduces computational cost through the sliding-window mechanism, while the additional computation introduced by the gating operation is relatively minor, leading to a more noticeable improvement in TTFT, which is consistent with the tendency shown in Figure 4. These results show that the proposed attention conversion could preserve model capability after distillation, and it also yields a meaningful systems-level payoff. The converted models substantially reduce KV-cache consumption and, as a consequence, deliver higher decoding throughput and better TTFT. The gain is especially evident when concurrency is high, which is precisely the operating regime where deployment cost and serving efficiency matter most. 
+
+# 7 Conclusion and Future Work 
+
+In this paper, we present Attention Editing, a general framework for converting the attention architecture of a trained LLM without re-pretraining from scratch. By treating the target attention as a learnable replacement, and training it with progressive distillation, our method avoids delicate architecture-specific weight surgery and enables substantial post hoc attention refactoring. Experiments on converting GQA-based Qwen3 models to both MLA and GateSWA show that competitive quality can be retained while improving efficiency. In addition, all experiments were conducted entirely on an Ascend 910B cluster, providing a practical case study of large-model post-training on domestic hardware. Although some current results are promising, several important questions remain open. First, the amount of training data used in our study is less than one-thousandth of that used for Qwen3 , so it remains unclear how Attention Editing will scale with substantially larger and more diverse data. Understanding whether further scaling can yield stronger recovery and better downstream efficiency-quality trade-offs is an especially interesting direction. Second, our current training mixture contains relatively limited a gent-oriented data , and our evaluation focuses more on chat and reasoning abilities than on fully interactive agent performance. Extending attention editing toward stronger tool-use and long-horizon agent capabilities is therefore a natural next step. 
+
+# References 
+
+Shunyu Yao, Jeffrey Zhao, Dian Yu, Nan Du, Izhak Shafran, Karthik Narasimhan, and Yuan Cao. React: Synergizing reasoning and acting in language models. arXiv preprint arXiv:2210.03629 , 2022. Timo Schick, Jane Dwivedi-Yu, Roberto Dessì, Roberta Raileanu, Maria Lomeli, Luke Zettlemoyer, Nicola Can-cedda, and Thomas Scialom. Toolformer: Language models can teach themselves to use tools. arXiv preprint arXiv:2302.04761 , 2023. OpenAI. gpt-oss-120b & gpt-oss-20b model card. Model card, 2025. An Yang et al. Qwen3 technical report. arXiv preprint arXiv:2505.09388 , 2025a. Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody Hao Yu, Joseph E Gonzalez, Hao Zhang, and Ion Stoica. Efficient memory management for large language model serving with pagedattention. arXiv preprint arXiv:2309.06180 , 2023. DeepSeek-AI. Deepseek-v2: A strong, economical, and efficient mixture-of-experts language model, 2024a. DeepSeek-AI. Deepseek-v3 technical report. arXiv preprint arXiv:2412.19437 , 2024b. DeepSeek-AI. Deepseek-r1: Incentivizing reasoning capability in llms via reinforcement learning. arXiv preprint arXiv:2501.12948 , 2025. Kimi Team. Kimi k2: Open agentic intelligence. arXiv preprint arXiv:2507.20534 , 2025a. GLM-5 Team. Glm-5: from vibe coding to agentic engineering. arXiv preprint arXiv:2602.15763 , 2026a. Angelos Katharopoulos, Apoorv Vyas, Nikolaos Pappas, and François Fleuret. Transformers are rnns: Fast autoregres-sive transformers with linear attention. In International Conference on Machine Learning , 2020. Krzysztof Choromanski, Valerii Likhosherstov, David Dohan, Xingyou Song, Andreea Gane, Tamas Sarlos, Peter Hawkins, Jared Davis, Afroz Mohiuddin, Lukasz Kaiser, David Belanger, Lucy Colwell, and Adrian Weller. Rethinking attention with performers. In International Conference on Learning Representations , 2021. 12 Attention Editing: A Versatile Framework for Cross-Architecture Attention Conversion Bo Peng et al. Rwkv: Reinventing rnns for the transformer era. arXiv preprint arXiv:2305.13048 , 2023. Albert Gu and Tri Dao. Mamba: Linear-time sequence modeling with selective state spaces. arXiv preprint arXiv:2312.00752 , 2023. Songlin Yang, Jan Kautz, and Ali Hatamizadeh. Gated delta networks: Improving mamba2 with delta rule. In 
+
+International Conference on Learning Representations , 2025b. Iz Beltagy, Matthew E. Peters, and Arman Cohan. Longformer: The long-document transformer. arXiv preprint arXiv:2004.05150 , 2020. LLM-Core Xiaomi. Mimo-v2-flash technical report. arXiv preprint arXiv:2601.02780 , 2026. StepFun Team. Step 3.5 flash: Open frontier-level intelligence with 11b active parameters. arXiv preprint arXiv:2602.10604 , 2026b. Fanxu Meng, Pingzhi Tang, Xiaojuan Tang, Zengwei Yao, Xing Sun, and Muhan Zhang. Transmla: Multi-head latent attention is all you need. arXiv preprint arXiv:2502.07864 , 2025. Tao Ji, Bin Guo, Yuanbin Wu, Qipeng Guo, Lixing Shen, Zhan Chen, Xipeng Qiu, Qi Zhang, and Tao Gui. Towards economical inference: Enabling deepseek’s multi-head latent attention in any transformer-based llms. arXiv preprint arXiv:2502.14837 , 2025. Akhiad Bercovich, Tomer Ronen, Talor Abramovich, et al. Puzzle: Distillation-based nas for inference-optimized llms. In International Conference on Machine Learning , 2025a. Toshiaki Koike-Akino, Xiangyu Chen, Jing Liu, Ye Wang, Pu Wang, and Matthew Brand. Latentllm: Activation-aware transform to multi-head latent attention. Technical report, Mitsubishi Electric Research Laboratories, 2026. Long Ouyang, Jeff Wu, Xu Jiang, Diogo Almeida, Carroll L. Wainwright, Pamela Mishkin, Chong Zhang, Sandhini Agarwal, Katarina Slama, Alex Ray, John Schulman, Jacob Hilton, Jan Leike, and Ryan Lowe. Training language models to follow instructions with human feedback. In Advances in Neural Information Processing Systems , 2022. Adriana Romero, Nicolas Ballas, Samira Ebrahimi Kahou, Antoine Chassang, Carlo Gatta, and Yoshua Bengio. Fitnets: Hints for thin deep nets. arXiv preprint arXiv:1412.6550 , 2014. Geoffrey Hinton, Oriol Vinyals, and Jeff Dean. Distilling the knowledge in a neural network. arXiv preprint arXiv:1503.02531 , 2015. Qwen Team. Qwen3-next-80b-a3b-instruct, 2025b. Guang Xiao et al. Efficient streaming language models with attention sinks. arXiv preprint arXiv:2309.17453 , 2023. Zihan Qiu, Zekun Wang, Bo Zheng, Zeyu Huang, Kaiyue Wen, Songlin Yang, Rui Men, Le Yu, Fei Huang, Suozhi Huang, Dayiheng Liu, Jingren Zhou, and Junyang Lin. Gated attention for large language models: Non-linearity, sparsity, and attention-sink-free. arXiv preprint arXiv:2505.06708 , 2025. Noam Shazeer. Fast transformer decoding: One write-head is all you need. arXiv preprint arXiv:1911.02150 , 2019. Joshua Ainslie, James Lee-Thorp, Michiel de Jong, Yury Zemlyanskiy, Federico Lebrón, and Sumit Sanghai. Gqa: Training generalized multi-query transformer models from multi-head checkpoints. arXiv preprint arXiv:2305.13245 ,2023. Yu Zhang, Zongyu Lin, Xingcheng Yao, et al. Kimi linear: An expressive, efficient attention architecture. arXiv preprint arXiv:2510.26692 , 2025. Akhiad Bercovich, Itay Levy, Izik Golan, et al. Llama-nemotron: Efficient reasoning models. arXiv preprint arXiv:2505.00949 , 2025b. Rishabh Agarwal, Nino Vieillard, Yongchao Zhou, Piotr Stanczyk, Sabela Ramos, Matthieu Geist, and Olivier Bachem. On-policy distillation of language models: Learning from self-generated mistakes. In International Conference on Learning Representations , 2024. Yuxian Gu et al. Minillm: Knowledge distillation of large language models. arXiv preprint arXiv:2306.08543 , 2023. Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Lukasz Kaiser, and Illia Polosukhin. Attention is all you need. In Advances in Neural Information Processing Systems , 2017. Xiangming Gu, Tianyu Pang, Chao Du, Qian Liu, Fengzhuo Zhang, Cunxiao Du, Ye Wang, and Min Lin. When attention sink emerges in language models: An empirical view. arXiv preprint arXiv:2410.10781 , 2025. Jiashi Li and Shengyu Liu. Flashmla: Efficient multi-head latent attention kernels, 2025. HITsz-TMG. Yizhao: A 2tb open financial corpus, 2026. 13 Attention Editing: A Versatile Framework for Cross-Architecture Attention Conversion Jeffrey Li et al. Datacomp-lm: In search of the next generation of training sets for language models. arXiv preprint arXiv:2406.11794 , 2024. Guilherme Penedo et al. Decanting the web for the finest text data at scale. arXiv preprint arXiv:2406.17557 , 2024. Dan Su et al. Nemotron-cc: Transforming common crawl into a refined long-horizon pretraining dataset. arXiv preprint arXiv:2412.02595 , 2024. Fan Zhou et al. Megamath: Pushing the limits of open math corpora. arXiv preprint arXiv:2504.02807 , 2025. Anton Lozhkov et al. Starcoder2 and the stack v2: The next generation. arXiv preprint arXiv:2402.19173 , 2024. Lianmin Zheng et al. Sglang: Efficient execution of structured language model programs. In Advances in Neural Information Processing Systems , 2024. Peter Clark et al. Think you have solved question answering? try arc, the ai2 reasoning challenge. arXiv preprint arXiv:1803.05457 , 2018. Dan Hendrycks et al. Measuring massive multitask language understanding. In International Conference on Learning Representations , 2021. Yuzhen Huang et al. C-eval: A multi-level multi-discipline chinese evaluation suite for foundation models. arXiv preprint arXiv:2305.08322 , 2023. Mor Geva et al. Transformer feed-forward layers are key-value memories. In Proceedings of the Conference on Empirical Methods in Natural Language Processing , 2021. Damai Dai et al. Knowledge neurons in pretrained transformers. In Proceedings of the Annual Meeting of the Association for Computational Linguistics , 2022. Kevin Meng et al. Locating and editing factual associations in gpt. In Advances in Neural Information Processing Systems , 2022. Jingcheng Niu et al. What does the knowledge neuron thesis have to do with knowledge? In International Conference on Learning Representations , 2024. Karl Cobbe et al. Training verifiers to solve math word problems. arXiv preprint arXiv:2110.14168 , 2021. 14
