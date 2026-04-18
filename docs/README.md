@@ -6,90 +6,76 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-04-17
-- 运行时间：2026-04-17 20:23:34 UTC
+- 最新运行日期：2026-04-18
+- 运行时间：2026-04-18 19:58:55 UTC
 - 运行状态：成功
-- 本次总论文数：23
-- 精读区：9
+- 本次总论文数：18
+- 精读区：4
 - 速读区：14
 
 ### 今日简报（AI）
-今日深度研读 23 篇前沿论文，重点聚焦获满分评价的时间序列预测评估框架 TempusBench。
-核心
-- 详情：[/202604/17/README](/202604/17/README)
+今日聚焦 18 篇前沿成果，深度探讨了多模态大模型（VLM）在金融预测及 5G 网络监控中的实战效能。
+核心结论指出 VLM 在解读 K 线图上仍具挑战，而轻量化框架 ESN-DAGMM 为 5G 异常检测提供了高效方案。
+建议读者重点关注 AI 在垂直领域（如金融视觉与工业运维）的落地，探索模型轻量化与多模态融合的新趋势。
+- 详情：[/202604/18/README](/202604/18/README)
 
 ### 精读区论文标签
-1. [TempusBench: An Evaluation Framework for Time-Series Forecasting](/202604/17/2604.11529v2-tempusbench-an-evaluation-framework-for-time-series-forecasting)  
-   标签：评分：10.0/10、query:ts-fm
-   evidence：时间序列基础模型的评估框架
-2. [Assessing the Performance-Efficiency Trade-off of Foundation Models in Probabilistic Electricity Price Forecasting](/202604/17/2604.14739v1-assessing-the-performance-efficiency-trade-off-of-foundation-models-in-probabilistic-electricity-price-forecasting)  
-   标签：评分：9.0/10、query:ts-fm
-   evidence：概率电价预测中的基础模型
-3. [Predicting Power-System Dynamic Trajectories with Foundation Models](/202604/17/2604.14991v1-predicting-power-system-dynamic-trajectories-with-foundation-models)  
-   标签：评分：9.0/10、query:llm
-   evidence：利用基础模型预测电力系统动态轨迹
-4. [Assessing the Potential of Masked Autoencoder Foundation Models in Predicting Downhole Metrics from Surface Drilling Data](/202604/17/2604.15169v1-assessing-the-potential-of-masked-autoencoder-foundation-models-in-predicting-downhole-metrics-from-surface-drilling-data)  
-   标签：评分：9.0/10、query:ts-fm
-   evidence：用于时间序列钻井数据的掩码自编码器基础模型
-5. [Relational Probing: LM-to-Graph Adaptation for Financial Prediction](/202604/17/2604.10212v1-relational-probing-lm-to-graph-adaptation-for-financial-prediction)  
+1. [Do VLMs Truly "Read" Candlesticks? A Multi-Scale Benchmark for Visual Stock Price Forecasting](/202604/18/2604.12659v1-do-vlms-truly-read-candlesticks-a-multi-scale-benchmark-for-visual-stock-price-forecasting)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：将语言模型应用于金融股票趋势预测
-6. [Learning to Adapt: In-Context Learning Beyond Stationarity](/202604/17/2604.10946v1-learning-to-adapt-in-context-learning-beyond-stationarity)  
+   evidence：视觉语言模型用于视觉股票价格预测和K线图模式
+2. [ESN-DAGMM: A Lightweight Framework for Unsupervised Time-Series Data Monitoring in 5G O-RAN Networks](/202604/18/2604.12972v1-esn-dagmm-a-lightweight-framework-for-unsupervised-time-series-data-monitoring-in-5g-o-ran-networks)  
+   标签：评分：8.0/10、query:ts-fm
+   evidence：无监督时间序列监控与时间依赖建模
+3. [FAST: A Synergistic Framework of Attention and State-space Models for Spatiotemporal Traffic Prediction](/202604/18/2604.13453v1-fast-a-synergistic-framework-of-attention-and-state-space-models-for-spatiotemporal-traffic-prediction)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：非平稳时变函数的上下文学习
-7. [LLM-Enhanced Log Anomaly Detection: A Comprehensive Benchmark of Large Language Models for Automated System Diagnostics](/202604/17/2604.12218v1-llm-enhanced-log-anomaly-detection-a-comprehensive-benchmark-of-large-language-models-for-automated-system-diagnostics)  
-   标签：评分：8.0/10、query:llm-ts
-   evidence：基于大语言模型的日志异常检测基准测试
-8. [An End-to-end Building Load Forecasting Framework with Patch-based Information Fusion Network and Error-weighted Adaptive Loss](/202604/17/2604.13714v1-an-end-to-end-building-load-forecasting-framework-with-patch-based-information-fusion-network-and-error-weighted-adaptive-loss)  
-   标签：评分：8.0/10、query:llm-ts
-   evidence：基于 Patch 信息融合的建筑负荷预测
-9. [MambaSL: Exploring Single-Layer Mamba for Time Series Classification](/202604/17/2604.15174v1-mambasl-exploring-single-layer-mamba-for-time-series-classification)  
-   标签：评分：8.0/10、query:llm-ts
-   evidence：用于时间序列分类的Mamba架构
+   evidence：使用注意力和状态空间模型进行时空交通预测
+4. [Outperforming Self-Attention Mechanisms in Solar Irradiance Forecasting via Physics-Guided Neural Networks](/202604/18/2604.13455v1-outperforming-self-attention-mechanisms-in-solar-irradiance-forecasting-via-physics-guided-neural-networks)  
+   标签：评分：8.0/10、query:llm
+   evidence：太阳能辐照度预测与Transformer对比
 
 ### 速读区论文标签
-1. [Large Language Model Post-Training: A Unified View of Off-Policy and On-Policy Learning](/202604/17/2604.07941v1-large-language-model-post-training-a-unified-view-of-off-policy-and-on-policy-learning)  
+1. [New Hybrid Fine-Tuning Paradigm for LLMs: Algorithm Design and Convergence Analysis Framework](/202604/18/2604.09940v1-new-hybrid-fine-tuning-paradigm-for-llms-algorithm-design-and-convergence-analysis-framework)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：大语言模型训练后处理方法的综述与统一视角
-2. [ASPECT:Analogical Semantic Policy Execution via Language Conditioned Transfer](/202604/17/2604.08355v2-aspectanalogical-semantic-policy-execution-via-language-conditioned-transfer)  
+   evidence：结合全量和参数高效微调的LLM混合微调范式
+2. [A Multi-head Attention Fusion Network for Industrial Prognostics under Discrete Operational Conditions](/202604/18/2604.10248v1-a-multi-head-attention-fusion-network-for-industrial-prognostics-under-discrete-operational-conditions)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：利用大语言模型作为动态语义算子实现强化学习中的零样本迁移
-3. [Data-Driven Power Flow for Radial Distribution Networks with Sparse Real-Time Data](/202604/17/2604.08403v1-data-driven-power-flow-for-radial-distribution-networks-with-sparse-real-time-data)  
+   evidence：涡轮机和工业机械的预测建模
+3. [WaterAdmin: Orchestrating Community Water Distribution Optimization via AI Agents](/202604/18/2604.10343v1-wateradmin-orchestrating-community-water-distribution-optimization-via-ai-agents)  
    标签：评分：7.0/10、query:llm
-   evidence：配电网数据驱动潮流计算与智能电网运行
-4. [Generative AI Agent Empowered Power Allocation for HAP Propulsion and Communication Systems](/202604/17/2604.09015v1-generative-ai-agent-empowered-power-allocation-for-hap-propulsion-and-communication-systems)  
+   evidence：用于水分配优化和能耗的LLM智能体
+4. [Structural Gating and Effect-aligned Lag-resolved Temporal Causal Discovery Framework with Application to Heat-Pollution Extremes](/202604/18/2604.10371v1-structural-gating-and-effect-aligned-lag-resolved-temporal-causal-discovery-framework-with-application-to-heat-pollution-extremes)  
+   标签：评分：7.0/10、query:llm-ts
+   evidence：复杂多变量时间序列中的因果发现
+5. [Distributed Optimization with Coupled Constraints over Time-Varying Digraph](/202604/18/2604.10422v1-distributed-optimization-with-coupled-constraints-over-time-varying-digraph)  
    标签：评分：7.0/10、query:llm
-   evidence：生成式人工智能赋能的能源效率功率分配代理
-5. [Drift-Aware Online Dynamic Learning for Nonstationary Multivariate Time Series: Application to Sintering Quality Prediction](/202604/17/2604.09358v1-drift-aware-online-dynamic-learning-for-nonstationary-multivariate-time-series-application-to-sintering-quality-prediction)  
+   evidence：经济调度和需求响应的分布式优化
+6. [Audio Flamingo Next: Next-Generation Open Audio-Language Models for Speech, Sound, and Music](/202604/18/2604.10905v1-audio-flamingo-next-next-generation-open-audio-language-models-for-speech-sound-and-music)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：非平稳多元时间序列的在线动态学习
-6. [Automated Instruction Revision (AIR): A Structured Comparison of Task Adaptation Strategies for LLM](/202604/17/2604.09418v1-automated-instruction-revision-air-a-structured-comparison-of-task-adaptation-strategies-for-llm)  
-   标签：评分：7.0/10、query:llm-ts
-   evidence：包括微调在内的LLM任务适配策略
-7. [In-situ process monitoring for defect detection in wire-arc additive manufacturing: an agentic AI approach](/202604/17/2604.09889v1-in-situ-process-monitoring-for-defect-detection-in-wire-arc-additive-manufacturing-an-agentic-ai-approach)  
-   标签：评分：7.0/10、query:llm-wd
-   evidence：基于焊接过程信号的大语言模型原位监测决策
-8. [Value-Guidance MeanFlow for Offline Multi-Agent Reinforcement Learning](/202604/17/2604.08174v1-value-guidance-meanflow-for-offline-multi-agent-reinforcement-learning)  
+   evidence：用于音频时间戳推理的时间音频思维链
+7. [Physics-Informed State Space Models for Reliable Solar Irradiance Forecasting in Off-Grid Systems](/202604/18/2604.11807v1-physics-informed-state-space-models-for-reliable-solar-irradiance-forecasting-in-off-grid-systems)  
+   标签：评分：7.0/10、query:llm
+   evidence：可再生能源系统的太阳辐照度预测
+8. [LVSum: A Benchmark for Timestamp-Aware Long Video Summarization](/202604/18/2604.10024v1-lvsum-a-benchmark-for-timestamp-aware-long-video-summarization)  
+   标签：评分：6.0/10、query:llm-ts
+   evidence：多模态大模型中的时间保真度与对齐
+9. [Virtual Smart Metering in District Heating Networks via Heterogeneous Spatial-Temporal Graph Neural Networks](/202604/18/2604.10166v1-virtual-smart-metering-in-district-heating-networks-via-heterogeneous-spatial-temporal-graph-neural-networks)  
    标签：评分：6.0/10、query:llm
-   evidence：使用流模型的离线多智能体强化学习
-9. [ASPECT:Analogical Semantic Policy Execution via Language Conditioned Transfer](/202604/17/2604.08355v1-aspectanalogical-semantic-policy-execution-via-language-conditioned-transfer)  
+   evidence：通过时空图神经网络进行热能网络智能运行
+10. [Data-Efficient Surgical Phase Segmentation in Small-Incision Cataract Surgery: A Controlled Study of Vision Foundation Models](/202604/18/2604.10514v1-data-efficient-surgical-phase-segmentation-in-small-incision-cataract-surgery-a-controlled-study-of-vision-foundation-models)  
+   标签：评分：6.0/10、query:ts-fm
+   evidence：用于时序阶段分割的视觉基础模型
+11. [Structure-Grounded Knowledge Retrieval via Code Dependencies for Multi-Step Data Reasoning](/202604/18/2604.10516v1-structure-grounded-knowledge-retrieval-via-code-dependencies-for-multi-step-data-reasoning)  
+   标签：评分：6.0/10、query:llm-ts
+   evidence：使用大语言模型解决特定领域的数据分析任务
+12. [GeoMeld: Toward Semantically Grounded Foundation Models for Remote Sensing](/202604/18/2604.10591v1-geomeld-toward-semantically-grounded-foundation-models-for-remote-sensing)  
+   标签：评分：6.0/10、query:llm-ts
+   evidence：光谱信号与文本描述之间的跨模态关系
+13. [Pseudoconvex Problems in Operational Decision Systems: Algorithms for Joint Learning and Optimization](/202604/18/2604.10778v1-pseudoconvex-problems-in-operational-decision-systems-algorithms-for-joint-learning-and-optimization)  
    标签：评分：6.0/10、query:llm
-   evidence：LLM作为强化学习智能体的动态语义算子
-10. [SOLAR: Communication-Efficient Model Adaptation via Subspace-Oriented Latent Adapter Reparametrization](/202604/17/2604.08368v1-solar-communication-efficient-model-adaptation-via-subspace-oriented-latent-adapter-reparametrization)  
-   标签：评分：6.0/10、query:llm-ts
-   evidence：基础模型的高效通信模型适配与微调
-11. [Risk-Aware Allocation of Transmission Capacity for AI Data Centers](/202604/17/2604.08854v1-risk-aware-allocation-of-transmission-capacity-for-ai-data-centers)  
-   标签：评分：6.0/10、query:llm
-   evidence：电力系统中AI数据中心的传输容量分配
-12. [PDE-regularized Dynamics-informed Diffusion with Uncertainty-aware Filtering for Long-Horizon Dynamics](/202604/17/2604.09058v1-pde-regularized-dynamics-informed-diffusion-with-uncertainty-aware-filtering-for-long-horizon-dynamics)  
-   标签：评分：6.0/10、query:llm-ts
-   evidence：长时程时空预测
-13. [Beyond Isolated Clients: Integrating Graph-Based Embeddings into Event Sequence Models](/202604/17/2604.09085v1-beyond-isolated-clients-integrating-graph-based-embeddings-into-event-sequence-models)  
-   标签：评分：6.0/10、query:llm-ts
-   evidence：将图嵌入集成到事件序列模型中以处理时间顺序
-14. [A Predictive View on Streaming Hidden Markov Models](/202604/17/2604.09208v1-a-predictive-view-on-streaming-hidden-markov-models)  
-   标签：评分：6.0/10、query:llm-ts
-   evidence：流式隐马尔可夫模型的预测优化框架
+   evidence：能源系统的联合学习与优化
+14. [MMR-AD: A Large-Scale Multimodal Dataset for Benchmarking General Anomaly Detection with Multimodal Large Language Models](/202604/18/2604.10971v1-mmr-ad-a-large-scale-multimodal-dataset-for-benchmarking-general-anomaly-detection-with-multimodal-large-language-models)  
+   标签：评分：6.0/10、query:ts-fm
+   evidence：多模态大语言模型用于通用异常检测
 
 
 <div class="dpr-home-promo-card">
