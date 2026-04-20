@@ -1,0 +1,5106 @@
+Title: Transformers Learn Latent Mixture Models In-Context via Mirror Descent
+
+URL Source: https://arxiv.org/pdf/2604.10848v1
+
+Published Time: Tue, 14 Apr 2026 01:52:46 GMT
+
+Number of Pages: 39
+
+Markdown Content:
+Published as a conference paper at ICLR 2026 
+
+# TRANSFORMERS LEARN LATENT MIXTURE MODELS 
+
+# IN-C ONTEXT VIA MIRROR DESCENT 
+
+Francesco D’Angelo ∗
+
+TML Lab, EPFL Switzerland 
+
+Nicolas Flammarion 
+
+TML Lab, EPFL Switzerland 
+
+ABSTRACT 
+
+Sequence modelling requires determining which past tokens are causally relevant from the context and their importance: a process inherent to the attention layers in transformers, yet whose underlying learned mechanisms remain poorly under-stood. In this work, we formalize the task of estimating token importance as an in-context learning problem by introducing a framework based on Mixture of Transition Distributions, where a latent variable determines the influence of past tokens on the next. The distribution over this latent variable is parameterized by unobserved mixture weights that transformers must learn in-context. We demon-strate that transformers can implement Mirror Descent to learn these weights from the context. Specifically, we give an explicit construction of a three-layer trans-former that exactly implements one step of Mirror Descent and prove that the resulting estimator is a first-order approximation of the Bayes-optimal predictor. Corroborating our construction and its learnability via gradient descent, we empir-ically show that transformers trained from scratch learn solutions consistent with our theory: their predictive distributions, attention patterns, and learned transition matrix closely match the construction, while deeper models achieve performance comparable to multi-step Mirror Descent. 
+
+1 INTRODUCTION 
+
+In recent years, Machine Learning has been transformed by large language models (LLMs). These massive, complex models achieve unprecedented performance across diverse tasks beyond text gen-eration (Bubeck et al., 2023). A striking example is in-context learning (ICL) (Brown et al., 2020; Min et al., 2022), where models adapt to new tasks using only examples in the prompt without parameter updates. Mechanistic interpretability has made significant strides in explaining this phe-nomenon, revealing that transformers can implement computational circuits (Elhage et al., 2021; Olsson et al., 2022; D’Angelo et al., 2025) that mimic known algorithms. For instance, in set-tings like linear regression, they learn to implement gradient-based optimization (Garg et al., 2022; Aky¨ urek et al., 2022; Von Oswald et al., 2023a;b; Zhang et al., 2023; Ahn et al., 2023; Mahankali et al., 2024), while for Markov Chains, they implement counting-based estimators for the transition probabilities (Nichani et al., 2024; Edelman et al., 2024; Bietti et al., 2023a; Rajaraman et al., 2024; Ildiz et al., 2024; Svete & Cotterell, 2024; Chen et al., 2024). However, these successes are con-fined to problems where all the sequences rely on the same, fixed causal structure: the relationship between tokens is static. For instance, in the case of regression, the model only needs to learn that every even token depends on the previous odd token and in Markov chains, it learns that the next token depends only on the previous one. Real-world sequential data, particularly language, defies such simplicity. The meaning of a sentence arises not from the fixed sequence of word meanings, but from the dynamic causal links between the words that must be inferred from the context. These underlying structures, which are fundamental to language, are latent variables hidden from direct observation. Consider the sentence in Figure 1; to predict the final token, a model cannot rely on simple recency. It must infer a latent structure: that “dog” is the agent, “ball” is the relevant object, and “bird” is a distractor. The influence of a past token is not merely a function of its position, but of its inferred role. This ability to infer and reason 
+
+> ∗
+
+Correspondence to: francesco.dangelo@epfl.ch 
+
+1
+
+> arXiv:2604.10848v1 [cs.LG] 12 Apr 2026
+
+Published as a conference paper at ICLR 2026 The dog that saw the bird threw the ball , and then ran to .fetch                            
+
+> High λg
+> High λg′
+> Low λg′′
+> fetch chase roll · · · fly
+> dog 0.6 0.3 0.0 · · · 0.0
+> ····· · · ·
+> ball 0.5 0.0 0.4 · · · 0.0
+> bird 0.0 0.1 0.0 · · · 0.8
+
+π⋆ =
+
+Figure 1: To predict the final word, the model must infer the causal relevance of past tokens. Our MTD framework models this by separating a static, context-free unigram ( π⋆) from dynamic, context-dependent weights ( λ) that are inferred in-context. The model learns to assign high weights to the causally relevant positions (’dog’) and (’ball’), activating their respective slices of the unigram (e.g., π⋆(dog , ·) favouring verbs like fetch or chase ). Conversely, a low weight is assigned to the distractor (’bird’), suppressing its influence. 
+
+over unobserved variables, be it syntactic roles, speaker intent, or the causal topic of a discourse, is a hallmark of intelligence. A robust model must therefore move beyond fixed dependencies and learn to infer this latent structure, dynamically identifying which tokens are causally relevant in a given context. These considerations give rise to the core question of this paper: 
+
+Can transformers infer latent structures in-context, and what algorithm do they learn? 
+
+To investigate this question, we introduce a synthetic task based on the Mixture of Transition Dis-tributions (MTD) model (Raftery, 1985; Andr´ e Berchtold, 2002). This framework recasts token-importance estimation as learning latent mixture weights in-context. While prior work has used mixture models in regressions (Pathak et al., 2024) or HMMs (Xie et al., 2022) to study ICL, they did not unveil the mechanism through which transformers learn to infer the latent mixture weights. We make the following contributions: 1. We introduce a framework for ICL based on latent variables using MTD: we create a syn-thetic task that frames the estimation of the influence of past tokens as learning latent mix-ture weights in-context. 2. We show that transformers can solve this task by implementing Mirror Descent and give an explicit construction of a 3-layer transformer that exactly implements one step of this algorithm. 3. We prove that the resulting one-step estimator yields a first-order approximation of the Bayes-optimal predictor. 4. We empirically validate that transformers trained from scratch with Adam learn solutions consistent with this construction matching the predictive distributions and attention patterns while deeper models achieve performance comparable to multi-step Mirror Descent. We show that transformers implement Mirror Descent to dynamically infer which past tokens are relevant, a capability fundamental to sequence modeling and, in particular, to capturing higher-order dependencies in language. This provides a gradient-based explanation of ICL in sequence modeling and offers a new algorithmic lens for understanding latent-variable inference in attention-based models. We defer to the Appendix C a more detailed discussion of related work. 
+
+Why MTD? Our choice of the MTD model is motivated by the desire to capture both in-weight and in-context learning in a single, controlled setting. While prior ICL work has focused on settings and tasks where nearly all useful structure must be inferred from the prompt (e.g., gradient-descent ICL in linear regression or counting estimators for simple Markov chains), our setup explicitly assumes that some statistical structure, namely the transition matrix π⋆, can be stored in the model’s weights during pretraining and reused at inference time to infer in-context the mixture weights λ
+
+from a single sequence. This mirrors a plausible regime for large language models, which cannot memorize full high-order n-grams due to their sample complexity growing exponentially with n
+
+but can realistically encode lower-order n-grams in their weights and dynamically reweight the influence of different past tokens depending on the context. Our in-context learning framework explicitly couples an in-weight component (learning π⋆) with an in-context component (inferring 
+
+λ), providing a natural testbed for studying the interplay between in-weight and in-context learning in LLMs. 2Published as a conference paper at ICLR 2026 
+
+2 DISENTANGLED TRANSFORMERS 
+
+The disentangled transformer (Friedman et al., 2023) is a modification of a standard Transformer with relative positional encodings (RPE) (Shaw et al., 2018), designed for enhanced interpretability by: (1) removing MLPs; (2) replacing residual connections with concatenation, creating an explicit residual stream that preserves computations from all previous layers; and (3) simplifying the atten-tion mechanism to use a single attention matrix instead of separate query and key matrices, and absorbing the value projection into the output matrix. Nichani et al. (2024) demonstrated that disen-tangled transformers are equivalent to standard transformers using only attention layers. The model maps a sequence of tokens s = ( s1, . . . , s T ) from a finite alphabet S to a sequence of vectors. Each token si is represented by its one-hot vector esi ∈ { 0, 1}|S| , yielding the initial representation 
+
+h(0)  
+
+> i
+
+= esi ∈ Rd0 with d0 = |S| . The model consists of L layers. We denote by h(l) 
+
+> i
+
+∈ Rdl the full hidden state of token i after layer l, and by ˆh(l,h ) 
+
+> i
+
+the output of attention head h in layer l. For each head h ∈ { 1, . . . , H l}, the pre-softmax attention score e(l,h ) 
+
+> ij
+
+between query i and key j is: 
+
+e(l,h ) 
+
+> ij
+
+= ( h(l−1)  
+
+> i
+
+)⊤W (l,h ) 
+
+> A
+
+h(l−1)  
+
+> j
+
++ ( h(l−1)  
+
+> i
+
+)⊤r(l,h ) 
+
+> ij
+
+. (1) Here, W (l,h ) 
+
+> A
+
+∈ Rdl−1×dl−1 is a learnable attention matrix and r(l,h ) 
+
+> ij
+
+= ( R(l,h ) 
+
+> A
+
+)i−j+1 ,: is a relative positional encoding vector retrieved from a learnable lookup table R(l,h ) 
+
+> A
+
+∈ RT ×dl−1 . The attention weights are computed via a causally masked softmax: A(l,h ) 
+
+> ij
+
+= [ softmax (e(l,h ) 
+
+> i
+
+)] j , where e(l,h ) 
+
+> i
+
+is the vector of scores. The output of a single attention head is formed by concatenating the full hidden state h(l−1)  
+
+> j
+
+with a positional value embedding r′(l,h ) 
+
+> ij
+
+before the weighted sum. The full hidden state is then updated by concatenating the input with all head outputs: 
+
+ˆh(l,h ) 
+
+> i
+
+= XTj=1 A(l,h ) 
+
+> ij
+
+Concat 
+
+
+
+h(l−1)  
+
+> j
+
+, r′(l,h )
+
+> ij
+
+
+
+h(l) 
+
+> i
+
+= Concat 
+
+
+
+h(l−1)  
+
+> i
+
+, ˆh(l, 1)  
+
+> i
+
+, . . . , ˆh(l,H l)
+
+> i
+
+
+
+.
+
+The positional value embeddings r′(l,h ) 
+
+> ij
+
+are retrieved from a second lookup table R(l,h ) 
+
+> V
+
+∈ RT ×dR ,where dR is a fixed hyperparameter. The dimension of the representation thus grows according to the recurrence dl = dl−1 + Hl · (dl−1 + dR). After L layers, a final linear layer with matrix 
+
+WO ∈ R|S|× dL maps h(L) 
+
+> i
+
+to logit predictions. 
+
+3 MIXTURE OF TRANSITION DISTRIBUTIONS FOR IN-C ONTEXT LEARNING 
+
+The Mixture of Transition Distributions (MTD) model (Raftery, 1985), is a higher-order Markov chain that offers a parsimonious representation of long-range dependencies. The idea is to model the probability of the next state as a mixture over lags, where a transition matrix is applied to the token at each lag, and the mixture weights determine the relative influence of each past position. 
+
+Model Definition: Let Y = (Y1, . . . , Y T ) be a sequence of random variables tak-ing values in a finite alphabet Y = {1, . . . , q }. The MTD model of order m ex-plains this sequence by positing a corresponding sequence of unobserved latent vari-ables Z = (Zm+1 , . . . , Z T ), where each Zt ∈ {1, . . . , m } acts as a switch, select-ing which of the m previous tokens, Yt−1, . . . , Y t−m, will influence the current token Yt.
+
+> Zt−2
+> Yt−2
+> Zt−1
+> Yt−1
+> Zt
+> Yt
+
+Figure 2: MTD for m=2. 
+
+The selection of this lag is a random event, governed by the mixture weights λ = ( λ1, . . . , λ m) with λg ≥ 0 for all g and Pmg=1 λg = 1 ,such that the probability of choosing lag g is given by P(Zt = g) = λg .Once the lag Zt = g is sampled, the next token Yt is generated from a first-order transition that depends only on the state at the sampled po-sition, Yt−g . This is captured by a transition matrix π ∈ P with P the set of q × q row-stochastic matrices defining the conditional probabil-ities π(i, j ) = P(Yt = j | Yt−g = i, Z t = g). Marginalizing over the unobserved latent variable Zt, we obtain the predictive distribution: 
+
+Definition 1 (Mixture Transition Distribution) . A sequence of random variables Y follows an m-th order MTD model if for all t > m and any history yt−11 , the conditional probability of Yt is: 
+
+P(Yt = yt | Y t−11 = yt−11 , λ) = Xmg=1 λg π(yt−g , y t), (2) 
+
+where the parameters λ = ( λ1, . . . , λ m) are the mixture weights and π the transition matrix. 
+
+3Published as a conference paper at ICLR 2026 This structure allows one to model different effective contexts, making it more flexible than a first-order Markov chain while preserving tractability by requiring only m − 1 + q(q − 1) parameters compared to the qm(q − 1) of a full m-th order Markov chain. 
+
+The In-Context Learning Task: We design an in-context learning task based on the MTD model structured as follows: Given a transition matrix π we generate sequences y, by sampling for each a new vector of mixture weights λ from a prior λ ∼ Dirichlet (α = 1). This λ vector is the hidden 
+
+task that defines the statistical structure of that particular sequence. The sequence y = ( y1, . . . , y T )
+
+is then generated according to the MTD model in equation 2. The learning objective for a model 
+
+f ∈ F , such as a transformer, is to predict the next token yt given the context yt−11 :
+
+inf   
+
+> f∈F
+
+Eλ∼Dirichlet (α)Ey∼MTD (λ,π⋆)
+
+KL  p(Yt|yt−11 , λ) ∥ f (yt−11 ) . (3) To perform this prediction optimally, the model must effectively learn the mixture weights λ of the latent variables Zt, which are not directly observable in the sequence and differ across sequences: 
+
+In-Context Task : Learn the unknown mixture weights λ given a single sequence y.
+
+The Bayes Optimal Solution: The solution to the ICL task (Eq. 3) is the Bayesian predictive distribution, p(Yt+1 | yt
+
+> 1
+
+, α).
+
+Proposition 1 (Bayes-Optimal MTD Predictor) . Given the MTD model with a known transition matrix π, a prior p(λ|α), and an observed sequence yt
+
+> 1
+
+, the Bayesian predictive distribution for 
+
+Yt+1 = j is a convex combination of the lag-specific transition probabilities, weighted by the poste-rior mean of the mixture weights λ:
+
+p(Yt+1 = j | yt
+
+> 1
+
+, α) = 
+
+> m
+
+X
+
+> g=1
+
+ˆλBayes  
+
+> g
+
+·π(yt+1 −g , j ) ˆλBayes  
+
+> g
+
+:= E[λg | yt
+
+> 1
+
+, α] = 
+
+Z
+
+> ∆m−1
+
+λg ·p(λ | yt
+
+> 1
+
+, α) dλ,
+
+(4) 
+
+where p(λ | yt
+
+> 1
+
+, α) ∝ p(yt 
+
+> 1
+
+| λ)p(λ | α) is the posterior distribution with p(yt 
+
+> 1
+
+| λ) =
+
+Qtk=m+1 (Pmh=1 λhπ(yk−h, y k)) being the likelihood. 
+
+The derivation is provided in Appendix F. While elegant, the Bayes-optimal predictor is analytically intractable. The core issue is that the Dirichlet prior is not conjugate to the MTD likelihood, mean-ing the posterior distribution does not have a closed form. Consequently, the integral defining the posterior mean ˆλBayes  
+
+> g
+
+cannot be computed directly, necessitating the use of approximation methods. 
+
+Mirror Descent (MD): The intractability of the posterior mean motivates considering simpler point estimates, such as the Maximum Likelihood Estimate (MLE) or the Maximum A Posteriori (MAP) estimate which are equivalent under uniform Dirichlet prior. However, analytical computation of either the MLE or MAP is intractable, necessitating iterative optimization methods. Methods such as Expectation–Maximization (EM) or Mirror Descent (MD) are preferred over standard gradient descent, as they are naturally adapted to the geometry of the simplex. For an extended discussion, see Appendix H. Furthermore, even if the MAP estimate could be found, it represents the mode of the posterior distribution, which does not coincide with the posterior mean in the Bayes-optimal predictor, therefore leading to suboptimal predictions. Mirror Descent, is a first-order method particularly well-suited for optimizing over the probability simplex ∆m−1 Nemirovskij & Yudin (1983); Beck & Teboulle (2003). By using a Bregman diver-gence based on the negative entropy potential Ψ( λ) = −H(λ), where H(λ) = − Pmg=1 λg log λg
+
+is the Shannon entropy, MD results in the Exponentiated Gradient (EG) algorithm, which has a simple multiplicative update rule (see Appendix H.4 for details): 
+
+λ(k+1)  
+
+> g
+
+= λ(k) 
+
+> g
+
+exp( η · ∇ λℓ(λ(k))g )
+
+Pmh=1 λ(k) 
+
+> h
+
+exp( η · ∇ λℓ(λ(k))h) , (5) where η > 0 is the learning rate and ∇λℓ(λ(k)) the gradient of the log-likelihood evaluated at λ(k). Instead of iterating the EG algorithm to convergence, we analyze a non-iterative es-timator derived from a single update step, initialized at the center of the probability simplex (λ(0) = (1 /m, . . . , 1/m )). This approach yields a computationally efficient, regularized approx-imation of the MLE, which we demonstrate serves as an effective proxy for the posterior mean. 4Published as a conference paper at ICLR 2026 
+
+Proposition 2 (One-Step MD Estimator) . Initializing the EG algorithm (Eq. 5) at λ(0) =(1 /m, . . . , 1/m ) and applying a single update step for the MTD model yields the estimator: 
+
+ˆλMD  
+
+> g
+
+:= exp 
+
+
+
+η · m Ptk=m+1 γk(g)
+
+Pmj=1 exp 
+
+
+
+η · m Ptk=m+1 γk(j)
+
+ γk(g) := p(Zk = g | yk 
+
+> 1
+
+, λ(0) ) = π(yk−g , y k)
+
+Pmh=1 π(yk−h, y k) ,
+
+(6) 
+
+where γk(g) is the posterior responsibility of lag g at step k > m , under the uniform prior. 
+
+The derivation is provided in Appendix H.4. This one-step estimator computes, for each step k in the sequence, the posterior probability that lag g was responsible for generating yk (assuming all lags equally likely a priori). These responsibilities are summed across the sequence and fed into a softmax function to produce the estimate ˆλMD with the learning rate η controlling its sharpness. 
+
+4 TRANSFORMERS IMPLEMENT ONE -S TEP OF MIRROR DESCENT 
+
+We present our main theoretical result: a constructive proof that the one-step MD estimator can be implemented by a Transformer. The crucial mechanism relies on relative position encodings to cor-rectly route information, allowing the self-attention layer to compute the posterior responsibilities. 
+
+Proposition 3 (Transformer Implementation of the One-Step MD Estimator) . Given an MTD model of order m with a known transition matrix π⋆ ∈ P , for any sequence y1: T of length T ≥ m,there exists a three-layer disentangled Transformer ˜T with single head, d0 = q and dR ≥ m
+
+that implements the one-step MD estimator. The Transformer produces at position T the predictive distribution for token YT given context yT −11 :
+
+˜T (y1: T )T =
+
+> m
+
+X
+
+> g=1
+
+˜λg (y1: T ) · π⋆(yT −g , :) ˜λg (y1: T ) = exp 
+
+ βT −m
+
+PTi=m+1 γi(g)
+
+Pmh=1 exp 
+
+ βT −m
+
+PTi=m+1 γi(h)
+
+ , (7) 
+
+with the weights ˜λ(y1: T ) computed exactly as the one-step MD estimate and β is a learnable pa-rameter corresponding to the scaled learning rate of the MD algorithm. 
+
+In the following we prove Proposition 3 by explicitly constructing a 3-layer disentangled Trans-former that implements the one-step MD estimator. The first layer computes the posterior responsi-bilities γi(g), the second layer computes the logits PTi=m+1 γi(g), and the third layer produces the final estimate vector ˜λ(y1: T ) within its attention weights 1.
+
+Layer 1, Posterior Responsibilities: The first layer uses the attention matrix W (1)  
+
+> A
+
+to compute the posterior responsibilities and the relative positional encoding r′ 
+
+> ij
+
+to store it in the residual stream: 
+
+W (1)  
+
+> A
+
+= (log π⋆)⊤, (R(1)  
+
+> A
+
+)k, : =
+
++δ1 · 1⊤ 2 ≤ k ≤ m + 1 
+
+−δ1 · 1⊤ otherwise , (R(1)  
+
+> V
+
+)k, : =
+
+e⊤ 
+
+> k−1
+
+2 ≤ k ≤ m + 1 
+
+0⊤ otherwise 
+
+R(1) ⊤ 
+
+> A
+
+= δ1   
+
+> 12. . . m+1 m+2 . . . T
+
+
+
+-1 1 . . . 1 -1 . . . -1 
+
+-1 1 . . . 1 -1 . . . -1 
+
+... ... . . . ... ... ... ...
+
+-1 1 . . . 1 -1 . . . -1 
+
+R(1) ⊤ 
+
+> V
+
+=    
+
+> 12. . . . . . m+1 m+2 . . . T
+
+
+
+0 1 0 . . . 0 0 . . . 0
+
+0 0 1 . . . 0 0 . . . 0
+
+... ... . . . ... ... ... ... ...
+
+0 0 . . . 0 1 0 . . . 0
+
+where log is applied element-wise, k = i−j +1 is the relative position between token i and j shifted by 1. The lookup table R(1)  
+
+> A
+
+biases attention to focus only on the first m relative positions (the lags). The lookup table R(1)  
+
+> V
+
+uses one-hot vectors ek to copy the computed attention weight for a specific lag into the corresponding dimension of the output vector, thereby storing the responsibilities for 
+
+> 1
+
+The attention-based computation of responsibilities in the first layer is shared with the construction of D’Angelo et al. (2025). However, our aggregation and prediction layers leverage RPE value embeddings to store responsibilities in dedicated dimensions, yielding a single-head construction. 
+
+5Published as a conference paper at ICLR 2026 different lags in distinct positions. The attention score eij for this layer is computed as per Equation 1. Given that the input is one-hot encoded, i.e., h(0)  
+
+> i
+
+= eyi , the score becomes: 
+
+eij = e⊤ 
+
+> yi
+
+(log π⋆)⊤eyj + e⊤ 
+
+> yi
+
+r(1)  
+
+> ij
+
+= log π⋆(yj , y i) + 
+
++δ1 if 1 ≤ i − j ≤ m
+
+−δ1 otherwise ,
+
+where we used that the RPE vector rij is constant with respect to the token values yi. For a large 
+
+δ1, the softmax only attends to keys j such that their relative position k = i − j is within the range 
+
+[1 , m ]. The causal attention weights A(1)  
+
+> ij
+
+for j ≤ i are given by: 
+
+A(1)  
+
+> ij
+
+= exp( eij )
+
+Pij′=1 exp( eij ′ ) = π⋆(yj , y i) exp( e⊤ 
+
+> yi
+
+r(1)  
+
+> ij
+
+)
+
+Pij′=1 π⋆(yj′ , y i) exp( e⊤ 
+
+> yi
+
+r(1)  
+
+> ij ′
+
+) .
+
+In the limit δ1 → ∞ , the behavior of the softmax changes based on the position i. For the first token (i = 1 ), the only valid key is itself ( j′ = 1 ), which means the attention is entirely self-contained, resulting in A(1) 11 = 1 . For any subsequent token ( i > 1), the terms in the denominator corresponding to lags k ∈ [1 , m ] are scaled by exp( δ1), while all other terms, including the diagonal ( k = 0 ), are scaled by exp( −δ1) and vanish. This yields the following limit for i > 1:
+
+A(1)  
+
+> ij
+
+=
+
+  
+
+> π⋆(yj,y i)
+> ˆmP
+> k=1
+> π⋆(yi−k,y i)
+
+i − j ∈ [m]0 otherwise 
+
+A(1) =                                                
+
+> 
+> 1000000. . .
+> ∗000000. . .
+> ∗∗00000. . . .......... . .............
+> 0. . . γT−1(m). . . γT−1(2) γT−1(1) 0. . .
+> 0. . . 0γT(m). . . γT(2) γT(1) 0
+> 
+
+where ˆm = min( i − 1, m ). For positions i > m , where the MTD model is defined, the attention mechanism thus computes A(1)  
+
+> ij
+
+= γi(i − j) for the active lags ( 1 ≤ i − j ≤ m). This expression is precisely the posterior responsibility γi(g) from Equation 6, where the lag is g = i − j. For earlier steps ( 1 < i ≤ m), the attention mechanism computes the natural counterpart by normalizing over the i − 1 available lags. The resulting attention matrix A(1) has a specific banded lower-triangular structure. The output of this layer, ˆh(1)  
+
+> i
+
+, is the attention-weighted sum over the concatenated value vectors. Given that the attention weights Aij compute the posterior responsibilities γi(g) (for i > m), and R(1)  
+
+> V
+
+embeds the lag g = i − j as a one-hot vector eg , the output for a position i > m is: 
+
+ˆh(1)  
+
+> i
+
+=
+
+> i−1
+
+X
+
+> j=1
+
+Aij Concat( eyj , r′(1)  
+
+> ij
+
+) = 
+
+> m
+
+X
+
+> g=1
+
+γi(g) Concat( eyi−g , eg ) . (8) This output is a convex combination, weighted by the posterior responsibilities, of vectors that each concatenate two pieces of information: the one-hot encoding of the token at a given lag ( eyi−g ) and the one-hot encoding of eg of the lag itself ( g): 
+
+ˆh(1)  
+
+> i
+
+= γi(m)
+
+
+
+eyi−m
+
+0
+
+...
+
+1
+
+| {z } 
+
+> Lag m
+
++ · · · + γi(2) 
+
+
+
+eyi−2
+
+01
+
+...
+
+| {z } 
+
+> Lag 2
+
++ γi(1) 
+
+
+
+eyi−1
+
+10
+
+...
+
+| {z } 
+
+> Lag 1
+
+= 
+
+> Pmg=1 γi(g)eyi−g
+> γi(1)
+> γi(2)
+> ...γi(m)
+> 
+
+In essence, the top part of ˆh(1)  
+
+> i
+
+contains a weighted sum of past tokens (which will not be used), while its bottom part explicitly stores the vector of posterior responsibilities with the value γi(g) for lag g stored at the g-th position within this second block (i.e., γi(1) is first, followed by γi(2) , etc.). 
+
+Layer 2, Summing Responsibilities: The second layer sums along the sequence the responsi-bility vectors computed in Layer 1, for tokens at positions i > m . This is achieved by setting the content-based attention to zero ( W (2)  
+
+> A
+
+= 0) and the value-rpe matrix to zero ( R(2)  
+
+> V
+
+= 0). The mechanism relies on the content-position interaction (h(1)  
+
+> i
+
+)⊤r(2)  
+
+> ij
+
+. Crucially, the input vector 
+
+h(1)  
+
+> i
+
+= Concat( eyi , ˆh(1)  
+
+> i
+
+) retains in the residual stream the one-hot embedding eyi of the current 6Published as a conference paper at ICLR 2026 token in its first q dimensions. The RPE table R(2)  
+
+> A
+
+is structured to interact only with this part of the vector, turning the dot product into a fixed bias: 
+
+W (2)  
+
+> A
+
+= 0d1×d1 , (R(2)  
+
+> A
+
+)k, : =
+
+ 01×d1 if 1 ≤ k ≤ T − m
+
+[−δ2 · 11×q , 01×(q+m)] otherwise , R(2)  
+
+> V
+
+= 0T ×m
+
+The attention score for the final query at i = T therefore simplifies to: 
+
+eT j = ( h(1)  
+
+> T
+
+)⊤r(2)  
+
+> T j
+
+=
+
+
+
+(h(1)  
+
+> T
+
+)⊤
+
+−δ2 · 1q
+
+0q+m
+
+
+
+= −δ2 · (e⊤ 
+
+> yT
+
+1q ) = −δ2 if 1 ≤ j ≤ m
+
+(h(1)  
+
+> T
+
+)⊤0d1 = 0 otherwise In the limit δ2 → ∞ , the softmax places uniform attention only on the keys where the score is not 
+
+−∞ . This results in uniform attention weights AT j = 1 /(T − m) for j ∈ [m + 1 , T ], and zero otherwise. The layer’s output for the final token is therefore the exact average of the desired vectors: 
+
+ˆh(2)  
+
+> T
+
+=
+
+> T
+
+X
+
+> j=1
+
+AT j Concat( h(1)  
+
+> j
+
+, r′ 
+
+> T j
+
+) = 1
+
+T − m
+
+> T
+
+X
+
+> j=m+1
+
+Concat( h(1)  
+
+> j
+
+, 0) = 1
+
+T − m         
+
+> PTj=m+1 eyj
+> PTj=m+1
+> Pmg=1 γj(g)eyj−g
+> PTj=m+1 γj(1)
+> PTj=m+1 γj(2)
+> ·
+> PTj=m+1 γj(m)
+> 0
+> 
+
+Defining Γj = ( γj (1) , γ j (2) , . . . , γ j (m)) ⊤, the m-dimensional sub-block at positions 2q+1 to 
+
+2q+m of ˆh(2)  
+
+> T
+
+contains the averaged responsibility vector 1 
+
+> T−m
+
+PTj=m+1 Γj , which is exactly the quantity needed to implement the one-step MD estimator in Prop. 2. 
+
+Layer 3, Final Predictive Weights: The third and final layer uses the averaged responsibilities computed in Layer 2 to produce the final predictive weights, ˜λ, which correspond to the one-step MD estimate from Prop. 2. This is accomplished by using the RPE table, R(3)  
+
+> A
+
+, to perform a selective dot product. The query vector for the final token, h(2)  
+
+> T
+
+, contains the vector of averaged responsibilities in the Γ sub-block of ˆh(2)  
+
+> T
+
+. The RPE vectors in R(3)  
+
+> A
+
+are constructed as scaled one-hot vectors that align with this sub-block, effectively using the dot product to ”read out” the corresponding averaged responsibility. Similarly to layer 2, to only have non-zero attention at the positions corresponding to the m lags, we use the one-hot embedding of the current token eyi from the residual stream 
+
+h(2)  
+
+> i
+
+= Concat( eyi , ˆh(1)  
+
+> i
+
+, ˆh(2)  
+
+> i
+
+) to add a fixed bias δ3 which drives the softmax to zero in the limit. The content-based attention and value-rpe are again disabled: 
+
+W (3)  
+
+> A
+
+= 0d2×d2
+
+R(3)  
+
+> V
+
+= 0T ×m
+
+, (R(3)  
+
+> A
+
+)k, : =
+
+(
+
+[ 
+
+> on h(0)
+
+z }| {
+
++δ3 · 1⊤ 
+
+> q
+
+, 
+
+> on ˆh(1)
+
+z }| { 
+
+0⊤
+
+> q+m
+
+, 
+
+> on ˆh(2) 1:2 q
+
+z}|{ 
+
+0⊤ 
+
+> 2q
+
+, 
+
+> on Γ
+
+z }| { 
+
+β · e⊤ 
+
+> k
+
+, 
+
+> on ˆh(2) 2q+m+1:2 q+2 m
+
+z}|{ 
+
+0⊤ 
+
+> m
+
+] if k ∈ [m][−δ3 · 1⊤ 
+
+> q
+
+, 0⊤
+
+> q+m
+
+, 0⊤ 
+
+> 2q
+
+, 0⊤
+
+> m
+
+, 0⊤
+
+> m
+
+] otherwise 
+
+Here, ek is a one-hot vector in Rm that selects the coordinate corresponding to the k-th responsibility in the Γ sub-block of h(2)  
+
+> T
+
+, and β is the learnable scaled learning rate. Visually, the RPE table R(3) 
+
+> A
+
+is a sparse matrix of scaled one-hot vectors: 
+
+R(3) ⊤ 
+
+> A
+
+=[1 , · · · , m ] · · · · · · T
+
+
+
+h(0) +δ3 · 1q , · · · , +δ3 · 1q −δ3 · 1q −δ3 · 1q −δ3 · 1q
+
+ˆh(1) 0 0 0 0
+
+ˆh(2) 1:2 q 0 0 0 0Γ  βe1 βe2 · · · βem
+
+ 0 0 0
+
+ˆh(2) 2q+m+1:2 q+2 m 0 0 0 0
+
+Since W (3)  
+
+> A
+
+= 0d2×d2 , the score simplifies to the content-position interaction (h(2)  
+
+> T
+
+)⊤r(3)  
+
+> T j
+
+and 
+
+r(3)  
+
+> T j
+
+is constructed to be non-zero only for relative positions g = T − j + 1 ∈ [1 , m ]. For these 7Published as a conference paper at ICLR 2026 lags, the RPE is a scaled one-hot vector that acts as a selector, using the dot product to extract the corresponding averaged responsibility stored in h(2)  
+
+> T
+
+:
+
+eT j = ( h(2)  
+
+> T
+
+)⊤r(3)  
+
+> T j
+
+=
+
+(
+
+(h(0)  
+
+> T
+
+)⊤(δ31q ) + ( Γ)⊤ 
+
+> T
+
+(βeg )
+
+−δ3 · (e⊤ 
+
+> yT
+
+1q ) =
+
+(
+
++δ3 + β ·   
+
+> PTi=m+1 γi(g)
+> T−m
+
+if g ∈ [m]
+
+−δ3 otherwise. The attention scores for the final token, eT, :, becomes the scaled averaged responsibility: 
+
+eT, : =
+
+
+
+−δ3, . . . , −δ3, +δ3 + β  
+
+> PTi=m+1 γi(m)
+> T−m
+
+| {z }  
+
+> pos T−m+1
+
+, . . . , +δ3 + β  
+
+> PTi=m+1 γi(2)
+> T−m
+
+| {z }  
+
+> pos T−1
+
+, +δ3 + β  
+
+> PTi=m+1 γi(1)
+> T−m
+
+| {z } 
+
+> pos T
+
+
+
+After applying the softmax and in the limit of large δ3, the attention weights for the last token compute the MD estimate of the mixture weights ˜λg and place them at the correct positions: 
+
+lim  
+
+> δ3→∞
+
+AT,T −g =exp 
+
+
+
+β  
+
+> PTi=m+1 γi(g)
+> T−m
+
+Pmk=1 exp 
+
+
+
+β  
+
+> PTi=m+1 γi(k)
+> T−m
+
+ lim  
+
+> δ3→∞
+
+AT, : =
+
+
+
+. . . , 0, ˜λm
+
+|{z}  
+
+> T−m+1
+
+, . . . , ˜λ2
+
+|{z}  
+
+> T−1
+
+, ˜λ1
+
+|{z} 
+
+> T
+
+
+
+.
+
+This final attention operation is the core of the estimation process. It computes the mixture weights 
+
+˜λ, which serve as the in-context estimates of token importance, thus realizing the mechanism of in-context learning this work seeks to understand. 
+
+Output Layer: The final step of the construction is to apply the output matrix fWO to the final hidden state h(3)  
+
+> T
+
+to produce the predictive distribution over the next token. The matrix fWO learns the known transition matrix π⋆ and selectively applies it to the embedding of the last token. The output of the third attention layer, ˆh(3)  
+
+> T
+
+, is a weighted sum of the hidden states from the second layer, where the weights are the estimated mixture weights ˜λg : ˆh(3)  
+
+> T
+
+= PTj=1 A(3)  
+
+> T j
+
+h(2)  
+
+> j
+
+= Pmg=1 ˜λg h(2)  
+
+> T−g
+
+(where we drop the zero value-RPE block since R(3)  
+
+> V
+
+= 0T ×m). The first q components of any hidden state h(k) 
+
+> j
+
+, due to the residual stream, simply contain the original input h(0)  
+
+> j
+
+= eyj . Conse-quently, the first q components of ˆh(3)  
+
+> T
+
+are a ˜λ-weighted combination of the one-hot embeddings of the relevant past tokens: (ˆh(3)  
+
+> T
+
+)1: q = Pmg=1 ˜λg (h(2)   
+
+> T−g
+
+)1: q = Pmg=1 ˜λg eyT −g . The full hidden state is h(3)  
+
+> T
+
+= Concat( h(0)  
+
+> T
+
+, ˆh(1)  
+
+> T
+
+, ˆh(2)  
+
+> T
+
+, ˆh(3)  
+
+> T
+
+) and the output matrix fWO ∈ Rq×d3 is structured to ignore all preceding blocks and operate only on the first q components of the final block, ˆh(3)  
+
+> T
+
+. This is achieved by storing the transition matrix, π⋆⊤, in the corresponding sub-block: 
+
+fWO = from h(0)   
+
+> Tfrom
+
+ˆh(1)   
+
+> Tfrom
+
+ˆh(2)   
+
+> Tfrom
+
+ˆh(3) 
+
+> T
+
+( )0q×q 0q×(q+m) 0q×(2 q+2 m) [π⋆⊤ 
+
+> q×q
+
+0q×(3 q+3 m)] .
+
+Applying this matrix to the fully expanded final hidden state yields the predictive distribution: 
+
+˜T (y1: T )T = [ π⋆⊤ 0] ˆh(3)  
+
+> T
+
+= π⋆⊤(ˆh(3)  
+
+> T
+
+)1: q = π⋆⊤
+
+> m
+
+X
+
+> g=1
+
+˜λg eyT −g
+
+!
+
+=
+
+> m
+
+X
+
+> g=1
+
+˜λg π⋆(yT −g , :) .
+
+This final vector is exactly the predictive distribution from Proposition 3, completing the proof. 
+
+5 WHY ONE -S TEP MIRROR DESCENT WORKS 
+
+We now turn to a theoretical analysis of the one-step MD estimator. We prove that a single mirror descent update, initialized at the uniform prior, recovers a first-order approximation of the Bayesian posterior mean. This result provides a formal justification for the effectiveness of the non-iterative estimator implemented by our construction. 
+
+One-Step MD as a First-Order Bayesian Approximation: We establish a theoretical connec-tion between the one-step Mirror Descent (MD) estimator and the Bayesian posterior mean. We show that their first-order Taylor expansions around the state of no evidence coincide up to a scalar 8Published as a conference paper at ICLR 2026 constant. This result justifies interpreting the one-step MD estimator as a principled approxima-tion to the Bayes-optimal predictor, especially in low-data regimes. The analysis hinges on treating both estimators as functions of the log-likelihood gradient evaluated at the center of the simplex, 
+
+g := ∇λℓ(λ(0) ), and expanding them around the point of no evidence, g = 0.
+
+Theorem 1 (First-Order Equivalence of the Estimators) . Let ˆλMD (g; η) be the one-step MD esti-mator with learning rate η, and let ˆλBayes (g) be the Bayesian posterior mean under the linearized likelihood. The two estimators are first-order equivalent at g = 0 for η = 1 
+
+> m+1
+
+.
+
+Learning-rate scaling via a Lipschitz (smoothness) constant: We established a first-order equiv-alence between the one-step MD estimator and the Bayesian posterior mean at g = 0 (the “no-evidence” regime). For a sequence of length T , however, the gradient norm |g| scales with T
+
+(see App. K), raising the question of how to scale the learning rate of ˆλMD = softmax( ηg) with 
+
+T . Mirror Descent theory suggests choosing the learning rate inversely proportional to the rela-tive smoothness constant Lrel (Bauschke et al., 2017). Because our MD update is derived from the negative entropy potential, smoothness is defined w.r.t. the KL divergence. Convergence requires 
+
+η ≤ 1/L rel . We now bound this constant and find exactly the scaling implemented in the Trans-former in Prop. 3. 
+
+Theorem 2 (Relative Smoothness and η scaling) . At the center of the simplex λ = (1 /m, . . . , 1/m ),the loss f (λ) = −ℓ(λ) is Lrel -smooth relative to the KL-divergence, with Lrel ≤ (T − m) m2.Consequently the stable step-size rule η ≤ 1 
+
+> Lrel
+
+yields the asymptotic scaling η = Θ   1
+
+> T
+
+ for fixed m.
+
+Beyond the Local Approximation, The Implicit Regularization of Mirror Descent: 10 1 10 2  
+
+> Sequence Length
+> 10 2
+> 10 1
+> KL Divergence
+> MLE
+> Bayes
+> Reg
+
+Figure 3: Regularized Es-timator. Comparison with Bayes and MLE estimators. 
+
+The first-order equivalence in Theorem 1 holds only for short se-quences, where the log-likelihood gradient is small. For longer se-quences, neglected higher-order terms become significant, and the one-step estimator diverges from the Bayesian mean. Empirically, however, a few additional Mirror Descent steps substantially reduce this gap (see Figure 5). In this regime, iterating MD to convergence yields the suboptimal MLE, while early stopping provides a much closer match to the Bayesian mean. We propose that this effect arises from implicit regularization. Specifically, early-stopped MD approx-imately solves an entropy-regularized optimization problem of the form min λ −ℓ(λ) + γH (λ) with the iterates tracking the correspond-ing regularization path (Suggala et al., 2018). Along this path, per-formance on par with the Bayes-optimal estimator is achieved for an appropriate choice of regularization γ (see Figure 3). Thus, early stopping is effectively equivalent to selecting this favorable point on the entropy-regularized path, avoiding the suboptimal MLE. 
+
+6 EXPERIMENTS 
+
+We validate our main claims below; further details and additional experiments are in App. B and E. 
+
+Setup: We train 3-layer disentangled transformers ˜Tdisent with single head with learned relative positional and one-hot semantic embeddings as well as 3-layer standard transformers Tstandard (no disentanglement) with single head attention with standard parameterization given by Query-Key-Value with learned relative positional and learned semantic embeddings. We sample a fixed q, m, π
+
+and at each iteration we sample a set of {λi}Bi=1 with B = 128 the batch size and λi ∼ Dir (α) and generate B sequences according to the MTD model. We train the model for 5 × 10 5 iterations using the Adam optimizer and MSE loss over the last token in the sequence for various sequence lengths. The choice of MSE over the standard cross-entropy loss is motivated by the fact that a softmax output layer is misspecified for the mixture model our construction implements (see App. D.1), while restricting the loss to the last token isolates a single, well-defined learning rate β rather than forcing the model to learn a compromise across positions (see App. D.2). 
+
+Results for one-step MD: We plot the KL divergence with the ground truth transition probabilities between the trained transformer ˜Tdisent. and Tstandard. compared to our theoretical construction ˜Tconstr. ,the one-step MD estimator ˆλMD and the optimal-Bayes estimator ˆλBayes (we compute it via MCMC; see App. G.1) for various sequence lengths in Figure 4 (right). We observe that both the disentangled 9Published as a conference paper at ICLR 2026 Constructed                                                    
+
+> Layer 1 Layer 2 Layer 3
+> Trained (disentangled) Trained (standard) 01234
+> To State
+> 0
+> 1
+> 2
+> 3
+> 4
+> From State
+> 0.33 0.21 0.35 0.01 0.09
+> 0.04 0.26 0.27 0.27 0.16
+> 0.05 0.17 0.30 0.17 0.30
+> 0.37 0.07 0.02 0.23 0.31
+> 0.16 0.16 0.30 0.22 0.16
+> True
+> 01234
+> Key Dimension
+> 0
+> 1
+> 2
+> 3
+> 4
+> Query Dimension  0.32 0.27 0.35 0.00 0.06
+> 0.08 0.32 0.22 0.26 0.12
+> 0.09 0.18 0.26 0.19 0.30
+> 0.33 0.04 0.00 0.26 0.37
+> 0.20 0.16 0.27 0.23 0.13
+> Softmax( W(1)
+> A)
+> 0.05
+> 0.10
+> 0.15
+> 0.20
+> 0.25
+> 0.30
+> 0.35
+> 0.05
+> 0.10
+> 0.15
+> 0.20
+> 0.25
+> 0.30
+> 0.35
+> Trained SeqLen 192 | KL=0.0376
+
+Figure 4: Comparison of Trained and Constructed Transformers. Left: Attention maps of the trained transformer (disentangled and standard) versus our theoretical construction (seq. length 64). Right (top): 
+
+KL divergence to the ground truth transition probabilities for the trained transformers, the constructed trans-former, and the one-step MD estimator across sequence lengths. Right (bottom): First-layer attention softmax Softmax (W A⊤ 
+
+> 1
+
+) vs. true transitions matrix π⋆ for a trained model. 
+
+and standard trained transformers match the performance of the theoretical construction and the one-step MD estimator: for small sequence lengths, the latter serves as a good proxy for the optimal Bayes estimator, validating our theoretical result in Theorem 1, whereas for longer sequences it becomes suboptimal. By inspecting the attention maps of the trained transformers in Figure 4 (left) we can see that they learn to extract the responsibilities γ(g)i as expected from our construction (for all three models, the locations of low and high attention entries, and the diagonal structure induced by the MTD order, are closely aligned). To further validate if the attention matrix in the first layer actually learns the ground truth transition matrix π⋆ we plot the heatmap of the first attention softmax (W A⊤
+
+1 ) vs. π⋆ as well as the average row-wise KL divergence between the two matrices Figure 4 (bottom-right) more results in App. E. For both the ˆλMD and ˜Tconstr. we tune the learning rate β and η via grid search to minimize the KL divergence (see Section B.1 for more details). 0 500 1000 1500 2000 
+
+Sequence Length   
+
+> 10 3
+> 10 2
+> KL divergence
+
+train.     
+
+> Bayes
+> MD, k= 1
+> MD, k= 2
+
+train.     
+
+> Bayes
+> MD, k= 1
+> MD, k= 2
+
+Figure 5: Multi-Step MD vs. 5-Layer Transformer. KL divergence to the ground-truth transition probabilities for a 5-layer trained transformer, the k-step MD estimators and the Bayes-optimal estimator across sequence lengths. 
+
+Results multi-step MD: To investigate whether deeper Transformers can learn to implement multiple steps of Mirror Descent, we plot in Figure 5 the KL divergence for a 5-layer trained transformer ˜Ttrain. compared to the multi-step MD esti-mator ˆλMD ,k =i (i denoting the number of steps) across various sequence lengths, averaged over 3 seeds with error bars. We observe that the trained transformer closely tracks the perfor-mance of the 2-step MD estimator. We emphasize that this is a performance comparison, not a convergence or optimal-ity claim: we do not assert that the transformer converges to the 2-step MD solution. Rather, the experiment suggests that deeper transformers are capable of implementing estimators whose accuracy is at least comparable to that of multi-step MD. Notably, for longer sequences where the gap between the 2-step MD and the Bayes-optimal solution widens, the transformer performance exhibits some variance across seeds, occasionally falling below the 2-step curve. This hints that the learned estimator may not be tied to the 2-step MD and could, in principle, exploit additional structure. Extending 10 Published as a conference paper at ICLR 2026 our explicit construction to the multi-step setting is nontrivial and we leave it to future work; how-ever, the empirical finding that a 5-layer transformer suffices to match 2-step performance suggests that intermediate representations (e.g., the responsibilities computed in earlier layers) may be reused across steps. 
+
+7 CONCLUSIONS 
+
+We set out to understand whether transformers can learn latent causal structures in-context, and what algorithm they implement to do so. To this end, we introduced a framework based on MTD that for-malizes token-importance estimation as in-context inference of latent variables. Our central finding is that transformers solve this task by implementing Mirror Descent. We gave an explicit three-layer construction that exactly implements one step of the algorithm and proved that the resulting estimator is a first-order approximation of the Bayes-optimal predictor, with a learning-rate scaling 
+
+η = Θ(1 /T ) matching the transformer’s learned behavior. Empirically, transformers trained from scratch, both disentangled and standard, recover the constructed solution across predictive distri-butions and attention patterns, while deeper models achieve performance comparable to multi-step Mirror Descent. Taken together, our results extend the gradient-based interpretation of in-context learning from regression to sequential domains over discrete tokens, offering a new algorithmic lens for understanding latent-variable inference in attention-based models. 11 Published as a conference paper at ICLR 2026 
+
+ACKNOWLEDGEMENTS 
+
+This work was partially funded by an unrestricted gift from Coefficient Giving, and the grant number 212111 from the Swiss National Science Foundation. Francesco D’Angelo is supported by the Google PhD Fellowships. 
+
+REFERENCES 
+
+Kwangjun Ahn, Xiang Cheng, Hadi Daneshmand, and Suvrit Sra. Transformers learn to imple-ment preconditioned gradient descent for in-context learning. Advances in Neural Information Processing Systems , 2023. Ekin Aky¨ urek, Dale Schuurmans, Jacob Andreas, Tengyu Ma, and Denny Zhou. What learning algorithm is in-context learning? investigations with linear models. In The Eleventh International Conference on Learning Representations , 2022. Adrian Raftery Andr´ e Berchtold. The Mixture Transition Distribution Model for High-Order Markov Chains and Non-Gaussian Time Series. Statistical Science , 17(3):328 – 356, 2002. doi: 10.1214/ss/1042727943. Yu Bai, Fan Chen, Huan Wang, Caiming Xiong, and Song Mei. Transformers as statisticians: Provable in-context learning with in-context algorithm selection. In Thirty-seventh Conference on Neural Information Processing Systems , 2023a. URL https://openreview.net/forum? id=liMSqUuVg9 .Yu Bai, Fan Chen, Huan Wang, Caiming Xiong, and Song Mei. Transformers as statisticians: Provable in-context learning with in-context algorithm selection. Advances in neural information processing systems , 36, 2023b. Heinz H Bauschke, J´ erˆ ome Bolte, and Marc Teboulle. A descent lemma beyond lipschitz gradient continuity: first-order methods revisited and applications. Mathematics of Operations Research ,42(2):330–348, 2017. Amir Beck and Marc Teboulle. Mirror descent and nonlinear projected subgradient methods for convex optimization. Operations Research Letters , 31(3):167–175, 2003. Alberto Bietti, Vivien Cabannes, Diane Bouchacourt, Herve Jegou, and Leon Bottou. Birth of a transformer: A memory viewpoint. Advances in Neural Information Processing Systems , 2023a. Alberto Bietti, Vivien Cabannes, Diane Bouchacourt, Herve Jegou, and Leon Bottou. Birth of a transformer: A memory viewpoint. Advances in Neural Information Processing Systems , 36, 2023b. Tom Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared D Kaplan, Prafulla Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, et al. Language models are few-shot learners. Advances in neural information processing systems , 33:1877–1901, 2020. S´ ebastien Bubeck, Varun Chandrasekaran, Ronen Eldan, Johannes Gehrke, Eric Horvitz, Ece Ka-mar, Peter Lee, Yin Tat Lee, Yuanzhi Li, Scott Lundberg, et al. Sparks of artificial general intelligence: Early experiments with gpt-4. arXiv preprint arXiv:2303.12712 , 2023. Stephanie Chan, Adam Santoro, Andrew Lampinen, Jane Wang, Aaditya Singh, Pierre Richemond, James McClelland, and Felix Hill. Data distributional properties drive emergent in-context learn-ing in transformers. Advances in neural information processing systems , 35:18878–18891, 2022. Siyu Chen, Heejune Sheen, Tianhao Wang, and Zhuoran Yang. Unveiling induction heads: Prov-able training dynamics and feature learning in transformers. In The Thirty-eighth Annual Confer-ence on Neural Information Processing Systems , 2024. URL https://openreview.net/ forum?id=4fN2REs0Ma .Arthur Conmy, Augustine N. Mavor-Parker, Aengus Lynch, Stefan Heimersheim, and Adri` aGarriga-Alonso. Towards automated circuit discovery for mechanistic interpretability. In 
+
+Thirty-seventh Conference on Neural Information Processing Systems , 2023. URL https: //openreview.net/forum?id=89ia77nZ8u .12 Published as a conference paper at ICLR 2026 Francesco D’Angelo, Francesco Croce, and Nicolas Flammarion. Selective induction heads: How transformers select causal structures in context. In The Thirteenth International Confer-ence on Learning Representations , 2025. URL https://openreview.net/forum?id= bnJgzAQjWf .Ezra Edelman, Nikolaos Tsilivis, Benjamin Edelman, Eran Malach, and Surbhi Goel. The evolution of statistical induction heads: In-context learning markov chains. Advances in Neural Information Processing Systems , 37:64273–64311, 2024. Nelson Elhage, Neel Nanda, Catherine Olsson, Tom Henighan, Nicholas Joseph, Ben Mann, Amanda Askell, Yuntao Bai, Anna Chen, Tom Conerly, Nova DasSarma, Dawn Drain, Deep Ganguli, Zac Hatfield-Dodds, Danny Hernandez, Andy Jones, Jackson Kernion, Liane Lovitt, Kamal Ndousse, Dario Amodei, Tom Brown, Jack Clark, Jared Kaplan, Sam McCandlish, and Chris Olah. A mathematical framework for transformer circuits. Transformer Circuits Thread ,2021. Dan Friedman, Alexander Wettig, and Danqi Chen. Learning transformer programs. In Thirty-seventh Conference on Neural Information Processing Systems , 2023. URL https:// openreview.net/forum?id=Pe9WxkN8Ff .Deqing Fu, Tian qi Chen, Robin Jia, and Vatsal Sharan. Transformers learn to achieve second-order convergence rates for in-context linear regression. In The Thirty-eighth Annual Conference on Neural Information Processing Systems , 2024. URL https://openreview.net/forum? id=L8h6cozcbn .Shivam Garg, Dimitris Tsipras, Percy S Liang, and Gregory Valiant. What can transformers learn in-context? a case study of simple function classes. Advances in Neural Information Processing Systems , 35:30583–30598, 2022. Jiachen Hu, Qinghua Liu, and Chi Jin. On limitation of transformer for learning hmms. arXiv preprint arXiv:2406.04089 , 2024. M Emrullah Ildiz, Yixiao Huang, Yingcong Li, Ankit Singh Rawat, and Samet Oymak. From self-attention to markov models: Unveiling the dynamics of generative transformers. arXiv preprint arXiv:2402.13512 , 2024. Yuchen Li, Yuanzhi Li, and Andrej Risteski. How do transformers learn topic structure: Towards a mechanistic understanding. In Andreas Krause, Emma Brunskill, Kyunghyun Cho, Barbara Engelhardt, Sivan Sabato, and Jonathan Scarlett (eds.), Proceedings of the 40th International Conference on Machine Learning , volume 202 of Proceedings of Machine Learning Research ,pp. 19689–19729. PMLR, 23–29 Jul 2023. Yue M Lu, Mary Letey, Jacob A Zavatone-Veth, Anindita Maiti, and Cengiz Pehlevan. Asymp-totic theory of in-context learning by linear attention. Proceedings of the National Academy of Sciences , 122(28):e2502599122, 2025. Arvind Mahankali, Tatsunori B Hashimoto, and Tengyu Ma. One step of gradient descent is provably the optimal in-context learner with one layer of linear self-attention. In The Twelfth International Conference on Learning Representations , 2024. Ashok Vardhan Makkuva, Marco Bondaschi, Adway Girish, Alliot Nagle, Martin Jaggi, Hyeji Kim, and Michael Gastpar. Attention with markov: A framework for principled analysis of transformers via markov chains. arXiv preprint arXiv:2402.04161 , 2024. Sewon Min, Xinxi Lyu, Ari Holtzman, Mikel Artetxe, Mike Lewis, Hannaneh Hajishirzi, and Luke Zettlemoyer. Rethinking the role of demonstrations: What makes in-context learning work? In Yoav Goldberg, Zornitsa Kozareva, and Yue Zhang (eds.), Proceedings of the 2022 Conference on Empirical Methods in Natural Language Processing , pp. 11048–11064, Abu Dhabi, United Arab Emirates, December 2022. Association for Computational Linguistics. Arkadij Semenoviˇ c Nemirovskij and David Borisovich Yudin. Problem complexity and method efficiency in optimization. 1983. 13 Published as a conference paper at ICLR 2026 Timothy Nguyen. Understanding transformers via n-gram statistics. arXiv preprint arXiv:2407.12034 , 2024. Eshaan Nichani, Alex Damian, and Jason D. Lee. How transformers learn causal structure with gradient descent. In Forty-first International Conference on Machine Learning , 2024. URL 
+
+https://openreview.net/forum?id=jNM4imlHZv .Catherine Olsson, Nelson Elhage, Neel Nanda, Nicholas Joseph, Nova DasSarma, Tom Henighan, Ben Mann, Amanda Askell, Yuntao Bai, Anna Chen, Tom Conerly, Dawn Drain, Deep Ganguli, Zac Hatfield-Dodds, Danny Hernandez, Scott Johnston, Andy Jones, Jackson Kernion, Liane Lovitt, Kamal Ndousse, Dario Amodei, Tom Brown, Jack Clark, Jared Kaplan, Sam McCandlish, and Chris Olah. In-context learning and induction heads. Transformer Circuits Thread , 2022. Reese Pathak, Rajat Sen, Weihao Kong, and Abhimanyu Das. Transformers can optimally learn regression mixture models. In The Twelfth International Conference on Learning Representations ,2024. URL https://openreview.net/forum?id=sLkj91HIZU .Jorge P´ erez, Pablo Barcel´ o, and Javier Marinkovic. Attention is turing complete. The Journal of Machine Learning Research , 22(1):3463–3497, 2021. Adrian E Raftery. A model for high-order markov chains. Journal of the Royal Statistical Society Series B: Statistical Methodology , 47(3):528–539, 1985. Nived Rajaraman, Marco Bondaschi, Kannan Ramchandran, Michael Gastpar, and Ashok Vard-han Makkuva. Transformers on markov data: Constant depth suffices. arXiv preprint arXiv:2407.17686 , 2024. Allan Raventos, Mansheej Paul, Feng Chen, and Surya Ganguli. Pretraining task diversity and the emergence of non-bayesian in-context learning for regression. In Thirty-seventh Conference on Neural Information Processing Systems , 2023. Michael Eli Sander, Raja Giryes, Taiji Suzuki, Mathieu Blondel, and Gabriel Peyr´ e. How do trans-formers perform in-context autoregressive learning ? In Forty-first International Conference on Machine Learning , 2024. URL https://openreview.net/forum?id=kZbTkpnafR .Clayton Sanford, Daniel Hsu, and Matus Telgarsky. Transformers, parallel computation, and logarithmic depth. In International Conference on Machine Learning , 2024. URL https: //api.semanticscholar.org/CorpusID:267657804 .Adam Shai, Paul M. Riechers, Lucas Teixeira, Alexander Gietelink Oldenziel, and Sarah Marzen. Transformers represent belief state geometry in their residual stream. In The Thirty-eighth Annual Conference on Neural Information Processing Systems , 2024. URL https://openreview. net/forum?id=YIB7REL8UC .Peter Shaw, Jakob Uszkoreit, and Ashish Vaswani. Self-attention with relative position representa-tions. In North American Chapter of the Association for Computational Linguistics , 2018. URL 
+
+https://api.semanticscholar.org/CorpusID:3725815 .Aaditya K Singh, Ted Moskovitz, Felix Hill, Stephanie C.Y. Chan, and Andrew M Saxe. What needs to go right for an induction head? a mechanistic study of in-context learning circuits and their formation. In Forty-first International Conference on Machine Learning , 2024. URL https: //openreview.net/forum?id=O8rrXl71D5 .Arun Suggala, Adarsh Prasad, and Pradeep K Ravikumar. Connecting optimization and regulariza-tion paths. Advances in Neural Information Processing Systems , 31, 2018. Anej Svete and Ryan Cotterell. Transformers can represent n-gram language models. arXiv preprint arXiv:2404.14994 , 2024. Aditya Varre, Gizem Y¨ uce, and Nicolas Flammarion. Learning in-context $n$-grams with trans-formers: Sub-$n$-grams are near-stationary points. In Forty-second International Conference on Machine Learning , 2025. URL https://openreview.net/forum?id=OMwdvGDeHL .14 Published as a conference paper at ICLR 2026 Johannes Von Oswald, Eyvind Niklasson, Ettore Randazzo, Jo˜ ao Sacramento, Alexander Mordv-intsev, Andrey Zhmoginov, and Max Vladymyrov. Transformers learn in-context by gradient descent. In International Conference on Machine Learning , pp. 35151–35174. PMLR, 2023a. Johannes Von Oswald, Eyvind Niklasson, Maximilian Schlegel, Seijin Kobayashi, Nicolas Zucchet, Nino Scherrer, Nolan Miller, Mark Sandler, Max Vladymyrov, Razvan Pascanu, et al. Uncovering mesa-optimization algorithms in transformers. arXiv preprint arXiv:2309.05858 , 2023b. Sang Michael Xie, Aditi Raghunathan, Percy Liang, and Tengyu Ma. An explanation of in-context learning as implicit bayesian inference. In International Conference on Learning Representations ,2022. Steve Yadlowsky, Lyric Doshi, and Nilesh Tripuraneni. Pretraining data mixtures enable narrow model selection capabilities in transformer models. arXiv preprint arXiv:2311.00871 , 2023. O˘ guz Kaan Y¨ uksel and Nicolas Flammarion. On the sample complexity of next-token prediction. In 
+
+The 28th International Conference on Artificial Intelligence and Statistics , 2025. URL https: //openreview.net/forum?id=eJkNMwzZzy .Chulhee Yun, Srinadh Bhojanapalli, Ankit Singh Rawat, Sashank Reddi, and Sanjiv Kumar. Are transformers universal approximators of sequence-to-sequence functions? In International Con-ference on Learning Representations , 2020. URL https://openreview.net/forum? id=ByxRM0Ntvr .Ruiqi Zhang, Spencer Frei, and Peter L Bartlett. Trained transformers learn linear models in-context. 
+
+arXiv preprint arXiv:2306.09927 , 2023. Yufeng Zhang, Fengzhuo Zhang, Zhuoran Yang, and Zhaoran Wang. What and how does in-context learning learn? bayesian model averaging, parameterization, and generalization, 2024. URL 
+
+https://openreview.net/forum?id=J9wzKfgZVK .Nicolas Zucchet, Francesco D’Angelo, Andrew Kyle Lampinen, and Stephanie C.Y. Chan. The emergence of sparse attention: impact of data distribution and benefits of repetition. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. URL https: //openreview.net/forum?id=jMhRbV47pS .15 Published as a conference paper at ICLR 2026 
+
+A NOTATION 
+
+Throughout this paper, we use non-bold letters for scalars (e.g., η, α ), lowercase bold letters for vectors (e.g., h, λ), and uppercase bold letters for matrices (e.g., W , H, π). The i-th element of a vector v is denoted by vi, and the vector at position i in a sequence of vectors H is written as 
+
+hi. The element in the i-th row and j-th column of a matrix A is Aij , and its i-th row vector is 
+
+Ai, :. We use 1 and 0 to denote vectors or matrices of ones and zeros, respectively, with dimensions inferred from context. We use ek to denote a one-hot vector with a one at the k-th position; its dimensionality is specified or clear from context. The set of integers {1, . . . , m } is denoted by [m].The probability simplex in Rm is denoted by ∆m−1. The operator Concat( ·, ·) denotes the vertical concatenation of vectors or matrices. For vectors a ∈ Rda and b ∈ Rdb , their concatenation results in a vector in Rda+db . For matrices A ∈ RdA×T and B ∈ RdB ×T with the same number of columns, 
+
+Concat( A, B) is the block matrix ( AB ) ∈ R(dA+dB )×T . Superscripts in parentheses, such as H(l),are used to index the layers of the Transformer. In the context of Transformer relative positional encodings, we use 1-based indexing for token positions i, j ∈ [T ]. The relative position is mapped to a lookup table index k = i − j + 1 . The approximations will be expressed using Landau notation, where a vector function f (g) = O(∥g∥p) signifies that ∥f (g)∥ ≤ C∥g∥p for some constant C in a neighborhood of g = 0.A.1 DIMENSIONALITY OF THE TRANSFORMER CONSTRUCTION 
+
+The disentangled Transformer architecture results in a hidden state that grows with each layer. The following table provides a summary of the dimensions at each stage of the construction. Note that the input to layer l is h(l−1) , and its output is h(l), which is formed by concatenating the input with the result of the attention mechanism, ˆh(l). We use q for the alphabet size and m for the MTD model order. The RPE value dimension is dR = m throughout the construction. Layer 1 uses the value RPE to store lag indices, while Layers 2 and 3 set R(l) 
+
+> V
+
+= 0, so the concatenation appends m zero dimensions. Table 1: Dimensionality of Hidden States in the Disentangled Transformer 
+
+Layer Description Attention Output ˆh(l) Concatenated Hidden State h(l)
+
+0 (Input) Token Embeddings — h(0) ∈ Rq
+
+1 Responsibilities ˆh(1) ∈ Rq+m h(1) = Concat( h(0) , ˆh(1) ) ∈ R2q+m
+
+2 Summation ˆh(2) ∈ R2q+2 m h(2) = Concat( h(1) , ˆh(2) ) ∈ R4q+3 m
+
+3 Weighting ˆh(3) ∈ R4q+3 m h(3) = Concat( h(2) , ˆh(3) ) ∈ R8q+6 m
+
+Final Output Matrix fWO ∈ Rq×(8 q+6 m)
+
+B EXPERIMENTAL DETAILS 
+
+This section provides additional details on the experimental setup, including the hyperparameter settings for all models and estimators used in our empirical validation. B.1 HYPERPARAMETER TUNING 
+
+For the one-step Mirror Descent estimator ( ˆλMD ) and our theoretical Transformer construction ( ˜Tconstr. ), the learning rate parameters η and β were not fixed but were tuned to optimize perfor-mance. For each sequence length evaluated, we performed a grid search over a range of potential values for η and β. The value that minimized the KL divergence to the true Bayesian posterior mean was selected for the final comparison plots. This ensures that both methods were evaluated under their optimal conditions. 16 Published as a conference paper at ICLR 2026 B.2 PARAMETER SUMMARY 
+
+The following table summarizes the key parameters used in our experiments. Table 2: Summary of Experimental Parameters 
+
+Component Parameter Value Data Generation 
+
+MTD model order ( m) 3,4,5 Vocabulary size ( q) 5Sequence Length ( T ) Varied (64 to 1984) Dirichlet Prior ( α) Uniform ( αg = 1 for all g)Transition Matrix ( π) Rows from Dirichlet ( α = 1 )
+
+Mirror Descent (MD) Estimator 
+
+Learning Rate ( η) Log grid: [ 10 −5, 10 −1], 1000 points 
+
+Constructed Transformer ( ˜Tconstr. )
+
+Large Constant ( δ1, δ 2, δ 3) [100,100,100] Scaled Learning Rate ( β) Log grid: [ 10 −5, 10 −1], 1000 points 
+
+Trained Transformer ( ˜Tdisent. )
+
+Architecture 3-layer & 5-layer Disentangled Transformer Attention Heads 1Concatenation True Semantic Embeddings one-hot Relative Positional Encodings Learned RPE value dimension m
+
+Embedding Dimension q
+
+QK parametrization False Value matrix False Head output projection matrix False Optimizer Adam Learning Rate 1 × 10 −3
+
+LR Schedule constant Batch Size 128 Training Iterations 5 × 10 5
+
+Loss Function MSE on the last token prediction 
+
+Trained Transformer ( Tstandard. )
+
+Architecture 3-layer Standard Transformer Attention Heads 1Concatenation False Semantic Embeddings Learned Relative Positional Encodings Learned Embedding Dimension 32 QK parametrization True Value matrix True Head output projection matrix Tru e Optimizer Adam Learning Rate 1 × 10 −3
+
+LR Schedule constant Batch Size 128 Training Iterations 5 × 10 5
+
+Loss Function MSE on the last token prediction 
+
+MCMC for Bayes Estimator 
+
+Sampler Gibbs Sampling Burn-in Iterations [200] Number of Samples (K) [2000] 17 Published as a conference paper at ICLR 2026 
+
+C RELATED WORKS 
+
+Induction heads and interpretability The emergence of ICL, as well as the more general ability of transformers to implement algorithms, has been linked to the formation of interpretable com-putational circuits Elhage et al. (2021) such as induction heads (Olsson et al., 2022), which are woven into sparse attention patterns (Zucchet et al., 2025). The development of these circuits is not monolithic; rather, they emerge in phases through the interaction of simpler subcircuits. Singh et al. (2024), for instance, use a causal framework to identify the key subcircuits whose interplay leads to the sudden formation of induction heads during training. This emergence itself also critically de-pends on the training data; specific distributional properties, such as burstiness and class imbalance, have been shown to be key drivers of this capability Chan et al. (2022); Zucchet et al. (2025). While much of this understanding comes from reverse-engineering circuits in pretrained models Conmy et al. (2023), a parallel line of research aims to create transformers that are interpretable by de-sign, for example by training models that can be directly decompiled into human-readable programs Friedman et al. (2023). 
+
+In-Context learning and gradient descent Following initial empirical observations of ICL in trans-formers (Brown et al., 2020), a significant line of research has sought to understand its underlying mechanisms. Early work demonstrated that transformers can learn simple function classes like linear models in-context (Garg et al., 2022). This led to the hypothesis that transformer layers effectively implement optimization algorithms, with several studies showing they can perform com-putations analogous to gradient descent for in-context linear regression (Aky¨ urek et al., 2022; Bai et al., 2023b; Von Oswald et al., 2023a;b). This gradient-based view has been extended to higher-order algorithms (Ahn et al., 2023; Fu et al., 2024) and given theoretical grounding, with proofs that gradient flow converges to a transformer that has learned the in-context task (Zhang et al., 2023). From a statistical learning perspective, this process has been formalized as ”algorithm learning”, where generalization is guaranteed by the algorithmic stability of the learned procedure (Li et al., 2023). From a Bayesian standpoint, Zhang et al. (2024) formalize ICL as Bayesian model averag-ing over latent concepts, providing generalization guarantees that complement the algorithmic view. Crucially, the emergence of this behavior is not guaranteed; it depends on sufficient pretraining task diversity (Raventos et al., 2023). This algorithmic paradigm also extends to linear autoregressive processes, where transformers have been shown to implement a gradient descent step to learn the transition matrix in-context (Sander et al., 2024). In a complementary direction, Lu et al. (2025) develop an asymptotic theory for in-context learning by linear attention, providing exact analytical characterizations in the large-dimensional limit. 
+
+In-Context learning, Markov chains and n-gram models Our work is closely related to the lit-erature analyzing ICL for sequential probabilistic models like n-grams and Markov chains. Foun-dational work by Y¨ uksel & Flammarion (2025) established formal generalization bounds for next-token prediction on Markovian data, analyzing its sample complexity. Regarding transformers, sev-eral mechanistic studies have investigated how they implement learning algorithms for these models. For bigrams, transformers have been shown to develop induction heads that function like associative memories (Bietti et al., 2023b) and accurately compute posterior probabilities from statistical cues (Edelman et al., 2024). For first order Markov chains, Nichani et al. (2024) demonstrated that trans-formers learn the causal structure with gradient descent and implement induction heads to estimate the transition probabilities in-context, effectively implementing a Bayes-optimal estimator. This analysis was later extended to higher-order chains (Chen et al., 2024), while the work of D’Angelo et al. (2025) shows that transformers can even learn to select the correct Markov causal structure at inference time. Further theoretical results have explored the transformer loss landscape in this set-ting (Makkuva et al., 2024), characterized in-context n-grams as near-stationary points (Varre et al., 2025), and shown that constant-depth transformers are sufficient to learn k-th order Markov chains (Rajaraman et al., 2024). 
+
+Transformers and sequential models Beyond specific learning algorithms, a broader line of work has explored the fundamental capabilities and limitations of transformers as sequential models. On the foundational side, transformers have been shown to be universal approximators of sequence-to-sequence functions (Yun et al., 2020) and even Turing-complete under certain assumptions (P´ erez et al., 2021), while recent work has investigated the trade-off between depth and parallel computa-tion (Sanford et al., 2024). In terms of representational power, transformers with sparse attention have been shown to be capable of exactly representing any n-gram model (Svete & Cotterell, 2024). 18 Published as a conference paper at ICLR 2026 However, this expressive power has limits; for instance, transformers may be less effective at learn-ing certain Hidden Markov Models (HMMs) compared to RNNs (Hu et al., 2024). Interestingly, when investigating the internal representations that enable inference in HMMs, Shai et al. (2024) showed that transformers maintain interpretable belief states that are linearly encoded in the residual stream. A strength of transformers is their ability to perform in-context model selection. It has been demonstrated that a single transformer can adaptively choose between different base algorithms or even qualitatively different tasks (e.g., regression vs. classification) based on the prompt (Bai et al., 2023a), effectively selecting between different function classes in-context (Yadlowsky et al., 2023). While high-level n-gram statistics can approximate transformer predictions, the mechanism for how the correct ”rule” is selected in-context remains an open question (Nguyen, 2024). 
+
+D TRAINING SETUP : L OSS FUNCTION AND TOKEN SUPERVISION 
+
+In this section we discuss the main experimental design choices we made in the main text and we provide additional details. D.1 MSE L OSS VS . C ROSS -E NTROPY LOSS 
+
+In standard next-token prediction tasks, the natural training objective is the cross-entropy loss (equiv-alently, the negative log-likelihood), which for a single prediction at position t takes the form: 
+
+LCE = −
+
+> q
+
+X
+
+> j=1
+
+eyt (j) log ˆ p(j) = − log ˆ p(yt), (9) where ˆp(j) denotes the model’s predicted probability for token j and eyt is the one-hot encoding of the target token yt. In a typical transformer, the predicted distribution is obtained by applying a softmax to the output logits z ∈ Rq :
+
+ˆp(j) = exp( zj )
+
+Pqk=1 exp( zk) . (10) However, this standard setup is misspecified for the MTD in-context learning task considered in this work. To see this, recall from Proposition 3 that the optimal predictive distribution is a convex combination of rows of the transition matrix: 
+
+p⋆(Yt = j | yt−11 ) = 
+
+> m
+
+X
+
+> g=1
+
+˜λg · π⋆(yt−g , j ), (11) where ˜λg ≥ 0 and Pmg=1 ˜λg = 1 . This target distribution is a mixture (i.e., a weighted average in probability space), and the set of achievable distributions M =
+
+nP 
+
+> g
+
+λg π⋆(yt−g , :) : λ ∈ ∆m−1
+
+o
+
+is a convex subset of the probability simplex. The key issue is that the softmax function in equation 10 maps Rq to the interior of the simplex via an exponential (log-linear) parameterization: 
+
+ˆp(j) = softmax (z)j = exp( zj )
+
+P 
+
+> k
+
+exp( zk) . (12) The image of the softmax is the set of distributions with full support , parameterized log-linearly. In contrast, the target distribution in equation 11 is a linear mixture of fixed distributions. Unless the mixture happens to coincide with a log-linear (exponential family) distribution (which is not generically the case), the softmax output layer cannot exactly represent the target. Concretely, suppose the transformer’s output layer produces logits z ∈ Rq . For the softmax output to match the optimal predictor, we would need: 
+
+exp( zj )
+
+P 
+
+> k
+
+exp( zk) =
+
+> m
+
+X
+
+> g=1
+
+˜λg · π⋆(yt−g , j ), ∀j ∈ { 1, . . . , q }. (13) 19 Published as a conference paper at ICLR 2026 This requires the logits to satisfy zj = log 
+
+Pmg=1 ˜λg · π⋆(yt−g , j )
+
+
+
++ C for some constant C.While such logits exist in Rq , the problem is that our construction produces the mixture directly in probability space through the attention mechanism (see Proposition 3): the output fWO h(3)  
+
+> T
+
+=
+
+P 
+
+> g
+
+˜λg π⋆(yT −g , :) already is the target probability vector. Composing this output with an additional softmax would yield: 
+
+ˆp(j) = exp 
+
+P 
+
+> g
+
+˜λg π⋆(yT −g , j )
+
+P 
+
+> k
+
+exp 
+
+P 
+
+> g
+
+˜λg π⋆(yT −g , k )
+
+̸ = X
+
+> g
+
+˜λg π⋆(yT −g , j ), (14) which does not recover the correct mixture distribution. The softmax distorts the linear mixture through a nonlinear transformation, making the model misspecified : regardless of parameter tuning, the composed map softmax ◦ linear ◦ attention cannot implement the target estimator when the output is constrained to be log-linear. One could, in principle, resolve this misspecification by using a standard transformer with MLP layers. Indeed, the softmax output can recover the correct mixture distribution if the logits are set to 
+
+zj = log 
+
+P 
+
+> g
+
+˜λg π⋆(yt−g , j )
+
+
+
+, which is a valid element-wise transformation of the mixture vector. An MLP applied after the final attention layer could learn this element-wise log( ·) mapping, effec-tively “undoing” the distortion introduced by the output softmax and allowing cross-entropy training. More generally, interleaving MLPs between attention layers gives the network additional expressive power to compose nonlinear transformations at each stage. However, this flexibility comes at a significant cost in interpretability: with three attention layers each followed by an MLP, the inter-mediate representations no longer have a transparent algebraic correspondence with the quantities in our construction (responsibilities, summed responsibilities, mixture weights). The clean separa-tion between the computation of γi(g), the averaging P 
+
+> i
+
+γi(g), and the softmax estimation of ˜λg
+
+would be entangled with learned nonlinear mappings at every layer, making it substantially harder to verify what estimator the trained model has learned. Since a primary goal of this work is to es-tablish a precise, interpretable link between transformers and the one-step MD estimator, we opt for the disentangled architecture without MLPs and leave the analysis of MLP-augmented transformers trained with cross-entropy to future work. For this reason, in all experiments we train with the mean squared error (MSE) loss, which directly measures the discrepancy in probability space: 
+
+LMSE = eyt − f (yt−11 ) 22 , (15) where f (yt−11 ) ∈ Rq is the model’s raw output (without a softmax nonlinearity at the output). Under MSE, the Bayes-optimal predictor is the conditional expectation E[eYt | yt−11 ] = p(Yt | yt−11 ),which is exactly the target probability vector in equation 11. Thus MSE is consistent with our construction: the global minimum of the MSE population risk is achieved when the model output equals the true predictive distribution, without any architectural mismatch. D.2 LOSS OVER THE LAST TOKEN ONLY 
+
+In our experiments, the training loss is computed only at the final position T of each sequence, rather than being averaged over all positions t ∈ { m+1 , . . . , T } as is standard in language modeling. While this reduces the number of gradient signals per sequence, it plays a crucial role in isolating the learning rate parameter β of the Mirror Descent algorithm that our construction implements. Recall from Proposition 3 that the constructed transformer computes the one-step MD estimator at position T with a scaled learning rate β/ (T − m), where β is a learnable parameter (stored in R(3)  
+
+> A
+
+). Crucially, the division by T − m arises because the second-layer attention uniformly averages the responsibilities over positions m+1 through T , so the effective number of terms in the sum scales with T − m.If we were to apply the loss at every position t > m , then at each position the relevant MD estimator would involve a sum of responsibilities from m+1 to t, with the optimal scaling being βt/(t −
+
+m). However, the RPE table R(3)  
+
+> A
+
+stores a single scalar β that is shared across all positions—the 20 Published as a conference paper at ICLR 2026 transformer has no mechanism to use a position-dependent βt. Therefore, when training with loss over all tokens, the model is forced to learn a single compromise value of β that performs reasonably well across all positions t, but is optimal for none. In principle, one could envision a mechanism where the learning rate varies with position. With ab-solute positional encodings, each position has a unique embedding, which could, in theory, encode position-specific scaling factors. However, our construction relies on relative positional encodings, where the RPE vectors depend only on the relative distance i − j between query and key posi-tions, not on the absolute position i. This makes it fundamentally difficult to implement a position-dependent parameter within a single set of RPE tables. By restricting the loss to the last token only, we ensure that the model needs to optimize a single, well-defined estimator, the one at position T , with a single, well-defined learning rate β. This cleanly isolates the learning rate as a single degree of freedom and avoids the bias introduced by the position-averaging compromise, making the experimental results more directly comparable to our theoretical construction. 
+
+E ADDITIONAL EXPERIMENTS 
+
+In this section we repeat the main-text experiments for different MTD orders, comparing the trained and constructed transformers: in addition to the m = 4 case in the main text, we report results for m = 3 and m = 5 . In Figure 6, we plot the KL divergence to the ground-truth transition probabilities across sequence lengths for the trained transformers, the constructed transformer, and the one-step MD estimator (orders 3 and 5). In Figure 7, we instead compare the learned first-layer attention (softmax) to the true transition matrices for orders 3 and 5, with the average row-wise KL divergence reported directly in each panel. Finally, Figure 8 reports attention grids for the trained and constructed transformers (disentangled) at sequence length 64 for MTD orders m = 3 and 
+
+m = 5 , analogous to the attention maps shown in Figure 4 (left) in the main text. 0 200 400 600 800 1000 
+
+> Sequence Length
+> 0.002
+> 0.003
+> 0.004
+> 0.005
+> 0.006
+> 0.007
+> 0.008
+> 0.009
+> 0.010
+> 0.020
+> KL divergence
+> train.
+> MD
+> Bayes
+
+Figure 6: KL divergence to the ground-truth We report the KL divergence to the ground truth transition probabilities for the trained transformers, the constructed transformer, and the one-step MD estimator across sequence lengths Left: order 3. Right: order 5. 
+
+21 Published as a conference paper at ICLR 2026 0 1 2 3 4
+
+To State 
+
+0
+
+1
+
+2
+
+3
+
+4
+
+> From State
+
+0.33 0.21 0.35 0.01 0.09 
+
+0.04 0.26 0.27 0.27 0.16 
+
+0.05 0.17 0.30 0.17 0.30 
+
+0.37 0.07 0.02 0.23 0.31 
+
+0.16 0.16 0.30 0.22 0.16 
+
+True 
+
+0 1 2 3 4
+
+Key Dimension 
+
+0
+
+1
+
+2
+
+3
+
+4
+
+> Query Dimension
+
+0.32 0.28 0.32 0.03 0.05 
+
+0.08 0.32 0.22 0.27 0.12 
+
+0.09 0.18 0.26 0.19 0.29 
+
+0.33 0.03 0.02 0.25 0.37 
+
+0.20 0.16 0.27 0.24 0.13 
+
+Softmax Attention 
+
+0.05 
+
+0.10 
+
+0.15 
+
+0.20 
+
+0.25 
+
+0.30 
+
+0.35 
+
+0.05 
+
+0.10 
+
+0.15 
+
+0.20 
+
+0.25 
+
+0.30 
+
+0.35 
+
+Trained SeqLen 128 | KL=0.0231 0 1 2 3 4
+
+To State 
+
+0
+
+1
+
+2
+
+3
+
+4
+
+> From State
+
+0.33 0.21 0.35 0.01 0.09 
+
+0.04 0.26 0.27 0.27 0.16 
+
+0.05 0.17 0.30 0.17 0.30 
+
+0.37 0.07 0.02 0.23 0.31 
+
+0.16 0.16 0.30 0.22 0.16 
+
+True 
+
+0 1 2 3 4
+
+Key Dimension 
+
+0
+
+1
+
+2
+
+3
+
+4
+
+> Query Dimension
+
+0.32 0.28 0.34 0.01 0.05 
+
+0.07 0.30 0.22 0.32 0.09 
+
+0.09 0.17 0.27 0.22 0.25 
+
+0.31 0.04 0.02 0.31 0.32 
+
+0.19 0.15 0.27 0.28 0.11 
+
+Softmax Attention 
+
+0.05 
+
+0.10 
+
+0.15 
+
+0.20 
+
+0.25 
+
+0.30 
+
+0.35 
+
+0.05 
+
+0.10 
+
+0.15 
+
+0.20 
+
+0.25 
+
+0.30 
+
+Trained SeqLen 256 | KL=0.0282 0 1 2 3 4
+
+To State 
+
+0
+
+1
+
+2
+
+3
+
+4
+
+> From State
+
+0.33 0.21 0.35 0.01 0.09 
+
+0.04 0.26 0.27 0.27 0.16 
+
+0.05 0.17 0.30 0.17 0.30 
+
+0.37 0.07 0.02 0.23 0.31 
+
+0.16 0.16 0.30 0.22 0.16 
+
+True 
+
+0 1 2 3 4
+
+Key Dimension 
+
+0
+
+1
+
+2
+
+3
+
+4
+
+> Query Dimension
+
+0.35 0.27 0.31 0.02 0.05 
+
+0.08 0.30 0.21 0.29 0.11 
+
+0.10 0.16 0.24 0.22 0.28 
+
+0.35 0.03 0.00 0.28 0.34 
+
+0.21 0.15 0.26 0.26 0.12 
+
+Softmax Attention 
+
+0.05 
+
+0.10 
+
+0.15 
+
+0.20 
+
+0.25 
+
+0.30 
+
+0.35 
+
+0.05 
+
+0.10 
+
+0.15 
+
+0.20 
+
+0.25 
+
+0.30 
+
+Trained SeqLen 384 | KL=0.0305 0 1 2 3 4
+
+To State 
+
+0
+
+1
+
+2
+
+3
+
+4
+
+> From State
+
+0.33 0.21 0.35 0.01 0.09 
+
+0.04 0.26 0.27 0.27 0.16 
+
+0.05 0.17 0.30 0.17 0.30 
+
+0.37 0.07 0.02 0.23 0.31 
+
+0.16 0.16 0.30 0.22 0.16 
+
+True 
+
+0 1 2 3 4
+
+Key Dimension 
+
+0
+
+1
+
+2
+
+3
+
+4
+
+> Query Dimension
+
+0.31 0.25 0.38 0.01 0.05 
+
+0.09 0.27 0.24 0.30 0.10 
+
+0.10 0.15 0.30 0.22 0.23 
+
+0.33 0.02 0.01 0.34 0.30 
+
+0.19 0.13 0.30 0.27 0.11 
+
+Softmax Attention 
+
+0.05 
+
+0.10 
+
+0.15 
+
+0.20 
+
+0.25 
+
+0.30 
+
+0.35 
+
+0.05 
+
+0.10 
+
+0.15 
+
+0.20 
+
+0.25 
+
+0.30 
+
+0.35 
+
+Trained SeqLen 512 | KL=0.0334 0 1 2 3 4
+
+To State 
+
+0
+
+1
+
+2
+
+3
+
+4
+
+> From State
+
+0.33 0.21 0.35 0.01 0.09 
+
+0.04 0.26 0.27 0.27 0.16 
+
+0.05 0.17 0.30 0.17 0.30 
+
+0.37 0.07 0.02 0.23 0.31 
+
+0.16 0.16 0.30 0.22 0.16 
+
+True 
+
+0 1 2 3 4
+
+Key Dimension 
+
+0
+
+1
+
+2
+
+3
+
+4
+
+> Query Dimension
+
+0.29 0.24 0.38 0.00 0.09 
+
+0.08 0.27 0.31 0.24 0.11 
+
+0.09 0.17 0.33 0.14 0.27 
+
+0.35 0.04 0.04 0.24 0.33 
+
+0.19 0.16 0.34 0.19 0.12 
+
+Softmax Attention 
+
+0.05 
+
+0.10 
+
+0.15 
+
+0.20 
+
+0.25 
+
+0.30 
+
+0.35 
+
+0.05 
+
+0.10 
+
+0.15 
+
+0.20 
+
+0.25 
+
+0.30 
+
+0.35 
+
+Trained SeqLen 640 | KL=0.0189 0 1 2 3 4
+
+To State 
+
+0
+
+1
+
+2
+
+3
+
+4
+
+> From State
+
+0.33 0.21 0.35 0.01 0.09 
+
+0.04 0.26 0.27 0.27 0.16 
+
+0.05 0.17 0.30 0.17 0.30 
+
+0.37 0.07 0.02 0.23 0.31 
+
+0.16 0.16 0.30 0.22 0.16 
+
+True 
+
+0 1 2 3 4
+
+Key Dimension 
+
+0
+
+1
+
+2
+
+3
+
+4
+
+> Query Dimension
+
+0.28 0.26 0.36 0.01 0.09 
+
+0.08 0.25 0.28 0.36 0.03 
+
+0.09 0.15 0.30 0.18 0.28 
+
+0.31 0.00 0.02 0.33 0.34 
+
+0.19 0.14 0.32 0.29 0.06 
+
+Softmax Attention 
+
+0.05 
+
+0.10 
+
+0.15 
+
+0.20 
+
+0.25 
+
+0.30 
+
+0.35 
+
+0.05 
+
+0.10 
+
+0.15 
+
+0.20 
+
+0.25 
+
+0.30 
+
+0.35 
+
+Trained SeqLen 768 | KL=0.0945 0 1 2 3 4
+
+To State 
+
+0
+
+1
+
+2
+
+3
+
+4
+
+> From State
+
+0.33 0.21 0.35 0.01 0.09 
+
+0.04 0.26 0.27 0.27 0.16 
+
+0.05 0.17 0.30 0.17 0.30 
+
+0.37 0.07 0.02 0.23 0.31 
+
+0.16 0.16 0.30 0.22 0.16 
+
+True 
+
+0 1 2 3 4
+
+Key Dimension 
+
+0
+
+1
+
+2
+
+3
+
+4
+
+> Query Dimension
+
+0.33 0.30 0.33 0.02 0.02 
+
+0.07 0.31 0.21 0.29 0.12 
+
+0.08 0.18 0.23 0.20 0.31 
+
+0.32 0.02 0.00 0.28 0.39 
+
+0.19 0.17 0.25 0.26 0.13 
+
+Softmax Attention 
+
+0.05 
+
+0.10 
+
+0.15 
+
+0.20 
+
+0.25 
+
+0.30 
+
+0.35 
+
+0.05 
+
+0.10 
+
+0.15 
+
+0.20 
+
+0.25 
+
+0.30 
+
+0.35 
+
+Trained SeqLen 128 | KL=0.0521 0 1 2 3 4
+
+To State 
+
+0
+
+1
+
+2
+
+3
+
+4
+
+> From State
+
+0.33 0.21 0.35 0.01 0.09 
+
+0.04 0.26 0.27 0.27 0.16 
+
+0.05 0.17 0.30 0.17 0.30 
+
+0.37 0.07 0.02 0.23 0.31 
+
+0.16 0.16 0.30 0.22 0.16 
+
+True 
+
+0 1 2 3 4
+
+Key Dimension 
+
+0
+
+1
+
+2
+
+3
+
+4
+
+> Query Dimension
+
+0.29 0.32 0.36 0.01 0.02 
+
+0.06 0.35 0.24 0.26 0.08 
+
+0.07 0.20 0.28 0.19 0.27 
+
+0.34 0.02 0.00 0.29 0.36 
+
+0.18 0.19 0.30 0.24 0.10 
+
+Softmax Attention 
+
+0.05 
+
+0.10 
+
+0.15 
+
+0.20 
+
+0.25 
+
+0.30 
+
+0.35 
+
+0.05 
+
+0.10 
+
+0.15 
+
+0.20 
+
+0.25 
+
+0.30 
+
+0.35 
+
+Trained SeqLen 256 | KL=0.0674 0 1 2 3 4
+
+To State 
+
+0
+
+1
+
+2
+
+3
+
+4
+
+> From State
+
+0.33 0.21 0.35 0.01 0.09 
+
+0.04 0.26 0.27 0.27 0.16 
+
+0.05 0.17 0.30 0.17 0.30 
+
+0.37 0.07 0.02 0.23 0.31 
+
+0.16 0.16 0.30 0.22 0.16 
+
+True 
+
+0 1 2 3 4
+
+Key Dimension 
+
+0
+
+1
+
+2
+
+3
+
+4
+
+> Query Dimension
+
+0.30 0.28 0.33 0.03 0.05 
+
+0.09 0.32 0.22 0.25 0.12 
+
+0.11 0.18 0.26 0.18 0.27 
+
+0.33 0.06 0.00 0.26 0.35 
+
+0.21 0.15 0.28 0.23 0.13 
+
+Softmax Attention 
+
+0.05 
+
+0.10 
+
+0.15 
+
+0.20 
+
+0.25 
+
+0.30 
+
+0.35 
+
+0.05 
+
+0.10 
+
+0.15 
+
+0.20 
+
+0.25 
+
+0.30 
+
+Trained SeqLen 384 | KL=0.0286 0 1 2 3 4
+
+To State 
+
+0
+
+1
+
+2
+
+3
+
+4
+
+> From State
+
+0.33 0.21 0.35 0.01 0.09 
+
+0.04 0.26 0.27 0.27 0.16 
+
+0.05 0.17 0.30 0.17 0.30 
+
+0.37 0.07 0.02 0.23 0.31 
+
+0.16 0.16 0.30 0.22 0.16 
+
+True 
+
+0 1 2 3 4
+
+Key Dimension 
+
+0
+
+1
+
+2
+
+3
+
+4
+
+> Query Dimension
+
+0.35 0.27 0.33 0.01 0.03 
+
+0.07 0.32 0.23 0.27 0.11 
+
+0.08 0.18 0.27 0.18 0.29 
+
+0.38 0.02 0.00 0.25 0.35 
+
+0.21 0.16 0.28 0.23 0.12 
+
+Softmax Attention 
+
+0.05 
+
+0.10 
+
+0.15 
+
+0.20 
+
+0.25 
+
+0.30 
+
+0.35 
+
+0.05 
+
+0.10 
+
+0.15 
+
+0.20 
+
+0.25 
+
+0.30 
+
+0.35 
+
+Trained SeqLen 512 | KL=0.0401 0 1 2 3 4
+
+To State 
+
+0
+
+1
+
+2
+
+3
+
+4
+
+> From State
+
+0.33 0.21 0.35 0.01 0.09 
+
+0.04 0.26 0.27 0.27 0.16 
+
+0.05 0.17 0.30 0.17 0.30 
+
+0.37 0.07 0.02 0.23 0.31 
+
+0.16 0.16 0.30 0.22 0.16 
+
+True 
+
+0 1 2 3 4
+
+Key Dimension 
+
+0
+
+1
+
+2
+
+3
+
+4
+
+> Query Dimension
+
+0.30 0.28 0.34 0.02 0.06 
+
+0.07 0.32 0.22 0.28 0.11 
+
+0.09 0.18 0.26 0.20 0.27 
+
+0.34 0.04 0.00 0.29 0.33 
+
+0.18 0.16 0.28 0.25 0.13 
+
+Softmax Attention 
+
+0.05 
+
+0.10 
+
+0.15 
+
+0.20 
+
+0.25 
+
+0.30 
+
+0.35 
+
+0.05 
+
+0.10 
+
+0.15 
+
+0.20 
+
+0.25 
+
+0.30 
+
+Trained SeqLen 640 | KL=0.0353 0 1 2 3 4
+
+To State 
+
+0
+
+1
+
+2
+
+3
+
+4
+
+> From State
+
+0.33 0.21 0.35 0.01 0.09 
+
+0.04 0.26 0.27 0.27 0.16 
+
+0.05 0.17 0.30 0.17 0.30 
+
+0.37 0.07 0.02 0.23 0.31 
+
+0.16 0.16 0.30 0.22 0.16 
+
+True 
+
+0 1 2 3 4
+
+Key Dimension 
+
+0
+
+1
+
+2
+
+3
+
+4
+
+> Query Dimension
+
+0.31 0.22 0.26 0.09 0.13 
+
+0.15 0.26 0.21 0.23 0.16 
+
+0.17 0.18 0.22 0.20 0.24 
+
+0.20 0.17 0.20 0.21 0.22 
+
+0.22 0.16 0.22 0.23 0.17 
+
+Softmax Attention 
+
+0.05 
+
+0.10 
+
+0.15 
+
+0.20 
+
+0.25 
+
+0.30 
+
+0.35 
+
+0.100 
+
+0.125 
+
+0.150 
+
+0.175 
+
+0.200 
+
+0.225 
+
+0.250 
+
+0.275 
+
+0.300 
+
+Trained SeqLen 768 | KL=0.0986 
+
+Figure 7: Layer-1 Attention Softmax vs. True Transition matrices for orders 3 and 5. For both orders (m = 3 top 3 rows, m = 5 bottom 3 rows), each panel reports the learned first-layer attention (softmax of 
+
+W A⊤
+
+1 ) alongside the true transition matrix; the average row-wise KL divergence is reported in the panel title. Sequence lengths increase left-to-right, top-to-bottom. 
+
+22 Published as a conference paper at ICLR 2026 Constructed     
+
+> Layer 1 Layer 2 Layer 3
+> Trained (disentangled) Constructed
+> Layer 1 Layer 2 Layer 3
+> Trained (disentangled)
+
+Figure 8: Comparison of Trained and Constructed Transformers (attention grids). Top: Attention maps of the trained transformer (disentangled) versus our theoretical construction (seq. length 64, MTD order m =3). Bottom: Same as top but for MTD order m = 5 .
+
+23 Published as a conference paper at ICLR 2026 
+
+F DERIVATION OF THE BAYES -O PTIMAL MTD P REDICTOR 
+
+Here, we provide the full derivation for the Bayes-optimal predictive distribution stated in Proposi-tion 1. Our goal is to derive the predictive distribution for the next state, p(Yt+1 |yt
+
+> 1
+
+, α), given an observed data prefix yt 
+
+> 1
+
+= ( y1, . . . , y t). The unknown mixture weights λ = ( λ1, . . . , λ m) are assumed to be drawn from a Dirichlet prior distribution: 
+
+p(λ|α) = Dirichlet (λ|α) = Γ( Pmg=1 αg )
+
+Qmg=1 Γ( αg )
+
+> m
+
+Y
+
+> g=1
+
+λαg −1 
+
+> g
+
+.
+
+The likelihood of the observed data given the parameters λ is defined by the MTD model: 
+
+p(yt 
+
+> 1
+
+| λ) = 
+
+> t
+
+Y
+
+> k=m+1
+
+p(yk | yk−11 , λ) = 
+
+> t
+
+Y
+
+> k=m+1
+> m
+
+X
+
+> h=1
+
+λhπ(yk−h, y k)
+
+!
+
+.
+
+Combining the likelihood and prior via Bayes’ theorem yields the posterior distribution over the mixture weights: 
+
+p(λ | yt
+
+> 1
+
+, α) ∝ p(yt 
+
+> 1
+
+| λ) · p(λ | α).
+
+The Bayesian predictive distribution is formulated by marginalizing the single-step prediction 
+
+p(Yt+1 = j | yt
+
+> 1
+
+, λ) over this posterior distribution of λ:
+
+p(Yt+1 = j | yt
+
+> 1
+
+, α) = 
+
+Z
+
+> ∆m−1
+
+p(Yt+1 = j | yt
+
+> 1
+
+, λ) · p(λ | yt
+
+> 1
+
+, α) dλ,
+
+where ∆m−1 is the probability simplex. The single-step prediction is simply the MTD model defi-nition: 
+
+p(Yt+1 = j | yt
+
+> 1
+
+, λ) = 
+
+> m
+
+X
+
+> g=1
+
+λg π(yt+1 −g , j ).
+
+Substituting this into the integral gives: 
+
+p(Yt+1 = j | yt
+
+> 1
+
+, α) = 
+
+Z
+
+> ∆m−1
+> m
+
+X
+
+> g=1
+
+λg π(yt+1 −g , j )
+
+!
+
+p(λ | yt
+
+> 1
+
+, α) dλ.
+
+By the linearity of expectation (and integration), the integral and the finite sum can be interchanged: 
+
+p(Yt+1 = j | yt
+
+> 1
+
+, α) = 
+
+> m
+
+X
+
+> g=1
+
+π(yt+1 −g , j )
+
+Z
+
+> ∆m−1
+
+λg · p(λ | yt
+
+> 1
+
+, α) dλ
+
+!
+
+.
+
+We recognize the term in the parentheses as the definition of the posterior mean of the parameter λg :
+
+ˆλBayes  
+
+> g
+
+:= E[λg | yt
+
+> 1
+
+, α] = 
+
+Z
+
+> ∆m−1
+
+λg · p(λ | yt
+
+> 1
+
+, α) dλ.
+
+This substitution yields the final form of the Bayes-optimal predictor, completing the proof: 
+
+p(Yt+1 = j | yt
+
+> 1
+
+, α) = 
+
+> m
+
+X
+
+> g=1
+
+ˆλBayes  
+
+> g
+
+· π(yt+1 −g , j ).
+
+F.1 THE STRUCTURE OF THE BAYES -O PTIMAL ESTIMATOR 
+
+While the posterior mean is intractable to compute, its structure can be derived exactly. In particular it can be shown that the MTD posterior is a finite mixture of Dirichlet distributions, and from this, we can derive that the mean of the posterior preserves the classic ’add-constant’ structure of conjugate Bayesian models, where the unobserved data counts are replaced by their posterior expectation. 24 Published as a conference paper at ICLR 2026 
+
+Proposition 4 (Posterior as a Mixture of Dirichlets) . Given the MTD likelihood L(λ) = p(yt 
+
+> 1
+
+| λ)
+
+and a Dirichlet prior p(λ | α) = Dir (λ | α), the posterior distribution is a finite mixture of Dirichlet distributions: 
+
+p(λ | yt
+
+> 1
+
+, α) = X
+
+> z∈{ 1,...,m }t−m
+
+π(z) · Dir (λ | α + k(z)) , (16) 
+
+where z = ( zm+1 , . . . , z t) is a latent assignment path, k(z) is the vector of counts of each lag in path z, and π(z) = p(Z = z | yt
+
+> 1
+
+, α) are the true posterior probabilities of the latent paths. Proof. We begin with Bayes’ theorem for the posterior distribution: 
+
+p(λ | yt
+
+> 1
+
+, α) ∝ p(yt 
+
+> 1
+
+| λ) · p(λ | α).
+
+The central idea is to express the observed-data likelihood, p(yt 
+
+> 1
+
+| λ), by marginalizing over all possible latent assignment paths z. A path z = ( zm+1 , . . . , z t) specifies which lag was used at each step k.
+
+p(yt 
+
+> 1
+
+| λ) = X
+
+> z∈{ 1,...,m }t−m
+
+p(yt
+
+> 1
+
+, z | λ).
+
+The joint probability of the data and a specific path z, known as the complete-data likelihood, is given by: 
+
+p(yt
+
+> 1
+
+, z | λ) = 
+
+> t
+
+Y
+
+> k=m+1
+
+p(yk, z k | yk−11 , λ)=
+
+> t
+
+Y
+
+> k=m+1
+
+p(zk | λ) · p(yk | yk−11 , z k, λ)=
+
+> t
+
+Y
+
+> k=m+1
+
+λzk · π(yk−zk , y k).
+
+We can group the terms that depend on λ and those that do not. Let kg (z) = Ptk=m+1 I(zk = g)
+
+be the number of times lag g is used in path z. Then: 
+
+p(yt
+
+> 1
+
+, z | λ) = 
+
+> m
+
+Y
+
+> g=1
+
+λkg (z)
+
+> g
+
+! tY
+
+> k=m+1
+
+π(yk−zk , y k)
+
+!
+
+.
+
+Let P (y | z) := Qtk=m+1 π(yk−zk , y k), which is constant with respect to λ. The prior is given by 
+
+p(λ | α) = 1
+
+> B(α)
+
+Qmg=1 λαg −1 
+
+> g
+
+, where B(α) is the multivariate beta function. Substituting these into the expression for the posterior: 
+
+p(λ | yt
+
+> 1
+
+, α) ∝ X
+
+> z
+
+P (y | z)
+
+> m
+
+Y
+
+> g=1
+
+λkg (z)
+
+> g
+
+!
+
+1
+
+B(α)
+
+> m
+
+Y
+
+> g=1
+
+λαg −1
+
+> g
+
+!
+
+∝ X
+
+> z
+
+P (y | z)
+
+> m
+
+Y
+
+> g=1
+
+λαg +kg (z)−1 
+
+> g
+
+.
+
+We recognize that the term Q 
+
+> g
+
+λ(αg +kg (z)) −1 
+
+> g
+
+is the kernel of a Dirichlet distribution, Dir (λ | α +
+
+k(z)) . We can write it as B(α + k(z)) · Dir (λ | α + k(z)) . Thus, the posterior takes the form of a weighted sum of Dirichlet densities: 
+
+p(λ | yt
+
+> 1
+
+, α) = X
+
+> z
+
+π(z) · Dir (λ | α + k(z)) ,
+
+where the mixture weights π(z) are the normalized coefficients, which are precisely the true poste-rior probabilities of the latent paths, p(Z = z | yt
+
+> 1
+
+, α). This completes the proof. From this mixture structure, we can derive an exact identity for the posterior mean. 25 Published as a conference paper at ICLR 2026 
+
+Proposition 5 (Bayes Mean as Add-Constant-to-Expected-Counts) . The components of the Bayesian posterior mean, ˆλBayes = E[λ | yt
+
+> 1
+
+, α], are given by: 
+
+ˆλBayes  
+
+> g
+
+= αg + EZ∼π [kg (Z)] 
+
+α0 + ( t − m) , (17) 
+
+where α0 = P 
+
+> j
+
+αj , and EZ∼π [kg (Z)] is the posterior expected number of times lag g was used, which is computationally intractable. Proof. The posterior mean is defined by the integral of λ over its posterior distribution: 
+
+ˆλBayes =
+
+Z
+
+> ∆m−1
+
+λ · p(λ | yt
+
+> 1
+
+, α) dλ.
+
+We substitute the mixture-of-Dirichlets form of the posterior from Proposition 4: 
+
+ˆλBayes =
+
+Z
+
+> ∆m−1
+
+λ · X
+
+> z
+
+π(z) · Dir (λ | α + k(z)) 
+
+!
+
+dλ.
+
+Since the summation is over a finite set of paths z, we can swap the integral and the summation: 
+
+ˆλBayes = X
+
+> z
+
+π(z)
+
+Z
+
+> ∆m−1
+
+λ · Dir (λ | α + k(z)) dλ
+
+!
+
+.
+
+The term inside the parentheses is the definition of the mean of a Dirichlet distribution with parame-ter vector β = α + k(z). The mean of a Dir (β) distribution is the vector β/β 0, where β0 = P 
+
+> j
+
+βj .In our case, the sum of the parameters is: 
+
+> m
+
+X
+
+> g=1
+
+(αg + kg (z)) = X
+
+> g
+
+αg
+
+!
+
++ X
+
+> g
+
+kg (z)
+
+!
+
+= α0 + ( t − m).
+
+Therefore, the inner integral evaluates to the vector α+k(z) 
+
+> α0+( t−m)
+
+. Substituting this back: 
+
+ˆλBayes = X
+
+> z
+
+π(z) α + k(z)
+
+α0 + ( t − m) .
+
+This expression is an expectation over the posterior distribution of latent paths, Z ∼ π(z). We can write it as: 
+
+ˆλBayes = EZ∼π
+
+ α + k(Z)
+
+α0 + ( t − m)
+
+
+
+.
+
+By the linearity of expectation, we can take the expectation inside for each component g:
+
+ˆλBayes  
+
+> g
+
+= EZ∼π [αg + kg (Z)] 
+
+α0 + ( t − m) = αg + EZ∼π [kg (Z)] 
+
+α0 + ( t − m) .
+
+This reveals the ”add-constant-to-expected-counts” structure of the estimator, completing the proof. 
+
+G APPROXIMATIONS FOR THE MEAN OF THE POSTERIOR DISTRIBUTION 
+
+In this section, we outline the methods used to approximate the mean of the posterior distribution over the mixture weights λ.G.1 MARKOV CHAIN MONTE CARLO (MCMC) Since an analytical solution is unavailable, we approximate the Bayesian predictive distribution using samples from the posterior distribution generated by a Markov Chain Monte Carlo (MCMC) method, specifically Gibbs sampling . Gibbs sampling is well-suited for this problem because, while the full posterior is intractable, the conditional posteriors of the parameters and latent variables are simple to sample from. The procedure involves augmenting the model with latent variables Zt 
+
+> 1
+
+= ( Zm+1 , . . . , Z t), where 
+
+Zk = g indicates that lag g was used to generate the transition to Yk. The Gibbs sampler iteratively draws from the two full conditional distributions: 26 Published as a conference paper at ICLR 2026 1. Sample Latent Variables Z given Parameters λ: For a given parameter vector λ(k−1) 
+
+from the previous iteration, we sample each latent variable Zs for s ∈ { m + 1 , . . . , t } from its categorical conditional posterior: 
+
+P(Zs = g | yt
+
+> 1
+
+, λ(k−1) ) = λ(k−1)  
+
+> g
+
+π(ys−g , y s)
+
+Pmh=1 λ(k−1)  
+
+> h
+
+π(ys−h, y s) . (18) This provides a complete sampled sequence of lags, z(k) = ( z(k)
+
+> m+1
+
+, . . . , z (k) 
+
+> t
+
+).2. Sample Parameters λ given Latent Variables Z: Given the sampled lags z(k), the Dirichlet prior is now conjugate to the complete-data likelihood. We first count the oc-currences of each lag, ng = Pts=m+1 I(z(k) 
+
+> s
+
+= g). The full conditional posterior for λ is a Dirichlet distribution, from which we draw the next sample λ(k):
+
+p(λ | yt
+
+> 1
+
+, z(k), α) = Dirichlet (λ | α1 + n1, . . . , α m + nm). (19) After running the sampler for Ktotal iterations and discarding an initial burn-in period, we obtain a set of K samples, {λ(1) , λ(2) , . . . , λ(K)}, that are approximately drawn from the true posterior 
+
+p(λ | yt
+
+> 1
+
+, α) shown in Equation 4. The integral in Equation 4 is then approximated via a Monte Carlo average: 
+
+ˆp(Yt+1 = j | yt
+
+> 1
+
+) = 1
+
+K
+
+> K
+
+X
+
+> k=1
+
+p(Yt+1 = j | yt
+
+> 1
+
+, λ(k))= 1
+
+K
+
+> K
+
+X
+
+> k=1
+> m
+
+X
+
+> g=1
+
+λ(k) 
+
+> g
+
+π(yt+1 −g , j )
+
+!
+
+. (20) This estimate converges to the true Bayes optimal predictive distribution as K → ∞ . It represents the theoretical performance limit for inference under the MTD model assumptions, providing a gold-standard benchmark against which other estimators can be compared. 
+
+H ALGORITHMS FOR MAXIMUM LIKELIHOOD ESTIMATION OF MTD 
+
+Maximum Likelihood Estimation (MLE) for the Mixture Transition Distribution (MTD) does not admit a closed-form solution, therefore iterative optimization algorithms are required. This section details two iterative algorithms suited for this task. We first review the Expectation-Maximization (EM) algorithm, a standard and widely-used method for latent variable models. We then present Mirror Descent (MD), an alternative optimization framework that is central to our work. H.1 EXPECTATION -M AXIMIZATION (EM) A LGORITHM 
+
+The Expectation-Maximization (EM) algorithm is a widely-used iterative method for finding Max-imum Likelihood estimates in statistical models with latent variables. In the context of the MTD model, the latent variables correspond to the specific mixture component responsible for generating each observation. The algorithm alternates between two steps: the Expectation (E) step, where it computes the expected log-likelihood with respect to the posterior distribution of the latent variables, and the Maximization (M) step, where it updates the model parameters to maximize this expected value. Given the latent variables Z = ( Zm+1 , . . . , Z T ), where each Zt ∈ { 1, . . . , m }. The variable Zt = g
+
+indicates that the gth mixture component (corresponding to lag g) was responsible for generating the transition to Yt at time t. The complete data are (y, z).The likelihood of the complete data (yTm+1 , zTm+1 ), conditional on ym 
+
+> 1
+
+, is given by: 
+
+P(yTm+1 , zTm+1 | ym 
+
+> 1
+
+; λ) = 
+
+> T
+
+Y
+
+> t=m+1
+
+P(yt, z t | yt−11 ; λ)=
+
+> T
+
+Y
+
+> t=m+1
+
+P(Zt = zt | yt−11 ; λ)P(yt | Zt = zt, yt−11 ; λ).
+
+27 Published as a conference paper at ICLR 2026 Under the MTD model assumptions: • P(Zt = g | yt−11 ; λ) = λg
+
+• P(yt | Zt = g, yt−11 ; λ) = π(yt−g , y t)
+
+Thus, P(yt, Z t = g | yt−11 ; λ) = λg π(yt−g , y t). The complete data likelihood becomes: 
+
+P(yTm+1 , zTm+1 | ym 
+
+> 1
+
+; λ) = 
+
+> T
+
+Y
+
+> t=m+1
+
+λzt π(yt−zt , y t).
+
+The complete data log-likelihood, ℓc(λ; y, z) = log P(yTm+1 , zTm+1 | ym 
+
+> 1
+
+; λ), is: 
+
+ℓc(λ; y, z) = 
+
+> T
+
+X
+
+> t=m+1
+
+log( λzt πzt (yt−zt , y t)) =
+
+> T
+
+X
+
+> t=m+1
+> m
+
+X
+
+> g=1
+
+I(zt = g) log( λg π(yt−g , y t)) , (21) where I(·) is the indicator function. H.2 EM A LGORITHM STEPS 
+
+Let λ(k) be the estimate of λ at iteration k.
+
+E-Step (Expectation) The E-step computes the expectation of the complete-data log-likelihood equation 21 with respect to the conditional distribution of the latent variables Z given the observed data y and the current parameter estimate λ(k). This expectation defines the Q function: 
+
+Q(λ | λ(k)) = EZ|y,λ(k) [ℓc(λ; y, Z)] = E
+
+" TX
+
+> t=m+1
+> m
+
+X
+
+> g=1
+
+I(Zt = g) log( λg π(yt−g , y t)) y, λ(k)
+
+#
+
+=
+
+> T
+
+X
+
+> t=m+1
+> m
+
+X
+
+> g=1
+
+E[I(Zt = g) | y, λ(k)] log( λg π(yt−g , y t)) .
+
+The core computation is the posterior probability (responsibility) of Zt = g:
+
+γ(k) 
+
+> t
+
+(g) := E[I(Zt = g) | y, λ(k)] = P(Zt = g | y, λ(k)).
+
+Due to the MTD model structure, future observations yTt+1 are conditionally independent of Zt given 
+
+yt
+
+> 1
+
+. Thus, the posterior probability simplifies: 
+
+P(Zt = g | y, λ(k)) = P(Zt = g | yt
+
+> 1
+
+, λ(k)).
+
+Using Bayes’ theorem: 
+
+γ(k) 
+
+> t
+
+(g) = P(Zt = g | yt
+
+> 1
+
+, λ(k))= P(yt | Zt = g, yt−11 , λ(k))P(Zt = g | yt−11 , λ(k))
+
+P(yt | yt−11 , λ(k))= π(yt−g , y t)λ(k)
+
+> g
+
+Pmh=1 P(yt, Z t = h | yt−11 , λ(k))= λ(k) 
+
+> g
+
+π(yt−g , y t)
+
+Pmh=1 λ(k) 
+
+> h
+
+π(yt−h, y t) . (22) The E-step involves calculating these responsibilities γ(k) 
+
+> t
+
+(g) for all t ∈ { m + 1 , . . . , T } and g ∈{1, . . . , m }. The Q function is then: 
+
+Q(λ | λ(k)) = 
+
+> T
+
+X
+
+> t=m+1
+> m
+
+X
+
+> g=1
+
+γ(k) 
+
+> t
+
+(g)(log λg + log π(yt−g , y t)) . (23) 28 Published as a conference paper at ICLR 2026 
+
+M-Step (Maximization) The M-step finds the parameter values λ that maximize the Q function equation 23 subject to the constraints λg ≥ 0 and Pmg=1 λg = 1 . This gives the updated estimate 
+
+λ(k+1) .
+
+λ(k+1) = arg max 
+
+> λ
+
+Q(λ | λ(k)).
+
+Since the terms log π(yt−g , y t) do not depend on λ, we maximize: 
+
+f (λ) = 
+
+> T
+
+X
+
+> t=m+1
+> m
+
+X
+
+> g=1
+
+γ(k) 
+
+> t
+
+(g) log λg =
+
+> m
+
+X
+
+> g=1
+> T
+
+X
+
+> t=m+1
+
+γ(k) 
+
+> t
+
+(g)
+
+!
+
+log λg .
+
+Let Cg = PTt=m+1 γ(k) 
+
+> t
+
+(g). We maximize f (λ) = Pmg=1 Cg log λg subject to Pmg=1 λg = 1 . We use a Lagrange multiplier μ:
+
+L(λ, μ ) = 
+
+> m
+
+X
+
+> g=1
+
+Cg log λg − μ
+
+> m
+
+X
+
+> g=1
+
+λg − 1
+
+!
+
+.
+
+Setting partial derivatives to zero: 
+
+∂L
+
+∂λ g
+
+= Cg
+
+λg
+
+− μ = 0 = ⇒ λg = Cg
+
+μ∂L
+
+∂μ = −
+
+> m
+
+X
+
+> g=1
+
+λg − 1
+
+!
+
+= 0 = ⇒
+
+> m
+
+X
+
+> g=1
+
+λg = 1 .
+
+Substituting λg = Cg /μ into the constraint yields μ = Pmh=1 Ch. Therefore: 
+
+λg = Cg
+
+Pmh=1 Ch
+
+=
+
+PTt=m+1 γ(k) 
+
+> t
+
+(g)
+
+Pmh=1 
+
+PTt′=m+1 γ(k) 
+
+> t′
+
+(h) .
+
+The denominator simplifies as Pmh=1 
+
+PTt′=m+1 γ(k) 
+
+> t′
+
+(h) = PTt′=m+1 
+
+Pmh=1 γ(k) 
+
+> t′
+
+(h) =
+
+PTt′=m+1 1 = T − m. The M-step update rule is thus: 
+
+λ(k+1)  
+
+> g
+
+=
+
+PTt=m+1 γ(k) 
+
+> t
+
+(g)
+
+T − m . (24) H.3 SUMMARY OF THE EM A LGORITHM 
+
+The EM algorithm for estimating the mixture weights λ in the MTD model, assuming known tran-sition matrices πg , proceeds as follows: 1. Initialization: Choose initial weights λ(0) = ( λ(0) 1 , . . . , λ (0)  
+
+> m
+
+) such that λ(0)  
+
+> g
+
+≥ 0 for all 
+
+g ∈ { 1, . . . , m } and Pmg=1 λ(0)  
+
+> g
+
+= 1 . Set the iteration counter k = 0 .2. E-Step (Expectation): Compute the responsibilities γ(k) 
+
+> t
+
+(g) for each time point t ∈{m + 1 , . . . , T } and each mixture component g ∈ { 1, . . . , m }, using the current parameter estimates λ(k):
+
+γ(k) 
+
+> t
+
+(g) = λ(k) 
+
+> g
+
+π(yt−g , y t)
+
+Pmh=1 λ(k) 
+
+> h
+
+π(yt−h, y t) . (25) 3. M-Step (Maximization): Update the mixture weights λ(k+1)  
+
+> g
+
+for each component g ∈{1, . . . , m } using the computed responsibilities: 
+
+λ(k+1)  
+
+> g
+
+=
+
+PTt=m+1 γ(k) 
+
+> t
+
+(g)
+
+T − m . (26) 4. Convergence Check: If the change in the parameter estimates (e.g., || λ(k+1) − λ(k)|| )or the change in the observed data log-likelihood (e.g., ℓ(λ(k+1) ; y) − ℓ(λ(k); y), where 
+
+ℓ(λ; y) is the observed data log-likelihood) is below a predefined tolerance ϵ, stop the algorithm and return ˆλ = λ(k+1) as the estimated mixture weights. Otherwise, set k ←
+
+k + 1 and repeat from Step 2. 29 Published as a conference paper at ICLR 2026 H.4 MIRROR DESCENT 
+
+This appendix provides detailed derivations for Equation (5) and Proposition 2. H.5 DERIVATION OF THE EXPONENTIATED GRADIENT ALGORITHM 
+
+The Exponentiated Gradient (EG) algorithm is a specific instance of the Mirror Descent (MD) online optimization algorithm. We apply it to the problem of maximizing the MTD log-likelihood function, 
+
+ℓ(λ), with respect to the mixture weights λ = ( λ1, . . . , λ m). The weights are constrained to the probability simplex, ∆m−1 = {λ ∈ Rm | P 
+
+> g
+
+λg = 1 , λ g ≥ 0}.The general MD update step at iteration k linearizes the objective function around the current esti-mate λ(k) and adds a regularization term. The next iterate, λ(k+1) , is found by solving: 
+
+λ(k+1) = arg max 
+
+> λ∈∆m−1
+
+
+
+⟨∇ ℓ(λ(k)), λ⟩ − 1
+
+η DΨ(λ, λ(k))
+
+
+
+, (27) where η > 0 is the learning rate, ∇ℓ(λ(k)) is the gradient of the log-likelihood evaluated at λ(k),and DΨ is the Bregman divergence associated with a potential function Ψ. For optimization over the simplex, the standard choice is the negative entropy potential, Ψ( λ) = Pmg=1 λg log λg . The resulting Bregman divergence is the unnormalized Kullback-Leibler (KL) divergence: 
+
+DΨ(λ, λ(k)) = 
+
+> m
+
+X
+
+> g=1
+
+λg log λg
+
+λ(k)
+
+> g
+
+. (28) Therefore the optimization problem in Equation (27) becomes: 
+
+λ(k+1) = arg max 
+
+> λ∈∆m−1
+
+(
+
+⟨∇ ℓ(λ(k)), λ⟩ − 1
+
+η
+
+> m
+
+X
+
+> g=1
+
+λg log λg
+
+λ(k)
+
+> g
+
+)
+
+. (29) To solve the optimization problem in Eq. 27, we form the Lagrangian with a multiplier μ for the constraint P 
+
+> g
+
+λg = 1 :
+
+L(λ, μ ) = η⟨∇ ℓ(λ(k)), λ⟩ − X
+
+> g
+
+λg log λg
+
+λ(k)
+
+> g
+
+− μ X
+
+> g
+
+λg − 1
+
+!
+
+. (30) Setting the derivative ∂L/∂λ g to zero yields: 
+
+η∇λℓ(λ(k))g − log λg
+
+λ(k)
+
+> g
+
++ 1 
+
+!
+
+− μ = 0 log λg
+
+λ(k)
+
+> g
+
+= η∇λℓ(λ(k))g − μ − 1
+
+λg = λ(k) 
+
+> g
+
+exp( η∇λℓ(λ(k))g ) exp( −μ − 1) .
+
+The term exp( −μ − 1) serves as a normalization constant to ensure P 
+
+> g
+
+λg = 1 . This leads directly to the EG update rule presented in Equation (5): 
+
+λ(k+1)  
+
+> g
+
+= λ(k) 
+
+> g
+
+exp( η · ∇ λℓ(λ(k))g )
+
+Pmh=1 λ(k) 
+
+> h
+
+exp( η · ∇ λℓ(λ(k))h) . (5, repeated) H.6 DERIVATION OF THE ONE -S TEP MTD E STIMATOR 
+
+We now prove Proposition 2 by specializing the EG update to the MTD model and evaluating it at the uniform prior λ(0) = (1 /m, . . . , 1/m ).30 Published as a conference paper at ICLR 2026 
+
+Step 1: MTD Log-Likelihood and its Gradient. Given an observed sequence prefix yt
+
+> 1
+
+, the MTD log-likelihood is: 
+
+ℓ(λ) = log p(yt 
+
+> 1
+
+| λ) = 
+
+> t
+
+X
+
+> k=m+1
+
+log 
+
+> m
+
+X
+
+> h=1
+
+λhπ(yk−h, y k)
+
+!
+
+. (31) The g-th component of its gradient is: 
+
+∇λℓ(λ)g = ∂ℓ (λ)
+
+∂λ g
+
+=
+
+> t
+
+X
+
+> k=m+1
+
+π(yk−g , y k)
+
+Pmh=1 λhπ(yk−h, y k) . (32) 
+
+Step 2: Evaluate Gradient at the Uniform Prior. We evaluate this gradient at λ(0) =(1 /m, . . . , 1/m ):
+
+∇λℓ(λ(0) )g =
+
+> t
+
+X
+
+> k=m+1
+
+π(yk−g , y k)
+
+Pmh=1 (1 /m )π(yk−h, y k)= m
+
+> t
+
+X
+
+> k=m+1
+
+π(yk−g , y k)
+
+Pmh=1 π(yk−h, y k) . (33) We recognize the term inside the summation as the posterior responsibility of lag g under the uniform model: 
+
+γk(g) := p(Zk = g | yk 
+
+> 1
+
+, λ(0) ) (34) 
+
+= p(yk | yk−g )p(Zk = g|λ(0) )
+
+P 
+
+> h
+
+p(yk | yk−h)p(Zk = h|λ(0) ) (35) 
+
+= π(yk−g , y k) · (1 /m )
+
+P 
+
+> h
+
+π(yk−h, y k) · (1 /m ) (36) 
+
+= π(yk−g , y k)
+
+Pmh=1 π(yk−h, y k) . (37) Thus, the gradient at the uniform prior is a scaled sum of these responsibilities: 
+
+∇λℓ(λ(0) )g = m
+
+> t
+
+X
+
+> k=m+1
+
+γunif  
+
+> k
+
+(g). (38) 
+
+Step 3: Apply the EG Update Rule. Finally, we substitute λ(0)  
+
+> g
+
+= 1 /m and the derived gradient into the EG update rule (Eq. 5) to find λ(1)  
+
+> g
+
+:
+
+ˆλMD  
+
+> g
+
+= λ(1)  
+
+> g
+
+= λ(0)  
+
+> g
+
+exp  η · ∇ λℓ(λ(0) )g
+
+Pmj=1 λ(0)  
+
+> j
+
+exp  η · ∇ λℓ(λ(0) )j
+
+
+
+=(1 /m ) · exp 
+
+
+
+η · m Ptk=m+1 γunif  
+
+> k
+
+(g)
+
+Pmj=1 (1 /m ) · exp 
+
+
+
+η · m Ptk=m+1 γunif  
+
+> k
+
+(j)
+
+
+
+=exp 
+
+
+
+ηm Ptk=m+1 γunif  
+
+> k
+
+(g)
+
+Pmj=1 exp 
+
+
+
+ηm Ptk=m+1 γunif  
+
+> k
+
+(j)
+
+ . (39) This completes the proof of Proposition 2. 
+
+I ONE -S TEP MD AS A FIRST -O RDER BAYESIAN APPROXIMATION 
+
+In this section, we formally establish a theoretical connection between the one-step Mirror Descent (MD) estimator and the true Bayesian posterior mean. We demonstrate that their respective first-order Taylor expansions around a state of “no evidence” are identical up to a scalar constant. This 31 Published as a conference paper at ICLR 2026 result provides a rigorous basis for understanding the one-step MD estimator as a principled approx-imation to the Bayes-optimal predictor, particularly in a low-data or low-signal regime. The analysis hinges on treating both estimators as functions of the log-likelihood gradient evaluated at the center of the simplex, g := ∇λℓ(λ(0) ), and expanding them around the point of no evidence, 
+
+g = 0. The approximations will be expressed using Landau notation, where a vector function 
+
+f (g) = O(∥g∥p) signifies that ∥f (g)∥ ≤ C∥g∥p for some constant C in a neighborhood of g = 0.
+
+Proposition 6 (First-Order Approximation of the One-Step MD Estimator) . Let ˆλMD (g) be the one-step MD estimator defined as ˆλMD (g) = softmax( ηg), viewed as a function of the log-likelihood gradient g. Its first-order Taylor expansion around g = 0 is given by: 
+
+ˆλMD  
+
+> k
+
+(g) = 1
+
+m + ηm (gk − ¯g) + O(∥g∥2), (40) 
+
+where ¯g = 1
+
+> m
+
+Pmj=1 gj . In vector form, this is ˆλMD (g) = λ(0) + ηm Proj ∆(g) + O(∥g∥2), where 
+
+λ(0) = (1 /m, . . . , 1/m ) and Proj ∆ is the operator that projects a vector onto the hyperplane of vectors that sum to zero. Proof. The one-step MD update is given by the softmax function, ˆλMD  
+
+> k
+
+(g) = exp( ηg k )Pmj=1 exp( ηg j ) . Since the exponential function is analytic, the softmax function is also analytic in g, and its Taylor series expansion around g = 0 exists. The expansion is given by: 
+
+ˆλMD (g) = ˆλMD (0) + JˆλMD (0)g + O(∥g∥2),
+
+where JˆλMD (0) is the Jacobian matrix of ˆλMD (g) evaluated at g = 0.
+
+Zeroth-Order Term: At g = 0, the estimator evaluates to the uniform distribution, which is the prior mean λ(0) :
+
+ˆλMD  
+
+> k
+
+(0) = exp(0) 
+
+Pmj=1 exp(0) = 1
+
+m = λ(0)  
+
+> k
+
+.
+
+First-Order Term (Jacobian): The entries of the Jacobian matrix, Jkj (g) = ∂∂g j
+
+ˆλMD  
+
+> k
+
+(g), are given by η · ˆλMD  
+
+> k
+
+(g)( δkj − ˆλMD  
+
+> j
+
+(g)) . Evaluating at g = 0, where ˆλMD  
+
+> j
+
+(0) = 1 /m for all j:
+
+∂ˆλMD 
+
+> k
+
+∂g j g=0
+
+= η · 1
+
+m
+
+
+
+δkj − 1
+
+m
+
+
+
+.
+
+Assembling the Expansion: The k-th component of the expansion is ˆλMD  
+
+> k
+
+(g) = ˆλMD  
+
+> k
+
+(0) + 
+
+Pmj=1    
+
+> ∂ˆλMD
+> k
+> ∂g j0
+
+· gj + O(∥g∥2):
+
+ˆλMD  
+
+> k
+
+(g) = 1
+
+m +
+
+> m
+
+X
+
+> j=1
+
+ ηm
+
+
+
+δkj − 1
+
+m
+
+ 
+
+gj + O(∥g∥2)= 1
+
+m + ηm
+
+
+
+> m
+
+X
+
+> j=1
+
+δkj gj − 1
+
+m
+
+> m
+
+X
+
+> j=1
+
+gj
+
+ + O(∥g∥2)= 1
+
+m + ηm (gk − ¯g) + O(∥g∥2).
+
+This completes the proof. Next, we derive the corresponding approximation for the Bayesian posterior mean. We linearize the log-likelihood around the prior mean, λ(0) , which allows for an analytical treatment of the posterior. 
+
+Proposition 7 (First-Order Approximation of the Bayesian Posterior Mean) . Consider a Bayesian model with a uniform Dirichlet( 1) prior over λ ∈ ∆m−1 and a log-likelihood linearized around 
+
+32 Published as a conference paper at ICLR 2026 
+
+the prior mean, ℓ(λ) = ℓ(λ(0) ) + ⟨g, λ − λ(0) ⟩. The resulting posterior mean, ˆλBayes (g), has a first-order Taylor expansion around g = 0 given by: 
+
+ˆλBayes  
+
+> k
+
+(g) = 1
+
+m + 1
+
+m(m + 1) (gk − ¯g) + O(∥g∥2). (41) 
+
+In vector form, this is ˆλBayes (g) = λ(0) + Cov λ(0) (λ)g + O(∥g∥2), where Cov λ(0) (λ) is the co-variance matrix of the prior distribution. Proof. Under the linearized likelihood, the posterior density is p(λ|g) ∝ p(λ) exp( ℓ(λ)) ∝
+
+exp( ⟨g, λ⟩), where terms constant in λ are absorbed into the normalization constant. The poste-rior mean is: 
+
+ˆλBayes (g) = 
+
+R 
+
+> ∆m−1
+
+λ · exp( ⟨g, λ⟩) dμ (λ)
+
+R 
+
+> ∆m−1
+
+exp( ⟨g, λ⟩) dμ (λ) ,
+
+where dμ (λ) is the uniform probability measure over the simplex ∆m−1. Let Nk(g) be the numer-ator’s k-th component and Z(g) be the denominator. The function ˆλBayes (g) is analytic, allowing a Taylor expansion. 
+
+Zeroth-Order Term: At g = 0, the exponential term is 1. The posterior equals the prior, so the posterior mean is the prior mean: 
+
+ˆλBayes (0) = 
+
+R 
+
+> ∆m−1
+
+λ dμ (λ)
+
+R 
+
+> ∆m−1
+
+1 dμ (λ) = Eλ∼Dir (1)[λ] = λ(0) .
+
+First-Order Term (Jacobian): The Jacobian entries are ∂ ˆλk 
+
+> ∂g j
+
+= ∂∂g j
+
+  Nk
+
+> Z
+
+. Using the quotient rule: 
+
+∂ˆλk
+
+∂g j
+
+= 1
+
+Z2
+
+
+
+Z ∂N k
+
+∂g j
+
+− Nk
+
+∂Z ∂g j
+
+
+
+.
+
+We find the required derivatives of Nk(g) and Z(g) differentiating under the integral sign, which is applicable here as the integrands are continuous on the compact domain ∆m−1:
+
+∂Z ∂g j
+
+= ∂∂g j
+
+Z
+
+> ∆m−1
+
+exp X
+
+> i
+
+giλi
+
+!
+
+dμ (λ) = 
+
+Z
+
+> ∆m−1
+
+λj exp X
+
+> i
+
+giλi
+
+!
+
+dμ (λ)
+
+∂N k
+
+∂g j
+
+= ∂∂g j
+
+Z
+
+> ∆m−1
+
+λk exp X
+
+> i
+
+giλi
+
+!
+
+dμ (λ) = 
+
+Z
+
+> ∆m−1
+
+λkλj exp X
+
+> i
+
+giλi
+
+!
+
+dμ (λ)
+
+Now, we evaluate these components at g = 0:• Z(0) = R 1 dμ (λ) = 1 .• Nk(0) = R λk dμ (λ) = E[λk] = 1 /m .• ∂Z ∂g j
+
+> g=0
+
+= R 
+
+> ∆m−1
+
+λj exp( ⟨0, λ⟩) dμ (λ) = R λj dμ (λ) = E[λj ] = 1 /m .• ∂N k
+
+> ∂g j
+> g=0
+
+= R 
+
+> ∆m−1
+
+λkλj exp( ⟨0, λ⟩) dμ (λ) = R λkλj dμ (λ) = E[λkλj ].Substituting these evaluated terms into the quotient rule expression at g = 0:
+
+∂ˆλk
+
+∂g j g=0
+
+= 1 · E[λkλj ] − (1 /m ) · (1 /m )12 = E[λkλj ] − E[λk]E[λj ] = Cov λ(0) (λk, λ j ).
+
+This establishes that the Jacobian of the posterior mean at g = 0 is the prior covariance matrix. 33 Published as a conference paper at ICLR 2026 
+
+Assembling the Expansion: For a Dirichlet( 1) distribution, the covariance matrix is Cov( λk, λ j ) =   
+
+> mδ kj −1
+> m2(m+1)
+
+. The k-th component of the expansion is: 
+
+ˆλBayes  
+
+> k
+
+(g) = 1
+
+m +
+
+> m
+
+X
+
+> j=1
+
+mδ kj − 1
+
+m2(m + 1) gj + O(∥g∥2)= 1
+
+m + 1
+
+m2(m + 1) 
+
+mg k −
+
+> m
+
+X
+
+> j=1
+
+gj
+
+ + O(∥g∥2)= 1
+
+m + mm2(m + 1) (gk − ¯g) + O(∥g∥2)= 1
+
+m + 1
+
+m(m + 1) (gk − ¯g) + O(∥g∥2).
+
+This completes the proof of the proposition. By comparing the results of Proposition 6 and Proposition 7, we arrive at our main result. 
+
+Theorem 3 (First-Order Equivalence of the Estimators (restated)) . Let ˆλMD (g; η) be the one-step MD estimator with learning rate η, and let ˆλBayes (g) be the Bayesian posterior mean under the linearized likelihood. There exists a unique learning rate η = 1 
+
+> m+1
+
+for which the two estimators are first-order equivalent at g = 0.Proof. Two estimators are first-order equivalent at g = 0 if their values and their Jacobian matrices are identical at that point. As shown in Propositions 6 and 7, the first condition, ˆλMD (0; η) = ˆλBayes (0), holds for any η. The equivalence thus depends on matching their Jacobians. From the proof of Proposition 6, the Jacobian of the MD estimator at g = 0 is: 
+
+JˆλMD (0) = ηm
+
+
+
+I − 1
+
+m 11 T
+
+
+
+.
+
+From the proof of Proposition 7, the Jacobian of the Bayesian posterior mean is: 
+
+JˆλBayes (0) = 1
+
+m(m + 1) 
+
+
+
+I − 1
+
+m 11 T
+
+
+
+.
+
+Equating the two Jacobians, JˆλMD (0) = JˆλBayes (0), requires their scalar coefficients to be equal, since the matrix factor is non-zero for m > 1:
+
+ηm = 1
+
+m(m + 1) .
+
+Solving for η yields the unique solution η = 1 
+
+> m+1
+
+.This theorem provides a theoretical justification for the performance of the one-step MD estimator. It demonstrates that this simple, non-iterative update is not merely a heuristic but a principled, first-order approximation of the Bayesian posterior mean under a linearized likelihood. 
+
+Remark (The Role of η and the Small-Gradient Assumption). The first-order equivalence es-tablished in Theorem 1 holds in the regime where ∥g∥ → 0, as this is where the higher-order terms, 
+
+O(∥g∥2), are negligible. For many models, the gradient’s magnitude, ∥g∥, scales with the amount of data (e.g., sequence length T ), which appears to invalidate the approximation when the data size is large. However, the one-step MD estimator, ˆλMD = softmax( ηg), can remain a well-behaved estimator even for large ∥g∥ if η is scaled appropriately. The term ηg determines the softmax behavior. If we set the learning rate to be inversely proportional to the signal strength, for instance η(T ) = Θ(1 /T ),the norm of the argument, ∥ηg∥, can remain bounded. This scaling prevents the softmax output from saturating and allows the estimator to remain sensitive to the information in g.34 Published as a conference paper at ICLR 2026 On the Bayesian side, under the linearized likelihood, the posterior mean ˆλBayes (g) lacks a scaling parameter analogous to η. For large ∥g∥, the posterior density exp( ⟨g, λ⟩) concentrates sharply at the vertex of the simplex maximizing the inner product with g. In this case, the first-order approxi-mation from Proposition 7 breaks down as the neglected O(∥g∥2) term becomes dominant. The equivalence in Theorem 1 should therefore be interpreted as a local consistency result at g = 0.It shows that for low-signal scenarios, the MD update is a principled approximation to the Bayesian one, and it provides a theoretically grounded value for η in that regime. The empirical success of the one-step estimator for large T suggests that while the functional forms of the two estimators diverge beyond the first order, a properly tuned MD estimator may still serve as an effective proxy for the Bayesian posterior mean, motivating analytical frameworks beyond local Taylor expansions. 
+
+J LEARNING -RATE SCALING VIA A LIPSCHITZ (SMOOTHNESS ) CONSTANT 
+
+In our main analysis, we established a first-order equivalence between the one-step MD estimator and the Bayesian posterior mean in the regime of ”no evidence,” where the log-likelihood gradient 
+
+g = 0. However, for a sequence of length T , the magnitude of the gradient, ∥g∥, typically scales with T . This raises the question of how the learning rate of the one-step MD estimator, ˆλMD =softmax( ηg) should be scaled with T to maintain good performance. In this section, we provide a theoretical justification for scaling the learning rate as η = Θ(1 /T ). We demonstrate that the negative log-likelihood function, viewed as a loss function over the simplex, has a gradient that is Lipschitz continuous with a constant L that grows linearly with the sequence length T . Standard optimization theory suggests setting the learning rate inversely proportional to this Lipschitz constant, i.e., η ∝ 1/L , to ensure stable updates. We use the same notation as the before: 
+
+ct,g = π(yt−g , y t), t = m + 1 , . . . , T, g = 1 , . . . , m, 
+
+and m is the number of lags. 
+
+Assumption. We assume there exists a constant 
+
+cmin > 0
+
+such that for every t ∈ { m + 1 , . . . , T } and every g ∈ { 1, . . . , m },
+
+ct,g = π(yt−g , y t) ≥ cmin . (42) Because each ct,g is a conditional probability, we also have the trivial upper bound 
+
+ct,g ≤ 1 for all t, g. (43) Under these assumptions the denominators that appear in derivatives are uniformly bounded away from zero, and global, uniform bounds on the Hessian are valid. 
+
+Lemma 1 (Hessian decomposition) . For ℓ(λ) = PTt=m+1 log   P mg=1 λg ct,g 
+
+ the Hessian satisfies 
+
+∇2ℓ(λ) = −
+
+> T
+
+X
+
+> t=m+1
+
+ctc⊤
+
+> t
+
+  P mg=1 λg ct,g 
+
+2 , ct := ( ct, 1, . . . , c t,m )⊤.
+
+Hence the Hessian of the negative log-likelihood f (λ) = −ℓ(λ) is 
+
+∇2f (λ) = 
+
+> T
+
+X
+
+> t=m+1
+
+ctc⊤
+
+> t
+
+  P mg=1 λg ct,g 
+
+2 .
+
+Proof. Direct differentiation of ℓ(λ) yields the displayed formulas. Write st(λ) := Pmg=1 λg ct,g and consequently the Hessian of the loss is 
+
+∇2f (λ) = 
+
+> T
+
+X
+
+> t=m+1
+
+ctc⊤
+
+> t
+
+st(λ)2 . (44) Each summand in equation 44 is a rank-one positive semi-definite matrix. 35 Published as a conference paper at ICLR 2026 J.1 UNIFORM OPERATOR -NORM BOUND ON THE HESSIAN 
+
+We now derive a uniform bound on the spectral (operator) norm of ∇2f (λ) that depends linearly on 
+
+T − m.
+
+Lemma 2 (Operator-norm bound) . Under the standing assumption equation 42 (and equation 43), for every λ in the full simplex ∆m−1 = {λ ≥ 0, P 
+
+> g
+
+λg = 1 } we have 
+
+∇2f (λ) op ≤ (T − m) mc2min 
+
+. (45) 
+
+Proof. From equation 44 and subadditivity of the operator norm, 
+
+∇2f (λ) op =
+
+> T
+
+X
+
+> t=m+1
+
+ctc⊤
+
+> t
+
+st(λ)2 op 
+
+≤
+
+> T
+
+X
+
+> t=m+1
+
+ctc⊤ 
+
+> top
+
+st(λ)2 .
+
+For a rank-one matrix uu ⊤ the operator norm equals ∥u∥22. Hence 
+
+ctc⊤  
+
+> top
+
+= ∥ct∥22 =
+
+> m
+
+X
+
+> g=1
+
+c2 
+
+> t,g
+
+.
+
+Using equation 43 we get the upper bound ∥ct∥22 ≤ m · 12 = m for every t.For the denominator, by equation 42 and since Pmg=1 λg = 1 ,
+
+st(λ) = 
+
+> m
+
+X
+
+> g=1
+
+λg ct,g ≥
+
+> m
+
+X
+
+> g=1
+
+λg cmin = cmin .
+
+Therefore for every t,
+
+ctc⊤ 
+
+> top
+
+st(λ)2 ≤ mc2min 
+
+.
+
+Summing over t = m + 1 , . . . , T yields 
+
+∇2f (λ) op ≤
+
+> T
+
+X
+
+> t=m+1
+
+mc2min 
+
+= ( T − m) mc2min 
+
+,
+
+which is the bound equation 45. J.2 IMPROVED BOUND AT THE CENTER OF THE SIMPLEX 
+
+Here we show that evaluating exactly at the uniform vector λ∗ yields a strictly better constant: the spectral norm of the Hessian at λ∗ is bounded by (T −m) m2. This gives a less pessimistic Lipschitz constant and hence a looser restriction on the conservative step-size η.
+
+Proposition 8 (Operator-norm bound at the uniform vector) . Let λ∗ = (1 /m, . . . , 1/m ). For the loss f (λ) = −ℓ(λ) we have 
+
+∇2f (λ∗) op ≤ (T − m) m2. (46) 
+
+In particular, the gradient ∇f is Lipschitz at λ∗ with constant L∗ ≤ (T − m)m2, and the conser-vative step-size choice η ≤ 1/L ∗ yields η = Θ(1 /T ) for fixed m.Proof. Recall the Hessian decomposition (Eq. equation 44): 
+
+∇2f (λ) = 
+
+> T
+
+X
+
+> t=m+1
+
+ctc⊤
+
+> t
+
+st(λ)2 , ct = ( ct, 1, . . . , c t,m )⊤, st(λ) = 
+
+> m
+
+X
+
+> g=1
+
+λg ct,g .
+
+Evaluate at the uniform vector λ∗. Then 
+
+st(λ∗) = 1
+
+m
+
+> m
+
+X
+
+> g=1
+
+ct,g =: St
+
+m , St := 
+
+> m
+
+X
+
+> g=1
+
+ct,g .
+
+36 Published as a conference paper at ICLR 2026 Hence the t-th summand becomes 
+
+ctc⊤
+
+> t
+
+st(λ∗)2 = ctc⊤
+
+> t
+
+(St/m )2 = m2
+
+S2
+
+> t
+
+ctc⊤ 
+
+> t
+
+.
+
+Taking operator norms and using subadditivity, 
+
+∇2f (λ∗) op ≤
+
+> T
+
+X
+
+> t=m+1
+
+m2
+
+S2
+
+> t
+
+ctc⊤ 
+
+> top
+
+.
+
+For each t, ∥ctc⊤ 
+
+> t
+
+∥op = ∥ct∥22. Observe the elementary inequality 
+
+∥ct∥22 ≤
+
+ mX
+
+> g=1
+
+ct,g 
+
+2
+
+= S2 
+
+> t
+
+,
+
+which holds because (P 
+
+> i
+
+ai)2 = P 
+
+> i
+
+a2 
+
+> i
+
++ 2 P 
+
+> i<j
+
+aiaj ≥ P 
+
+> i
+
+a2 
+
+> i
+
+for nonnegative ai. Using this inequality we obtain, for every t,
+
+m2
+
+S2
+
+> t
+
+∥ct∥22 ≤ m2
+
+S2
+
+> t
+
+S2 
+
+> t
+
+= m2.
+
+Summing over t = m + 1 , . . . , T yields 
+
+∇2f (λ∗) op ≤
+
+> T
+
+X
+
+> t=m+1
+
+m2 = ( T − m) m2,
+
+which proves equation 46. The remaining claims follow immediately from the standard equiva-lence between Hessian operator-norm bounds and local Lipschitz continuity of the gradient, and the reciprocal step-size rule η ≤ 1/L ∗.
+
+Theorem 4 (Relative smoothness and η scaling at the uniform mixture (restated)) . At the uniform vector λ∗ = (1 /m, . . . , 1/m ) the loss f (λ) = −ℓ(λ) is Lrel -smooth relative to the KL-divergence, with 
+
+Lrel ≤ (T − m) m2. (47) 
+
+Consequently, the conservative step-size rule η ≤ 1 
+
+> Lrel
+
+yields the asymptotic scaling 
+
+η = Θ 
+
+ 1
+
+T
+
+
+
+(48) 
+
+for fixed m.Proof. Proposition 8 establishes that at λ∗ the Hessian satisfies 
+
+∥∇ 2f (λ∗)∥op ≤ (T − m) m2.
+
+Relative smoothness of f with respect to the KL-divergence means ∇2f (λ) ⪯ Lrel ∇2Ψ( λ), where 
+
+Ψ( λ) = P 
+
+> g
+
+λg log λg is the negative entropy whose Bregman divergence is the KL. At the uniform vector, ∇2Ψ( λ∗) = m I ⪰ I (since m ≥ 1). Therefore 
+
+∇2f (λ∗) ⪯ (T − m) m2 · I ⪯ (T − m) m2 · ∇ 2Ψ( λ∗),
+
+which gives Lrel ≤ (T −m) m2 as claimed. The conservative step-size choice η ≤ 1/L rel is therefore sufficient to guarantee stability of the mirror-descent / exponentiated-gradient update. Since T −
+
+m = Θ( T ), the scaling η = Θ(1 /T ) follows for fixed m.The assumption equation 42 (strict positivity of every transition probability appearing in the likeli-hood) is the minimal condition that guarantees a uniform finite Lipschitz constant L over the entire simplex ∆m−1. If some transitions were zero, then for parameter vectors placing mass on coor-dinates corresponding to zero transitions some denominators st(λ) could vanish and the Hessian operator norm would be unbounded (hence no global L exists). 37 Published as a conference paper at ICLR 2026 
+
+K ASYMPTOTIC PROPERTIES OF THE LIKELIHOOD GRADIENT 
+
+In this section, we study the asymptotic properties of the gradient of the log-likelihood function. We are mostly interested in the asymptotic scaling of the gradient with the sequence length T .
+
+Lemma 3 (Asymptotic Properties of the Gradient) . Let the true parameter λ∗ ∈ int (∆ m−1) induce a Markov chain on the history space Ym that is aperiodic and irreducible on a finite state space. This implies the chain is geometrically ergodic. Let Estat  
+
+> λ∗
+
+denote expectation with respect to the stationary distribution of this chain. The mean of the score vector g(Y) exhibits the following asymptotic properties as Nobs → ∞ : The expected score vector scales linearly with Nobs = T − m:
+
+g0(λ∗) := Eλ∗ [g(Y)] = Nobs · v(λ∗) + O(1) , (49) 
+
+where v(λ∗) is the constant vector of stationary expected single-step scores, whose h-th component is: 
+
+[v(λ∗)] h = m · Estat 
+
+> λ∗
+
+"
+
+π(Yt−h, Y t)
+
+Pmj=1 π(Yt−j , Y t)
+
+#
+
+. (50) 
+
+The O(1) term represents a constant offset due to initial conditions that does not grow with Nobs .Proof. Let us first define the score contribution from a single time step t as the vector zt(Y) ∈ Rm,whose h-th component is given by: 
+
+[zt(Y)] h = m π(Yt−h, Y t)
+
+Pmj=1 π(Yt−j , Y t) .
+
+The total score vector is the sum of these contributions over the observation period: 
+
+g(Y) = 
+
+> T
+
+X
+
+> t=m+1
+
+zt(Y), where Nobs = T − m. 
+
+The process (zt)t>m is a sequence of random vectors. Because it is a function of the underlying ergodic Markov chain (Yt−m, . . . , Y t), the sequence (zt) is also ergodic and its distribution con-verges to a stationary distribution. By the linearity of expectation, the expected score is the sum of the individual expectations: 
+
+Eλ∗ [g(Y)] = 
+
+> T
+
+X
+
+> t=m+1
+
+Eλ∗ [zt(Y)] .
+
+The key assumption is the geometric ergodicity of the Markov chain. This implies that the distribu-tion of the state (Yt−m, . . . , Y t) converges exponentially fast to the unique stationary distribution, regardless of the initial state (Y1, . . . , Y m). Consequently, the expectation Eλ∗ [zt(Y)] converges exponentially fast to its stationary-state expectation, v(λ∗). This convergence can be quantified. There exist a constant vector C and a rate ρ ∈ (0 , 1) such that for all t > m :
+
+∥Eλ∗ [zt(Y)] − v(λ∗)∥ ≤ ∥ C∥ρt−m.
+
+We can now rewrite the sum of expectations: 
+
+Eλ∗ [g(Y)] = 
+
+> T
+
+X
+
+> t=m+1
+
+(v(λ∗) + ( Eλ∗ [zt(Y)] − v(λ∗))) =
+
+> T
+
+X
+
+> t=m+1
+
+v(λ∗)
+
+!
+
++
+
+> T
+
+X
+
+> t=m+1
+
+(Eλ∗ [zt(Y)] − v(λ∗)) 
+
+!
+
+= Nobs · v(λ∗) + ET ,
+
+where ET is the cumulative error term due to the process not having reached stationarity at early time steps. We can bound the norm of this error term: 
+
+∥ET ∥ =
+
+> T
+
+X
+
+> t=m+1
+
+(Eλ∗ [zt] − v(λ∗)) ≤
+
+> T
+
+X
+
+> t=m+1
+
+∥Eλ∗ [zt] − v(λ∗)∥ ≤ 
+
+> T
+
+X
+
+> t=m+1
+
+∥C∥ρt−m.
+
+38 Published as a conference paper at ICLR 2026 Let k = t − m. The sum becomes a geometric series: 
+
+∥ET ∥ ≤ ∥ C∥ 
+
+> T−m
+
+X
+
+> k=1
+
+ρk < ∥C∥
+
+> ∞
+
+X
+
+> k=1
+
+ρk = ∥C∥ ρ
+
+1 − ρ .
+
+The sum of the error terms is bounded by a finite constant that does not depend on T or Nobs .Therefore, the error term is O(1) . This proves the first claim: g0(λ∗) = Nobs · v(λ∗) + O(1) . Note that O(1) is also o(Nobs ), so the term is asymptotically sub-linear. 39
