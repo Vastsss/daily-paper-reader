@@ -1,0 +1,1831 @@
+Title: Calibrating Scientific Foundation Models with Inference-Time Stochastic Attention
+
+URL Source: https://arxiv.org/pdf/2604.19530v1
+
+Published Time: Wed, 22 Apr 2026 01:12:36 GMT
+
+Number of Pages: 29
+
+Markdown Content:
+# Calibrating Scientific Foundation Models with Inference-Time Stochastic Attention 
+
+Akash Yadav * 1 Taiwo A. Adebiyi * 1 Ruda Zhang 1
+
+Abstract 
+
+Transformer-based scientific foundation models are increasingly deployed in high-stakes settings, but current architectures give deterministic out-puts and provide limited support for calibrated predictive uncertainty. We propose Stochastic At-tention , a lightweight inference-time modification that randomizes attention by replacing softmax weights with normalized multinomial samples controlled by a single concentration parameter, and produces predictive ensembles without re-training. To set this parameter, we introduce a calibration objective that matches the stochastic attention output with the target, yielding an ef-ficient univariate post-hoc tuning problem. We evaluate this mechanism on two scientific founda-tion models for weather and timeseries forecasting along with an additional regression task. Across benchmarks against uncertainty-aware baselines, we find that Stochastic Attention achieves the strongest native calibration and the sharpest pre-diction intervals at comparable coverage, while requiring only minutes of post-hoc tuning versus days of retraining for competitive baselines. 
+
+1. Introduction 
+
+Scientific modeling has already had to confront an uncom-fortable fact: some of its most accurate modern predictors are mechanistically opaque. Across scientific domains, deep learning models are no longer viewed merely as flexible function approximators, but as increasingly useful comple-ments to classical modeling pipelines. In weather forecast-ing, for example, recent learned systems have shown that data-driven models can rival, and in some cases surpass, long-standing forecasting workflows on prominent bench-marks (Fig. 1a) (Nguyen et al., 2023). What this shift has not yet resolved is how such models should be trusted when uncertainty matters. If scientific practice is willing to accept   
+
+> *Equal contribution 1University of Houston, Houston, Texas, USA. Correspondence to: Ruda Zhang <rudaz@uh.edu >.
+> Preprint. April 22, 2026.
+
+partially opaque routes to accurate prediction, then uncer-tainty quantification must confront that same reality rather than evade it. The challenge is not simply to attach uncer-tainty to deep models, but to develop forms of uncertainty that remain useful under the very conditions that make these models successful: heterogeneous data, noisy and misspeci-fied settings, and internal computations whose strength is real even when their mechanics are not fully transparent. That gap is easy to acknowledge in principle, but harder to formalize in a way that is actually useful. A common intu-ition is that if predictive distributions look reasonable under standard scoring rules or if intervals achieve nominal cov-erage, then uncertainty has been “handled.” We argue that this view is incomplete. Even in a simple setting such as a sinusoidal relation, models that recover the same underlying trend can still express very different kinds of uncertainty:one may be sharply overconfident, another calibrated but too diffuse, and a third more usefully balanced (Fig. 1c). This is not uniquely a scientific-modeling problem; it is a more general difficulty in uncertainty quantification that becomes especially consequential in scientific prediction. Useful un-certainty therefore cannot be reduced to a single score. It lives at the intersection of accuracy, calibration, sharpness, and cost: a model may be accurate yet systematically over-confident, calibrated yet too diffuse to support action, or sharp only because it understates risk (Gneiting et al., 2007; Kuleshov & Deshpande, 2022; Gruber & Buettner, 2022). This multi-objective structure is precisely what makes un-certainty difficult to reason about, and it helps explain why the literature has produced many promising tools without a unifying pattern for what “useful” uncertainty should look like in practice. The field has approached this problem from two largely separate directions. One line of work focuses on how uncer-tainty is evaluated, relying on proper scores, coverage-based diagnostics, or calibration metrics as proxies for reliability (Guo et al., 2017; Gneiting et al., 2007; Lakshminarayanan et al., 2017). Another focuses on where and how uncertainty is introduced, through output-level recalibration, weight-space approximations, ensembles, or stochastic forward-pass mechanisms (Guo et al., 2017; Gal & Ghahramani, 2016; Lakshminarayanan et al., 2017; Maddox et al., 2019; Shen et al., 2024; Heo et al., 2018; Pei et al., 2022). Both 1
+
+> arXiv:2604.19530v1 [cs.LG] 21 Apr 2026
+
+Calibrating Scientific Foundation Models with Inference-Time Stochastic Attention Calibrated + Sharp,                  
+
+> Not Accurate
+> Accurate + Calibrated,
+> Not Sharp
+> Accurate + Sharp,
+> Not Calibrated
+> Accurate +
+> Calibrated + Sharp
+> Ground truth Predictive mean 95% predictive interval ERA5 Ground Truth ClimaX 72h Forecast Forecast Bias
+> 44750 46250 47750 49250 50750 52250 53750 55250 56750
+> Geopotential (m²/s²)
+> 1000 500 0500 1000
+> Bias (m²/s²) Accuracy Calibration
+> Sharpness
+> Cost
+
+(a) 
+
+(b) 
+
+(c) 
+
+Figure 1. Useful uncertainty in scientific foundation models is not a single property. (a) Microsoft ClimaX 72-hour weather forecasting illustrates the growing relevance of deep learning to scientific prediction, showing ERA5 ground truth, the corresponding forecast, and forecast bias. (b) Accuracy, calibration, sharpness, and cost define distinct and complementary axes for evaluating uncertainty quality. (c) A simple sinusoidal example showing predictive means and 95% predictive intervals against the ground truth. Even when competing predictors recover the same underlying relation, the uncertainty they attach can differ qualitatively; useful uncertainty requires all three properties jointly. 
+
+perspectives matter, but neither is sufficient on its own. For highly parameterized models operating under misspecifica-tion, distribution shift, and noisy supervision, useful uncer-tainty is not guaranteed simply because a standard metric improves, nor simply because stochasticity has been added somewhere in the model. This raises a more fundamental question: if uncertainty is to be useful in transformer-based models, where should randomness enter, and by what prin-ciple should its magnitude be chosen? 
+
+We take the view that, for transformer-based scientific foun-dation models, the natural place to ask that question is the 
+
+attention bottleneck . Attention is where contextual infor-mation is routed and aggregated, so perturbing it is qualita-tively different from only rescaling outputs after prediction or globally randomizing all model weights. Building on this perspective, we study inference-time stochastic atten-tion as a lightweight mechanism that introduces controlled randomness directly into the attention computation while preserving the deterministic backbone in expectation. Just as importantly, we do not treat the magnitude of that stochas-ticity as a free noise knob. Instead, we choose it through a calibration-oriented criterion, turning stochastic attention into a calibrated operating point rather than an arbitrary randomization device. We investigate this perspective across three settings that play different roles in the paper. TIMES FM (Das et al., 2024) serves as a transparent forecasting testbed in which uncertainty pathologies are visually easy to diagnose. C LI -
+
+MA X (Nguyen et al., 2023) provides the flagship scientific forecasting case, where the practical value of calibrated un-certainty is clearest. FT-Transformer regression benchmarks then broaden the picture beyond the original forecasting do-mains. Across these settings, our goal is not to argue that a single lightweight mechanism dominates every alternative under every scalar score. Rather, we show that introducing stochasticity at the attention bottleneck identifies a practi-cally useful operating point: one that preserves the strength of the underlying predictor in expectation, achieves strong calibration, remains competitive in sharpness once calibra-tion is taken seriously, and does so at substantially lower cost than retraining-heavy alternatives (Maddox et al., 2019; Shen et al., 2024; Wilson & Izmailov, 2020; Papamarkou et al., 2024). Our contributions are threefold: • We frame uncertainty in scientific foundation models as a genuinely multi-objective problem governed by accu-racy, calibration, sharpness, and cost, and use that lens to argue that where uncertainty enters a transformer matters. • We study inference-time stochastic attention as a lightweight uncertainty mechanism at the attention bottleneck and show how its single concentration pa-rameter can be chosen through a calibration-oriented principle rather than by heuristic tuning. • We demonstrate across scientific forecasting and re-gression settings that this yields a strong practical oper-ating point for uncertainty-aware prediction, balancing calibration, sharpness, and computational efficiency around strong pretrained or adapted backbones. 2Calibrating Scientific Foundation Models with Inference-Time Stochastic Attention 
+
+2. A lens for evaluating uncertainty in scientific foundation models 
+
+In practice, uncertainty quality is often compressed into one favored score, one calibration statistic, or one probabilistic formalism. That compression is convenient, but it obscures the structure of the problem. What scientists actually need from uncertainty is more demanding: the central predic-tion must remain useful, the predictive distribution must be statistically trustworthy, the reported intervals must be informative rather than vacuous, and the overall procedure must remain realistic at the scale of modern transformer-based models. Throughout this paper, we organize that requirement through four complementary axes: accuracy ,
+
+calibration , sharpness , and cost .
+
+2.1. Accuracy, calibration, and sharpness are complementary 
+
+Accuracy, calibration, and sharpness are often invoked to-gether, but they do not collapse into one another. Accuracy concerns the quality of a representative prediction, typically the predictive mean or another point summary under a task-relevant loss. Calibration concerns whether the predictive distribution is statistically consistent with realized outcomes in the long run. Sharpness concerns the concentration of that predictive distribution and therefore whether the reported uncertainty is informative rather than vacuous (Gneiting et al., 2007; Kuleshov & Deshpande, 2022). The key point is not simply that these notions differ, but that they can pull against one another. A method may re-tain strong point accuracy while remaining systematically overconfident. Another may achieve nominal coverage only by broadening its intervals until they become practically uninformative. A third may look attractive under a sharp-ness summary precisely because it understates risk. Fig-ure 1b is meant to make that non-collapse visible: accuracy, calibration, and sharpness define distinct desiderata, and improving one of them does not automatically improve the others. Figure 1c makes the same point in a deliberately simple setting, where predictors recovering the same un-derlying sinusoidal relation still express qualitatively dif-ferent uncertainty—calibrated and sharp but inaccurate, ac-curate and calibrated but diffuse, accurate and sharp but miscalibrated, or balanced across all three. In that sense, uncertainty quality is genuinely multi-objective rather than reducible to a single scalar target. This perspective is consistent with the probabilistic forecast-ing literature, where calibration and sharpness have long been treated as complementary rather than interchangeable properties of predictive distributions (Gneiting et al., 2007). It also clarifies why uncertainty can remain unsatisfying even when the central prediction is strong: a good mean forecast is necessary, but it is not enough. 
+
+2.2. Cost is part of the decision 
+
+For scientific foundation models, cost belongs in the same coordinate system. This is not a practical footnote added after the statistical discussion. Uncertainty methods differ not only in the distributions they induce, but in the training runs, posterior approximations, checkpoint collections, or repeated stochastic passes they require. In large-model settings, those differences can determine whether a method is realistically usable at all. That distinction matters because some of the strongest base-lines derive their gains from substantial computational in-vestment. Deep ensembles require repeated model training (Lakshminarayanan et al., 2017). SWAG and MultiSWAG approximate predictive uncertainty through trajectory- or checkpoint-based posterior structure (Maddox et al., 2019; Wilson & Izmailov, 2020). Variational Bayesian methods such as IVON enrich the stochastic training objective, again at the cost of additional optimization complexity (Shen et al., 2024). These are meaningful baselines, but they do not occupy the same operating point as a lightweight inference-time mechanism. A method that improves a scalar score only after multiple additional training runs is not solving the same practical problem as one that achieves useful cal-ibration with minimal internal overhead. Cost therefore belongs to the uncertainty-design problem itself, not as an afterthought, but as part of what makes one uncertainty method practically preferable to another. 
+
+2.3. When and where randomness and calibration happen 
+
+Once uncertainty is viewed through these complementary axes, it becomes natural to ask how current methods actually intervene. One useful way to organize the landscape is by 
+
+when uncertainty or calibration happen and where they act. The first distinction is temporal. Some methods introduce uncertainty during training, for example by learning weight-space posteriors or stochastic optimization dynamics that alter the model itself (Gal & Ghahramani, 2016; Shen et al., 2024). Others act at inference time, producing predic-tive variability through repeated stochastic forward passes, checkpoint sampling, or architectural stochasticity (Maddox et al., 2019; Wilson & Izmailov, 2020; Heo et al., 2018; Pei et al., 2022). A third class leaves the model untouched and instead calibrates uncertainty after prediction, as in tem-perature scaling or conformal-style procedures (Guo et al., 2017; Kuleshov et al., 2018; Vovk et al., 2005; Ye et al., 2024). The second distinction is structural. Randomness or calibration may be applied at the output level, in weight space, or inside the model’s computation. 3Calibrating Scientific Foundation Models with Inference-Time Stochastic Attention 
+
+These choices are not interchangeable. Output-level recal-ibration can improve uncertainty statistics without chang-ing how the model internally routes information. That is the logic behind temperature scaling and conformal wrap-pers: they reshape reported uncertainty after the predictor has already done its work (Guo et al., 2017; Vovk et al., 2005). Weight-space methods and ensembles intervene much more globally, often at substantially higher compu-tational cost, by averaging over parameters, trajectories, or multiple trained models (Lakshminarayanan et al., 2017; Maddox et al., 2019; Wilson & Izmailov, 2020; Shen et al., 2024). Stochastic forward-pass approaches sit somewhere in between, injecting randomness into the network itself while largely preserving the trained predictor (Gal & Ghahramani, 2016). Within that class, attention-level stochasticity is qual-itatively different from indiscriminate perturbation because it acts at a computational bottleneck that directly governs how information is routed (Heo et al., 2018; Pei et al., 2022). Organizing the literature this way does more than tidy up cat-egories. It shows that methods differ not only in strength but in mechanism: they intervene at different stages of the pre-dictive pipeline and perturb different objects. It also clarifies a practical point that is often treated as an embarrassment rather than a fact of current modeling practice. In many large-model settings, predictive accuracy is established first and uncertainty is calibrated or attached afterward. We do not regard that separation as a conceptual failure. The more relevant question is whether the second-stage uncertainty mechanism remains tied to the computation in a meaningful way, rather than merely wrapped around its outputs. That is the question that motivates the later focus on the attention bottleneck. 
+
+2.4. Proper scores are useful, but not the whole story 
+
+This brings us to the role of metrics. Proper scores are valu-able because they provide compact summaries of predictive quality and reward alignment between forecast distributions and realized outcomes. In practice, however, they are often asked to do more conceptual work than they can bear. A lower negative log-likelihood, CRPS, or related score can reflect improved uncertainty, but it can also reflect increased spread, altered sharpness, or other changes that are diffi-cult to disentangle directly (Gneiting et al., 2007; Gruber & Buettner, 2022). In other words, these scores blend together aspects of uncertainty quality that the present paper is trying to keep distinct. That does not make proper scores unimportant. On the contrary, we report them precisely because they remain in-formative summaries. But they are not sufficient as the sole definition of useful uncertainty. A method can improve a blended score and still land at an undesirable operating point from the perspective of calibration or practical infor-mativeness. This matters especially in highly parameterized models operating under misspecification, shift, and noisy su-pervision, where a predictive distribution can become more diffuse without becoming more meaningful. For that reason, we treat proper scores as complementary to, rather than replacements for, calibration diagnostics. Throughout the paper, PIT-based diagnostics and coverage-based views play the primary role in assessing probabilistic consistency, while sharpness summaries and proper scores help characterize how that calibrated uncertainty is being achieved. At that point, the next question becomes unavoid-able: if useful uncertainty does not follow automatically either from a single metric or from adding stochasticity somewhere in the model, then by what principle should the amount of stochasticity be chosen? Section 3 introduces the mechanism, and Section 4 turns to that calibration problem directly. 
+
+3. Stochastic attention 
+
+If uncertainty is to reflect plausible internal variability rather than arbitrary perturbation, attention is the natural place to introduce randomness. Our starting point is that determin-istic attention already admits a probabilistic interpretation: the softmax weights form a simplex-valued distribution over tokens, and the corresponding attention output is its expec-tation. Stochastic attention replaces that exact expectation by a finite-sample approximation drawn from the same cate-gorical distribution. This yields a one-parameter family of stochastic predictors indexed by a concentration parameter 
+
+ν, with small ν producing more dispersed attention out-comes and large ν recovering the deterministic computation. The construction is probabilistic in a frequentist rather than fully Bayesian sense: the model parameters remain fixed, while repeated attention-space sampling induces an implicit predictive distribution around a frozen transformer. 
+
+3.1. Deterministic attention as an expectation 
+
+Consider a single attention head with query, key, and value matrices Q ∈ Rnq ×d, K ∈ Rnk ×d, V ∈ Rnk ×dv . For a query position t ∈ { 1, . . . , n q }, let qt denote the t-th query row and define the score vector 
+
+st ∈ Rnk , (st)j := ⟨qt, kj ⟩√d . (1) The corresponding deterministic attention weights are πt := softmax( st) ∈ ∆nk −1, where ∆nk −1 is the probability simplex. The standard attention output at position t is 
+
+ot := π⊺ 
+
+> t
+
+V =
+
+> nk
+
+X
+
+> j=1
+
+(πt)j vj . (2) This expectation view is the structural fact the method builds 4Calibrating Scientific Foundation Models with Inference-Time Stochastic Attention 
+
+on. The attention weights already behave as probabilities over tokens, so the stochastic extension can be defined by sampling from that distribution rather than by injecting ex-ogenous noise into scores or outputs. Standard masks, such as causal or padding masks, are applied before the softmax in the usual way, and stochastic attention is applied only af-ter the masked softmax has produced a valid simplex-valued weight vector. 
+
+3.2. Stochastic attention via normalized multinomial sampling 
+
+Once attention is viewed this way, the stochastic extension is natural. The attention weights πt already define a cate-gorical distribution over keys, so we replace the determin-istic weighted average by a sample-average approximation drawn from that same distribution. This preserves the sim-plex structure of the attention weights while producing a controllable stochastic family indexed by ν.
+
+Definition 3.1 (Stochastic attention weights) . Fix an in-teger ν ∈ N. Given πt ∈ ∆nk −1, draw counts Wt ∼
+
+Multinomial( ν, πt), and define the stochastic attention weights 
+
+eπt := 1
+
+ν Wt ∈ ∆nk −1. (3) Equivalently, if z(m)
+
+> t
+> iid
+
+∼ Categorical( πt) for m = 1 , . . . , ν ,and ej denotes the j-th standard basis vector, then eπt =
+
+> 1
+> ν
+
+Pνm=1 ez(m)
+
+> t
+
+.The corresponding stochastic attention output is 
+
+eot := eπ⊺ 
+
+> t
+
+V = 1
+
+ν
+
+> ν
+
+X
+
+> m=1
+
+vz(m)
+
+> t
+
+. (4) Thus, stochastic attention replaces the deterministic expec-tation under πt by a finite-sample empirical average. If one token is attended to at random according to πt, the attention outcome is random. If ν such token selections are averaged, the result remains random but concentrates toward deter-ministic attention as ν grows. This is exactly the stochastic family we study, with ν acting as a concentration parameter. The first basic property is that this construction preserves deterministic attention in expectation. 
+
+Proposition 3.2 (Mean preservation and deterministic re-covery) . Conditioned on (πt, V), the stochastic weights and outputs satisfy 
+
+E[eπt | πt] = πt, E[eot | πt, V] = ot. (5) 
+
+Moreover, under the i.i.d categorical representation, 
+
+eπt → πt and eot → ot almost surely as ν → ∞ .
+
+(6) 
+
+Algorithm 1 Stochastic attention for one attention row                              
+
+> Require: Deterministic attention weights πt∈∆nk−1; value matrix V∈Rnk×dv; concentration parameter ν∈N.
+> Ensure: Stochastic attention output eot.1: for m= 1 to νdo
+> 2: Sample z(m)
+> t∼Categorical( πt)
+> 3: end for
+> 4: Compute
+> eot= 1
+> ν
+> νX
+> m=1
+> vz(m)
+> t
+> .
+> 5: return eot
+
+The second property describes how the induced dispersion scales with ν.
+
+Proposition 3.3 (Covariance scaling with ν). Conditioned on πt, the stochastic attention weights satisfy 
+
+Cov( eπt | πt) = 1
+
+ν
+
+ diag( πt) − πtπ⊺
+
+> t
+
+. (7) 
+
+Consequently, 
+
+Cov( eot | πt, V) = V⊺ Cov( eπt | πt)V
+
+= 1
+
+ν V⊺ diag( πt) − πtπ⊺
+
+> t
+
+V. (8) These two properties explain why ν is the natural operating parameter. It leaves the mean attention computation un-changed while shrinking the induced stochastic dispersion at the canonical 1/ν rate. In contrast to single-draw hard attention or other discrete stochastic attention schemes, ran-domness is not locked to one token selection; it is controlled systematically through the sample size ν (Xu et al., 2015; Heo et al., 2018). Algorithm 1 summarizes the corresponding row-wise stochastic-attention computation in its direct output form. 
+
+3.3. Predictive distribution from repeated forward passes 
+
+Let fθ denote the original deterministic transformer with fixed parameters θ, and let fθ,ν (·) denote the same network with stochastic attention enabled wherever the mechanism is applied. Given an input x, repeated stochastic forward passes generate Monte Carlo predictions 
+
+by(m)(x) := f (m) 
+
+> θ,ν
+
+(x), m = 1 , . . . , M, (9) where f (m) 
+
+> θ,ν
+
+(x) denotes the m-th stochastic forward pass. We treat {by(m)(x)}Mm=1 as samples from an implicit predic-tive distribution induced by attention-space randomization in the frozen transformer. For scalar regression targets, these samples define an em-pirical predictive CDF bFν, x. For vector-valued outputs, 5Calibrating Scientific Foundation Models with Inference-Time Stochastic Attention 
+
+they define a sample-based joint predictive distribution that can be summarized coordinate-wise or through multivariate quantities such as empirical covariance, interval width, and proper scores. This also makes the scope of the construction precise. Stochastic attention is introduced only at inference time; we do not retrain the transformer, and we do not optimize through discrete samples. The backbone is first trained or fine-tuned for predictive accuracy, and the attention-space randomness is calibrated afterward. Accordingly, stochastic attention should be viewed neither as output-only recalibra-tion nor as posterior inference over all network weights, but as a post-hoc probabilistic mechanism inside the transformer computation itself. Two Monte Carlo quantities play distinct roles. The con-centration parameter ν controls the stochastic distribution itself by determining the amount of attention-space variabil-ity within a single forward pass. By contrast, M controls only how accurately we estimate summaries of the predic-tive distribution induced by that mechanism. Thus, ν is the method’s operating parameter, whereas M is simply the evaluation budget used to estimate predictive summaries. Taken together, this defines a one-parameter family of stochastic predictors {fθ,ν }ν∈Ξ around the frozen determin-istic backbone fθ , where Ξ ⊆ N is the admissible search domain for ν. The remaining question is how to choose the operating value of ν.
+
+4. Choosing a calibrated operating point 
+
+The concentration parameter ν should be chosen by what we want the predictive distribution to achieve, not by heuristic noise tuning. Under the lens of Section 2, useful uncertainty is not determined by randomness alone, but by a balance among accuracy, calibration, sharpness, and cost. In sci-entific settings, that balance is especially consequential: under-dispersion yields overconfident predictions, while over-dispersion yields uncertainty that is statistically safer but operationally uninformative. Both are calibration fail-ures, and both matter in practice. For that reason, we treat calibration as the first requirement for selecting the stochastic-attention operating point. Proper scores remain useful and are reported later, but they blend calibration with predictive spread, so the operating point that optimizes a single scalar score need not be the one with the clearest probabilistic calibration. Our goal here is therefore not to re-optimize model parameters, but to choose ν so that the predictive variability induced by stochastic attention is com-mensurate with the residual variability observed on held-out data. 
+
+4.1. Calibration objective 
+
+We choose ν using a held-out calibration set Dcal =
+
+{(xi, yi)}Ncal  
+
+> i=1
+
+. Let fθ (x) denote the deterministic predic-tor, and let fθ,ν (x) denote the random predictive output produced by one stochastic forward pass of the same frozen model under stochastic attention. Here and below, expecta-tions and variances involving fθ,ν (x) are taken with respect to the internal stochastic-attention sampling, conditional on the input x.For a calibration input x, define the induced stochastic devi-ation magnitude 
+
+Rν (x) := ∥fθ,ν (x) − fθ (x)∥2. (10) For a calibration pair (x, y), define the observed residual magnitude 
+
+Z(x, y) := ∥y − fθ (x)∥2. (11) We then choose ν by minimizing the squared discrepancy between these two magnitudes: 
+
+ν⋆ ∈ arg min  
+
+> ν∈Ξ
+
+LSA (ν), (12) where 
+
+LSA (ν) := E(x,y)∼D cal 
+
+E(Rν (x) − Z(x, y)) 2 x .
+
+(13) Simply, the objective asks that the scale of stochastic varia-tion induced around the deterministic predictor match the scale of the residuals observed on the calibration data. 
+
+4.2. Interpretation and scope 
+
+Because Z(x, y) is deterministic once (x, y) is fixed, the inner expectation in LSA (ν) can be decomposed as 
+
+LSA (ν) = E(x,y)∼D cal 
+
+h
+
+Var( Rν (x) | x)+  E[Rν (x) | x] − Z(x, y)2i
+
+.
+
+(14) This decomposition gives the objective a direct interpreta-tion. It favors operating points where the mean induced stochastic deviation magnitude matches the residual magni-tude observed in held-out data, while penalizing unnecessary excess variability in that induced deviation. In that sense, the objective is not a generic heuristic for tuning noise, but a calibration-oriented dispersion-matching rule for the scale of the implicit predictive variability generated by stochastic attention. At the population level, the objective encourages the random output from stochastic attention to behave as the ground truth in an L2 distance sense. This is the sense in which we view it as a calibration objective rather than merely a score-tuning device. 6Calibrating Scientific Foundation Models with Inference-Time Stochastic Attention 
+
+Its scope should nonetheless be stated clearly. We do not claim that this objective is a universal calibration rule for all predictive tasks. It is designed for continuous regression settings, where residual magnitudes and predictive disper-sion are naturally compared in a common metric space. It is therefore best understood as a calibration principle for the specific one-parameter stochastic family induced by stochas-tic attention, not as a replacement for all proper scoring rules or all probabilistic training objectives. This also clarifies the main design trade-off. A single shared concentration parameter ν keeps the method lightweight and easy to calibrate, but it limits expressivity across heads, layers, coordinates, and inputs. We take that trade-off de-liberately here: the goal is not to build the most expressive possible probabilistic model, but to identify a calibration-first operating point that remains simple enough to deploy while preserving the strength of the deterministic backbone in expectation. 
+
+4.3. Optimization and computational role of ν
+
+In practice, LSA (ν) is evaluated on the held-out calibration split Dcal . For each candidate ν ∈ Ξ, we estimate the inner expectation using repeated stochastic forward passes of the frozen model. As in Section 3.3, ν controls the stochastic predictive distribution induced by attention-space sampling, whereas the number M of repeated stochastic forward passes controls only the Monte Carlo accuracy with which summaries of that distribution are estimated. When all stochastic attention layers share a single concen-tration parameter ν, LSA (ν) becomes a one-dimensional calibration problem. We optimize it using the BO-under-uncertainty routine of Yadav & Zhang (2025), which fits a Bayesian generalized linear model surrogate to noisy evalu-ations and analytically proposes the next candidate ν; full details are deferred to the appendix. In practice, each BO iteration evaluates a single proposed ν on mini-batches from 
+
+Dcal using M stochastic forward passes per batch. Com-bined with the one-dimensional search and analytic BO suggestion step, this makes ν-selection fast in practice and far cheaper than retraining-heavy uncertainty baselines. 
+
+5. Experimental design 
+
+5.1. Models and tasks 
+
+The experimental design mirrors the paper’s central premise: uncertainty quality should be read through several comple-mentary dimensions, and different empirical settings are useful for different parts of that argument. We therefore do not present the datasets as interchangeable benchmarks. TimesFM on the ETT-small datasets (Das et al., 2024) serves as a diagnostic forecasting setting. It is univariate, visu-ally interpretable, and well suited to showing what under-dispersion, over-dispersion, and more useful uncertainty ac-tually look like. In practice, it is also a difficult fine-tuning regime because the adaptation data are limited, so we use it primarily as a transparent testbed rather than as the quanti-tative center of the paper. ClimaX is the flagship scientific case: a structured, high-dimensional forecasting problem in which uncertainty must remain meaningful under realistic scientific demands, and where the practical stakes of calibra-tion are clearest (Nguyen et al., 2023). FT-Transformer on UCI regression then broadens the scope beyond forecasting, using the standard Gal-style splits to provide a compact and reproducible transformer regression setting (Gal & Ghahra-mani, 2016). Full training, split, and implementation details are deferred to Appendix C. 
+
+5.2. Baselines 
+
+In tandem with the established notion that uncertainty meth-ods differ not only in strength, but in where they intervene and how they generate predictive variability, we compare against weight-space methods, ensemble-style methods, and stochastic forward-pass or architectural methods. SWAG and IVON represent two different routes to weight-space uncertainty, while MultiSWAG plays the role of a strong ensemble-style baseline built from repeated SWAG training runs (Maddox et al., 2019; Wilson & Izmailov, 2020; Shen et al., 2024). That choice is intentional: MultiSWAG is not merely another competitor, but a representative of the broader family of expensive ensemble-based uncertainty methods that often set a high empirical bar. We also include MC Dropout as a lightweight stochastic forward-pass base-line (Gal & Ghahramani, 2016), Contextual Dropout as a stronger context-dependent dropout alternative (Fan et al., 2021a), and HSA as the closest attention-level stochastic baseline, since it injects uncertainty inside attention rather than only through weights or outputs (Pei et al., 2022). Ad-ditional baseline summaries are provided in Appendix G. 
+
+5.3. Metrics and diagnostics 
+
+We report point accuracy, calibration diagnostics, sharp-ness summaries, and score-based investigations. Point accu-racy remains necessary because an uncertainty method that substantially weakens the underlying predictor loses prac-tical relevance. Calibration is assessed primarily through PIT behavior, empirical coverage, and, where appropriate, Wasserstein-1 distance to the uniform distribution. For scalar targets, PIT is computed from the empirical pre-dictive CDF induced by repeated predictive samples. For structured outputs such as gridded ClimaX forecasts, PIT is computed coordinate-wise and then aggregated across coordinates and test cases; the exact computation for each setting is given in Appendix C. Under exact probabilistic calibration, PIT values are uniformly distributed on [0 , 1] .This makes PIT histograms especially useful diagnostically: 7Calibrating Scientific Foundation Models with Inference-Time Stochastic Attention 100 200 300 400 500                            
+
+> 2
+> 1
+> Value
+> 520 540 560 580 600
+> 1.75
+> 1.50
+> 1.25
+> Value
+> Stochastic Attention (Cov=61.5%, Sharp=0.39)
+> 520 540 560 580 600
+> 1.8
+> 1.6
+> 1.4
+> Value
+> IVON (Cov=15.6%, Sharp=0.09)
+> 520 540 560 580 600
+> 1.8
+> 1.6
+> 1.4
+> 1.2
+> Value
+> SWAG (Cov=16.7%, Sharp=0.06)
+> 520 540 560 580 600
+> Time
+> 1.8
+> 1.6
+> 1.4
+> 1.2
+> Value
+> MultiSWAG (Cov=20.8%, Sharp=0.10)
+> 520 540 560 580 600
+> Time
+> 1.8
+> 1.6
+> 1.4
+> 1.2
+> Value
+> Contextual Dropout (Cov=19.8%, Sharp=0.18)
+> 520 540 560 580 600
+> Time
+> 1.8
+> 1.6
+> 1.4
+> Value
+> HSA (Cov=38.5%, Sharp=0.20)
+> Context Target Prediction mean 95% PI
+
+Figure 2. Native uncertainty on TimesFM (ETTh1, H=96 ). SA achieves Cov =61 .5% , far closer to the 95% target than all baselines (IVON 15.6%, SWAG 16.7%, MultiSWAG 20.8%, Contextual Dropout 19.8%, HSA 38.5%). Baselines are not merely imperfect but systematically under-dispersed. Full results across all eight ETT configurations are in Appendix E. 
+
+U-shaped histograms indicate under-dispersion or overcon-fidence, hump-shaped histograms indicate over-dispersion, and near-uniform histograms indicate better calibrated pre-dictive uncertainty (Dawid, 1984; Gneiting et al., 2007). Coverage and W1 then provide compact summaries of the same phenomenon. Sharpness is summarized through interval widths and related spread statistics, but it is never interpreted in isolation. A narrow predictive interval is only useful once the associated predictive distribution is already credible; otherwise, appar-ent sharpness may simply reflect under-dispersion (Gneiting et al., 2007; Kuleshov & Deshpande, 2022). We also report proper scoring rules and related ablations as complementary investigations. For UCI regression this includes ensemble CRPS, while for ClimaX, we report marginal CRPS and en-ergy score. These are informative because they test whether calibration-first operating points remain competitive under blended distributional scores (Gneiting et al., 2007; Gruber & Buettner, 2022). 
+
+5.4. Fairness and cost protocol 
+
+The comparison protocol separates native uncertainty qual-ity from post-corrected uncertainty quality. As already em-phasized, sharpness is not meaningfully comparable when calibration differs substantially across methods, making this distinction essential. The first comparison is therefore al-ways native. Stochastic attention remains native throughout because its operating point is chosen by a calibration-first criterion; once that native calibration is established, its sharp-ness can be interpreted directly in end-to-end comparison. For baselines whose native predictive distributions are mate-rially miscalibrated, we also report post-scaled comparisons where appropriate, not to blur the distinction, but to show what happens once calibration is brought to a more compa-rable level. This lets later sharpness and score comparisons be read as differences in uncertainty quality rather than arti-facts of obvious under- or over-dispersion as presented in Sections 6 and 7. Cost is treated in the same practical spirit. Retraining-heavy baselines, checkpoint-based ensembles, and lightweight inference-time mechanisms do not occupy the same deploy-ment regime, even when evaluated on the same task. We therefore interpret uncertainty quality together with the cost required to obtain it. This is especially important for the comparison against strong ensemble-style baselines: their performance matters, but so does the fact that they achieve it through repeated training and aggregation rather than through a lightweight post-hoc mechanism around a frozen model. 8Calibrating Scientific Foundation Models with Inference-Time Stochastic Attention 0.0 0.2 0.4 0.6 0.8 1.0                                 
+
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> Relative freq.
+> W1= 0.2195
+> SWAG
+> 0.0 0.2 0.4 0.6 0.8 1.0
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> W1= 0.2132
+> IVON
+> 0.0 0.2 0.4 0.6 0.8 1.0
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> W1= 0.2188
+> Multi-SWAG
+> 0.0 0.2 0.4 0.6 0.8 1.0
+> PIT value
+> 0.00
+> 0.05
+> 0.10
+> 0.15
+> 0.20
+> Relative freq.
+> W1= 0.1048
+> Contextual Dropout
+> 0.0 0.2 0.4 0.6 0.8 1.0
+> PIT value
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> W1= 0.1787
+> HSA
+> 0.0 0.2 0.4 0.6 0.8 1.0
+> PIT value
+> 0.000
+> 0.025
+> 0.050
+> 0.075
+> 0.100
+> 0.125
+> 0.150
+> W1= 0.0560
+> SA (ours)
+> PIT histogram Uniform
+
+(a) Native predictions. 0.0 0.2 0.4 0.6 0.8 1.0                                  
+
+> 0.00
+> 0.02
+> 0.04
+> 0.06
+> Relative freq.
+> W1= 0.0475
+> SWAG
+> 0.0 0.2 0.4 0.6 0.8 1.0
+> 0.00
+> 0.01
+> 0.02
+> 0.03
+> 0.04
+> 0.05
+> 0.06
+> W1= 0.0558
+> IVON
+> 0.0 0.2 0.4 0.6 0.8 1.0
+> 0.00
+> 0.02
+> 0.04
+> 0.06
+> W1= 0.0534
+> Multi-SWAG
+> 0.0 0.2 0.4 0.6 0.8 1.0
+> PIT value
+> 0.00
+> 0.01
+> 0.02
+> 0.03
+> 0.04
+> 0.05
+> 0.06
+> Relative freq.
+> W1= 0.0501
+> Contextual Dropout
+> 0.0 0.2 0.4 0.6 0.8 1.0
+> PIT value
+> 0.00
+> 0.01
+> 0.02
+> 0.03
+> 0.04
+> 0.05
+> 0.06
+> W1= 0.0367
+> HSA
+> 0.0 0.2 0.4 0.6 0.8 1.0
+> PIT value
+> 0.000
+> 0.025
+> 0.050
+> 0.075
+> 0.100
+> 0.125
+> 0.150
+> W1= 0.0560
+> SA (ours, native)
+> PIT histogram Uniform
+
+(b) Baselines temperature-scaled; SA native. 
+
+Figure 3. PIT calibration on ClimaX (72-hour Z500 ). W1: Wasserstein-1 from uniform (lower =better). (a) SA approaches uniformity natively ( W1=0 .056 ); all baselines show U-shaped overconfidence ( W1=0 .10 –0.22 ). (b) After temperature scaling, baselines improve to W1=0 .04 –0.06 ; SA’s native calibration is already comparable without correction. 
+
+6. Results on scientific forecasting 
+
+6.1. TimesFM: a diagnostic view 
+
+Before turning to the flagship scientific case, it is useful to see why calibration-first evaluation matters visually. Fig-ure 2 shows native predictive intervals for all six methods on one TimesFM case (ETTh1, H=96 ). SA achieves na-tive coverage of 61 .5% , far from the 95% target but already closer than any baseline (IVON 15 .6% , SWAG 16 .7% , Mul-tiSWAG 20 .8% , Contextual Dropout 19 .8% , HSA 38 .5% ). Baselines are not merely imperfect; they are systematically under-dispersed. Narrow intervals that miss most outcomes are not sharp; they are overconfident. The correspond-ing equal-coverage visualization, where all baselines are rescaled to SA’s empirical coverage for a fair sharpness comparison, is in Appendix E. This is the structure that the rest of the evaluation must navigate. 
+
+6.2. ClimaX: native calibration at the attention bottleneck 
+
+ClimaX is where the calibration-first lens lands most clearly. Figure 3a shows native PIT histograms for all six methods. SA produces a near-uniform distribu-tion ( W1=0 .0560 ); every baseline shows a severely U-shaped PIT: SWAG ( 0.2195 ), IVON ( 0.2132 ), MultiSWAG (0.2188 ), HSA ( 0.1787 ), Contextual Dropout ( 0.1048 ). This under-dispersion is not a tuning failure. We veri-fied that SWAG’s predictive mean is strong: SWAG-mean reaches ACC =0 .9645 and SWAG-BMA reaches 0.9648 ,matching the deterministic baseline. Even after a dedi-cated variance-scale sweep over {1, 2, 4, 8, 16 , 32 , 64 } for increased predictive spread, the best natively calibrated SWAG (scale 64) achieves W1=0 .116 at coverage 60 .9% —still more than twice SA’s W1 at comparable native coverage (Appendix D.1). The SA–HSA comparison is especially informative: both target the attention bottleneck, but HSA modifies attention during training and suffers a 22% accuracy degradation (ACC drops to 0.7476 ). SA preserves the pretrained spatial routing by intervening only at inference time, achieving ACC =0 .902 at the BO-optimized ν=4 . This is a modest ac-curacy cost relative to the deterministic baseline ( 0.964 ), and it diminishes rapidly as ν increases: at ν=25 , SA reaches ACC =0 .966 , essentially matching SWAG-BMA ( 0.965 ). 
+
+6.3. Calibration, sharpness, and cost 
+
+With SA’s native calibration advantage now established, the question shifts to sharpness, but only once the compari-son is fair. Figure 3b shows what happens when baselines are temperature-scaled: W1 drops to 0.04 –0.06 across the board, confirming that their native under-dispersion was a correctable calibration failure rather than a fundamental limitation. SA, which remains native throughout, sits at 
+
+W1=0 .056 , already comparable without any post-hoc ad-justment. With calibration now comparable, sharpness becomes mean-ingful (Figure 4). SA is the sharpest method overall (nor-malized mean ≈1.0), with MultiSWAG closest at ≈1.02 but requiring 10 independent training runs. HSA’s accuracy degradation forces its intervals to 2.74 × SA’s width. Table 3 (Appendix D) consolidates the full four-axis comparison: SA achieves native calibration ( W1=0 .056 ) competitive with post-scaled baselines ( 0.04 –0.06 ), the sharpest inter-vals (PI-95 width 1051 .9 vs. 1075 –2883 for baselines), and the lowest cost among methods with comparable uncertainty quality. Figure 5 makes the cost advantage concrete. SA adds only 9Calibrating Scientific Foundation Models with Inference-Time Stochastic Attention IVON SWAG Multi-SWAG Contextual    
+
+> Dropout
+> HSA Stochastic
+> Attention
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> 7
+> Normalized 95% interval width
+> Temp.-scaled baselines Stochastic Attention Mean
+
+Figure 4. Normalized PI-95 widths on ClimaX (SA =1 .0; baselines temperature-scaled). SA is the sharpest overall; MultiSWAG is closest ( ≈1.02 ×) but requires 10 training runs. HSA’s accuracy loss forces intervals to ≈2.74 × SA. Whiskers: P5/P95; diamond: mean. Contextual Dropout 
+
+> SWAG
+> MultiSWAG
+> IVON
+> HSA
+> TS
+> SA
+> Method
+> 10 1
+> 10 2
+> 10 3
+> 10 4
+> Time (minutes, log scale)
+
+Figure 5. Total method cost on ClimaX (log scale). SA uses only inference passes on a frozen backbone; MultiSWAG, the closest calibration competitor, requires 10 × the training cost. Per-pass latency scales linearly with S (Appendix D.2). 
+
+a multinomial draw and count normalization per query; the S=19 passes are embarrassingly parallel. On a V100-SXM2-32GB, SA’s BO calibration (140–580 evaluations) completes in 1–3 minutes, compared to ∼29 hours for SWAG trajectory collection or ∼12 days of aggregate com-pute for 10-seed MultiSWAG. We further show that ν-selection is stable across initializa-tions. Figure 6 shows the Bayesian GLM surrogate land-scape used by the BO routine: the normalized calibration loss forms a smooth, well-identified bowl, and posterior samples concentrate tightly around the optimum. Across five random seeds, BO selects νopt ∈ { 3.91 –3.95 }, consis-tently rounding to ν=4 , and remains stable under a different search range ( νopt ∈ { 3.70 –3.75 }). The posterior band for 
+
+β∗= ln ν∗ spans less than 0.08 , confirming that the calibra-tion procedure converges reliably regardless of initialization. 
+
+6.4. Proper scores and the calibration–score frontier 
+
+Proper scoring rules blend calibration and spread into a sin-gle number, so it is worth asking whether SA’s calibration advantage survives under them. Table 1 shows the CRPS 3 3.5 4 4.5 
+
+-
+
+0246810 12         
+
+> f =f  $
+> f(-) via GLM: N= 540
+> f(-) via Bayesian GLM: posterior sample (-$,f$) of posterior sample (-$,f$) via GLM
+
+Figure 6. Bayesian GLM surrogate for ν calibration on ClimaX. The normalized calibration loss f /f ∗ as a function of β= ln ν,with posterior samples (light curves) tightly concentrated around the optimum. The posterior band for β∗ spans less than 0.08 ,confirming stable convergence. The corresponding β∗ posterior histogram is in Appendix D.3. 
+
+Table 1. ClimaX marginal CRPS decomposition (native, T =1 ). 
+
+E|X−y|: prediction error (lower =better); 12 E|X−X′|: spread reward (higher =more diverse). Units: m2 s−2; bold =best per column. Method CRPS ↓ E|X−y| ↓ 12 E|X−X′| ↑ 
+
+Contextual Dropout 139.94 201.35 61.41 MultiSWAG 166.06 171.88 5.82 SWAG 166.77 172.18 5.41 SA (ours, ν=4 , BO-opt.) 221.68 367.80 146.12 
+
+IVON 241.43 257.11 15.69 HSA 377.34 427.16 49.82 
+
+decomposition on ClimaX. At ν=4 , SA ranks fourth in raw CRPS ( 221 .68 ), but the decomposition reveals that the gap is driven entirely by prediction error, not distributional quality. SA has by far the largest spread reward ( 146 .12 
+
+vs. 5–61 for baselines), reflecting genuine predictive di-versity; SWAG and MultiSWAG achieve low CRPS with spread rewards of ∼5–6, meaning their ensembles are near-deterministic. These methods win on CRPS by collapsing uncertainty rather than calibrating it. This decomposition motivates a complementary question: what if ν is chosen to minimize CRPS directly rather than the calibration loss? Sweeping over ν yields an optimum at ν=25 , where SA’s accuracy rises to match SWAG-BMA ( 0.966 ), closing the prediction error gap while retaining a spread reward ( 67 .4)that still exceeds every baseline. This insight points to a deeper structure. Figure 7 shows both CRPS and Energy Score as a function of ν: both are jointly minimized at ν∗=25 , where SA achieves the best CRPS ( 135 .42 ) and Energy Score ( 209 .68 ) among all meth-ods, ahead of every baseline. The ν=25 optimum differs from the BO-selected ν=4 because the two criteria target 10 Calibrating Scientific Foundation Models with Inference-Time Stochastic Attention 3 4 5 25 50 75 100                       
+
+> 140
+> 160
+> 180
+> 200
+> 220
+> 240
+> 260
+> Marginal CRPS (m 2 s 2)
+> *= 25
+> 135.4
+> 34525 50 75 100
+> 200
+> 250
+> 300
+> 350
+> 400
+> Energy Score (m 2 s 2)
+> *= 25
+> 209.7 0.00 0.25 0.50 0.75 1.00
+> PIT value
+> 0.00
+> 0.02
+> 0.04
+> 0.06
+> 0.08
+> 0.10
+> 0.12
+> 0.14
+> Relative freq.
+> W1= 0.0560
+> SA = 4 (BO-opt)
+> 0.00 0.25 0.50 0.75 1.00
+> PIT value
+> 0.000
+> 0.025
+> 0.050
+> 0.075
+> 0.100
+> 0.125
+> 0.150
+> 0.175
+> W1= 0.0854
+> SA = 25
+> : 4 25
+> PIT histogram Uniform
+
+Figure 7. Top: CRPS and Energy Score vs. ν on ClimaX ( ν≥3). Both minimized at ν∗=25 , where SA ranks first among all meth-ods. Bottom: PIT at ν=4 (W1=0 .056 ) and ν=25 (W1=0 .085 ). Calibration-first and score-optimal criteria select different but re-lated operating points on the same SA family. 
+
+different aspects of the predictive distribution: the calibra-tion loss (Eq. 13) via its calibration-first criterion selects for PIT uniformity, while CRPS rewards sharpness subject to propriety. Figure 7 (bottom) makes the trade-off visible: at ν=4 the PIT is near-uniform ( W1=0 .056 ); at ν=25 it shifts rightward ( W1=0 .085 ), reflecting mild over-coverage from sharper per-sample predictions. That the same one-parameter mechanism ranks first under both criteria, at dif-ferent and interpretable operating points, is perhaps the strongest evidence that calibration-first and score-optimal evaluations are complementary views of the same underly-ing stochastic family. 
+
+7. Results beyond forecasting 
+
+The forecasting results establish a strong operating point for SA, but they leave open whether the mechanism depends on forecasting structure, LoRA adaptation, or foundation-model pretraining. Table 2 addresses that question directly: on eight UCI regression datasets with a from-scratch FT-Transformer (Gal & Ghahramani, 2016), SA achieves the lowest native W1 on 5 of 8 datasets (Panel A), with Naval es-sentially tied with MC Dropout ( 0.022 vs. 0.020 ). After tem-perature scaling baselines toward comparable coverage, SA produces the narrowest intervals on 7 of 8 datasets (Panel B). The exception is Naval, where HSA’s lower point-prediction error translates into tighter scaled intervals. Per-dataset PIT histograms and sharpness comparisons for all eight datasets are in Appendix F; on representative datasets like Yacht (normalized RMSE =0 .05 ), SA’s PIT is closest to uniform (W1=0 .021 ) and its intervals remain the sharpest after scal-ing. Ensemble CRPS evaluated natively (Appendix F.0.1) confirms that SA is among the two best methods on 4 of 8 datasets, with MultiSWAG winning 5 of 8 through lower per-sample prediction error from 10 independent training runs—the same pattern observed on ClimaX. The UCI results also reveal the method’s operating regime. SA’s calibration tracks backbone accuracy predictably: on low-RMSE datasets (Naval 0.04 , Yacht 0.05 , Energy 0.07 ), BO selects high ν (33 –76 ) and the PIT is near-uniform; as RMSE grows (Kin8nm 0.40 , Power Plant 0.24 ), ν col-lapses and coverage falls short. On Protein ( 0.67 ) and Wine (0.88 ), attention-level perturbations cannot span the residual uncertainty regardless of ν. This limitation is shared by all post-hoc methods, which degrade when the backbone is insufficiently accurate. But it defines a clear operating regime: SA is most valuable around strong pretrained or well-adapted backbones, precisely the setting scientific foun-dation models occupy. 
+
+8. Discussion 
+
+8.1. The calibration–cost trade-off 
+
+The empirical picture across three structurally different set-tings converges on a consistent operating point. SA achieves strong native calibration, the sharpest or near-sharpest inter-vals once calibration is comparable, and does so at a fraction of the cost of retraining-heavy alternatives. These properties follow from three design choices that reinforce each other: stochasticity enters only at inference time, preserving the backbone’s predictive strength; it acts at the attention bot-tleneck where information is routed rather than at arbitrary locations; and its magnitude is set by a calibration objective, turning ν into a principled operating point rather than a free knob. The cost comparison sharpens this point. MultiSWAG achieves comparable sharpness through 10 independent training runs whose aggregate compute exceeds SA’s by over three orders of magnitude. Dropout-based methods share SA’s inference-time spirit but lack a calibration mech-anism tied to the model’s internal computation, leaving them natively overconfident. HSA targets the same bottleneck but modifies it during training, disrupting pretrained representa-tions. SA sidesteps all three failure modes by design. 
+
+8.2. Limitations of a single-parameter design 
+
+One global ν shared across all heads, layers, and coordinates is what makes SA lightweight, but it also limits expressivity. The UCI results make this concrete: on datasets where the backbone is accurate, a single ν suffices for near-uniform PIT distributions; on noisier tasks where residuals exceed what attention-level perturbations can induce, calibration sat-11 Calibrating Scientific Foundation Models with Inference-Time Stochastic Attention                                                                                                                                         
+
+> Table 2. UCI regression across eight datasets. Panel A : native calibration via pooled PIT W1(lower is better). SA achieves the lowest
+> W1on 5 of 8 datasets. Panel B : coverage-comparable sharpness as mean PI-95 width normalized by SA’s width per dataset (SA =1.0; lower is sharper). Baselines are temperature-scaled to comparable coverage before computing sharpness; SA remains native throughout.
+> Bold denotes the best value per row. Abbreviations: SA =Stochastic Attention, MC =MC Dropout, SW =SWAG, MS =MultiSWAG, HSA =Hierarchical Stochastic Attention, IV =IVON.
+> Panel A: Native W1↓Panel B: Sharp/SA ↓(SA =1.0)
+> Dataset SA MC SW MS HSA IV SA MC SW MS HSA IV Concrete 0.051 0.092 0.137 0.115 0.093 0.220 1.000 1.395 1.443 1.306 1.881 1.452 Energy 0.030 0.039 0.071 0.042 0.036 0.159 1.000 1.366 1.373 1.211 3.012 1.214 Kin8nm 0.070 0.111 0.110 0.087 0.085 0.197 1.000 1.370 1.501 1.393 1.612 1.548 Naval 0.022 0.020 0.053 0.028 0.073 0.183 1.000 1.328 3.378 3.018 0.451 2.158 Power 0.093 0.162 0.176 0.169 0.196 0.215 1.000 1.730 1.985 1.919 2.041 1.846 Protein 0.163 0.133 0.148 0.140 0.154 0.228 1.000 1.892 2.149 2.090 2.066 2.451 Wine 0.189 0.201 0.196 0.177 0.208 0.246 1.000 2.808 3.214 3.025 2.922 2.829 Yacht 0.021 0.038 0.037 0.070 0.061 0.103 1.000 1.301 1.535 1.308 1.913 1.471
+
+urates and coverage falls short. This limitation is not unique to SA; it is shared by all single-parameter post-hoc calibra-tion methods, from temperature scaling (Guo et al., 2017) to isotonic recalibration (Kuleshov et al., 2018), which simi-larly trade expressivity for simplicity and robustness. Extending to layer-dependent or input-dependent ν is natu-ral but involves a genuine trade-off: each degree of freedom increases expressivity at the cost of calibration complexity and overfitting risk. The present results suggest that the simplest version already identifies a useful operating point for the strong-backbone regime where scientific foundation models operate. 
+
+8.3. Uncertainty and computational structure 
+
+Beyond the practical trade-offs above, the results point to a qualitative distinction worth making explicit. The uncer-tainty SA produces is not sensitivity to parameter pertur-bation or random subnetwork selection; it is sensitivity to how the model allocates computational resources across tokens. That this form of variability, tied directly to the model’s internal information routing, already delivers better calibration at lower cost suggests that aligning the source of stochasticity with the model’s computational structure is itself a useful inductive bias for uncertainty quantification. 
+
+9. Conclusion 
+
+We introduced inference-time stochastic attention, a mecha-nism that replaces exact attention expectations with finite-sample multinomial draws controlled by a single concentra-tion parameter ν. Choosing ν through a calibration objective yields predictive distributions that are well calibrated na-tively, competitive in sharpness at comparable coverage, and obtainable without retraining. Across ClimaX weather forecasting, TimesFM time-series prediction, and FT-Transformer tabular regression, SA consistently achieves the strongest native calibration and the sharpest intervals on a coverage-comparable basis, re-quiring only inference-time passes on a frozen backbone. Under proper scoring rules, a different operating point (ν=25 ) ranks first, confirming that calibration-first and score-optimal evaluations are complementary. The main limitation mirrors the main simplification: a single global 
+
+ν bounds expressivity when the backbone itself is insuf-ficiently accurate. Extensions to richer parameterizations remain a natural next step, but the simplest version already identifies a practically useful operating point for uncertainty in scientific foundation models. 
+
+References 
+
+Cong, B., Daheim, N., Shen, Y., Cremers, D., Yokota, R., Khan, M. E., and M ¨ollenhoff, T. Variational low-rank adaptation using IVON. In NeurIPS 2024 Workshop on Fine-Tuning in Modern Machine Learning: Principles and Scalability , 2024. URL https://openreview. net/forum?id=nRD5uZa2fe .Das, A., Kong, W., Sen, R., and Zhou, Y. A decoder-only foundation model for time-series forecasting. In Forty-first International Conference on Machine Learning ,2024. URL https://openreview.net/forum? id=jn2iTJas6h .Dawid, A. P. Present position and potential de-velopments: Some personal views statistical the-ory the prequential approach. Journal of the Royal Statistical Society: Series A (General) , 147 (2):278–290, 1984. doi: https://doi.org/10.2307/ 2981683. URL https://rss.onlinelibrary. wiley.com/doi/abs/10.2307/2981683 .Fan, X., Zhang, S., Tanwisuth, K., Qian, X., and Zhou, M. Contextual dropout: An efficient sample-dependent dropout module. In International Conference on 
+
+12 Calibrating Scientific Foundation Models with Inference-Time Stochastic Attention 
+
+Learning Representations , 2021a. URL https:// openreview.net/forum?id=ct8_a9h1M .Fan, X., Zhang, S., Tanwisuth, K., Qian, X., and Zhou, M. Contextual dropout: An efficient sample-dependent dropout module. In International Conference on Learning Representations , 2021b. URL https:// openreview.net/forum?id=ct8_a9h1M .Gal, Y. and Ghahramani, Z. Dropout as a bayesian ap-proximation: Representing model uncertainty in deep learning. In Balcan, M. F. and Weinberger, K. Q. (eds.), 
+
+Proceedings of The 33rd International Conference on Ma-chine Learning , volume 48 of Proceedings of Machine Learning Research , pp. 1050–1059, New York, New York, USA, 20–22 Jun 2016. PMLR. URL https:// proceedings.mlr.press/v48/gal16.html .Gneiting, T., Balabdaoui, F., and Raftery, A. E. Probabilistic forecasts, calibration and sharpness. Journal of the Royal Statistical Society Series B: Statistical Methodology , 69 (2):243–268, 03 2007. ISSN 1369-7412. doi: 10.1111/j. 1467-9868.2007.00587.x. URL https://doi.org/ 10.1111/j.1467-9868.2007.00587.x . Origi-nally presented at Workshop on Ensemble Forecasting, 2003, with title ”Verifying probabilistic forecasts: Cali-bration and sharpness”. Received 2005-05-01; accepted 2006-10-01; published 2007-03-05. Gruber, S. and Buettner, F. Better uncertainty calibration via proper scores for classification and beyond. In Koyejo, S., Mohamed, S., Agarwal, A., Belgrave, D., Cho, K., and Oh, A. (eds.), Advances in Neural Information Processing Systems , volume 35, pp. 8618–8632. Curran Associates, Inc., 2022. Guo, C., Pleiss, G., Sun, Y., and Weinberger, K. Q. On cali-bration of modern neural networks. In Precup, D. and Teh, Y. W. (eds.), Proceedings of the 34th International Confer-ence on Machine Learning , volume 70 of Proceedings of Machine Learning Research , pp. 1321–1330. PMLR, 06– 11 Aug 2017. URL https://proceedings.mlr. press/v70/guo17a.html .Heo, J., Lee, H. B., Kim, S., Lee, J., Kim, K. J., Yang, E., and Hwang, S. J. Uncertainty-aware attention for reliable interpretation and prediction. In Bengio, S., Wallach, H., Larochelle, H., Grauman, K., Cesa-Bianchi, N., and Garnett, R. (eds.), Advances in Neural Information Processing Systems , volume 31. Curran Associates, Inc., 2018. URL https://proceedings.neurips. cc/paper_files/paper/2018/file/ 285e19f20beded7d215102b49d5c09a0-Paper. pdf .Hu, E. J., yelong shen, Wallis, P., Allen-Zhu, Z., Li, Y., Wang, S., Wang, L., and Chen, W. LoRA: Low-rank adaptation of large language models. In International Conference on Learning Representations , 2022. Izmailov, P., Podoprikhin, D., Garipov, T., Vetrov, D. P., and Wilson, A. G. Averaging weights leads to wider optima and better generalization. In Globerson, A. and Silva, R. (eds.), Proceedings of the Thirty-Fourth Conference on Uncertainty in Artificial Intelligence , pp. 876–885, Monterey, California, USA, August 2018. AUAI Press. Kuleshov, V. and Deshpande, S. Calibrated and sharp uncertainties in deep learning via density estimation. In Chaudhuri, K., Jegelka, S., Song, L., Szepesvari, C., Niu, G., and Sabato, S. (eds.), Proceedings of the 39th International Conference on Machine Learn-ing , volume 162 of Proceedings of Machine Learn-ing Research , pp. 11683–11693. PMLR, 17–23 Jul 2022. URL https://proceedings.mlr.press/ v162/kuleshov22a.html .Kuleshov, V., Fenner, N., and Ermon, S. Accurate un-certainties for deep learning using calibrated regres-sion. In Dy, J. and Krause, A. (eds.), Proceedings of the 35th International Conference on Machine Learn-ing , volume 80 of Proceedings of Machine Learn-ing Research , pp. 2796–2804. PMLR, 10–15 Jul 2018. URL https://proceedings.mlr.press/v80/ kuleshov18a.html .Lakshminarayanan, B., Pritzel, A., and Blundell, C. Simple and scalable predictive uncertainty estimation using deep ensembles. In Guyon, I., Luxburg, U. V., Bengio, S., Wallach, H., Fergus, R., Vishwanathan, S., and Garnett, R. (eds.), Advances in Neural Information Processing Systems , volume 30. Curran Associates, Inc., 2017. URL https://proceedings.neurips. cc/paper_files/paper/2017/file/ 9ef2ed4b7fd2c810847ffa5fa85bce38-Paper. pdf .Maddox, W. J., Izmailov, P., Garipov, T., Vetrov, D. P., and Wilson, A. G. A simple baseline for Bayesian uncertainty in deep learning. In Advances in Neural Information Pro-cessing Systems , volume 32, pp. 13153–13164. Curran Associates, Inc., 2019. Nguyen, T., Brandstetter, J., Kapoor, A., Gupta, J. K., and Grover, A. Climax: A foundation model for weather and climate. In ICML , pp. 25904–25938, 2023. Onal, E., Fl ¨oge, K., Caldwell, E., Sheverdin, A., and Fortuin, V. Gaussian stochastic weight averaging for bayesian low-rank adaptation of large language models. In Sixth Symposium on Advances in Approximate Bayesian In-ference - Non Archival Track , 2024. URL https: //openreview.net/forum?id=LZrCBQBCzl .13 Calibrating Scientific Foundation Models with Inference-Time Stochastic Attention 
+
+Papamarkou, T., Skoularidou, M., Palla, K., Aitchison, L., Arbel, J., Dunson, D., Filippone, M., Fortuin, V., Hennig, P., Hern ´andez-Lobato, J. M., Hubin, A., Immer, A., Kar-aletsos, T., Khan, M. E., Kristiadi, A., Li, Y., Mandt, S., Nemeth, C., Osborne, M. A., Rudner, T. G. J., R ¨ugamer, D., Teh, Y. W., Welling, M., Wilson, A. G., and Zhang, R. Position: Bayesian deep learning is needed in the age of large-scale AI. In Salakhutdinov, R., Kolter, Z., Heller, K., Weller, A., Oliver, N., Scarlett, J., and Berkenkamp, F. (eds.), Proceedings of the 41st International Conference on Machine Learning , volume 235 of Proceedings of Ma-chine Learning Research , pp. 39556–39586. PMLR, 21– 27 Jul 2024. URL https://proceedings.mlr. press/v235/papamarkou24b.html .Pei, J., Wang, C., and Szarvas, G. Transformer uncertainty estimation with hierarchical stochastic attention. Pro-ceedings of the AAAI Conference on Artificial Intelli-gence , 36(10):11147–11155, Jun. 2022. doi: 10.1609/ aaai.v36i10.21364. URL https://ojs.aaai.org/ index.php/AAAI/article/view/21364 .Shen, Y., Daheim, N., Cong, B., Nickl, P., Marconi, G. M., Raoul, B. C. E. M., Yokota, R., Gurevych, I., Cremers, D., Khan, M. E., and M ¨ollenhoff, T. Variational learning is effective for large deep networks. In Proceedings of the 41st International Conference on Machine Learning , vol-ume 235 of Proceedings of Machine Learning Research ,pp. 44665–44686. PMLR, 21–27 Jul 2024. Vovk, V., Gammerman, A., and Shafer, G. Algorith-mic Learning in a Random World . Springer, Cham, first edition edition, 2005. ISBN 9783031066481. URL https://link.springer.com/book/10. 1007/978-3-031-06649-8 . First edition, 2005. Wilson, A. G. and Izmailov, P. Bayesian deep learning and a probabilistic perspective of generalization. In Advances in Neural Information Processing Systems , volume 33, pp. 4697–4708. Curran Associates, Inc., 2020. Xu, K., Ba, J., Kiros, R., Cho, K., Courville, A., Salakhudi-nov, R., Zemel, R., and Bengio, Y. Show, attend and tell: Neural image caption generation with visual atten-tion. In Bach, F. and Blei, D. (eds.), Proceedings of the 32nd International Conference on Machine Learning , vol-ume 37 of Proceedings of Machine Learning Research ,pp. 2048–2057, Lille, France, 07–09 Jul 2015. PMLR. URL https://proceedings.mlr.press/v37/ xuc15.html .Yadav, A. and Zhang, R. Bayesian optimization under uncertainty for training a scale parameter in stochastic models, 2025. Ye, F., Yang, M., Pang, J., Wang, L., Wong, D. F., Yilmaz, E., Shi, S., and Tu, Z. Benchmarking llms via uncertainty quantification. In Globerson, A., Mackey, L., Belgrave, D., Fan, A., Paquet, U., Tomczak, J., and Zhang, C. (eds.), 
+
+Advances in Neural Information Processing Systems , vol-ume 37, pp. 15356–15385. Curran Associates, Inc., 2024. doi: 10.52202/079017-0491. Zhou, H., Zhang, S., Peng, J., Zhang, S., Li, J., Xiong, H., and Zhang, W. Informer: Beyond efficient trans-former for long sequence time-series forecasting. Pro-ceedings of the AAAI Conference on Artificial Intelli-gence , 35(12):11106–11115, May 2021. doi: 10.1609/ aaai.v35i12.17325. URL https://ojs.aaai.org/ index.php/AAAI/article/view/17325 .14 Calibrating Scientific Foundation Models with Inference-Time Stochastic Attention 
+
+A. Bayesian Optimization Routine for Tuning ν
+
+This appendix gives the practical optimization procedure used to calibrate the stochastic-attention concentration parameter ν.In the main text, ν is selected by minimizing the calibration loss LSA (ν) over an admissible integer search domain Ξ ⊂ N.Here we describe how that optimization is carried out in practice when only noisy Monte Carlo estimates of the loss are available. 
+
+What is being optimized. The target quantity is the calibration loss from Equation (13), 
+
+LSA (ν) = E(x,y)∼D cal 
+
+h
+
+E
+
+h Rν (x) − Z(x, y)2 x
+
+ii 
+
+,
+
+where 
+
+Rν (x) := ∥fθ,ν (x) − fθ (x)∥2 , Z(x, y) := ∥y − fθ (x)∥2 .
+
+As in Sections 3–4, the model parameters θ are frozen throughout. The parameter ν controls the stochastic-attention law, whereas repeated stochastic forward passes are used only to estimate the expectations appearing in the loss. 
+
+Why the evaluations are noisy. For a fixed candidate ν ∈ Ξ, we do not observe LSA (ν) exactly. Instead, we compute a Monte Carlo estimate bLSA (ν),
+
+whose randomness comes from two sources: (i) sampling mini-batches from the calibration set Dcal , and (ii) stochastic attention sampling within each forward pass. This makes direct exhaustive search inefficient when the calibration budget is limited. 
+
+Overall calibration routine. Algorithm 2 describes the full post-hoc calibration loop. For each candidate ν, it estimates the calibration loss by comparing the magnitude of stochastic deviations from the deterministic predictor with the magnitude of realized residuals on held-out data. The outer loop then uses Bayesian optimization to search efficiently over the integer domain Ξ.
+
+Algorithm 2 Calibration of the stochastic-attention concentration parameter ν
+
+Require: Trained parameters θ; calibration set Dcal ; batch sampler SAMPLE BATCH (Dcal ); Monte Carlo passes per batch M ; number of batch draws per evaluation B; BO budget K; integer search domain Ξ ⊂ N.
+
+Ensure: Calibrated concentration parameter ν⋆.1: function EVAL LOSS (ν)2: bLSA (ν) ← 0
+
+3: for b = 1 to B do 
+
+4: (xb, yb) ← SAMPLE BATCH (Dcal )
+
+5: byb ← fθ (xb)
+
+6: rb ← ∥ yb − byb∥2
+
+7: ℓb ← 0
+
+8: for m = 1 to M do 
+
+9: by(m) 
+
+> b
+
+← f (m) 
+
+> θ,ν
+
+(xb)
+
+10: δ(m) 
+
+> b
+
+← ∥ by(m) 
+
+> b
+
+− byb∥2
+
+11: ℓb ← ℓb + ( δ(m) 
+
+> b
+
+− rb)2
+
+12: end for 
+
+13: bLSA (ν) ← bLSA (ν) + ℓb/M 
+
+14: end for 
+
+15: return bLSA (ν)/B 
+
+16: end function 
+
+17: Freeze θ and disable other stochasticity. 18: Initialize optimization history H ← ∅ .19: for k = 1 to K do 
+
+20: νk ← BAYES OPT SUGGEST (H, Ξ) 
+
+21: ℓk ← EVAL LOSS (νk )
+
+22: H ← H ∪ { (νk , ℓ k )}
+
+23: end for 
+
+24: ν⋆ ← arg min (ν,ℓ )∈H ℓ
+
+25: return ν⋆
+
+15 Calibrating Scientific Foundation Models with Inference-Time Stochastic Attention 
+
+BO-under-uncertainty surrogate. To exploit the fact that this is a one-dimensional tuning problem, we use the BO-under-uncertainty framework of (Yadav & Zhang, 2025). Following that approach, each noisy evaluation is summarized through a positive stochastic scale quantity and a positive target scale quantity. In our setting, a natural empirical choice is 
+
+s(ν) := 1
+
+BM 
+
+> B
+
+X
+
+> b=1
+> M
+
+X
+
+> m=1
+
+f (m) 
+
+> θ,ν
+
+(xb) − fθ (xb) 2
+
+, s0 := 1
+
+B
+
+> B
+
+X
+
+> b=1
+
+∥yb − fθ (xb)∥2 . (15) The quantity s(ν) measures the average stochastic deviation scale induced by stochastic attention at concentration level ν,while s0 measures the corresponding residual scale on the same calibration batches. We model the dependence of s(ν) on ν through the Bayesian log–log surrogate 
+
+ln s(ν) = a ln ν + ln b + ϵz, z ∼ N (0 , 1) , (16) which implies 
+
+s(ν) = b ν aζ, ζ ∼ log N (0 , ϵ 2).
+
+This surrogate is appropriate here because the stochastic deviation scale decreases systematically as ν increases, while still allowing multiplicative noise in the observed evaluations. Conditional on sampled surrogate parameters (a, ln b, ϵ 2), the next candidate can be selected by minimizing the expected squared discrepancy between the surrogate scale and the target scale: 
+
+E
+
+h s(ν) − s0
+
+2 a, b, ϵ 2, s 0
+
+i
+
+= Var( bν aζ) + ( E[bν aζ] − s0)2 . (17) This mirrors the same bias–variance decomposition that underlies the calibration objective in the main text, but here it is used only as a surrogate for efficient search. 
+
+BO suggestion step. Algorithm 3 gives the internal proposal mechanism used at each iteration of the outer calibration loop. The routine fits the log–log surrogate to the current history, draws surrogate parameters from the posterior via Thompson sampling, computes the continuous minimizer of the sampled surrogate objective, and finally projects that value back to the admissible integer domain Ξ.
+
+Algorithm 3 BAYES OPT SUGGEST for tuning ν via BO-under-uncertainty (Yadav & Zhang, 2025) 
+
+Require: Optimization history H = {(νi, ℓ i)}ni=1 with νi ∈ Ξ ⊂ N; integer search domain Ξ.
+
+Ensure: Next candidate νnext ∈ Ξ.1: Fit the Bayesian log–log surrogate model 
+
+ln s(ν) = a ln ν + ln b + ϵz, z ∼ N (0 , 1) ,
+
+using the current history H.2: Draw (a, ln b, ϵ 2) from the posterior distribution of the surrogate parameters. 3: Form the corresponding sampled surrogate objective for the discrepancy between s(ν) and the target scale s0.4: Compute the continuous minimizer 
+
+ν⋆ 
+
+> cont
+
+= arg min  
+
+> ν> 0
+
+E
+
+h s(ν) − s0
+
+2 a, b, ϵ 2, s 0
+
+i
+
+.
+
+5: Project to the integer domain: 
+
+νnext = Π Ξ(ν⋆
+
+> cont
+
+) ,
+
+where ΠΞ denotes nearest-point projection onto Ξ.6: return νnext 
+
+In this way, the outer calibration loop and the inner BO-under-uncertainty proposal rule remain clearly separated. Algorithm 2 defines what is being optimized, namely the stochastic-attention calibration loss, while Algorithm 3 defines how the next candidate value of ν is selected efficiently under noisy objective evaluations. 16 Calibrating Scientific Foundation Models with Inference-Time Stochastic Attention 
+
+B. Proofs 
+
+For completeness, we collect here the proofs of the main stochastic-attention properties stated in Propositions 3.2–3.3. Throughout, we fix an attention row index t and condition on the deterministic attention weights πt ∈ ∆nk −1 and the value matrix V ∈ Rnk ×dv . Recall that 
+
+Wt ∼ Multinomial( ν, πt), eπt = 1
+
+ν Wt, eot = eπ⊺ 
+
+> t
+
+V, ot = π⊺ 
+
+> t
+
+V.
+
+Proof of Proposition 3.2. We prove the three claims in turn. 
+
+Conditional mean of the stochastic weights. For a multinomial random vector, 
+
+E[( Wt)j | πt] = ν(πt)j , j = 1 , . . . , n k.
+
+Therefore, 
+
+E[( eπt)j | πt] = 1
+
+ν E[( Wt)j | πt] = ( πt)j .
+
+Since this holds componentwise, 
+
+E[eπt | πt] = πt.
+
+Conditional mean of the stochastic attention output. Using linearity of conditional expectation and the fact that V is fixed under conditioning, 
+
+E[eot | πt, V] = E[eπ⊺ 
+
+> t
+
+V | πt, V] = E[eπt | πt]⊺ V = π⊺ 
+
+> t
+
+V = ot.
+
+Deterministic recovery as ν → ∞ . Using the categorical representation from Definition 3.1, let 
+
+z(m)
+
+> t
+> iid
+
+∼ Categorical( πt), m = 1 , . . . , ν, 
+
+so that 
+
+eπt = 1
+
+ν
+
+> ν
+
+X
+
+> m=1
+
+ez(m)
+
+> t
+
+.
+
+For each coordinate j,
+
+(eπt)j = 1
+
+ν
+
+> ν
+
+X
+
+> m=1
+
+1{z(m) 
+
+> t
+
+= j}.
+
+By the strong law of large numbers, 
+
+(eπt)j
+
+> a.s.
+
+−−−−→ 
+
+> ν→∞
+
+E
+
+h
+
+1{z(1)  
+
+> t
+
+= j} | πt
+
+i
+
+= ( πt)j .
+
+Hence 
+
+eπt
+
+> a.s.
+
+−−−−→ 
+
+> ν→∞
+
+πt.
+
+Since the map x 7 → x⊺V is linear and therefore continuous for fixed V,
+
+eot = eπ⊺ 
+
+> t
+
+V a.s.
+
+−−−−→ 
+
+> ν→∞
+
+π⊺ 
+
+> t
+
+V = ot.
+
+This proves the claim. 
+
+Proof of Proposition 3.3. We again condition on (πt, V).17 Calibrating Scientific Foundation Models with Inference-Time Stochastic Attention 
+
+Covariance of the stochastic weights. Write πt = ( π1, . . . , π nk )⊺ for brevity. Standard multinomial moment identities give 
+
+Var(( Wt)j | πt) = νπ j (1 − πj ), Cov(( Wt)j , (Wt)ℓ | πt) = −νπ j πℓ (j̸ = ℓ).
+
+Equivalently, 
+
+Cov( Wt | πt) = ν
+
+
+
+diag( πt) − πtπ⊺
+
+> t
+
+
+
+.
+
+Because eπt = ν−1Wt, covariance scaling yields 
+
+Cov( eπt | πt) = 1
+
+ν2 Cov( Wt | πt) = 1
+
+ν
+
+
+
+diag( πt) − πtπ⊺
+
+> t
+
+
+
+.
+
+Propagation to the stochastic attention output. The output satisfies 
+
+eo⊺ 
+
+> t
+
+= V⊺ eπt.
+
+For any fixed matrix A and random vector x,
+
+Cov( Ax ) = A Cov( x) A⊺.
+
+Applying this identity with A = V⊺ and x = eπt gives 
+
+Cov( eot | πt, V) = V⊺ Cov( eπt | πt) V.
+
+Substituting the expression above, 
+
+Cov( eot | πt, V) = 1
+
+ν V⊺
+
+diag( πt) − πtπ⊺
+
+> t
+
+
+
+V.
+
+This is exactly the claimed formula. 
+
+C. Experimental Setup and Reproducibility Details 
+
+This appendix section summarizes the experimental settings used in the paper and provides the key implementation details needed to reproduce the reported uncertainty diagnostics. We consider three evaluation settings: (i) transformer-based time-series forecasting with T IMES FM, (ii) global weather forecasting with C LIMA X, and (iii) UCI regression as a compact testbed for evaluating calibration and sharpness beyond the scientific forecasting examples. Baseline-method summaries are given separately in Appendix G. 
+
+C.1. TimesFM: Architecture and Forecasting Backbone. TIMES FM is a decoder-only transformer for time-series forecasting that operates on non-overlapping input patches (Das et al., 2024). Each patch is mapped to a token representation and processed by stacked causal self-attention layers. Forecasts are decoded in output patches and extended autoregressively for longer horizons. Unless otherwise stated, deterministic reporting uses the point-forecast decoding head. TimesFM supports multiple decoding heads; for deterministic reporting we use the point-forecast head (decode index = 5 ). 
+
+Datasets and splits. We evaluate on the ETT-small benchmarks ETTh1, ETTh2, ETTm1, and ETTm2 (Zhou et al., 2021), using the standard Informer split boundaries: ETTh*: training 0–8640, validation 8640–11520, test 11520–14400; ETTm*: training 0–34560, validation 34560–46080, test 46080–57600. Following our adaptation protocol, normalization statistics are computed on the full training segment, while model adaptation uses only the first 10% of the training portion. Each column is treated as an independent univariate series. 
+
+Forecasting protocol and metric. We use context length 512 and forecasting horizons of 96 and 192. Forecasting is performed autoregressively in patch units. Predictive accuracy is reported using MAE, averaged across series and forecast horizon. 18 Calibrating Scientific Foundation Models with Inference-Time Stochastic Attention 
+
+Lightweight task adaptation. To obtain a strong deterministic checkpoint while keeping the pretrained backbone fixed, we use LoRA adapters attached to the query–key–value projection, attention output projection, and the two linear layers in the feed-forward block. All pretrained backbone parameters are frozen and only LoRA parameters are trained. 
+
+C.2. ClimaX: Architecture and Global Forecasting Protocol Backbone. CLIMA X is a ViT-style foundation model for gridded weather and climate fields (Nguyen et al., 2023). It tokenizes each variable field into spatial patches, aggregates variable information through cross-attention, and processes the resulting token sequence with a ViT backbone. 
+
+Task and metrics. We evaluate global forecasting at a 72-hour lead time. Deterministic predictive accuracy is reported using latitude-weighted MSE, latitude-weighted RMSE, and latitude-weighted anomaly correlation coefficient (ACC), following the standard evaluation protocol for C LIMA X. 
+
+Model adaptation. We start from the pretrained 5.625 ◦ checkpoint and use LoRA adapters on the attention projections and MLP linear layers. The pretrained backbone is frozen, while normalization layers remain trainable. Best and final checkpoints are selected using validation latitude-weighted RMSE. 
+
+C.3. UCI Regression Benchmarks Purpose. In addition to the forecasting experiments, we evaluate stochastic attention on standard UCI regression tasks to test whether the method extends beyond the two scientific foundation-model case studies. This provides a compact regression setting in which calibration, sharpness, and proper scoring rules can be compared across multiple datasets under a common protocol. 
+
+Evaluation protocol. For each UCI dataset, we begin with a deterministic transformer-based regressor and then apply the same post-hoc stochastic-attention calibration procedure used in the main paper. We report deterministic predictive accuracy, along with uncertainty diagnostics based on PIT, empirical coverage, interval width, and, where applicable, proper scoring rules. Native and post-scaled comparisons are reported separately in the appendix results. 
+
+C.4. Predictive Samples for Calibration Diagnostics 
+
+All uncertainty methods considered in the paper induce predictive distributions through samples. To unify evaluation across methods, we form an empirical predictive distribution bF from repeated predictive samples for each test case. PIT values are then computed from bF for scalar outcomes, and coordinate-wise for structured outputs, aggregating over coordinates when needed. 
+
+Stochastic attention. For stochastic attention, each predictive sample corresponds to a single stochastic forward pass of the frozen model, with attention rows sampled according to Algorithm 1. The concentration parameter ν is calibrated on held-out data using Algorithm 2, after which repeated stochastic forward passes are used to estimate calibration and sharpness diagnostics. 
+
+SWAG-LoRA and MultiSWAG. For SWAG-LoRA, predictive samples are obtained by sampling LoRA weights from the SWAG approximation and performing one forward pass per draw. For MultiSWAG, samples are aggregated across multiple independently trained SWAG-LoRA models, yielding a mixture approximation. 
+
+IVON-LoRA. For IVON-LoRA, predictive samples are generated by sampling LoRA weights from the learned Gaussian variational approximation and running one forward pass per sample. 
+
+C.5. Implementation Hyperparameters 
+
+We summarize the main hyperparameter settings below. Additional baseline-specific details are provided in the corresponding appendix subsections. 19 Calibrating Scientific Foundation Models with Inference-Time Stochastic Attention 
+
+Table 3. ClimaX calibration and sharpness summary. W1: Wasserstein-1 from uniform (lower =better). SA uses native predictions; baselines are temperature-scaled. PI-95: mean interval width (lower =sharper). Bold =best per column. Method ACC ↑ Native W1 ↓ Scaled W1 ↓ PI-95 ↓
+
+SA (ours, ν=4 ) 0.9022 0.0560 0.0560 1051.9 
+
+Cxt. Dropout 0.9599 0.1048 0.0501 1080.9 MultiSWAG 0.9648 0.2188 0.0534 1075.5 SWAG 0.9648 0.2195 0.0475 1167.1 IVON 0.9381 0.2132 0.0558 1422.0 HSA 0.7476 0.1787 0.0367 2882.8 
+
+TimesFM. We use T IMES FM 2.5 with 20 layers, 16 heads, model dimension 1280, input patch length 32, and output patch length 128. LoRA uses rank 8 and α = 8 . Optimization uses Adam with cosine learning rate decay, a batch size of 16, and 50 epochs. 
+
+ClimaX. We use the pretrained 5.625 ◦ CLIMA X checkpoint with a patch size of 2, an embedding dimension of 1024, a depth of 8, and 16 attention heads. LoRA uses rank 8 and α = 8 . Optimization uses AdamW with warmup and cosine decay in fp16 DDP training. 
+
+Sampling budgets. Unless otherwise stated, predictive diagnostics are computed from repeated Monte Carlo samples from each method. For stochastic attention, this involves fixing a calibrated ν and drawing repeated stochastic forward passes. For SWAG-based and IVON-based baselines, it involves repeated parameter sampling followed by forward evaluation. In all cases, the same sampling budget is used within a given experiment when comparing methods. 
+
+D. Additional ClimaX Results 
+
+D.1. SWAG Variance-Scale Sweep 
+
+To verify that the native under-dispersion of SWAG on ClimaX is not simply a tuning issue, we ran a variance-scale sweep over {1, 2, 4, 8, 16 , 32 , 64 } while keeping the trained checkpoint fixed. Table 4 reports validation results: increasing the scale improves calibration and coverage, initially improves accuracy, and then substantially widens intervals. Scale 64 is selected by validation W1, while scale 16 is the best accuracy/sharpness compromise. Table 5 reports the corresponding held-out test results at these two operating points. Even the best natively calibrated SWAG (scale 64, W1=0 .116 , coverage 
+
+60 .9% ) remains more than twice SA’s W1 at comparable native coverage. 
+
+Table 4. Native SWAG variance-scale sweep on ClimaX validation data. Increasing the scale improves calibration and coverage, initially improves accuracy, then widens intervals; scale 64 is selected by validation W1, scale 16 is the best accuracy/sharpness compromise. 
+
+Bold marks the best value per column. Scale Val. RMSE ↓ Val. W1 ↓ Val. Cov@95 ↑ Val. Sharp@95 ↓
+
+1 265.73 0.215 0.089 47.4 2 265.43 0.210 0.123 64.9 4 265.01 0.202 0.170 89.2 8 264.45 0.190 0.233 123.0 16 263.86 0.174 0.320 171.3 
+
+32 263.93 0.149 0.445 247.7 64 267.44 0.116 0.604 379.6 
+
+Table 5. Held-out test results for the two SWAG operating points highlighted by the variance sweep. Scale 64 is the fairest best-calibrated SWAG point under the validation W1 rule; scale 16 is the strongest accuracy/sharpness compromise. Test operating point RMSE ↓ W1 ↓ Cov@95 ↑ Sharp@95 ↓
+
+SWAG @ 16 (compromise) 263.71 0.175 0.321 171.0 
+
+SWAG @ 64 (val.-selected) 266.67 0.116 0.609 381.2 
+
+20 Calibrating Scientific Foundation Models with Inference-Time Stochastic Attention 
+
+D.2. Per-Pass Latency 
+
+Per-forward-pass latency of ClimaX increases gradually with ν: from 0.457 s ( ν=1 ) to 0.529 s ( ν=512 ), compared to 0.424 sfor deterministic inference. At the BO-selected ν=4 , the overhead is approximately 11% .1 32 64 128 256 512  
+
+> 1.00
+> 1.05
+> 1.10
+> 1.15
+> 1.20
+> 1.25
+> t/t0
+> Deterministic Baseline
+> Stochastic Attention
+> Linear fit ( > 1)
+
+Figure 8. Per-forward-pass latency on ClimaX as a function of ν. The BO-selected operating point ( ν=4 ) lies in the low-overhead regime. 
+
+D.3. BO Sensitivity and Robustness 
+
+Figure 9 shows the posterior distribution of β∗= ln ν∗ from the Bayesian GLM surrogate. The distribution concentrates in a narrow band ( 3.69 –3.77 ), confirming reliable convergence of the ν-selection procedure. 3.7 3.72 3.74 3.76 
+
+-$  
+
+> 0510 15
+> Frequency
+> -$of posterior sample
+> -$via GLM
+
+Figure 9. Posterior distribution of β∗= ln ν∗ from the Bayesian GLM surrogate on ClimaX. The distribution concentrates in a band spanning less than 0.08 .
+
+D.4. PIT at ν=4 vs. ν=25 
+
+Figure 10 compares the PIT histograms at the BO-optimized ( ν=4 ) and CRPS-optimal ( ν=25 ) operating points. The rightward shift at ν=25 reflects mild over-coverage from sharper per-sample predictions. 
+
+D.5. Additional Sharpness Levels 
+
+Figures 11a–11c show ClimaX sharpness at PI-25, PI-50, and PI-75, complementing the PI-95 results in the main text. 
+
+E. TimesFM Details 
+
+Figure 12 shows the equal-coverage visualization for ETTh1 ( H=96 ), where all baselines are rescaled to match SA’s empirical coverage. At matched coverage, sharpness differences become directly comparable: HSA produces the sharpest 21 Calibrating Scientific Foundation Models with Inference-Time Stochastic Attention 0.00 0.25 0.50 0.75 1.00 
+
+PIT value 
+
+> 0.00
+> 0.02
+> 0.04
+> 0.06
+> 0.08
+> 0.10
+> 0.12
+> 0.14
+> Relative freq.
+
+W1 = 0.0560 
+
+SA = 4 (BO-opt)     
+
+> 0.00 0.25 0.50 0.75 1.00
+
+PIT value 
+
+> 0.000
+> 0.025
+> 0.050
+> 0.075
+> 0.100
+> 0.125
+> 0.150
+> 0.175
+
+W1 = 0.0854 
+
+SA = 25 
+
+: 4 25 
+
+PIT histogram Uniform 
+
+Figure 10. PIT at ν=4 (BO-optimized, W1=0 .056 ) and ν=25 (CRPS-optimal, W1=0 .085 ). The rightward shift reflects mild over-coverage from sharper per-sample predictions. IVON SWAG Multi-SWAG Contextual    
+
+> Dropout
+> HSA Stochastic
+> Attention
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> 7
+> 8
+> Normalized 25% interval width
+> Temp.-scaled baselines Stochastic Attention Mean
+
+(a) PI-25. IVON SWAG Multi-SWAG Contextual     
+
+> Dropout
+> HSA Stochastic
+> Attention
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> 7
+> Normalized 50% interval width
+> Temp.-scaled baselines Stochastic Attention Mean
+
+(b) PI-50. IVON SWAG Multi-SWAG Contextual     
+
+> Dropout
+> HSA Stochastic
+> Attention
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> 7
+> Normalized 75% interval width
+> Temp.-scaled baselines Stochastic Attention Mean
+
+(c) PI-75. 
+
+Figure 11. ClimaX normalized interval widths at additional PI levels (SA =1 .0; baselines temperature-scaled). The sharpness advantage of SA is consistent across all interval levels. 
+
+intervals ( 0.34 ) while SWAG and MultiSWAG require the widest ( 0.47 and 0.50 ). Table 6 reports the full sharpness comparison across all eight ETT configurations. 
+
+F. UCI Regression Results 
+
+Figure 13 shows the native PIT histograms and coverage-comparable sharpness for the Yacht dataset as a representative example. Figures 14–15 show the PI-95 sharpness comparison (SA-normalized, baselines temperature-scaled) for all remaining UCI datasets. F.0.1. UCI E NSEMBLE CRPS 
+
+G. Baseline Method Summaries 
+
+This appendix section summarizes the baseline uncertainty methods used in the experiments. The baselines were se-lected to represent different mechanisms for producing predictive uncertainty in fine-tuned transformer models: stochastic forward passes induced by dropout, weight-space posterior approximations, mixtures of posterior approximations, varia-tional/Bayesian training, and stochastic architectural perturbations. This organization is useful because stochastic attention is best understood not only as another competing uncertainty method, but as a method that occupies a different point in the design space of where randomness is introduced and when calibration is performed .
+
+G.1. MC Dropout 
+
+MC dropout interprets dropout training as approximate Bayesian inference and obtains predictive uncertainty by keeping dropout active at test time and averaging repeated stochastic forward passes (Gal & Ghahramani, 2016). Unlike weight-space posterior approximations such as SWAG or IVON, MC dropout injects randomness by randomly zeroing columns of weight 22 Calibrating Scientific Foundation Models with Inference-Time Stochastic Attention 100 200 300 400 500                            
+
+> 2
+> 1
+> Value
+> 520 540 560 580 600
+> 1.75
+> 1.50
+> 1.25
+> Value
+> Stochastic Attention (native) (Cov=61.5%, Sharp=0.39)
+> 520 540 560 580 600
+> 1.75
+> 1.50
+> 1.25
+> Value
+> IVON (rescaled) (Cov=61.5%, Sharp=0.40)
+> 520 540 560 580 600
+> 2.0
+> 1.5
+> 1.0
+> Value
+> SWAG (rescaled) (Cov=61.5%, Sharp=0.47)
+> 520 540 560 580 600
+> Time
+> 2.0
+> 1.5
+> 1.0
+> Value
+> MultiSWAG (rescaled) (Cov=61.5%, Sharp=0.50)
+> 520 540 560 580 600
+> Time
+> 1.75
+> 1.50
+> 1.25
+> 1.00
+> Value
+> Cxt. Dropout (rescaled) (Cov=61.5%, Sharp=0.41)
+> 520 540 560 580 600
+> Time
+> 1.8
+> 1.6
+> 1.4
+> 1.2
+> Value
+> HSA (rescaled) (Cov=61.5%, Sharp=0.34)
+> Context Target Prediction mean 95% PI
+
+Figure 12. Equal-coverage uncertainty on TimesFM (ETTh1, H=96 ). All baselines are rescaled to match SA’s empirical coverage (Cov =61 .5% ); SA remains native. At matched coverage, sharpness (mean PI width) becomes directly comparable. Compare with the native version in the main text (Figure 2). 
+
+Table 6. TimesFM sharpness comparison at equal coverage. All methods’ intervals are rescaled to match SA’s empirical coverage exactly, then mean interval width (sharpness) is compared. Lower sharpness is better; bold marks the two sharpest methods per row. Dataset Cov (%) SA IVON SWAG MS HSA C-Drop ETTh1 (H=96) 61.46 0.39 0.40 0.47 0.50 0.34 0.41 ETTh2 (H=96) 81.25 0.97 1.79 1.10 0.99 1.84 1.07 ETTm1 (H=96) 88.54 1.60 3.37 2.60 1.52 2.03 1.41 
+
+ETTm2 (H=96) 35.42 0.28 0.22 0.26 0.27 0.40 0.32 ETTh1 (H=192) 84.90 1.87 1.59 2.11 1.79 2.51 1.69 
+
+ETTh2 (H=192) 51.04 0.70 0.75 0.66 0.73 1.59 0.80 ETTm1 (H=192) 70.31 0.29 0.77 0.37 0.33 0.49 0.35 ETTm2 (H=192) 51.56 0.69 0.52 0.37 0.42 0.70 0.69 
+
+matrices at each forward pass, making it a lightweight and widely used uncertainty baseline. Let fθ,d(x) denote the network output for input x, where θ are the learned parameters and d denotes the collection of dropout masks. At test time, MC dropout performs M stochastic forward passes with independently sampled masks 
+
+{d(m)}Mm=1 . The predictive mean is approximated by 
+
+bμ(x⋆) = 1
+
+M
+
+> M
+
+X
+
+> m=1
+
+fθ,d(m) (x⋆). (18) For regression, the predictive covariance is estimated by the sample covariance of the stochastic predictions together with the inverse model-precision term: 
+
+dCov( y⋆ | x⋆, D) ≈ τ −1I + 1
+
+M
+
+> M
+
+X
+
+> m=1
+
+fθ,d(m) (x⋆)fθ,d(m) (x⋆)⊺ − bμ(x⋆)bμ(x⋆)⊺, (19) where τ is the model precision parameter, which can be obtained from the weight-decay coefficient λ, dropout probability p,prior length-scale l, and dataset size N via τ = pl 2/(2 N λ ) (Gal & Ghahramani, 2016). 23 Calibrating Scientific Foundation Models with Inference-Time Stochastic Attention (a) 
+
+(b) 
+
+Figure 13. UCI Yacht. (a) Native PIT: SA achieves the most uniform distribution ( W1=0 .021 ). (b) PI-95 widths normalized by SA (baselines temperature-scaled); SA is the sharpest. MC     
+
+> Dropout
+> SWAG MultiSWAG HSA IVON SA
+> (ours)
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> 2.0
+> 2.5
+> 3.0
+> Normalized 95% PI width (/ SA mean)
+
+Concrete   
+
+> SA (native) Temp.-scaled baselines Mean
+
+(a) Concrete. MC     
+
+> Dropout
+> SWAG MultiSWAG HSA IVON SA
+> (ours)
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> Normalized 95% PI width (/ SA mean)
+
+Energy    
+
+> SA (native) Temp.-scaled baselines Mean
+
+(b) Energy. MC     
+
+> Dropout
+> SWAG MultiSWAG HSA IVON SA
+> (ours)
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> 2.0
+> 2.5
+> 3.0
+> Normalized 95% PI width (/ SA mean)
+
+Kin8nm    
+
+> SA (native) Temp.-scaled baselines Mean
+
+(c) Kin8nm. MC     
+
+> Dropout
+> SWAG MultiSWAG HSA IVON SA
+> (ours)
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> Normalized 95% PI width (/ SA mean)
+
+Naval   
+
+> SA (native) Temp.-scaled baselines Mean
+
+(d) Naval. MC     
+
+> Dropout
+> SWAG MultiSWAG HSA IVON SA
+> (ours)
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> 2.0
+> 2.5
+> 3.0
+> 3.5
+> Normalized 95% PI width (/ SA mean)
+
+Power Plant    
+
+> SA (native) Temp.-scaled baselines Mean
+
+(e) Power Plant. MC     
+
+> Dropout
+> SWAG MultiSWAG HSA IVON SA
+> (ours)
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> Normalized 95% PI width (/ SA mean)
+
+Protein    
+
+> SA (native) Temp.-scaled baselines Mean
+
+(f) Protein. 
+
+Figure 14. UCI per-dataset PI-95 sharpness (SA =1 .0; baselines temperature-scaled). SA is the sharpest on 7 of 8 datasets; the exception is Naval, where HSA’s lower prediction error produces tighter scaled intervals. MC 
+
+Dropout 
+
+SWAG MultiSWAG HSA IVON SA 
+
+(ours) 
+
+0
+
+1
+
+2
+
+3
+
+4
+
+5
+
+6
+
+7
+
+> Normalized 95% PI width (/ SA mean)
+
+Wine 
+
+SA (native) Temp.-scaled baselines Mean 
+
+Figure 15. UCI Wine: PI-95 sharpness (SA =1 .0; baselines temperature-scaled). 
+
+Equivalently, the predictive distribution is approximated by Monte Carlo averaging over stochastic subnetworks: 
+
+p(y⋆ | x⋆, D) ≈ 1
+
+M
+
+MX
+
+m=1 
+
+p
+
+
+
+y⋆ | x⋆, θ, d(m)
+
+. (20) 24 Calibrating Scientific Foundation Models with Inference-Time Stochastic Attention                                                           
+
+> Table 7. Ensemble CRPS on UCI regression ( S=19 samples, native predictions, mean ±std over 20 splits). Lower is better; bold marks the two best per row. Dataset SA (ours) MC Dropout SWAG MultiSWAG HSA IVON Concrete 3.176 ±0.311 3.083 ±0.301 3.181 ±0.282 2.993 ±0.268 3.920 ±0.324 3.925 ±0.335
+> Energy 0.369 ±0.054 0.413 ±0.054 0.374 ±0.046 0.344 ±0.039 0.931 ±0.164 0.415 ±0.064
+> Kin8nm 0.043 ±0.001 0.041 ±0.001 0.042 ±0.001 0.039 ±0.001 0.043 ±0.001 0.051 ±0.002
+> Naval 0.0015 ±0.0003 0.0017 ±0.0003 0.0045 ±0.0007 0.0040 ±0.0003 0.0006 ±0.0003 0.0029 ±0.0005
+> Power Plant 2.357 ±0.175 2.146 ±0.152 2.532 ±0.068 2.483 ±0.077 2.695 ±0.197 2.929 ±0.143
+> Protein 2.368 ±0.146 1.938 ±0.052 2.185 ±0.059 2.148 ±0.034 2.031 ±0.032 2.959 ±0.086
+> Wine 0.484 ±0.031 0.439 ±0.027 0.432 ±0.032 0.410 ±0.029 0.445 ±0.030 0.487 ±0.033
+> Yacht 0.332 ±0.116 0.338 ±0.113 0.372 ±0.118 0.349 ±0.096 0.469 ±0.164 0.410 ±0.170
+
+In our comparisons, MC dropout serves as a low-cost stochastic-inference baseline: it provides uncertainty estimates from repeated forward passes without explicitly fitting a posterior over the full set of model parameters. 
+
+G.2. Contextual Dropout 
+
+Contextual dropout generalizes standard dropout by making the dropout distribution depend on the input covariates, rather than using a single global dropout distribution shared across all samples (Fan et al., 2021b). In the paper’s Bayesian interpretation, the dropout masks become data-dependent local random variables, so different inputs induce different distributions over the effective network weights. More precisely, for each training pair (xi, y i), contextual dropout introduces a variational distribution 
+
+qϕ(zi | xi), (21) and optimizes the sample-wise evidence lower bound 
+
+L(xi, y i) = Ezi∼qϕ(·| xi)[log pθ (yi | xi, zi)] − DKL (qϕ(zi | xi) ∥ pη (zi)) . (22) Compared with regular dropout, the key change is that a single global dropout distribution is replaced by covariate-dependent distributions, and the regularization becomes a sum of data-dependent KL terms. The method is designed to remain efficient by reusing intermediate decoder features to parameterize the dropout probabilities. If Ul = gl 
+
+> θ
+
+(xl−1) denotes the output of layer l, contextual dropout uses a small auxiliary module hl
+
+> φ
+
+(Ul) to produce dropout logits αl, from which masks are sampled and then broadcast back onto Ul. In the reference paper, this construction is compatible with fully connected, convolutional, and attention layers, and with either Bernoulli or Gaussian dropout variants. At evaluation time, uncertainty is estimated by repeated stochastic forward passes using masks drawn from the input-dependent distribution: 
+
+p(y⋆ | x⋆, D) ≈ 1
+
+M
+
+> M
+
+X
+
+> m=1
+
+p
+
+
+
+y⋆ | x⋆, z(m)
+
+, z(m) ∼ qϕ(· | x⋆). (23) Thus, unlike MC dropout, contextual dropout does not rely on fixed hand-tuned dropout rates; instead, it learns sample-dependent stochasticity during training. 
+
+G.3. Stochastic Weight Averaging Gaussian (SWAG) 
+
+SWAG (Maddox et al., 2019) builds a Gaussian approximation to the weight posterior using the trajectory of SGD iterates, building on Stochastic Weight Averaging (SWA) (Izmailov et al., 2018). The key idea is to (i) run SGD with a relatively high (often constant) learning rate after reaching a good solution, (ii) average the resulting weights to obtain a central point estimate (SWA), and (iii) fit a low-rank plus diagonal covariance to the iterates around this mean. Let {θi}Ti=1 be parameter snapshots collected during the SWA phase (e.g., one snapshot per epoch). SWA defines the 25 Calibrating Scientific Foundation Models with Inference-Time Stochastic Attention 
+
+averaged solution 
+
+θSWA = 1
+
+T
+
+> T
+
+X
+
+> i=1
+
+θi. (24) Intuitively, the high learning-rate SGD trajectory explores a set of comparably good solutions, and θSWA acts as a more central representative of that set. The sample covariance of the SGD iterates around θSWA is 
+
+Σ = 1
+
+T − 1
+
+> T
+
+X
+
+> i=1
+
+(θi − θSWA )( θi − θSWA )⊺, (25) and is of rank T . As θSWA is not available during training, SWAG approximates this covariance with a diagonal-plus-low-rank estimator built from running moments and a buffer of recent deviations. • Diagonal term. Maintain a running estimate of the element-wise second moment θ2 = 1
+
+> T
+
+PTi=1 θ2 
+
+> i
+
+. Then 
+
+Σdiag = diag 
+
+
+
+θ2 − θ2
+
+> SWA
+
+
+
+, (26) where the squares are applied element-wise. • Low-rank term. Let θi = 1
+
+> i
+
+Pij=1 θj be the running mean after i snapshots, and define deviation columns di = θi−θi.To limit the rank, SWAG retains only the last K such columns in a matrix D ∈ Rd×K , giving the low-rank covariance 
+
+Σlr = 1
+
+K − 1 DD ⊺. (27) The resulting SWAG posterior approximation is 
+
+qSWAG (θ) = N
+
+
+
+θSWA , 12 (Σdiag + Σlr )
+
+
+
+. (28) Given z1 ∼ N (0 , I d) and z2 ∼ N (0 , I K ), SWAG draws samples via 
+
+eθ = θSWA + 1
+
+√2 Σ1/2diag z1 + 1
+
+p2( K − 1) Dz 2. (29) With M samples eθ(m)
+
+∼ qSWAG (θ), the predictive distribution is approximated by Monte Carlo averaging: 
+
+p(y⋆ | x⋆, D) ≈ 1
+
+M
+
+> M
+
+X
+
+> m=1
+
+p(y⋆ | x⋆, eθ(m)
+
+). (30) For architectures with batch normalization, batch-norm statistics are typically recomputed after sampling each eθ(m)
+
+before evaluating p(y⋆ | x⋆, eθ(m)
+
+).
+
+G.4. MultiSWAG 
+
+A single SWAG fit approximates the posterior only within one basin of attraction and can therefore under-represent posterior mass when different SGD runs reach distinct basins. MultiSWAG (Wilson & Izmailov, 2020) addresses this by combining multiple independently trained SWAG approximations into a mixture-of-Gaussians posterior surrogate, with each Gaussian centered on a different basin of attraction. Let {ql(θ)}Ll=1 be L independent SWAG posteriors, each defined as in Appendix G.3 but obtained from a separate training run (e.g., different random seed and/or initialization). MultiSWAG forms an equally-weighted mixture 
+
+qMultiSWAG (θ) = 1
+
+L
+
+> L
+
+X
+
+> l=1
+
+ql(θ), ql(θ) = N
+
+
+
+θ(l)
+
+> SWA
+
+, 12 (Σ(l)diag + Σ(l) 
+
+> lr
+
+)
+
+
+
+. (31) 26 Calibrating Scientific Foundation Models with Inference-Time Stochastic Attention 
+
+The predictive distribution is approximated by sampling from each component and averaging predictions. Concretely, draw 
+
+M samples per component eθ(l,m )
+
+∼ ql(θ) and compute 
+
+p(y⋆ | x⋆, D) ≈ 1
+
+L
+
+> L
+
+X
+
+> l=1
+
+1
+
+M
+
+> M
+
+X
+
+> m=1
+
+p(y⋆ | x⋆, eθ(l,m )
+
+)
+
+!
+
+, (32) In practice, this is often implemented as “ L SWAG solutions, M samples per solution,” producing an ensemble of size 
+
+L × M , with the same batch-norm refresh convention as SWAG when applicable. Relative to a single SWAG fit, this requires L independent SWAG runs. Relative to a deep ensemble with L independently trained models, the training budget is comparable, but test-time cost is higher because each SWAG component is itself sampled multiple times. 
+
+G.5. Improved Variational Online Newton (IVON) 
+
+IVON is a variational-learning optimizer that learns a diagonal Gaussian distribution over the weights while training with an Adam-like loop (Shen et al., 2024). Unlike post-hoc weight-space methods such as SWAG, IVON optimizes the variational objective directly during training and uses the learned weight distribution itself for uncertainty estimation. Let q(θ) be a variational distribution over parameters θ. IVON optimizes a variational objective of the form 
+
+L(q) = λ Eq(θ)
+
+ℓ(θ) + DKL 
+
+ q(θ) ∥ p(θ), (33) where ℓ(θ) is the empirical risk, p(θ) is a prior, and λ is a scaling parameter (often set to the dataset size N ). The posterior is taken to be a diagonal Gaussian, 
+
+q(θ) = N θ m, diag( σ)2, (34) with mean m ∈ RP and standard deviation σ ∈ RP . Equivalently, IVON parameterizes the variance through a diagonal curvature/precision vector h via 
+
+σ = 1
+
+pλ (h + δ) , (35) where δ > 0 is the weight-decay term used in practice as a prior-like regularizer. Each training step draws a sample θ ∼ q(θ) and computes a minibatch gradient bg = b∇ℓ(θ). A reparameterization-based curvature estimate is formed as 
+
+bh ← bg · θ − m
+
+σ2 , (36) where · and the fraction are applied element-wise. Since this estimator need not be positive, IVON applies a positivity-preserving correction in the update of the running curvature estimate: 
+
+h ← β2h + (1 − β2)bh + 12 (1 − β2)2 (h − bh)2
+
+h + δ , (37) with all operations understood element-wise. Using first-moment momentum g with parameter β1 and the bias-corrected estimate g = g/(1 − βt
+
+> 1
+
+), the mean update is 
+
+m ← m − αt
+
+g + δmh + δ , (38) after which the scale is refreshed through σ = 1 /pλ (h + δ). In the reference paper, λ is often set to the dataset size N .This makes IVON look similar to Adam, but with a Newton-like preconditioner: unlike Adam, there is no square root over h
+
+in the mean update. At evaluation time, we either use the variational mean ( m) as a point estimate (IVON@mean) or approximate the posterior predictive by Monte Carlo averaging: 
+
+p(y⋆ | x⋆, D) ≈ 1
+
+M
+
+> M
+
+X
+
+> m=1
+
+p
+
+
+
+y⋆ | x⋆, eθ(m)
+
+, eθ(m)
+
+∼ q(θ). (39) 27 Calibrating Scientific Foundation Models with Inference-Time Stochastic Attention 
+
+G.6. Low-Rank Adaptation (LoRA) 
+
+LoRA fine-tunes a pre-trained model by freezing its original weights and introducing a low-rank parameterization for the weight update in selected linear layers (Hu et al., 2022). Concretely, for a pre-trained weight matrix W0 ∈ Rd×k, LoRA reparameterizes the adapted weight as 
+
+W = W0 + ∆ W, ∆W = BA , (40) where B ∈ Rd×r and A ∈ Rr×k with rank r ≪ min( d, k ). The pre-trained weights W0 are held fixed, and only the LoRA parameters (A, B) are trained. For an input x, the resulting forward pass is 
+
+h = Wx = W0x + BAx . (41) LoRA commonly scales the update by α/r , yielding h = W0x + αr BAx , and initializes A with a small random matrix while setting B = 0 so that ∆W = 0 at initialization. 
+
+G.7. SWAG-LoRA, MultiSWAG-LoRA, and IVON-LoRA 
+
+We implement SWAG-LoRA and MultiSWAG-LoRA by combining the SWA/SWAG and MultiSWAG procedures described above with LoRA (Hu et al., 2022; Izmailov et al., 2018; Maddox et al., 2019; Onal et al., 2024). The core SWAG and MultiSWAG constructions remain unchanged; the key difference is that the posterior approximation is placed only over the trainable LoRA adapters rather than over the full set of model weights. This restriction is what makes the Bayesian treatment computationally feasible for large pre-trained models. Let ϕ denote the vector of trainable LoRA parameters (i.e., the collection of all (A, B) matrices included in our LoRA configuration). In SWAG-LoRA, we keep the pre-trained backbone weights fixed and apply SWA/SWAG to ϕ, constructing the same diagonal-plus-low-rank Gaussian approximation but over the LoRA parameter trajectory. At inference, we sample 
+
+ϕ, insert the sampled LoRA parameters into the model (leaving the backbone unchanged), and average predictions across samples, using the same batch-norm refresh convention as SWAG when applicable. This avoids the substantially more expensive task of estimating a posterior over all network parameters. MultiSWAG-LoRA follows the same extension as MultiSWAG: we build multiple independent SWAG-LoRA components from separate runs (e.g., different random seeds/initializations) and average predictions across components and samples, yielding Bayesian marginalization across multiple basins while remaining in LoRA parameter space. In practice, this is often implemented as “ L SWAG solutions, M samples per solution,” producing an ensemble of size L × M , with the same batch-norm refresh convention as SWAG when applicable. We also implement IVON-LoRA by replacing the standard LoRA optimizer (e.g., AdamW) with the IVON variational-learning procedure on the LoRA parameters, while keeping the backbone fixed (Shen et al., 2024; Cong et al., 2024). Thus, the variational posterior is placed directly over ϕ rather than fit post hoc after training, and the diagonal posterior variance is learned through IVON’s scale/curvature vector during optimization. This makes IVON-LoRA a direct Bayesian optimizer over the LoRA adapters, with only minor extra cost from posterior sampling during training. At evaluation time, we either use the variational mean (IVON-LoRA@mean) or approximate the posterior predictive by averaging predictions over multiple samples ϕ(m) ∼ q(ϕ) (IVON-LoRA), analogously to the sampling-based predictions described for IVON. 
+
+G.8. Hierarchical Stochastic Attention (HSA) 
+
+Hierarchical stochastic attention (HSA) injects randomness directly into transformer self-attention through Gumbel-Softmax sampling (Pei et al., 2022). The reference paper first introduces a simpler stochastic-attention-over-values variant, then extends it hierarchically by forcing key heads to stochastically attend to a set of learnable centroids before attending to values. This makes HSA particularly relevant in our study because, like stochastic attention, it perturbs the attention pathway itself rather than only randomizing weights or activations. For a standard attention head with query qi, key ki, and value vi, deterministic self-attention takes the form 
+
+ai = Softmax  τ −1qik⊺
+
+> i
+
+ , hi = aivi, (42) where τ is a temperature parameter. A simpler precursor in the paper replaces the deterministic value attention with a stochastic attention distribution sampled using Gumbel-Softmax: 
+
+bai ∼ G  τ −1qik⊺
+
+> i
+
+ , hi = baivi, (43) 28 Calibrating Scientific Foundation Models with Inference-Time Stochastic Attention 
+
+where G(·) denotes the Gumbel-Softmax sampling operator. HSA then augments this idea with an additional stochastic attention over a set of learnable centroids, 
+
+C = [ c1, . . . , cc] ∈ Rdh×c,
+
+with each centroid having the same dimension as a key head. This centroid-level attention regularizes the key heads by making them stochastically attend to the learned centroids: 
+
+ba c ∼ G  τ −11 kiC , (44) and then forms a new stochastic key head by a centroid-weighted combination 
+
+bki = ba cC⊺. (45) Conditioned on this stochastic key representation, HSA performs a second stochastic attention step over the values: 
+
+ba v ∼ G 
+
+
+
+τ −12 qi bk⊺
+
+> i
+
+
+
+, hi = ba v vi, (46) where τ1 and τ2 control the softness of the centroid-level and value-level stochastic attentions, respectively, and bki is the stochastic key head formed from the centroid-level sample. Thus, HSA injects randomness at two levels: first, through stochastic assignment of keys to learned centroids, and second, through stochastic attention over values. The paper motivates the centroid stage as a way to retain predictive performance while still capturing uncertainty, and also shows that the induced centroid-attention approximation is bounded when nearby keys are close in Euclidean distance. After training, uncertainty is estimated by repeating stochastic forward passes and averaging the resulting outputs. In our experiments, HSA serves as the closest architectural baseline to stochastic attention, since both methods alter the attention pathway itself. 29
