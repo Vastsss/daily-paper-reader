@@ -1,0 +1,627 @@
+Title: REALM: Reliable Expertise-Aware Language Model Fine-Tuning from Noisy Annotations
+
+URL Source: https://arxiv.org/pdf/2604.17289v1
+
+Published Time: Tue, 21 Apr 2026 01:09:43 GMT
+
+Number of Pages: 18
+
+Markdown Content:
+# REALM: Reliable Expertise-Aware Language Model Fine-Tuning from Noisy Annotations 
+
+Sajjad Ghiasvand, Mark Beliaev, Mahnoosh Alizadeh, & Ramtin Pedarsani Department of Electrical and Computer Engineering UC Santa Barbara Santa Barbara, CA 93106, USA 
+
+{sajjad,mbeliaev,alizadeh,ramtin}@ucsb.edu 
+
+Abstract 
+
+Supervised fine-tuning of large language models relies on human-annotated data, yet annotation pipelines routinely involve multiple crowd-workers of heterogeneous expertise. Standard practice aggregates labels via majority vote or simple averaging, discarding annotator identity and causing the model to absorb the errors of unreliable annotators directly into its parameters. We propose REALM, a method that jointly learns the model parameters and a scalar expertise value for each annotator entirely unsupervised, requiring no supervision beyond annotator identity. The key idea is to model each observed label as a mixture between the model’s prediction and a uniform random guess, weighted by the annota-tor’s learned expertise. We extend REALM to a multi-task setting via a learned expertise matrix that captures per-annotator reliability across tasks. We evaluate on five question answering benchmarks, fine-tuning three sizes of Flan-T5 under simulated noisy annotations. The proposed algorithm consistently outperforms the naive noisy SFT in the large majority of single- and multi-task settings, across datasets, model sizes, and noise types, with accuracy improvements of up to 50% in the most adversarial regime and gains that grow with model capacity. 
+
+## 1 Introduction 
+
+Supervised fine-tuning (SFT) on human-annotated data is a cornerstone of modern language model development [ 1–4]. In practice, annotation pipelines rely on multiple crowdworkers who vary widely in domain expertise, task familiarity, and attention [1, 4]. Despite this, the overwhelming majority of fine-tuning pipelines treat all anno-tations as equally reliable, aggregating labels via majority vote or simple averaging before training [ 5, 6]. This discards information about annotator identity and quality, and causes the model to absorb the errors of unreliable annotators directly into its parameters. 1
+
+> arXiv:2604.17289v1 [cs.LG] 19 Apr 2026
+
+The problem is particularly acute in the low-budget crowdsourcing setting, where a small number of annotators with heterogeneous expertise label large quantities of data. When one annotator is highly reliable and two are near-random, a model trained naively on the combined annotations is learning from noise the majority of the time. Recent work has shown that annotation quality matters far more than quantity for SFT [ 7], yet existing methods for handling label noise [ 8–10 ] typically assume a fixed noise transition matrix and require either a clean validation set or strong assumptions about the noise structure — neither of which is available in the crowdsourcing setting. The question we address is whether the model can instead identify and down-weight unreliable annotators automatically, using only the observed labels and annotator identities, without any additional supervision on annotator quality. We propose Reliable Expertise-Aware Language Model (REALM) Fine-Tuning, a method that jointly learns the model parameters and an expertise value for each annotator. The key idea is to model each observed label as a mixture between the model’s prediction and a uniform random guess, weighted by the annotator’s expertise. An annotator with high expertise pushes the model toward their label; one with low expertise contributes little signal. Crucially, expertise is never observed: it is recovered entirely unsupervised from the structure of the training data. This mixture-based formulation was introduced in the imitation learning literature [ 11 , 12 ], where it was shown to allow unsupervised recovery of demonstrator quality in sequential decision-making. We adapt and extend this framework to the LLM fine-tuning setting, where supervision is token-level and expertise varies across tasks in a structured multi-task setting. To our knowledge, this mixture-based approach has not previously been applied to language model training. We adapt the mixture objective to the LLM fine-tuning setting by restricting the model’s output distribution to the K answer-choice tokens of each multiple-choice task, and extend it to a multi-task setting where annotator expertise varies across tasks and is encoded in a learned matrix. We evaluate REALM on five multiple-choice question answering benchmarks [ 13 – 17 ], fine-tuning three sizes of Flan-T5 [ 2] under simulated noisy annotations. Our experiments systematically vary the annotator expertise distribution, the noise type (uniform, asymmetric, and systematic), and the annotation mode (shared and exclusive), yielding a comprehensive picture of when and why expertise-aware training helps. Our main contributions are as follows: 
+
+• We propose REALM, a mixture-based fine-tuning objective that jointly learns model parameters and per-annotator expertis vectors entirely unsupervised, requiring no additional supervision beyond annotator identity. 
+
+• REALM consistently outperforms naive noisy SFT across datasets, model sizes, noise regimes, and in the multi-task setting where annotator expertise varies across tasks, with accuracy improvements of up to 50% in the most adversarial setting and gains that grow with model size. 
+
+• REALM remains robust when the noise type violates the model’s generative assumptions, because unreliable annotators still produce systematically worse labels regardless of the noise structure. 22 Background and Related Work 
+
+2.1 Learning from Noisy and Crowdsourced Labels 
+
+Inferring ground-truth labels from multiple noisy annotators is a well-studied problem in machine learning. [ 5] introduced a seminal EM-based framework for estimating per-annotator error rates without access to gold labels, modeling each annotator through an individual confusion matrix. [ 6] extended this to a joint learning setting in which the classifier and annotator parameters are estimated simultaneously, showing consistent improvements over majority voting. [ 18 ] further incorporate item difficulty alongside annotator expertise, showing that both factors jointly determine label quality. These methods, however, are designed for fixed classification models and do not apply to the end-to-end fine-tuning of LLMs, where the learned representation and the annotator reliability must be optimised jointly through gradient descent. In NLP, annotator disagreement has received growing attention, particularly for subjective tasks such as toxicity detection and sentiment analysis [ 19 –22 ]. [ 19 ] show that multi-task models which predict each annotator’s label separately outperform majority-vote aggregation on several binary classification tasks. [ 20 ] propose jury learning, which explicitly selects a composition of annotators at inference time to reflect a desired social perspective. While these works model disagreement as a signal to preserve, they do not address the setting where disagreement arises from differing levels of expertise on a factual task with a single correct answer, which is the setting we consider. A related line of work addresses label noise in deep learning more broadly [ 8–10 ], and recent work has extended noise-robust training to the LLM fine-tuning setting [ 23 –26 ]. These approaches typically assume a fixed noise structure, require external guidance or a clean reference set to identify noisy samples, and do not model annotator identity. In contrast, REALM requires neither: it learns annotator reliability unsupervised as part of training, with no access to ground-truth labels at any stage, and explicitly models the per-annotator source of noise rather than treating it as a property of individual examples. 
+
+2.2 Learning from Suboptimal Demonstrators 
+
+Imitation learning from heterogeneous and suboptimal demonstrators is a well-studied problem in sequential decision-making. Standard behavioral cloning [ 27 ] treats all demonstrators as equally expert, which leads to a degraded policy when the dataset contains suboptimal behavior. Several methods address this by requiring additional supervision, such as confidence scores over demonstrations [ 28 ], access to a subset of expert demonstrations [29], or knowledge of environment dynamics [30]. A key insight motivating REALM is that annotator identity alone, without any quality labels, can be sufficient to recover reliable expertise estimates. A mixture-based demonstrator model captures this intuition naturally: the observed label is modeled as a convex combination of the optimal model’s prediction and a uniform random guess, weighted by the annotator’s (learned) expertise. This formulation was introduced in 3the sequential decision-making literature and shown to allow unsupervised recovery of demonstrator quality while simultaneously improving the learned policy [ 11 , 12 ]. We adapt and extend this framework to the LLM fine-tuning setting, where supervision is token-level and expertise varies across tasks in a structured multi-task setting. To our knowledge, this mixture-based approach has not previously been applied to language model training. 
+
+2.3 Supervised Fine-Tuning and Alignment of Language Models 
+
+Supervised fine-tuning on human-annotated demonstrations is a standard first step in aligning large language models with human intent [ 1–4]. In practice, the annotation pipelines used to construct SFT datasets involve multiple crowdworkers with varying levels of domain expertise, task familiarity, and attention [ 1, 4]. Despite this, the vast majority of SFT pipelines aggregate annotations via majority vote or simple averaging before training, discarding information about annotator identity and quality. Recent work has shown that annotation quality matters far more than quantity for SFT: a small set of carefully curated examples can match or exceed models trained on orders of magnitude more data [ 7], and instruction data can even be generated without human annotation altogether [ 31 ]. This underscores the practical importance of methods that can automatically identify and down-weight low-quality annotations at training time. Reinforcement learning from human feedback [ 1, 4, 32 ] addresses annotator disagree-ment to some extent through preference modeling, but requires pairwise comparisons rather than direct labels, and relies on a separate reward model stage that introduces its own sources of noise and bias. Methods that operate directly on the SFT stage, without requiring reward modeling or online feedback, are therefore of practical interest. REALM operates entirely within the SFT stage: it takes as input the same triples of (prompt, annotator, label) that standard SFT uses, and replaces the cross-entropy loss with an expertise-aware mixture objective. It requires no preference data, no clean reference set, no reward model, and no additional annota-tion beyond annotator identity. This makes it a lightweight and broadly applicable alternative to standard SFT when training data originates from multiple annotators of heterogeneous quality. 
+
+## 3 Proposed Algorithm 
+
+3.1 Problem Setup 
+
+We consider supervised fine-tuning of a language model on multiple-choice question answering under noisy annotations. Let Q denote the space of prompts and A =
+
+{1, . . . , K } a finite set of answer choices. We assume access to a training set of triples (Q, i, ˜Y ), where Q ∈ Q is a prompt, i ∈ { 1, . . . , N } indexes an annotator, and 
+
+˜Y ∈ A is a potentially noisy observed label. The ground-truth label Y ∗ ∈ A is never observed during training. 4Each annotator has an expertise level βi ∈ [0 , 1] , interpreted as the probability that their label matches the ground truth. Standard SFT ignores annotator identity entirely, treating all (Q, ˜Y ) pairs as equally reliable, thereby absorbing the errors of low-expertise annotators directly into the model. 
+
+3.2 The REALM Objective 
+
+REALM models the observed label as a mixture between the model’s prediction and a uniform random guess, weighted by the annotator’s expertise. Let θ denote the parameters of the language model and Pθ(y | Q) its predicted probability for answer 
+
+y given prompt Q. The observed label distribution is: 
+
+P ( ˜Y = y | Q, i ) = βiPθ(y | Q) + 1 − βi
+
+K . (1) When βi = 1 the annotator is a perfect expert; when βi = 0 they label uniformly at random. 
+
+Restricted softmax. For multiple-choice tasks, each answer choice corresponds to a single token in the model’s vocabulary (e.g. the tokens for a, b, c, d). Rather than computing a softmax over the full vocabulary of tens of thousands of tokens, we restrict the output distribution to the K answer tokens {t1, . . . , t K }, one per answer choice: 
+
+Pθ(y = k | Q) = exp( ztk )
+
+PKk′=1 exp( ztk′ ) , (2) where zv denotes the logit for vocabulary token v at the answer position in the generated sequence. This serves two purposes: it ensures Pθ is a proper distribution over A rather than being diluted across irrelevant tokens, and it aligns the model’s output space with the uniform term 1/K in the mixture objective of Equation 1, so that both components operate over the same K-class distribution. 
+
+Learning expertise. We parameterize each annotator’s expertise as βi = σ(ωi),where ωi ∈ R is a scalar trained jointly with the model parameters θ. The training objective is the negative log-likelihood of the observed labels under the mixture model: 
+
+L(θ, ω) = − X  
+
+> (Q, i, ˜Y)
+
+log 
+
+
+
+σ(ωi) · Pθ( ˜Y | Q) + 1 − σ(ωi)
+
+K
+
+
+
+, (3) where ω = {ωi}Ni=1 . We optimise θ and ω jointly using AdamW with separate learning rates, as the expertise scalars typically benefit from a larger step size than the model parameters. At convergence, σ(ωi) provides an interpretable, unsupervised estimate of annotator i’s reliability. 
+
+Relationship to standard SFT. When ωi → +∞ for all i, all βi → 1 and L reduces to the standard cross-entropy loss on the restricted softmax. REALM therefore strictly generalises SFT, recovering it in the high-expertise limit and progressively down-weighting annotator errors as expertise decreases. 53.3 Extension of REALM to the Multi-Task Setting 
+
+We extend REALM to a setting with M tasks (datasets), each with its own answer set A(m) of size Km. Let f ∗ : Q → { 1, . . . , M } be the ground-truth task assignment and write T = f ∗(Q). In our experiments, f ∗(Q) is always observed since we know which dataset each prompt originates from. Each annotator i is assigned a skill vector 
+
+ωi ∈ RM , generalising the scalar ωi from Section 3.2 to one entry per task, where 
+
+ωi,m captures the reliability of annotator i on task m. Stacking these vectors as rows defines a learned N × M expertise matrix Ω, where Ωi,m = ωi,m , and the expertise of annotator i on a prompt from task T is σ(Ω i,T ). The multi-task training objective is: 
+
+L(θ, Ω) = − X  
+
+> (Q, i, ˜Y)
+
+log 
+
+"
+
+σ Ωi, f ∗(Q)
+
+ · Pθ( ˜Y | Q) + 1 − σ Ωi, f ∗(Q)
+
+
+
+Kf ∗(Q)
+
+#
+
+. (4) In all settings the true matrix Ω is never provided; the model learns it entirely from the observed triples (Q, i, ˜Y ).
+
+Per-task restricted softmax. Because different tasks have different numbers of answer choices, we construct a separate set of answer token ids per task. Within each minibatch, examples are grouped by task so that the correct Km is used for both the restricted softmax and the uniform term 1/K m in the mixture, ensuring that both components of the objective operate over the same Km-class distribution. 
+
+State-Dependent Expertise. The formulation above assigns a fixed expertise value to annotator i on task T , regardless of the specific prompt Q within that task. A natural generalisation replaces the task-index lookup with a learned inner product: 
+
+ρi(Q) = σ(⟨ωi, ϕ (Q)⟩) , (5) where ϕ(Q) ∈ Rd is a learned prompt embedding and ωi ∈ Rd is a per-annotator skill vector of embedding dimension d, not necessarily equal to M . Rather than asking which task annotator i is reliable on, this formulation asks which types of prompts annotator i handles well, allowing expertise to vary continuously across the input space. Stacking all skill vectors as rows gives Ω ∈ RN ×d, and the expertise of all annotators on a given prompt can be computed as σ(Ω ϕ(Q)) ∈ RN via a single matrix-vector product; when processing a full minibatch, this extends to a matrix product where a binary mask selects only the annotator-prompt pairs that appear in the training data. Note that the multi-task lookup σ(Ω i,f ∗(Q)) is recovered as a special case when ϕ(Q) is the one-hot encoding of the task index, and the single-task scalar ωi from Section 3.2 corresponds to d=1 . We leave the full exploration of this generalisation to future work. 
+
+## 4 Empirical Results 
+
+4.1 Experimental Setup 
+
+Datasets. We evaluate on five multiple-choice question answering benchmarks. For commonsense reasoning: OpenBookQA [ 13 ] (OBQA) and ARC [ 14 ], each with four 6answer choices ( K=4); PIQA [ 15 ], a physical intuition benchmark with two choices (K=2); and RiddleSense [ 16 ], a commonsense riddle dataset with five choices ( K=5). For biomedical reasoning: PubMedQA [ 17 ], a yes/no/maybe question answering dataset with three choices ( K= 3). These datasets span a range of task difficulties, domain types, and answer-set sizes, making them well-suited for studying how annotation noise and expertise structure interact with model performance. In the multi-task setting we combine three datasets simultaneously; single-task experiments are conducted on each dataset independently. 
+
+Implementation Details. We fine-tune three sizes of Flan-T5 [ 2]: small (80M), base (250M), and large (780M parameters). All models are fine-tuned using AdamW with a cosine learning rate schedule, a model learning rate of 5×10 −5, a batch size of 8, and gradient accumulation over 8 steps, giving an effective batch size of 64 .Training runs for 200 steps in all experiments. For REALM, the expertise scalars 
+
+ω are optimised with a separate learning rate selected from {0.5, 1.0} based on validation performance, as the expertise parameters are low-dimensional and benefit from faster adaptation than the model parameters θ. All results are reported as the mean and standard deviation over five random seeds. 
+
+Baselines. We compare REALM against two baselines. Oracle SFT trains on ground-truth labels and serves as an upper bound; it is never achievable in practice since true labels are unobserved during training. Noisy SFT trains on simulated noisy labels using standard cross-entropy, ignoring annotator identity entirely. This reflects the standard pipeline used in practice when annotations are aggregated without quality control. 
+
+Simulated Annotation. Since we do not have access to a real multi-annotator dataset with known ground-truth expertise levels, we simulate noisy annotations using the mixture model in Equation 1. We use N =3 annotators in all experiments. In the single-task setting, we evaluate three annotator expertise distributions: Dist. 1
+
+(β=[0 .9, 0.1, 0.1] ), where one reliable annotator is outnumbered by two near-random ones; Dist. 2 (β=[0 .9, 0.9, 0.1] ), where two reliable annotators form a majority; and 
+
+Dist. 3 (β=[0 .9, 0.5, 0.1] ), where expertise is spread uniformly from high to low. These configurations vary the proportion of reliable annotators, from a single reliable annotator (Dist. 1 ) to a majority (Dist. 2 ), allowing us to assess REALM across a wide range of annotation quality regimes. 
+
+Noise Types. In the standard uniform noise model assumed by the mixture objective, when an annotator makes an error, the wrong label is drawn uniformly at random over the K−1 incorrect classes. Beyond this, we evaluate under two additional noise types that violate this assumption. In asymmetric noise , the wrong label concentrates on the cyclically adjacent class (t+ 1) mod K, which receives a weight of c=4 times that of the remaining wrong classes. Concretely, with K=4
+
+the adjacent class receives approximately 57% of the wrong-label mass while the other two incorrect classes share the remaining 43% . The marginal accuracy βi is preserved, but the wrong-label distribution is no longer uniform, violating REALM’s generative assumption. In systematic noise , each annotator i deterministically emits class (t + i + 1) mod K whenever they make an error, where t is the true class index, so wrong labels are fully predictable from annotator identity and the true label. Together, the three noise types allow us to assess REALM both under its assumed 7Table 1: Test accuracy (%) under uniform noise (mean ± std over five runs). Bold 
+
+indicates the better method and ∆ = realm − noisy .
+
+Size Dataset Oracle Dist. 1 Dist. 2 Dist. 3
+
+realm noisy ∆ realm noisy ∆ realm noisy ∆
+
+Small ARC 29.44 27 .35 ±0.63 26 .68 ±1.16 +0 .67 29 .05 ±0.47 27 .00 ±0.87 +2 .05 26 .70 ±0.51 26 .64 ±1.40 +0 .06 
+
+OBQA 44.20 39 .44 ±1.26 30 .28 ±2.07 +9 .16 44 .28 ±0.39 39 .52 ±0.94 +4 .76 42 .52 ±0.45 35 .80 ±2.04 +6 .72 
+
+PIQA 52.88 52 .14 ±1.56 51 .08 ±1.35 +1 .06 51 .60 ±1.54 51 .12 ±0.86 +0 .48 52 .88 ±1.18 50 .36 ±0.60 +2 .52 
+
+PubMedQA 58.00 50 .60 ±1.22 35 .95 ±6.23 +14 .65 53 .05 ±1.88 50 .35 ±3.00 +2 .70 50 .60 ±1.97 46 .55 ±3.17 +4 .05 
+
+Riddle 39.02 31 .49 ±1.30 23 .80 ±0.86 +7 .69 34 .71 ±1.14 31 .25 ±1.11 +3 .46 32 .16 ±1.44 29 .69 ±0.69 +2 .47 
+
+Avg 44.71 40 .20 ±1.19 33 .56 ±2.33 +6 .65 42 .54 ±1.08 39 .85 ±1.36 +2 .69 40 .97 ±1.11 37 .81 ±1.58 +3 .16 
+
+Base ARC 47.47 43 .97 ±0.77 40 .55 ±1.38 +3 .42 45 .49 ±0.80 44 .31 ±1.01 +1 .18 43 .78 ±0.60 42 .15 ±0.39 +1 .63 
+
+OBQA 59.60 57 .88 ±0.24 49 .12 ±1.66 +8 .76 58 .68 ±0.81 56 .84 ±0.64 +1 .84 57 .96 ±0.54 55 .00 ±1.28 +2 .96 
+
+PIQA 67.68 65 .70 ±0.67 46 .31 ±2.37 +19 .39 66 .55 ±0.52 63 .33 ±1.97 +3 .22 65 .79 ±0.78 51 .47 ±1.23 +14 .32 
+
+PubMedQA 61.00 51 .80 ±0.97 40 .60 ±2.96 +11 .20 54 .00 ±2.19 53 .20 ±2.15 +0 .80 49 .15 ±1.85 44 .80 ±3.18 +4 .35 
+
+Riddle 54.12 46 .04 ±2.07 36 .20 ±2.22 +9 .84 49 .61 ±1.12 45 .84 ±1.03 +3 .77 46 .63 ±2.01 42 .00 ±1.88 +4 .63 
+
+Avg 57.97 53 .08 ±0.94 42 .56 ±2.12 +10 .52 54 .87 ±1.09 52 .70 ±1.36 +2 .16 52 .66 ±1.16 47 .08 ±1.59 +5 .58 
+
+Large ARC 64.81 57 .56 ±0.80 53 .68 ±1.19 +3 .88 61 .51 ±0.92 57 .96 ±0.88 +3 .55 59 .59 ±0.64 56 .14 ±1.07 +3 .45 
+
+OBQA 71.60 69 .68 ±0.99 61 .36 ±0.99 +8 .32 70 .68 ±0.43 68 .80 ±0.46 +1 .88 70 .12 ±1.24 65 .68 ±0.52 +4 .44 
+
+PIQA 77.80 76 .45 ±0.31 26 .27 ±0.88 +50 .18 77 .67 ±0.64 75 .10 ±0.23 +2 .57 76 .50 ±0.28 51 .99 ±3.98 +24 .51 
+
+PubMedQA 71.25 57 .65 ±2.78 43 .85 ±3.11 +13 .80 60 .55 ±1.93 56 .00 ±1.15 +4 .55 53 .45 ±2.09 48 .05 ±3.08 +5 .40 
+
+Riddle 67.84 60 .43 ±1.25 50 .35 ±2.16 +10 .08 65 .45 ±0.57 61 .49 ±1.24 +3 .96 62 .31 ±1.65 57 .06 ±2.38 +5 .25 
+
+Avg 70.66 64 .35 ±1.23 47 .10 ±1.67 +17 .25 67 .17 ±0.90 63 .87 ±0.79 +3 .30 64 .39 ±1.18 55 .78 ±2.21 +8 .61 
+
+generative model and under increasingly severe forms of distributional mismatch. 
+
+Multi-Task Setup. In the multi-task setting we jointly train on three datasets simultaneously with N =3 annotators and M = 3 tasks, yielding a square expertise matrix Ω ∈ R3×3 where each entry Ωi,m represents the reliability of annotator i on task m. We evaluate three structured expertise configurations: Dist. 1 , in which annotator i is reliable only on task i (βi,i =0.9, βi,j =0.1 for j̸ = i); Dist. 2 , the inverse pattern in which annotator i is reliable on all tasks except task i (βi,i =0.1, βi,j =0.9 for 
+
+j̸ = i); and Dist. 3 , in which annotator i has expertise βi,j = [0 .9, 0.5, 0.1][( j−i) mod 
+
+M ] on task j, so annotator i is most reliable on their own task i (β=0.9), intermediate on task (i+1) mod M (β=0 .5), and least reliable on task (i+2) mod M (β=0 .1). 
+
+4.2 Single-Task Results 
+
+Results under Uniform Noise. Table 1 reports test accuracy under uniform noise across all datasets, model sizes, and expertise distributions. realm outperforms 
+
+noisy in all settings, with gains that grow with annotation difficulty. Improvements are largest under Dist. 1 , where only one annotator is reliable and the two unreliable annotators dominate the training signal. Here noisy degrades severely as it absorbs the majority noise directly, while realm recovers substantially by learning to down-weight the two near-random annotators, with accuracy improvements of up to 50 .18% 
+
+on PIQA for the Large model. Under Dist. 3 , the gains are more modest because the intermediate annotator ( β=0.5) provides a partial signal that reduces the damage of naive aggregation, leaving less room for the mixture correction to help. Under Dist. 2 , the gap narrows further still, as the two reliable annotators provide a strong majority signal that noisy can exploit without requiring expertise weighting, and 
+
+realm still wins consistently on OBQA, Riddle, and PIQA. 
+
+Robustness to Noise Type. Table 2 reports results under Dist. 1 across uniform, asymmetric, and systematic noise types. realm remains robust under all three con-ditions, consistently outperforming noisy despite both asymmetric and systematic 8Table 2: Test accuracy (%) under Dist. 1○ across noise types, datasets, and model sizes. Bold indicates the better method and ∆ = realm − noisy .
+
+Size Dataset Oracle Uniform Asymmetric Systematic 
+
+realm noisy ∆ realm noisy ∆ realm noisy ∆
+
+Small ARC 29.44 27 .35 ±0.63 26 .68 ±1.16 +0 .67 27 .04 ±1.74 26 .97 ±1.33 +0 .07 26 .51 ±1.15 25 .91 ±0.73 +0 .60 
+
+OBQA 44.20 39 .44 ±1.26 30 .28 ±2.07 +9 .16 37 .84 ±2.69 31 .64 ±2.28 +6 .20 40 .80 ±1.53 27 .44 ±3.43 +13 .36 
+
+PIQA 52.88 52 .14 ±1.56 51 .08 ±1.35 +1 .06 51 .06 ±0.96 50 .16 ±0.67 +0 .90 54 .41 ±1.23 50 .84 ±0.92 +3 .57 
+
+PubMedQA 58.00 50 .60 ±1.22 35 .95 ±6.23 +14 .65 48 .80 ±2.38 28 .80 ±4.19 +20 .00 53 .70 ±1.51 54 .20 ±0.90 −0.50 
+
+Riddle 39.02 31 .49 ±1.30 23 .80 ±0.86 +7 .69 31 .45 ±1.07 23 .53 ±0.89 +7 .92 31 .88 ±1.09 21 .96 ±1.53 +9 .92 
+
+Avg 44.71 40.20 ±1.19 33 .56 ±2.33 +6 .65 39.24 ±1.77 32 .22 ±1.87 +7 .02 41.46 ±1.30 36 .07 ±1.50 +5 .39 
+
+Base ARC 47.47 42 .56 ±0.50 40 .55 ±1.38 +2 .01 42 .76 ±0.54 40 .74 ±0.81 +2 .02 43 .14 ±0.51 41 .77 ±0.61 +1 .37 
+
+OBQA 59.60 57 .88 ±0.24 49 .12 ±1.66 +8 .76 57 .48 ±0.39 49 .84 ±1.49 +7 .64 57 .52 ±0.68 49 .00 ±1.41 +8 .52 
+
+PIQA 67.68 65 .70 ±0.67 46 .31 ±2.37 +19 .39 66 .22 ±0.34 46 .31 ±1.79 +19 .91 66 .92 ±0.42 64 .87 ±0.97 +2 .05 
+
+PubMedQA 61.00 51 .80 ±0.97 40 .60 ±2.96 +11 .20 50 .70 ±1.58 36 .35 ±0.75 +14 .35 55 .30 ±1.18 53 .10 ±1.62 +2 .20 
+
+Riddle 54.12 46 .04 ±2.07 36 .20 ±2.22 +9 .84 45 .76 ±1.41 37 .14 ±2.05 +8 .62 46 .86 ±1.75 35 .37 ±2.32 +11 .49 
+
+Avg 57.97 52.80 ±0.89 42 .56 ±2.12 +10 .24 52.58 ±0.85 42 .08 ±1.38 +10 .50 53.95 ±0.91 48 .82 ±1.39 +5 .13 
+
+Large ARC 64.81 57 .56 ±0.80 53 .68 ±1.19 +3 .88 57 .68 ±0.75 53 .01 ±0.29 +4 .67 57 .48 ±0.81 54 .99 ±0.38 +2 .49 
+
+OBQA 71.60 69 .68 ±0.99 61 .36 ±0.99 +8 .32 69 .04 ±0.75 57 .84 ±1.47 +11 .20 69 .60 ±1.00 61 .88 ±1.18 +7 .72 
+
+PIQA 77.80 76 .45 ±0.31 26 .27 ±0.88 +50 .18 77 .06 ±0.27 27 .62 ±1.63 +49 .44 77 .67 ±0.63 75 .60 ±1.04 +2 .07 
+
+PubMedQA 71.25 57 .65 ±2.78 43 .85 ±3.11 +13 .80 58 .90 ±2.37 35 .95 ±1.98 +22 .95 62 .10 ±1.03 61 .05 ±2.65 +1 .05 
+
+Riddle 67.84 60 .43 ±1.25 50 .35 ±2.16 +10 .08 59 .69 ±1.32 50 .75 ±3.92 +8 .94 60 .55 ±0.96 50 .08 ±1.54 +10 .47 
+
+Avg 70.66 64.35 ±1.23 47 .10 ±1.67 +17 .25 64.47 ±1.09 45 .03 ±1.86 +19 .44 65.48 ±0.89 60 .72 ±1.36 +4 .76 
+
+noise violating the uniform assumption of the mixture objective. The key insight is that even under misspecified noise, the observed labels still carry information about annotator expertise: unreliable annotators produce systematically worse labels regardless of the noise structure, and realm is able to identify and down-weight them. Asymmetric noise introduces a directional bias in the wrong-label distribution but preserves this signal, and realm performs comparably to the uniform setting. Systematic noise is the hardest case, as each annotator’s errors follow a fixed deter-ministic offset that partially masks their true reliability, reflected in the average ∆
+
+dropping to +5 .39% (Small) and +5 .13% (Base) compared to +6 .65% and +10 .24% 
+
+under uniform noise. 
+
+Model Size Effect. The ∆ columns in Tables 1 and 2 reveal a consistent scaling trend across most settings: the average gain under Dist. 1 grows from +6 .65% 
+
+to +10 .52% to +17 .25% across Small, Base, and Large under uniform noise, and from +7 .02% to +10 .50% to +19 .44% under asymmetric noise. This suggests that larger models have greater capacity to exploit the expertise signal provided by the mixture objective, translating annotator reliability estimates into larger accuracy improvements. Under systematic noise the trend is less pronounced, likely because the deterministic error structure limits how much additional capacity can help when the reliability signal itself is partially masked. 
+
+4.3 Multi-Task Results 
+
+Table 3 reports combined accuracy on ARC, OBQA, and Riddle in the multi-task setting, where annotator expertise varies across tasks according to a learned 3×3
+
+matrix Ω. In this setting, realm outperforms noisy in every configuration across all model sizes, expertise distributions, and noise types. As in the single-task setting, the largest gains occur under Dist. 1 , where only one annotator is reliable per task. Here realm outperforms noisy by up to 11 .75% (Large, Asymmetric: 60 .44% vs. 
+
+48 .69% ), approaching Oracle accuracy in several cases. Under Dist. 2 and Dist. 3
+
+the gains are more modest but remain consistent, suggesting that realm reliably 9Table 3: Combined test accuracy (%) on ARC, OBQA, and Riddle in the multi-task setting. Oracle accuracy for each model size is shown in parentheses next to the size label.                                                                         
+
+> Size (Oracle) Distribution Uniform Asymmetric Systematic
+> realm noisy realm noisy realm noisy
+> Small (28.57%) Dist. 127 .89 ±0.07 25 .20 ±0.69 27 .49 ±0.32 25 .68 ±0.48 27 .95 ±0.14 24 .92 ±0.09
+> Dist. 228 .57 ±0.21 28 .39 ±0.07 28 .71 ±0.11 28 .62 ±0.02 28 .39 ±0.11 27 .93 ±0.11
+> Dist. 328 .16 ±0.16 26 .74 ±0.80 27 .98 ±0.25 27 .01 ±0.07 28 .16 ±0.11 26 .30 ±0.00
+> Base (46.05%) Dist. 142 .41 ±0.67 38 .44 ±0.69 41 .93 ±0.28 38 .25 ±0.18 42 .05 ±0.67 37 .75 ±0.55
+> Dist. 244 .07 ±0.07 42 .64 ±0.25 44 .18 ±0.05 42 .48 ±0.05 43 .59 ±0.09 42 .67 ±0.37
+> Dist. 342 .51 ±0.16 40 .30 ±0.48 42 .62 ±0.09 41 .08 ±0.30 42 .83 ±0.25 40 .94 ±0.48
+> Large (64.76%) Dist. 161 .38 ±0.28 54 .90 ±0.05 60 .44 ±0.11 48 .69 ±1.75 60 .14 ±0.00 53 .91 ±0.34
+> Dist. 262 .41 ±0.30 61 .49 ±0.07 62 .67 ±0.32 60 .44 ±0.67 62 .69 ±0.02 60 .92 ±0.14
+> Dist. 362 .32 ±0.11 59 .10 ±0.39 61 .66 ±0.09 57 .77 ±0.07 61 .08 ±0.07 58 .46 ±0.71
+
+Table 4: Test accuracy (%) for varying expertise learning rates ηω under Dist. 1○,uniform noise (Base model, model learning rate 5×10 −5, mean ± std over five runs). 
+
+Dataset lr = 0 .01 lr = 0 .05 lr = 0 .1 lr = 0 .5 lr = 1 .0
+
+ARC 40 .60 ±0.67 41 .96 ±0.54 42 .56 ±0.50 43 .86 ±1.02 43.97 ±0.77 
+
+OBQA 55 .28 ±0.84 57 .68 ±0.37 57 .88 ±0.24 58 .08 ±0.70 58 .24 ±0.81 
+
+PIQA 40 .91 ±3.51 39 .33 ±3.40 41 .85 ±5.80 65 .70 ±0.67 65 .61 ±0.68 
+
+PubMedQA 36 .95 ±2.57 44 .15 ±4.67 49 .30 ±3.31 51 .25 ±1.06 51 .80 ±0.97 
+
+Riddle 42 .47 ±2.00 45 .76 ±2.03 46 .04 ±2.07 46 .20 ±2.41 46 .27 ±2.30 
+
+recovers the structured per-task expertise pattern even when the signal is weaker. Per-dataset breakdowns are provided in the Appendix, where the gains of realm 
+
+are consistent across ARC, OBQA, and Riddle individually. 
+
+4.4 Ablation Study 
+
+Expertise Learning Rate. Table 4 ablates the expertise scalar learning rate ηω
+
+with the model learning rate fixed at 5×10 −5. Low values ( ηω ≤ 0.05 ) cause severe degradation, most notably on PIQA ( 40 .91% at ηω=0.01 ), because the expertise scalars adapt too slowly to influence training before the model has already absorbed the noise. Performance stabilises at ηω ≥ 0.1 for most datasets, with PIQA requiring 
+
+ηω=0.5 to fully recover, as the expertise scalars must adapt quickly enough to influence the model before it converges to a noisy solution. 
+
+Number of Annotators. Table 5 reports accuracy as the number of annotators grows from N = 3 to N =10 under Dist. 3 . realm outperforms noisy across all datasets and annotator counts, demonstrating that the method scales reliably as the annotator pool grows. As N increases, the expertise values are spread uniformly from β=0.9 down to β=0.1 across more annotators, introducing a larger number of intermediate-reliability annotators that are harder to distinguish from one another, which explains the modest drop in average ∆ from +5 .93% (N =3) and +5 .98% (N = 5)to +5 .01% (N =10 ). Despite this, the gains remain consistent across all annotator counts, confirming that realm is robust to larger annotator pools. 10 Table 5: Test accuracy (%) under uniform noise for varying numbers of annotators (Base model, Dist. 3○ with uniform expertise spread, mean ± std over five runs). 
+
+Dataset N = 3 N = 5 N = 10 
+
+realm noisy realm noisy realm noisy 
+
+ARC 45 .30 ±0.26 43 .69 ±0.51 45 .80 ±0.57 43 .69 ±0.95 46 .25 ±0.83 42 .70 ±0.60 
+
+OBQA 57 .88 ±0.24 55 .08 ±0.50 57 .76 ±0.34 54 .84 ±0.73 57 .80 ±0.33 55 .00 ±0.44 
+
+PIQA 65 .44 ±0.59 51 .97 ±2.05 65 .70 ±0.40 52 .03 ±1.28 65 .14 ±0.63 51 .40 ±0.35 
+
+PubMedQA 50 .10 ±1.89 44 .80 ±3.18 50 .35 ±1.37 45 .00 ±3.28 47 .40 ±2.34 47 .40 ±2.83 
+
+Riddle 47 .80 ±0.49 41 .33 ±0.72 47 .10 ±0.73 41 .25 ±1.43 45 .92 ±0.92 40 .98 ±0.74 0 50 100 150 200                                                                
+
+> Training Step
+> 30
+> 35
+> 40
+> 45
+> Accuracy (%)
+> ARC
+> 050 100 150 200
+> Training Step
+> 30
+> 40
+> 50
+> 60 OBQA
+> 050 100 150 200
+> Training Step
+> 45
+> 50
+> 55
+> 60
+> 65
+> PIQA
+> 050 100 150 200
+> Training Step
+> 30
+> 40
+> 50
+> 60
+> PubMedQA
+> 050 100 150 200
+> Training Step
+> 20
+> 30
+> 40
+> Riddle
+> REALM Noisy SFT Dist. #1 (Uniform Noise, Base Model) 050 100 150 200
+> Training Step
+> 30
+> 35
+> 40
+> 45
+> Accuracy (%)
+> ARC
+> 050 100 150 200
+> Training Step
+> 30
+> 40
+> 50
+> 60 OBQA
+> 050 100 150 200
+> Training Step
+> 45
+> 50
+> 55
+> 60
+> 65
+> PIQA
+> 050 100 150 200
+> Training Step
+> 35
+> 40
+> 45
+> 50
+> 55
+> 60 PubMedQA
+> 050 100 150 200
+> Training Step
+> 20
+> 30
+> 40
+> Riddle
+> REALM Noisy SFT Dist. #1 (Asymmetric C4 Noise, Base Model) 050 100 150 200
+> Training Step
+> 30
+> 35
+> 40
+> 45
+> Accuracy (%)
+> ARC
+> 050 100 150 200
+> Training Step
+> 30
+> 40
+> 50
+> 60
+> OBQA
+> 050 100 150 200
+> Training Step
+> 55
+> 60
+> 65
+> PIQA
+> 050 100 150 200
+> Training Step
+> 50.0
+> 52.5
+> 55.0
+> 57.5
+> 60.0
+> 62.5 PubMedQA
+> 050 100 150 200
+> Training Step
+> 20
+> 30
+> 40
+> Riddle
+> REALM Noisy SFT Dist. #1 (Systematic Noise, Base Model)
+
+Figure 1: Test accuracy (%) over training steps under Dist. 1○ across all three noise types (rows) and five datasets (columns), for the Base model. Shaded bands denote 
+
+± std over five runs. 
+
+4.5 Learning Curves 
+
+Figure 1 shows test accuracy over training steps under Dist. 1 for all three noise types. Under all three conditions, realm converges smoothly and remains consistently above noisy , while noisy degrades on PIQA as training progresses by absorbing the dominant noise signal from the two unreliable annotators. The separation is most pronounced under asymmetric noise, where noisy collapses more severely, while under systematic noise the gap is smaller but still consistent. Across all noise types, 
+
+realm exhibits noticeably lower variance than noisy , indicating that jointly learning annotator expertise stabilises training even under distributional mismatch between the noise model and the true label generation process. 11 5 Conclusion 
+
+We presented REALM, a mixture-based fine-tuning objective that jointly learns language model parameters and per-annotator expertise scalars entirely unsupervised. By modeling each observed label as a convex combination of the model’s prediction and a uniform random guess, REALM automatically identifies and down-weights unreliable annotators without any supervision beyond annotator identity. Experiments on five question answering benchmarks across three model sizes, three noise types, and multiple expertise distributions show that REALM consistently outperforms naive noisy SFT in the large majority of settings, with gains that grow with model capacity and persist even when the noise type violates the model’s generative assumptions. In the multi-task extension, a learned expertise matrix captures per-task annotator reliability and further improves performance across all configurations. Directions for future work include extending REALM to state-dependent expertise via learned prompt embeddings, and combining the expertise-aware objective with federated optimization for distributed annotation pipelines. 12 References 
+
+[1] L. Ouyang, J. Wu, X. Jiang, D. Almeida, C. Wainwright, P. Mishkin, C. Zhang, S. Agarwal, K. Slama, A. Ray, et al. , “Training language models to follow instructions with human feedback,” Advances in neural information processing systems , vol. 35, pp. 27730–27744, 2022. [2] H. W. Chung, L. Hou, S. Longpre, B. Zoph, Y. Tay, W. Fedus, Y. Li, X. Wang, M. Dehghani, S. Brahma, et al. , “Scaling instruction-finetuned language models,” 
+
+Journal of Machine Learning Research , vol. 25, no. 70, pp. 1–53, 2024. [3] D. M. Ziegler, N. Stiennon, J. Wu, T. B. Brown, A. Radford, D. Amodei, P. Chris-tiano, and G. Irving, “Fine-tuning language models from human preferences,” 
+
+arXiv preprint arXiv:1909.08593 , 2019. [4] Y. Bai, A. Jones, K. Ndousse, A. Askell, A. Chen, N. DasSarma, D. Drain, S. Fort, D. Ganguli, T. Henighan, et al. , “Training a helpful and harmless assistant with reinforcement learning from human feedback,” arXiv preprint arXiv:2204.05862 , 2022. [5] A. P. Dawid and A. M. Skene, “Maximum likelihood estimation of observer error-rates using the em algorithm,” Journal of the Royal Statistical Society: Series C (Applied Statistics) , vol. 28, no. 1, pp. 20–28, 1979. [6] V. C. Raykar, S. Yu, L. H. Zhao, G. H. Valadez, C. Florin, L. Bogoni, and L. Moy, “Learning from crowds.,” Journal of machine learning research , vol. 11, no. 4, 2010. [7] C. Zhou, P. Liu, P. Xu, S. Iyer, J. Sun, Y. Mao, X. Ma, A. Efrat, P. Yu, L. Yu, S. Zhang, G. Ghosh, M. Lewis, L. Zettlemoyer, and O. Levy, “LIMA: Less is more for alignment,” in Advances in Neural Information Processing Systems ,vol. 36, pp. 55006–55021, 2023. [8] N. Natarajan, I. S. Dhillon, P. K. Ravikumar, and A. Tewari, “Learning with noisy labels,” Advances in neural information processing systems , vol. 26, 2013. [9] B. Han, Q. Yao, X. Yu, G. Niu, M. Xu, W. Hu, I. Tsang, and M. Sugiyama, “Co-teaching: Robust training of deep neural networks with extremely noisy labels,” Advances in neural information processing systems , vol. 31, 2018. [10] G. Patrini, A. Rozza, A. Krishna Menon, R. Nock, and L. Qu, “Making deep neural networks robust to label noise: A loss correction approach,” in Proceedings of the IEEE conference on computer vision and pattern recognition , pp. 1944–1952, 2017. [11] M. Beliaev, A. Shih, S. Ermon, D. Sadigh, and R. Pedarsani, “Imitation learn-ing by estimating expertise of demonstrators,” in International Conference on Machine Learning , pp. 1732–1748, PMLR, 2022. [12] M. Beliaev and R. Pedarsani, “Inverse reinforcement learning by estimating expertise of demonstrators,” in Proceedings of the AAAI Conference on Artificial Intelligence , vol. 39, pp. 15532–15540, 2025. 13 [13] T. Mihaylov, P. Clark, T. Khot, and A. Sabharwal, “Can a suit of armor conduct electricity? a new dataset for open book question answering,” in Proceedings of EMNLP , 2018. [14] P. Clark, I. Cowhey, O. Etzioni, T. Khot, A. Sabharwal, C. Schoenick, and O. Tafjord, “Think you have solved question answering? try arc, the ai2 reasoning challenge,” in arXiv preprint arXiv:1803.05457 , 2018. [15] Y. Bisk, R. Zellers, J. Gao, and Y. Choi, “PIQA: Reasoning about physical commonsense in natural language,” in Proceedings of AAAI , 2020. [16] B. Y. Lin, Z. Wu, Y. Yang, D.-H. Lee, and X. Ren, “RiddleSense: Reasoning about riddle questions featuring linguistic creativity and commonsense knowledge,” in 
+
+Findings of ACL , 2021. [17] Q. Jin, B. Dhingra, Z. Liu, W. Cohen, and X. Lu, “PubMedQA: A dataset for biomedical research question answering,” in Proceedings of the 2019 Conference on Empirical Methods in Natural Language Processing , pp. 2567–2577, 2019. [18] J. Whitehill, P. Ruvolo, T. Wu, J. Bergsma, and J. Movellan, “Whose vote should count more: Optimal integration of labels from labelers of unknown expertise,” in Advances in Neural Information Processing Systems , vol. 22, pp. 2035–2043, 2009. [19] A. M. Davani, M. Díaz, and V. Prabhakaran, “Dealing with disagreements: Looking beyond the majority vote in subjective annotations,” Transactions of the Association for Computational Linguistics , vol. 10, pp. 92–110, 2022. [20] M. L. Gordon, M. S. Lam, J. S. Park, K. Patel, J. Hancock, T. Hashimoto, and M. S. Bernstein, “Jury learning: Integrating dissenting voices into machine learning models,” in Proceedings of the 2022 CHI Conference on Human Factors in Computing Systems , pp. 1–19, 2022. [21] B. Plank, “The “problem” of human label variation: On ground truth in data, modeling and evaluation,” in Proceedings of the 2022 conference on empirical methods in natural language processing , pp. 10671–10682, 2022. [22] A. N. Uma, T. Fornaciari, D. Hovy, S. Paun, B. Plank, and M. Poesio, “Learning from disagreement: A survey,” Journal of Artificial Intelligence Research , vol. 72, pp. 1385–1470, 2021. [23] J. Luo, X. Luo, and K. Ding, “RobustFT: Robust supervised fine-tuning for large language models under noisy response,” arXiv preprint arXiv:2412.14922 , 2024. [24] S. Wang, Z. Tan, and R. Guo, “Noise-robust fine-tuning of pretrained language models via external guidance,” in Findings of the Association for Computational Linguistics: EMNLP 2023 , 2023. [25] A. K. Yadav and A. Singh, “SymNoise: Advancing language model fine-tuning with symmetric noise,” in Proceedings of the Conference on Empirical Methods in Natural Language Processing , 2023. 14 [26] Y. Yu, S. Zuo, and H. Jiang, “Fine-tuning pre-trained language model with weak supervision: A contrastive-regularized self-training approach,” in Proceedings of the 2021 Conference of the North American Chapter of the Association for Computational Linguistics , 2021. [27] D. A. Pomerleau, “Efficient training of artificial neural networks for autonomous navigation,” Neural computation , vol. 3, no. 1, pp. 88–97, 1991. [28] S. Zhang, Z. Cao, D. Sadigh, and Y. Sui, “Confidence-aware imitation learning from demonstrations with varying optimality,” Advances in Neural Information Processing Systems , vol. 34, pp. 12340–12350, 2021. [29] M. Yang, S. Levine, and O. Nachum, “Trail: Near-optimal imitation learning with suboptimal data,” arXiv preprint arXiv:2110.14770 , 2021. [30] D. S. Brown, W. Goo, and S. Niekum, “Better-than-demonstrator imitation learn-ing via automatically-ranked demonstrations,” in Conference on robot learning ,pp. 330–359, PMLR, 2020. [31] Y. Wang, Y. Kordi, S. Mishra, A. Liu, N. A. Smith, D. Khashabi, and H. Ha-jishirzi, “Self-instruct: Aligning language models with self-generated instructions,” in Proceedings of the 61st Annual Meeting of the Association for Computational Linguistics , pp. 13484–13508, 2023. [32] N. Stiennon, L. Ouyang, J. Wu, D. Ziegler, R. Lowe, C. Voss, A. Radford, D. Amodei, and P. F. Christiano, “Learning to summarize with human feedback,” 
+
+Advances in neural information processing systems , vol. 33, pp. 3008–3021, 2020. [33] S. Ghiasvand, Y. Yang, Z. Xue, M. Alizadeh, Z. Zhang, and R. Pedarsani, “Communication-efficient and tensorized federated fine-tuning of large language models,” in Findings of the Association for Computational Linguistics: ACL 2025 , pp. 24192–24207, 2025. [34] S. Ghiasvand, M. Alizadeh, and R. Pedarsani, “Decentralized low-rank fine-tuning of large language models,” in Proceedings of the 1st Workshop for Research on Agent Language Models (REALM 2025) , pp. 334–345, 2025. 15 A Additional Results 
+
+A.1 Results under Dist. 2○ and Dist. 3○
+
+Tables 6 and 7 report results under the remaining two expertise distributions. Under Dist. 2 , where two reliable annotators form a majority, gains are modest (avg ∆ ≤
+
++4% ) since noisy can already exploit the strong majority signal, with PubMedQA reversing under systematic noise at Base and Large model sizes. Under Dist. 3 , gains are larger and asymmetric noise yields the highest average ∆ across all model sizes, while systematic noise again produces the smallest gains with occasional reversals on PubMedQA. Overall, realm outperforms noisy in the large majority of settings across both distributions, noise types, and model sizes. Table 6: Test accuracy (%) under Dist. 2 across noise types, datasets, and model sizes. Bold indicates the better method and ∆ = realm − noisy .
+
+Size Dataset Oracle Uniform Asymmetric Systematic 
+
+realm noisy ∆ realm noisy ∆ realm noisy ∆
+
+Small ARC 29.44 29 .05 ±0.47 27 .00 ±0.87 +2 .05 28 .70 ±0.47 27 .54 ±0.57 +1 .16 28 .22 ±0.90 27 .43 ±1.21 +0 .79 
+
+OBQA 44.20 44 .28 ±0.39 39 .52 ±0.94 +4 .76 44 .32 ±0.50 40 .08 ±0.97 +4 .24 43 .68 ±0.92 40 .00 ±1.67 +3 .68 
+
+PIQA 52.88 51 .60 ±1.54 51 .12 ±0.86 +0 .48 50 .84 ±1.02 51 .45 ±1.35 −0.61 51 .32 ±1.22 50 .84 ±0.92 +0 .48 
+
+PubMedQA 58.00 53 .05 ±1.88 50 .35 ±3.00 +2 .70 50 .95 ±1.90 47 .05 ±3.75 +3 .90 54 .90 ±0.96 56 .50 ±1.79 −1.60 
+
+Riddle 39.02 34 .71 ±1.14 31 .25 ±1.11 +3 .46 33 .49 ±0.92 31 .76 ±1.41 +1 .73 33 .53 ±0.51 30 .59 ±1.19 +2 .94 
+
+Avg 44.71 42 .54 ±1.08 39 .85 ±1.36 +2 .69 41 .66 ±0.96 39 .58 ±1.61 +2 .08 42 .33 ±0.90 41 .07 ±1.36 +1 .26 
+
+Base ARC 47.47 45 .49 ±0.80 44 .31 ±1.01 +1 .18 46 .11 ±0.87 44 .76 ±0.83 +1 .35 45 .85 ±0.34 44 .98 ±0.51 +0 .87 
+
+OBQA 59.60 58 .68 ±0.81 56 .84 ±0.64 +1 .84 58 .24 ±0.46 57 .08 ±1.16 +1 .16 58 .44 ±0.59 56 .00 ±0.94 +2 .44 
+
+PIQA 67.68 66 .55 ±0.52 63 .33 ±1.97 +3 .22 67 .18 ±0.30 63 .55 ±1.79 +3 .63 66 .92 ±0.42 64 .87 ±0.97 +2 .05 
+
+PubMedQA 61.00 54 .00 ±2.19 53 .20 ±2.15 +0 .80 54 .45 ±1.37 51 .05 ±1.96 +3 .40 56 .55 ±1.35 60 .55 ±1.26 −4.00 
+
+Riddle 54.12 49 .61 ±1.12 45 .84 ±1.03 +3 .77 49 .45 ±0.91 47 .92 ±0.76 +1 .53 49 .25 ±0.89 46 .43 ±1.30 +2 .82 
+
+Avg 57.97 54 .87 ±1.09 52 .70 ±1.36 +2 .17 55 .09 ±0.78 52 .87 ±1.30 +2 .22 55 .40 ±0.72 54 .57 ±1.00 +0 .83 
+
+Large ARC 64.81 61 .51 ±0.92 57 .96 ±0.88 +3 .55 62 .85 ±0.92 59 .09 ±0.85 +3 .76 62 .40 ±0.88 59 .64 ±1.16 +2 .76 
+
+OBQA 71.60 70 .68 ±0.43 68 .80 ±0.46 +1 .88 70 .76 ±0.70 67 .40 ±0.88 +3 .36 71 .00 ±1.07 69 .32 ±0.43 +1 .68 
+
+PIQA 77.80 77 .67 ±0.64 75 .10 ±0.23 +2 .57 77 .37 ±0.88 75 .50 ±0.82 +1 .87 77 .67 ±0.63 75 .60 ±1.04 +2 .07 
+
+PubMedQA 71.25 60 .55 ±1.93 56 .00 ±1.15 +4 .55 61 .50 ±2.93 56 .70 ±3.37 +4 .80 63 .80 ±0.64 67 .75 ±1.26 −3.95 
+
+Riddle 67.84 65 .45 ±0.57 61 .49 ±1.24 +3 .96 64 .43 ±0.73 62 .04 ±1.56 +2 .39 65 .45 ±0.73 62 .75 ±0.57 +2 .70 
+
+Avg 70.66 67 .17 ±0.90 63 .87 ±0.79 +3 .30 67 .38 ±1.23 64 .15 ±1.50 +3 .23 68 .06 ±0.79 67 .01 ±0.89 +1 .05 
+
+Table 7: Test accuracy (%) under Dist. 3 across noise types, datasets, and model sizes. Bold indicates the better method and ∆ = realm − noisy .
+
+Size Dataset Oracle Uniform Asymmetric Systematic 
+
+realm noisy ∆ realm noisy ∆ realm noisy ∆
+
+Small ARC 29.44 26 .70 ±0.51 26 .64 ±1.40 +0 .06 27 .21 ±0.96 27 .43 ±0.96 −0.22 27 .45 ±1.28 26 .76 ±0.75 +0 .69 
+
+OBQA 44.20 42 .52 ±0.45 35 .80 ±2.04 +6 .72 42 .48 ±0.82 35 .76 ±1.88 +6 .72 42 .56 ±1.11 35 .00 ±1.77 +7 .56 
+
+PIQA 52.88 52 .88 ±1.18 50 .36 ±0.60 +2 .52 50 .25 ±0.87 50 .58 ±0.39 −0.33 51 .32 ±1.22 50 .84 ±0.92 +0 .48 
+
+PubMedQA 58.00 50 .60 ±1.97 46 .55 ±3.17 +4 .05 49 .00 ±3.44 36 .80 ±3.08 +12 .20 53 .80 ±0.94 55 .00 ±0.74 −1.20 
+
+Riddle 39.02 32 .16 ±1.44 29 .69 ±0.69 +2 .47 32 .59 ±1.41 29 .10 ±0.80 +3 .49 32 .27 ±1.14 28 .16 ±1.64 +4 .11 
+
+Avg 44.71 40 .97 ±1.11 37 .81 ±1.58 +3 .16 40 .31 ±1.50 35 .93 ±1.42 +4 .38 41 .48 ±1.14 39 .15 ±1.16 +2 .33 
+
+Base ARC 47.47 43 .78 ±0.60 42 .15 ±0.39 +1 .63 44 .00 ±0.86 42 .76 ±1.07 +1 .24 43 .90 ±0.47 43 .52 ±0.68 +0 .38 
+
+OBQA 59.60 57 .96 ±0.54 55 .00 ±1.28 +2 .96 57 .72 ±1.11 55 .12 ±0.77 +2 .60 58 .60 ±0.95 54 .36 ±1.24 +4 .24 
+
+PIQA 67.68 65 .79 ±0.78 51 .47 ±1.23 +14 .32 65 .77 ±0.71 52 .10 ±1.75 +13 .67 66 .92 ±0.42 64 .87 ±0.97 +2 .05 
+
+PubMedQA 61.00 49 .15 ±1.85 44 .80 ±3.18 +4 .35 52 .00 ±2.42 43 .70 ±3.32 +8 .30 55 .85 ±1.93 58 .45 ±1.81 −2.60 
+
+Riddle 54.12 46 .63 ±2.01 42 .00 ±1.88 +4 .63 46 .94 ±1.34 42 .47 ±1.17 +4 .47 46 .47 ±1.31 42 .08 ±0.95 +4 .39 
+
+Avg 57.97 52 .66 ±1.16 47 .08 ±1.59 +5 .58 53 .29 ±1.29 47 .23 ±1.62 +6 .06 54 .35 ±1.02 52 .66 ±1.13 +1 .69 
+
+Large ARC 64.81 59 .59 ±0.64 56 .14 ±1.07 +3 .45 59 .64 ±1.08 55 .93 ±0.47 +3 .71 58 .49 ±0.59 56 .74 ±0.54 +1 .75 
+
+OBQA 71.60 70 .12 ±1.24 65 .68 ±0.52 +4 .44 69 .80 ±1.21 64 .80 ±1.03 +5 .00 70 .12 ±1.03 65 .40 ±1.08 +4 .72 
+
+PIQA 77.80 76 .50 ±0.28 51 .99 ±3.98 +24 .51 76 .17 ±0.49 53 .47 ±2.70 +22 .70 77 .67 ±0.63 75 .60 ±1.04 +2 .07 
+
+PubMedQA 71.25 53 .45 ±2.09 48 .05 ±3.08 +5 .40 55 .70 ±2.32 47 .45 ±2.70 +8 .25 60 .95 ±2.11 64 .05 ±2.85 −3.10 
+
+Riddle 67.84 62 .31 ±1.65 57 .06 ±2.38 +5 .25 61 .33 ±0.96 56 .16 ±0.98 +5 .17 61 .25 ±0.97 57 .92 ±1.91 +3 .33 
+
+Avg 70.66 64 .39 ±1.18 55 .78 ±2.21 +8 .61 64 .53 ±1.21 55 .56 ±1.58 +8 .97 65 .70 ±1.07 63 .94 ±1.48 +1 .76 
+
+16 A.2 Per-Dataset Multi-Task Results 
+
+Table 8 provides the per-dataset breakdown of the combined multi-task results reported in Table 3. realm outperforms noisy on the large majority of individual dataset and configuration combinations, confirming that the gains observed in the combined accuracy are not driven by a single dataset. The most consistent and largest gains appear on OBQA and Riddle, which have more answer choices ( K= 4 and K=5
+
+respectively), giving the mixture objective a stronger signal to discriminate reliable from unreliable annotators. ARC shows smaller but still consistent gains, while a small number of reversals occur on ARC under Dist. #2 for the Small model, where the noise level is low enough that noisy benefits from the larger shared training set. Table 8: Per-dataset test accuracy (%) in the multi-task setting across model sizes, expertise distributions, and noise types (mean ± std over five runs). Bold indicates the better method within each configuration. This table provides the per-dataset breakdown of the combined results reported in Table 3. 
+
+Size Distribution Dataset Uniform Asymmetric Systematic 
+
+realm noisy realm noisy realm noisy 
+
+Small Dist. 1
+
+ARC 26 .35 ±0.34 25 .54 ±0.47 25 .92 ±0.94 26 .39 ±0.73 26 .61 ±0.86 26 .05 ±0.21 
+
+OBQA 34 .90 ±0.70 29 .50 ±1.50 34 .60 ±1.40 29 .50 ±0.50 35 .80 ±1.40 26 .20 ±0.40 
+
+Riddle 24 .51 ±1.76 20 .20 ±0.39 24 .12 ±0.59 20 .29 ±0.10 23 .33 ±0.00 21 .08 ±0.29 
+
+Dist. 2
+
+ARC 26 .39 ±0.04 27 .42 ±0.04 26 .78 ±0.09 27 .77 ±0.21 26 .52 ±0.52 27 .04 ±0.43 
+
+OBQA 38 .10 ±1.10 36 .90 ±0.30 37 .20 ±0.80 35 .40 ±0.40 36 .20 ±1.00 34 .90 ±0.30 
+
+Riddle 24 .22 ±0.10 22 .25 ±0.10 24 .80 ±0.10 23 .92 ±0.20 25 .00 ±0.29 23 .14 ±0.78 
+
+Dist. 3
+
+ARC 26 .22 ±0.64 26 .48 ±0.39 26 .35 ±0.77 26 .22 ±0.64 26 .70 ±0.77 26 .35 ±0.00 
+
+OBQA 35 .90 ±1.50 33 .40 ±2.40 34 .80 ±0.80 34 .60 ±1.20 35 .50 ±1.10 30 .70 ±0.30 
+
+Riddle 25 .00 ±0.69 20 .78 ±0.20 25 .00 ±0.10 21 .37 ±0.00 24 .31 ±0.20 21 .86 ±0.29 
+
+Base Dist. 1
+
+ARC 41 .76 ±1.07 38 .67 ±0.90 42 .15 ±0.52 40 .26 ±0.34 42 .19 ±0.73 38 .76 ±0.99 
+
+OBQA 55 .00 ±0.40 47 .90 ±1.10 54 .30 ±0.30 45 .90 ±0.70 54 .20 ±0.20 47 .70 ±0.10 
+
+Riddle 31 .57 ±0.78 28 .63 ±0.20 29 .31 ±0.29 26 .18 ±0.69 29 .80 ±0.98 25 .69 ±0.20 
+
+Dist. 2
+
+ARC 42 .53 ±0.04 41 .93 ±0.64 42 .79 ±0.30 42 .19 ±0.30 42 .32 ±0.00 41 .72 ±0.60 
+
+OBQA 55 .50 ±0.70 55 .30 ±0.90 55 .80 ±0.20 53 .50 ±1.30 54 .90 ±0.30 54 .80 ±1.60 
+
+Riddle 36 .37 ±0.49 31 .86 ±0.49 35 .98 ±0.69 32 .35 ±0.78 35 .39 ±0.69 32 .94 ±1.76 
+
+Dist. 3
+
+ARC 41 .37 ±0.60 40 .52 ±0.34 42 .49 ±0.26 41 .50 ±0.47 42 .49 ±0.34 41 .29 ±0.77 
+
+OBQA 54 .90 ±0.70 52 .30 ±2.10 54 .30 ±0.70 53 .20 ±0.40 55 .00 ±0.00 52 .80 ±0.40 
+
+Riddle 32 .94 ±0.00 28 .04 ±0.78 31 .47 ±0.29 28 .24 ±0.59 31 .67 ±0.29 28 .53 ±0.69 
+
+Large Dist. 1
+
+ARC 62 .10 ±0.04 58 .76 ±0.56 61 .24 ±0.21 51 .89 ±1.59 61 .67 ±0.04 57 .73 ±0.73 
+
+OBQA 68 .40 ±0.20 60 .90 ±0.90 68 .10 ±0.90 52 .20 ±2.20 67 .30 ±1.10 61 .30 ±0.90 
+
+Riddle 52 .84 ±1.47 40 .20 ±1.96 51 .08 ±0.88 37 .94 ±1.67 49 .61 ±0.98 37 .94 ±1.08 
+
+Dist. 2
+
+ARC 62 .06 ±0.52 61 .89 ±0.77 62 .62 ±0.13 61 .29 ±0.86 62 .45 ±0.04 61 .03 ±0.09 
+
+OBQA 69 .50 ±0.30 67 .80 ±1.20 70 .40 ±0.40 66 .10 ±1.10 70 .40 ±0.20 67 .70 ±0.10 
+
+Riddle 56 .27 ±0.39 54 .41 ±0.88 55 .20 ±0.69 52 .94 ±0.20 55 .69 ±0.39 54 .02 ±0.29 
+
+Dist. 3
+
+ARC 62 .83 ±0.26 60 .94 ±0.26 62 .10 ±0.04 58 .97 ±0.26 61 .93 ±0.04 60 .82 ±0.04 
+
+OBQA 69 .40 ±1.00 65 .20 ±0.40 68 .70 ±0.30 65 .40 ±0.20 68 .00 ±0.40 65 .60 ±1.40 
+
+Riddle 54 .22 ±1.08 48 .92 ±1.47 53 .73 ±0.78 47 .55 ±0.69 52 .35 ±0.59 46 .08 ±1.76 
+
+17 B Future Work 
+
+Efficient and Distributed Fine-Tuning. Fine-tuning large language models at scale introduces practical challenges beyond data quality, including communication overhead, privacy constraints, and computational efficiency. In many real-world annotation pipelines, training data is collected from multiple independent sources or organizations, each with its own data distribution and annotation practices, mirroring the federated learning setting where data heterogeneity across clients is a central challenge. Recent work has extended parameter-efficient fine-tuning methods to feder-ated [ 33 ] and fully decentralized settings [ 34 ], with explicit mechanisms for handling non-i.i.d. data distributions and convergence guarantees. The data heterogeneity problem in these settings is conceptually related to the annotator heterogeneity problem studied in this paper: in both cases, a model must be trained on data from multiple sources of varying quality without access to a unified gold standard. REALM addresses this at the annotation level by learning per-source reliability weights, and combining expertise-aware objectives with federated optimization represents a natural direction for future work. 
+
+State-Dependent Expertise. In REALM, each annotator is assigned a single scalar expertise value βi that is constant across all prompts. This is a simplifying assumption: in practice, an annotator may be highly reliable on certain question types or domains while performing poorly on others, even within the same dataset. A natural extension is to model expertise as a function of the input, ρi(Q) = σ(⟨fϕ(Q), ω i⟩),where fϕ(Q) is a learned embedding of the prompt and ωi is a per-annotator skill vector. This formulation allows the model to identify not just who is reliable, but when 
+
+each annotator can be trusted, enabling finer-grained down-weighting that adapts to the difficulty and domain of each individual example. In the multi-task setting, this would remove the requirement that the task assignment f ∗(Q) be observed at training time, as the model could infer task identity implicitly from the prompt representation. 18
