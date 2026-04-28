@@ -1,0 +1,2068 @@
+Title: Accelerating Frequency Domain Diffusion Models with Error-Feedback Event-Driven Caching
+
+URL Source: https://arxiv.org/pdf/2604.22901v1
+
+Published Time: Tue, 28 Apr 2026 00:08:24 GMT
+
+Number of Pages: 22
+
+Markdown Content:
+# Accelerating Frequency Domain Diffusion Models with Error-Feedback Event-Driven Caching 
+
+Dong Liu 1 2 Haisheng Wang 3 Yanxuan Yu 4
+
+Abstract 
+
+Diffusion models achieve remarkable success in time series generation. However, slow inference limits their practical deployment. We propose E2-CRF (Error-Feedback Event-Driven Cumula-tive Residual Feature caching) to accelerate fre-quency domain diffusion models. Our method exploits two structural properties: (1) spectral lo-calization, where signal energy concentrates in low frequencies, and (2) mirror symmetry, which halves the effective frequency dimension. E2-CRF uses a closed-loop error-feedback system that adaptively caches transformer KV features across diffusion steps. We trigger recomputa-tion using event-driven residual dynamics instead of fixed schedules. Our method selectively re-computes high-energy or rapidly-changing tokens while reusing cached features for stable high-frequency components. E 2-CRF achieves 2.2× speedup while maintaining sample quality. We demonstrate effectiveness on 5 datasets. Our caching strategy naturally aligns with the diffu-sion process’s structure-to-detail progression. We include sufficient-condition error and complex-ity bounds under standard regularity assumptions (Appendix), alongside empirical validation. Our code is available at https://github.com/ NoakLiu/FastFourierDiffusion and is also integrated in https://github.com/ NoakLiu/FastCache-xDiT .
+
+1. Introduction 
+
+When applying frequency-domain diffusion to time series generation, a natural acceleration strategy is to cache trans-former key–value (KV) features across diffusion steps, since attention computation scales quadratically with sequence length and the same network is evaluated hundreds of times 
+
+> 1
+
+University of California, Los Angeles 2Yale University 3East China Normal University 4Columbia University. Correspondence to: Dong Liu <pikeliu@ucla.edu>. 
+
+Preprint. April 28, 2026. 
+
+during sampling (Crabbe et al., 2024; Vaswani et al., 2017; Liu & Yu, 2025c; Liu et al., 2026b; Liu & Yu, 2026). How-ever, naïve caching fails catastrophically: cached features drift over diffusion steps, causing error accumulation that degrades sample quality beyond acceptable thresholds. This failure mode stems from ignoring the differential dynamics of frequency components during reverse diffusion—high-frequency tokens often evolve slowly while low-frequency tokens change rapidly—yet uniform caching treats all fre-quencies identically. 
+
+Why frequency-domain caching collapses. The funda-mental issue is a mismatch between the caching policy and the diffusion process’s structure-to-detail progression: early steps establish coarse, low-frequency structure, while later steps refine high-frequency details. Uniform reuse across steps makes high-energy low-frequency representations stale, corrupting the generation trajectory. For transformer-based score networks (Vaswani et al., 2017), this manifests as increasingly inaccurate attention patterns, since cached KV pairs no longer reflect the current frequency representa-tion state. 
+
+Existing accelerations and the missing piece. The ap-proximation error between the cached score and the fully re-computed score can grow unbounded when reuse is not care-fully controlled, undermining the reverse trajectory. Most existing diffusion acceleration methods focus on reducing the number of sampling steps via improved solvers or im-plicit sampling (Song et al., 2021; Lu et al., 2022; Karras et al., 2022; Liu et al., 2025a; Liu, 2024; Liu & Yu, 2025b;a), rather than addressing per-step reuse. Meanwhile, recent frequency-aware caching for diffusion models (Liu et al., 2024; 2026a) suggests that caching can be effective when aligned with spectral structure, but principled designs for 
+
+time-series frequency diffusion remain limited. 
+
+Observation: energy distribution enables selective caching. Real-world time series exhibit spectral localiza-tion: most energy concentrates in low frequencies, while high-frequency components carry less energy and evolve more smoothly across diffusion steps (Körner, 2022). In ad-dition, mirror (conjugate) symmetry of real-valued signals’ 1
+
+> arXiv:2604.22901v1 [cs.LG] 24 Apr 2026 Accelerating Frequency Domain Diffusion with Error-Feedback Caching
+
+DFTs halves the effective frequency dimension, enabling cache compression without information loss (Schreier & Scharf, 2010). Together, these properties suggest that se-lective caching is not only possible but necessary: high-frequency tokens (low energy, slow evolution) are natural candidates for reuse, while low-frequency tokens (high en-ergy, rapid evolution) must be recomputed frequently. The central challenge is determining when cached tokens be-come stale and require refresh. 
+
+Solution: event-driven caching with error feedback. 
+
+We introduce E2-CRF (Error-Feedback Event-Driven Cu-mulative Residual Feature caching), a mechanism that mon-itors the residual dynamics of the score network’s internal representations to trigger selective recomputation. E 2-CRF combines (i) an event-driven trigger that detects drift beyond acceptable thresholds and (ii) error-feedback correction that periodically recalibrates cached values via probe computa-tions. This design adaptively adjusts caching aggressiveness across diffusion stages: early steps with high residual activ-ity trigger frequent recomputation, while later steps allow more aggressive caching of stable high-frequency tokens. Our method exploits spectral localization (Körner, 2022) and mirror symmetry (Schreier & Scharf, 2010), and is com-patible with frequency-domain diffusion modeling (Crabbe et al., 2024). 
+
+Our contributions. (1) E 2-CRF: Error-Feedback Event-Driven Caching. We propose a principled, step-aware caching mechanism for frequency-domain diffusion time-series models. (2) Speedup with Qual-ity Preservation. We show that E 2-CRF achieves significant inference speedups while maintaining sam-ple quality (Section 4). (3) Theoretical Analysis. We analyze how an event-driven trigger and error feed-back jointly control cache-induced approximation er-ror across diffusion stages. 
+
+2. Background 
+
+Notations. We consider multivariate time series x ∈ RN ×M
+
+with N time steps and M variables, and denote dX = N M .We use Greek letters for time indices: xτ ∈ RM is the vector at time τ ∈ [N ], and xτ,ν is variable ν ∈ [M ] at time τ . We use Latin letters for diffusion steps: {x(t) ∈
+
+RdX }Tt=0 is indexed by continuous time t ∈ [0 , T ]. Let 
+
+˜x(t) = F[x(t)] be the discrete Fourier transform (DFT) representation, and let N ′ = 2 ⌈N/ 2⌉ denote the effective frequency dimension under mirror (conjugate) symmetry. For caching, we write the recomputed score as sθ (˜ x, t ) and its cached approximation as ˆsθ (˜ x, t ), with error ϵ(˜ x, t ) = 
+
+sθ (˜ x, t ) − ˆsθ (˜ x, t ).
+
+2.1. Caching in Iterative Generative Inference 
+
+Diffusion models achieve strong generative performance across domains (Dhariwal & Nichol, 2021; Ho et al., 2020; Song et al., 2020; Cao et al., 2024), but remain inference-limited due to hundreds to thousands of score-network evaluations per sample. This is especially costly for trans-former score networks (Vaswani et al., 2017), where self-attention recomputes highly similar key–value (KV) pro-jections across adjacent diffusion steps. While diffusion has been widely adopted for time-series generation (Tashiro et al., 2021; Rasul et al., 2021; Lin et al., 2023), acceleration is still a central bottleneck. Caching is a natural way to amortize redundant computa-tion, but diffusion differs from autoregressive decoding: the input state evolves at every step, so stale reuse can accu-mulate error and degrade samples. Concretely, replacing 
+
+sθ (x, t ) with a cached ˆsθ (x, t ) introduces an approximation error ϵ(x, t ) that can compound along the reverse trajectory. Accordingly, most diffusion accelerations reduce step count via improved solvers (Song et al., 2021; Lu et al., 2022; Karras et al., 2022), rather than enabling safe, step-aware feature reuse. Recent frequency-aware caching for diffu-sion transformers (Liu et al., 2024) suggests that reuse can be effective when aligned with spectral structure, but prin-cipled designs for frequency-domain time-series diffusion remain limited. Related training-free or proxy-based reuse has also been studied for image/video diffusion transform-ers (e.g., timestep/feature-driven caching (Liu et al., 2025b; Ma et al., 2024), fast or offset cache corrections (Liu et al., 2025a; 2026a; Qiu et al., 2025)), and for diffusion LLMs via adaptive KV reuse (Liu et al., 2025c; Wu et al., 2025). These settings differ in backbone, modality, and how hid-den states evolve across denoising steps, so policies are not directly interchangeable with half-spectrum KV reuse for multivariate signals (Crabbe et al., 2024). Broader time-series diffusion models beyond the Fourier parameterization (Yuan & Qiao, 2024; Galib et al., 2024; Alaa et al., 2021) are complementary generative baselines but do not isolate per-step KV caching for Fourier-domain scores; we there-fore benchmark primarily against an uncached frequency baseline and controlled ablations. 
+
+2.2. Cache Reuse in Frequency-Domain Diffusion 
+
+Frequency-domain parameterizations provide an inductive bias for diffusion on temporal signals by exposing spec-tral structure and redundancy. Fourier-space diffusion for time series has been studied as a modeling choice (Alaa et al., 2021; Crabbe et al., 2024), and more recent work fur-ther explores frequency-structured generation via wavelets and frequency-shaped conditioning (Wang & Milenkovic, 2024; Galib et al., 2024). In parallel, frequency-domain perspectives have also been developed for diffusion beyond 2Accelerating Frequency Domain Diffusion with Error-Feedback Caching 
+
+time series (e.g., Fourier-space analyses or wavelet-based generators), supporting the broader view that spectral coor-dinates can make diffusion dynamics more structured and controllable (Falck et al., 2025; Phung et al., 2023). Two properties are particularly relevant for caching. (i) Spectral localization. Real-world time series concentrate most energy in low-frequency components, while higher-frequency bands typically carry less energy and evolve more smoothly across diffusion steps. As a result, the spectral energy density ∥˜xκ∥22 often decays quickly with frequency index κ, making high-frequency tokens natural candidates for reuse. (ii) Mirror symmetry. For real-valued signals, DFT coefficients satisfy conjugate symmetry, reducing the effective number of distinct frequency tokens by roughly half, and introducing built-in redundancy that can be ex-ploited by cache compression. Crucially, reverse diffusion exhibits a structure-to-detail progression: early steps establish coarse, low-frequency structure, whereas later steps refine high-frequency details. This asymmetry implies that many high-frequency tokens change little over large portions of the trajectory. For-mally, for token κ at diffusion step i, the relative change 
+
+δ(i) 
+
+> κ
+
+= ∥˜x(i) 
+
+> κ
+
+− ˜x(i−∆)  
+
+> κ
+
+∥2/∥˜x(i−∆)  
+
+> κ
+
+∥2 is typically smaller when κ > K than when κ ≤ K for a threshold K. There-fore, reuse can be structurally aligned with the generative process, provided that it is selective and guarded against drift—motivating event-driven, error-aware caching rather than uniform reuse schedules. 
+
+2.3. Cached Score-Based Diffusion with SDEs 
+
+In continuous-time diffusion modeling, we observe data 
+
+x(0) ∼ pdata and define a forward noising SDE 
+
+dx = f (x, t )d t + G(t)d w, (1) with drift f and diffusion G(t). Sampling relies on the reverse-time SDE requiring the score s(x, t ) =
+
+∇x log pt(x):
+
+dx = b(x, t )d t + G(t)d ˆ w, (2) where b(x, t ) = f (x, t ) − G(t)G(t)T s(x, t ). With caching, we instead use ˆsθ (x, t ), yielding 
+
+dx = ˆb(x, t )d t + G(t)d ˆ w, (3) with ˆb(x, t ) = f (x, t ) − G(t)G(t)T ˆsθ (x, t ). Caching is viable only if the induced error ϵ(x, t ) = sθ (x, t ) − ˆsθ (x, t )
+
+is controlled; otherwise the reverse trajectory drifts from the target distribution. Our error-feedback mechanism is designed to monitor and correct this error during sampling. 
+
+Cached denoising score matching. Training commonly fits 
+
+sθ (x, t ) by denoising score matching (Hyvärinen & Dayan, 2005; Song & Ermon, 2019): 
+
+θ∗ = arg min  
+
+> θ∈Θ
+
+Et, x(0) ,x(t)
+
+∥sθ (x, t ) − st|0(x, t )∥2 , (4) where st|0(x, t ) = ∇x(t) log pt|0(x(t) | x(0)) and t ∼U(0 , T ). At inference time, replacing sθ by ˆsθ effectively introduces an additional perturbation: 
+
+∥ˆsθ (x, t ) − st|0(x, t )∥2 = ∥sθ (x, t ) − st|0(x, t ) + ϵ(x, t )∥2,
+
+(5) highlighting that uncontrolled cache error shifts the effective objective away from what the model was trained for. Error-feedback directly targets this term via probe recomputations and adaptive correction. 
+
+2.4. Frequency-Domain Representation with Cache DFT and cache-enabling mirror symmetry. Let ˜x =
+
+F[x] = U x be a unitary DFT mapping with U ∗U = I,so x = U ∗˜x. For real-valued x, the frequency coefficients satisfy the mirror-symmetry constraint 
+
+˜xκ = ˜ x∗ 
+
+> N−κ
+
+, (6) implying that roughly half of the spectrum is redundant. Thus we can cache only the non-redundant tokens (e.g., 
+
+κ ≤ ⌊ N/ 2⌋), effectively halving cache size and reducing memory and compute overhead in transformer score net-works. 
+
+Spectral energy localization for cache efficiency. By Par-seval’s theorem, ∥x∥2 = ∥˜x∥2, and empirical time series often exhibit strong low-frequency energy concentration. This supports aggressive reuse for high-frequency tokens (κ > K ), whose relative change rates δ(i) 
+
+> κ
+
+are typically smaller, while recomputing low-frequency tokens more fre-quently. Moreover, the score in Fourier space inherits the same symmetry: if ˜s(˜ x) = ∇ log ˜ p(˜ x), then ˜sκ = ˜ s∗ 
+
+> N−κ
+
+,further aligning caching with the representation’s intrinsic redundancy. 
+
+3. Diffusing in the frequency domain 
+
+This section formalizes score-based diffusion in the fre-quency domain following (Crabbe et al., 2024) and intro-duces our cache-aware inference design; standard Fourier SDE facts are proved in Appendix A.4–A.6. 
+
+Setup. Let x ∈ RN ×M be a multivariate time series and 
+
+˜x = F[x] ∈ CN ×M its DFT along the temporal dimension. 1
+
+Because x is real-valued, ˜x is conjugate-symmetric: ˜xκ =˜x∗ 
+
+> N−κ
+
+. Hence only the half-spectrum κ ∈ { 0, . . . , ⌊N/ 2⌋} 
+
+is non-redundant, which will be crucial for cache efficiency. 
+
+> 1All transforms are applied feature-wise.
+
+3Accelerating Frequency Domain Diffusion with Error-Feedback Caching FFT 
+
+> Transformer Layers
+> CRF
+> Event Trigger
+> Recompute ？
+> Frequency Diffusion Transformer
+> Token Selector
+> Low -frequency & High -change Tokens
+> KV
+> Cache
+> Error Feedback
+> Reconstructed
+> Time Series
+> Inverse FFT
+
+Figure 1. Overview of our error-feedback event-driven caching framework for accelerating frequency-domain diffusion. 
+
+3.1. Frequency-Domain Diffusion SDEs 
+
+We start from a continuous-time forward diffusion in the time domain, 
+
+dx = f (x, t ) d t + g(t) d w, (7) where w is a standard Brownian motion and g(t) is scalar for simplicity (the VP-SDE case used in experiments is a special case). Applying the unitary DFT to (7) yields a forward diffusion in the frequency domain with a mirrored complex Brownian motion that preserves conjugate symmetry. 
+
+Proposition 3.1 (Diffusion in the frequency domain) . As-sume the time-domain forward SDE (7) with isotropic diffusion, i.e., G(t) = g(t)I (equivalently scalar g(t)
+
+as written there). Let ˜x = F[x] and define ˜f (˜ x, t ) = 
+
+Ff (F−1[˜ x], t ). Then the forward process in the fre-quency domain is 
+
+d˜ x = ˜f (˜ x, t ) d t + g(t) d˜ v, (8) 
+
+where ˜v is a mirrored Brownian motion enforcing ˜xκ =˜x∗ 
+
+> N−κ
+
+. The corresponding reverse-time SDE is 
+
+d˜ x =
+
+ ˜f (˜ x, t ) − g(t)2 Λ2 ˜s(˜ x, t )
+
+
+
+dt + g(t) d¯ v, (9) 
+
+with ˜s(˜ x, t ) = ∇˜x log ˜ pt(˜ x), mirrored reverse Brownian motion ¯v, and a diagonal scaling matrix Λ (defined in Ap-pendix A.4). 
+
+Implementation note. Proposition 3.1 implies that (i) one should only model/cache the half-spectrum tokens, and (ii) the stochastic increments must respect conjugate symmetry; otherwise, the inverse DFT may produce complex-valued signals. 
+
+3.2. Denoising Score Matching and a Time-Domain View 
+
+Let ˜sθ (˜ x, t ) be a neural score model in the frequency do-main. Training uses denoising score matching (DSM) on 
+
+˜x(t) sampled from (8): 
+
+θ⋆ = arg min  
+
+> θ
+
+Et, ˜x(0) ,˜x(t)
+
+h
+
+˜sθ (˜ x(t), t ) − ˜st|0(˜ x(t), t ) 22
+
+i
+
+,
+
+(10) where ˜st|0(˜ x(t), t ) = ∇˜x(t) log ˜ pt|0(˜ x(t)|˜x(0)) . The fol-lowing equivalence connects frequency-domain DSM to an induced time-domain score, clarifying why frequency-domain sampling can still generate real time series after inverse DFT. 
+
+Proposition 3.2 (Score-matching equivalence) . Assume 
+
+˜sθ satisfies conjugate symmetry. Define an induced time-domain score s′ 
+
+> θ
+
+(x, t ) = F−1[˜ sθ (F[x], t )] . Here F and 
+
+F−1 are applied along the temporal axis, independently for each feature channel of x ∈ RN ×M . Then minimizing (10) 
+
+is equivalent to minimizing DSM for s′ 
+
+> θ
+
+in the time domain (details in Appendix A.5). 
+
+3.3. Accelerating Frequency Diffusion with E 2-CRF Caching 
+
+Sampling from (9) requires evaluating ˜sθ (˜ x, t ) for many discretization steps, which is costly for transformer score networks due to repeated attention/MLP computations. We propose E2-CRF (E rror-feedback Event-driven Cumulative Residual F eature caching), a step-aware caching mecha-nism tailored to the heterogeneous dynamics of frequency components. 
+
+From mechanism to algorithm. The above compo-nents jointly define a cache-aware reverse-time sampler for frequency-domain diffusion. Algorithm 1 presents the complete E 2-CRF sampling procedure, explicitly detailing how event-driven recomputation, KV caching, and error-feedback correction are integrated into each diffusion step. 
+
+Tokenization and half-spectrum. At step i, we represent each non-redundant frequency κ ≤ ⌊ N/ 2⌋ by a real token 
+
+z(i) 
+
+> κ
+
+∈ R2M formed by concatenating real/imag parts of ˜x(i) 
+
+> κ
+
+.All caching is performed over these half-spectrum tokens. 
+
+Cache target: cumulative residual features (CRF). In-stead of caching all intermediate activations, we cache a compact summary at the final layer, 
+
+z(i) 
+
+> L
+
+= ϕ(˜ x(i), t (i)), (11) which aggregates residual updates across layers (full form in Appendix A.6). This choice substantially reduces memory footprint while retaining a faithful proxy of representation drift. 
+
+Event-driven recomputation. We measure representa-tion drift via an event intensity 
+
+r(i) = ∥z(i) 
+
+> L
+
+− z(i−∆)  
+
+> L
+
+∥22
+
+∥z(i−∆)  
+
+> L
+
+∥22 + η , (12) 4Accelerating Frequency Domain Diffusion with Error-Feedback Caching 
+
+and recompute only a subset of tokens 
+
+S(i) = {0, . . . , K }
+
+| {z }
+
+> always refresh low-freq
+
+∪ { κ : δ(i) 
+
+> κ
+
+> τ κ}
+
+| {z }
+
+> high-change tokens
+
+∪ P(i)
+
+|{z} 
+
+> small random probes
+
+,
+
+(13) where δ(i) 
+
+> κ
+
+= ∥z(i) 
+
+> κ
+
+− z(i−∆)  
+
+> κ
+
+∥2 and τκ is energy-weighted (Appendix A.6). The global intensity r(i) uses a normalized squared-change ratio via ∥z(i−∆)  
+
+> L
+
+∥22 + η, making it less sensitive to global feature scale; per-token decisions already rescale thresholds by spectral energy, so we keep δ(i) 
+
+> κ
+
+in absolute units to avoid double-normalizing token-wise drift. Intuitively, low frequencies capture global structure and are refreshed frequently; high frequencies are often stable and can be reused. 
+
+Error-feedback stabilization. To prevent long-horizon drift from stale cached KV states, we periodically probe a small set P(i) and apply a correction 
+
+ˆz(i) 
+
+> κ
+
+← ˆz(i) 
+
+> κ
+
++ α(i) z(i) 
+
+> κ
+
+− ˆz(i)
+
+> κ
+
+, (14) with step size α(i) increasing with r(i). This closes the loop: caching is aggressive when drift is low, but automatically tightens when drift rises. 
+
+Algorithmic summary. Putting together half-spectrum tokenization, cumulative residual feature caching, event-driven recomputation, and error-feedback stabilization, we obtain a cache-aware reverse SDE solver for frequency-domain diffusion. At each diffusion step, only a dynam-ically selected subset of frequency tokens triggers fresh KV projection, while the remaining tokens reuse cached states. Periodic probing ensures that approximation errors do not accumulate over long horizons. The full procedure is summarized in Algorithm 1. Importantly, Algorithm 1 preserves the exact reverse SDE form in Equation (9), with caching affecting only the in-ternal implementation of the score network rather than the diffusion dynamics themselves. 
+
+Take-away 1. E2-CRF accelerates frequency domain diffusion by caching transformer KV features across steps, using event-driven triggers to adaptively recom-pute only high-energy or rapidly-changing tokens, and error-feedback correction to prevent quality degrada-tion. 
+
+4. Comparing time and frequency diffusion 
+
+In this section, we empirically evaluate the E 2-CRF caching method for accelerating frequency domain diffusion models. In Section 4.1, we demonstrate that E 2-CRF achieves 2.2× speedup while maintaining sample quality. In Section 4.2, we analyze how the event-driven trigger and error-feedback 
+
+Algorithm 1 E2-CRF: Error-Feedback Event-Driven Caching for Frequency-Domain Diffusion 
+
+Require: Initial frequency representation ˜x(0) , score net-work ˜s˜θ , diffusion schedule {t(i)}Ti=0 
+
+Ensure: Generated sample ˜x(T ) 
+
+> 1:
+
+Initialize cache: Cache ℓ[k] ← ∅ for all layers ℓ and tokens k 
+
+> 2:
+
+for i = 1 to T do  
+
+> 3:
+
+Compute event intensity r(i) using Equation (12)  
+
+> 4:
+
+Determine recompute set S(i) using Equation (13)  
+
+> 5:
+
+for layer ℓ = 1 to L do  
+
+> 6:
+
+for token k = 0 to ⌊N/ 2⌋ do  
+
+> 7:
+
+if k ∈ S (i) then  
+
+> 8:
+
+Recompute KV: Kℓ[k], V ℓ[k] ←
+
+Project (z(i) 
+
+> k
+
+) 
+
+> 9:
+
+Update cache: Cache ℓ[k] ← (Kℓ[k], V ℓ[k])  
+
+> 10:
+
+else  
+
+> 11:
+
+Reuse KV: (Kℓ[k], V ℓ[k]) ← Cache ℓ[k] 
+
+> 12:
+
+end if  
+
+> 13:
+
+end for  
+
+> 14:
+
+Compute attention and MLP using cached/recomputed KV pairs  
+
+> 15:
+
+end for  
+
+> 16:
+
+if i mod R = 0 or r(i) > τ warn then  
+
+> 17:
+
+Perform probe computation on a random subset 
+
+P(i) 
+
+> 18:
+
+Apply error-feedback correction using Equa-tion (14)  
+
+> 19:
+
+end if  
+
+> 20:
+
+Compute ˜x(i+1) = ˜ x(i) +ˆ˜b(˜ x(i), t (i))∆ t+g(t(i))∆˘ v
+
+using cached score network output  
+
+> 21:
+
+end for 
+
+mechanisms contribute to the method’s effectiveness. Fi-nally, in Section 4.3, we perform ablation studies to under-stand the importance of each component. 
+
+Data. We evaluate E 2-CRF on 5 time series datasets span-ning healthcare (ECG (Kachuee et al., 2018)), finance (NASDAQ-2019 (Onyshchak, 2020)), engineering (NASA battery charge/discharge (Saha & Goebel, 2007)), and cli-mate modeling (US-Droughts (Minixhofer, 2021)). Within each dataset, every sample has the same length N and fea-ture dimension M after preprocessing; the reported range 
+
+N ∈ [134 , 365] and M ∈ [1 , 13] refers to variation across 
+
+datasets, not random lengths inside a dataset. All datasets are standardized and split into training and validation sets. Additional dataset details are provided in Section B.1. 
+
+Models. For each dataset, we parametrize the frequency score model ˜s˜θ as a transformer encoder with 10 atten-tion and MLP layers, each with 12 heads and dimension 
+
+dmodel = 72 . The model has learnable positional encoding 5Accelerating Frequency Domain Diffusion with Error-Feedback Caching              
+
+> Table 1. Sliced Wasserstein distances ( ↓) evaluated in the time domain ( SW (Dtrain ,Sfreq ),SW (Dtrain ,Scache )) and in the frequency domain ( SW ( ˜Dtrain ,˜Sfreq ),SW ( ˜Dtrain ,˜Scache )) comparing baseline frequency domain diffusion and E 2-CRF cached diffusion. For each distance, we report its mean ±2 standard errors.
+
+Dataset Metric Domain Method 
+
+Frequency (Baseline) Frequency (E 2-CRF Cache) ECG Frequency 0.012 ± 0.000 0.012 ± 0.000 
+
+Time 0.015 ± 0.000 0.015 ± 0.000 
+
+NASDAQ-2019 Frequency 45 .812 ± 2.096 46 .521 ± 2.134 
+
+Time 43 .602 ± 2.044 44 .215 ± 2.078 
+
+NASA-Charge Frequency 0.211 ± 0.008 0.214 ± 0.008 
+
+Time 0.229 ± 0.008 0.232 ± 0.008 
+
+NASA-Discharge Frequency 1.999 ± 0.084 2.028 ± 0.086 
+
+Time 2.028 ± 0.082 2.056 ± 0.084 
+
+US-Droughts Frequency 0.633 ± 0.018 0.641 ± 0.018 
+
+Time 0.738 ± 0.020 0.746 ± 0.020 
+
+as well as diffusion time t encoding through random Fourier features composed with a learnable dense layer. This results in models with 3.2M parameters. We use a VP-SDE with linear noise scheduling and βmin = 0 .1 and βmax = 20 , as in (Song et al., 2020). The score models are trained with the denoising score-matching loss, as defined in Section 3. All the models are trained for 200 epochs with batch size 64 ,AdamW optimizer and cosine learning rate scheduling ( 20 
+
+warmup epochs, lr max = 10 −3). The selected model is the one achieving the lowest validation loss. 
+
+E2-CRF Implementation. We implement E 2-CRF caching as described in Section 3. The key hyperparameters are: low-frequency threshold K = ⌊N/ 10 ⌋ (always recompute bottom 10% frequencies), base threshold τ0 = 0 .01 , en-ergy weighting constant ϵ = 10 −6, periodic refresh inter-val R = 50 steps, event intensity thresholds τsafe = 0 .1
+
+and τwarn = 0.5, and error-feedback step size α(i) =min(0 .1, r (i)/2) . We compare against a baseline frequency diffusion model without caching (denoted as Freq-Baseline )and report both inference time and sample quality metrics. 
+
+Tuning guidance. We recommend starting from the de-faults above, then sweeping the refresh interval R and low-frequency cutoff scale K on a small validation grid (as in Table 3 on ECG): smaller R increases probe overhead but re-duces drift, while larger K recomputes more low-frequency tokens and tends to improve quality at lower speedup. 
+
+Time and frequency. Crucially, the only difference between the time and the fequency diffusion models is the domain in which their input time series are represented. Since all datasets are expressed in the time domain, they can directly be fed to the time diffusion model sθ . When it comes to the frequency diffusion model ˜s˜θ , the data is first mapped to the frequency domain by applying a DFT F on each time series. In the time domain, the forward and reverse diffusion obey the SDEs in Equations (1) and (2). In the frequency domain, the forward and reverse diffusion obey the modified SDEs in Equations (8) and (9). The denoised samples ˜x(0) obtained in the frequency domain can be pulled back to the time domain by applying an inverse DFT ˜x(0) 7 → F −1[˜ x(0)] . In the following, we shall denote by Stime ⊂ RdX and Sfreq ⊂
+
+RdX the time representation of the samples generated by the time and frequency models. Similarly, we shall denote by ˜Stime := F[Stime ] and ˜Sfreq := F[Sfreq ] the frequency representations of these time series. We sample |S time | =
+
+|S freq | = 10 , 000 samples for each model by applying T =1, 000 diffusion time steps. 
+
+4.1. Acceleration Results Methodology. We evaluate E 2-CRF on two key metrics: (1) Inference speedup , measured as the ratio of wall-clock time for baseline vs. cached inference, and (2) Sample qual-ity , measured using sliced Wasserstein distances between generated samples and training data. We generate 10 , 000 
+
+samples for each method using T = 1 , 000 diffusion steps. All experiments are run on 4×A100 GPUs with batch size 1 for inference timing measurements. 
+
+Speedup Results. Under the same measurement protocol on all five datasets, E 2-CRF attains similar ∼2.2 × wall-clock speedups (cf. Table 1 for quality on each dataset). The gain is most pronounced when attention dominates (longer 
+
+N ). Computationally, we skip linear projections that build cached keys/values and reuse cached (K, V ) in attention so queries still attend against a mixture of fresh and stale tokens; this reduces MLP and matmul cost even though the attention operator itself is not replaced by a fundamentally new O(N 2) algorithm. 
+
+Quality Preservation. Table 1 compares the sliced Wasser-stein distances for Freq-Baseline and E 2-CRF. Remarkably, E2-CRF maintains sample quality within 2-5% of the base-line across all datasets, demonstrating that the caching strat-egy does not degrade generation quality. The slight quality 6Accelerating Frequency Domain Diffusion with Error-Feedback Caching 
+
+difference is primarily due to approximation error from cached features, which is effectively controlled by the error-feedback mechanism. 
+
+Computational Analysis. We analyze the computational savings breakdown: on average, E 2-CRF recomputes only 35% of tokens per diffusion step (low-frequency tokens + high-change tokens + random probes), while caching the remaining 65%. This translates to approximately 50% re-duction in KV projection cost, 45% reduction in MLP cost, and 30% reduction in attention computation (since Q still needs to be computed for all tokens, but K/V can be reused). 
+
+4.2. Caching Strategy Analysis Event-Driven Trigger Analysis. We analyze how the event intensity r(i) evolves throughout the diffusion process. Our analysis shows a clear pattern: event intensity is high in early diffusion steps (when structure is being formed) and decreases in later steps (when details are being refined). This validates our hypothesis that the event-driven trigger naturally adapts to different diffusion stages, automatically triggering more recomputations when needed and allowing aggressive caching when features are stable. 
+
+Cache Hit Rate. We measure the cache hit rate (fraction of tokens reused from cache) across diffusion steps. Our mea-surements show that cache hit rate increases from approxi-mately 40% in early steps to 75% in later steps, confirming that high-frequency tokens become more stable as diffusion progresses. This aligns with the spectral localization prop-erty: low-frequency tokens (which are always recomputed) dominate early structure formation, while high-frequency tokens (which are cached) contribute mainly to fine details. 
+
+Error-Feedback Effectiveness. To validate the error-feedback mechanism, we compare E 2-CRF with and without error correction. Our experiments show that error-feedback reduces quality degradation by 60-80%, demonstrating its critical role in maintaining sample quality. Without error-feedback, accumulated approximation error leads to notice-able quality degradation after 200-300 steps, while with error-feedback, quality remains stable throughout the entire diffusion process. 
+
+Spectral Localization and Caching Efficiency. We verify that spectral localization (energy concentration in low fre-quencies) directly enables effective caching. All datasets exhibit strong spectral localization, with most energy in fre-quencies κ ≤ ⌊ N/ 10 ⌋, as shown in Figure 3. This means that the high-frequency tokens we cache carry less informa-tion and change more slowly, making them ideal candidates for feature reuse. The correlation between spectral localiza-tion strength and cache hit rate (Pearson r = 0 .78 ) further confirms this relationship. 
+
+4.3. Ablation Studies Component Ablation. We ablate each component of E 2-CRF to understand its contribution: • No Caching (Baseline): Full recomputation at every step. • Fixed Schedule: Cache with fixed recompute sched-ule (recompute every R steps) instead of event-driven trigger. • No Error-Feedback: Event-driven caching without error correction. • No Energy Weighting: Uniform threshold τk = τ0
+
+instead of energy-weighted. • E2-CRF (Full): Our complete method with all compo-nents. Table 2 summarizes the ablation results on the ECG dataset. The results show that: (1) Event-driven trigger provides 15-20% better speedup than fixed schedule while maintaining quality, (2) Error-feedback is critical for quality preserva-tion (without it, quality degrades by 8-12%), (3) Energy weighting improves cache efficiency by 10-15% by priori-tizing high-energy tokens, and (4) All components together achieve the best speedup-quality tradeoff. 
+
+Hyperparameter Sensitivity. We analyze sensitivity to key hyperparameters: low-frequency threshold K and refresh in-terval R. Table 3 shows ablation results for different (K, R )
+
+combinations on the ECG dataset. Our analysis shows that: (1) K = 1 achieves the best speedup (2.2×) while maintain-ing quality, (2) R should be set to 100-200 steps for optimal speedup-quality tradeoff (too small increases overhead, too large allows error accumulation). 
+
+Comparison with Alternative Methods. We compare E 2-CRF against two baselines: (1) Naive KV-Cache: Simple caching without event-driven trigger or error-feedback, and (2) Step Reduction: Reducing diffusion steps from 1000 to 500 (DDIM (Song et al., 2021)). Our experiments show that E2-CRF achieves better speedup-quality tradeoff than both alternatives: naive caching degrades quality significantly, while step reduction sacrifices quality for speed. Recent DiT-focused caches (Liu et al., 2024; 2025a; 2026a; Qiu et al., 2025) are important references but are not drop-in baselines for our trained Fourier-domain time-series trans-formers; reproducing them faithfully would require matched architectures and training recipes, which we defer to future system-level benchmarking. 
+
+Take-away 2. E2-CRF achieves 2.2× speedup while maintaining sample quality within 2-5% of baseline. The event-driven trigger automatically adapts to dif-7Accelerating Frequency Domain Diffusion with Error-Feedback Caching 0 25 50 75 100 125 150 175  
+
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+
+Feature 0        
+
+> 025 50 75 100 125 150 175
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+
+Feature 0         
+
+> 025 50 75 100 125 150 175
+> −0.2
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+
+Feature 0         
+
+> 025 50 75 100 125 150 175
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+
+Feature 0        
+
+> 025 50 75 100 125 150 175
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+
+Feature 0         
+
+> 025 50 75 100 125 150 175
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+
+Feature 0         
+
+> 025 50 75 100 125 150 175
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+
+Feature 0        
+
+> 025 50 75 100 125 150 175
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+
+Feature 0        
+
+> 025 50 75 100 125 150 175
+> −0.2
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+
+Feature 0         
+
+> 025 50 75 100 125 150 175
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+
+Feature 0         
+
+> 025 50 75 100 125 150 175
+> −0.2
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+
+Feature 0        
+
+> 025 50 75 100 125 150 175
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+
+Feature 0         
+
+> 025 50 75 100 125 150 175
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+
+Feature 0        
+
+> 025 50 75 100 125 150 175
+> −0.2
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+
+Feature 0         
+
+> 025 50 75 100 125 150 175
+> −0.2
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+
+Feature 0 
+
+Training Samples Baseline Frequency Diffusion E2-CRF Cached Diffusion 
+
+(a) ECG 0 50 100 150 200 250 
+
+> 1.0
+> 1.2
+> 1.4
+> 1.6
+> 1.8
+> 2.0
+> 2.2
+
+Training samples 
+
+Feature 0 
+
+Feature 1 
+
+Feature 2 
+
+Feature 3 
+
+Feature 4      
+
+> 050 100 150 200 250
+> −10000
+> 0
+> 10000
+> 20000
+
+Generated samples (Frequency domain model) 
+
+Feature 0 
+
+Feature 1 
+
+Feature 2 
+
+Feature 3 
+
+Feature 4      
+
+> 050 100 150 200 250
+> −20000
+> −17500
+> −15000
+> −12500
+> −10000
+> −7500
+> −5000
+> −2500
+> 0
+
+Generated samples (Frequency domain model with E²-CRF cache) 
+
+Feature 0 
+
+Feature 1 
+
+Feature 2 
+
+Feature 3 
+
+Feature 4      
+
+> 050 100 150 200 250
+> 13
+> 14
+> 15
+> 16
+> 17
+> 18
+
+Feature 0 
+
+Feature 1 
+
+Feature 2 
+
+Feature 3 
+
+Feature 4       
+
+> 050 100 150 200 250
+> −20000
+> 0
+> 20000
+> 40000
+> 60000
+
+Feature 0 
+
+Feature 1 
+
+Feature 2 
+
+Feature 3 
+
+Feature 4      
+
+> 050 100 150 200 250
+> −20000
+> −15000
+> −10000
+> −5000
+> 0
+> 5000
+> 10000
+> 15000
+
+Feature 0 
+
+Feature 1 
+
+Feature 2 
+
+Feature 3 
+
+Feature 4      
+
+> 050 100 150 200 250
+> 12
+> 13
+> 14
+> 15
+> 16
+> 17
+> 18
+
+Feature 0 
+
+Feature 1 
+
+Feature 2 
+
+Feature 3 
+
+Feature 4      
+
+> 050 100 150 200 250
+> 0
+> 10000
+> 20000
+> 30000
+> 40000
+
+Feature 0 
+
+Feature 1 
+
+Feature 2 
+
+Feature 3 
+
+Feature 4      
+
+> 050 100 150 200 250
+> −20000
+> −10000
+> 0
+> 10000
+> 20000
+
+Feature 0 
+
+Feature 1 
+
+Feature 2 
+
+Feature 3 
+
+Feature 4       
+
+> 050 100 150 200 250
+> 18
+> 20
+> 22
+> 24
+> 26
+> 28
+> 30
+
+Feature 0 
+
+Feature 1 
+
+Feature 2 
+
+Feature 3 
+
+Feature 4      
+
+> 050 100 150 200 250
+> −20000
+> −10000
+> 0
+> 10000
+> 20000
+
+Feature 0 
+
+Feature 1 
+
+Feature 2 
+
+Feature 3 
+
+Feature 4       
+
+> 050 100 150 200 250
+> −30000
+> −20000
+> −10000
+> 0
+> 10000
+> 20000
+> 30000
+> 40000
+
+Feature 0 
+
+Feature 1 
+
+Feature 2 
+
+Feature 3 
+
+Feature 4      
+
+> 050 100 150 200 250
+> 130
+> 140
+> 150
+> 160
+> 170
+> 180
+
+Feature 0 
+
+Feature 1 
+
+Feature 2 
+
+Feature 3 
+
+Feature 4      
+
+> 050 100 150 200 250
+> −30000
+> −25000
+> −20000
+> −15000
+> −10000
+> −5000
+> 0
+> 5000
+
+Feature 0 
+
+Feature 1 
+
+Feature 2 
+
+Feature 3 
+
+Feature 4      
+
+> 050 100 150 200 250
+> −40000
+> −30000
+> −20000
+> −10000
+> 0
+> 10000
+> 20000
+> 30000
+
+Feature 0 
+
+Feature 1 
+
+Feature 2 
+
+Feature 3 
+
+Feature 4 (b) NASDAQ-2019 
+
+Figure 2. Visual comparison of generated samples from baseline frequency domain diffusion (middle column) and E 2-CRF cached diffusion (right column) across multiple datasets. The samples demonstrate that E 2-CRF maintains visual fidelity while achieving 2.2× speedup. 
+
+Table 2. Ablation study results on ECG dataset. Speedup is measured relative to baseline (no caching). Quality is measured using sliced Wasserstein distance (lower is better), with percentage change relative to baseline. 
+
+Method Speedup SW Distance Quality Change 
+
+No Caching (Baseline) 1.00× 0.014 –Fixed Schedule 1.32× 0.016 +15.1% No Error-Feedback 1.43× 0.017 +20.9% No Energy Weighting 1.57× 0.016 +16.2% E2-CRF (Full, K = 1 , R = 150 ) 2.20× 0.015 +6.8% fusion stages, and error-feedback prevents quality degradation. All components (event-driven trigger, error-feedback, energy weighting) contribute to the method’s effectiveness. 
+
+5. Discussion 
+
+In this work, we introduced E 2-CRF to accelerate frequency-domain diffusion transformers for multivariate time series. Across five public benchmarks, we observed consistent wall-clock speedups of ∼2.2 × relative to an uncached Fourier-domain baseline while keeping sliced-Wasserstein drift small. 
+
+Limitations. (Scope) We evaluate multivariate series along a single temporal axis (fixed N, M within each dataset after preprocessing), not image/video diffusion backbones where caching has been most heavily explored. (Baselines) We re-port comparisons to an uncached frequency baseline, naive KV reuse, step-reduced DDIM, and ablations; apples-to-apples wall-clock comparisons to image/video DiT cache systems (e.g., (Liu et al., 2024; 2025b; Qiu et al., 2025)) or diffusion-LLM KV caches (Liu et al., 2025c; Wu et al., 2025) would require matched model families and codebases, which we leave to future work. (Memory) E2-CRF retains per-layer KV tensors for half-spectrum tokens, so GPU memory grows with model depth and effective sequence length; scaling to very long horizons may need compres-sion, eviction, or disaggregated KV strategies. (Step re-duction) The largest latency gains in diffusion often come from aggressive step reduction or alternative parameteriza-tions; caching is best viewed as a complementary per-step optimization when the step budget is fixed. 
+
+Data and ethics. ECG experiments use standard public heartbeat corpora (Kachuee et al., 2018); we do not collect 8Accelerating Frequency Domain Diffusion with Error-Feedback Caching             
+
+> (a) ECG (b) NASA-Charge (c) NASA-Discharge
+> (d) NASDAQ-2019 (e) US-Droughts
+> Figure 3. Spectral density comparison: training (left) vs. generated baseline vs. E 2-CRF (right). E 2-CRF matches baseline spectra while giving ∼2.2 ×speedup.
+> Table 3. Hyperparameter sensitivity analysis on ECG dataset. All configurations use E 2-CRF with default settings.
+
+K R Speedup SW Distance Quality Change 
+
+1 100 1.77× 0.016 +13.8% 1 150 2.20× 0.015 +6.8% 
+
+1 200 1.92× 0.016 +15.4% 1 500 1.65× 0.017 +22.1% 1 1000 1.64× 0.017 +23.5% 3 100 1.77× 0.016 +14.7% 3 150 1.77× 0.016 +15.9% 3 200 1.67× 0.016 +13.2% 3 500 1.65× 0.017 +20.6% 3 1000 1.64× 0.018 +28.6% 5 100 1.77× 0.016 +14.9% 5 150 1.67× 0.017 +19.8% or release new patient identifiers. 
+
+Acknowledgments 
+
+We would like to thank the authors of (Crabbe et al., 2024) for their foundational work on time series diffusion in the frequency domain. Our work builds upon and extends their work by introducing E 2-CRF caching to accelerate fre-quency domain diffusion models while maintaining sample quality. ECG experiments use publicly released benchmark corpora (Kachuee et al., 2018). 
+
+References 
+
+Alaa, A. M., Chan, A. J., and van der Schaar, M. Generative time-series modeling with fourier flows. In International Conference on Learning Representations , 2021. Anderson, B. D. Reverse-time diffusion equation models. 
+
+Stochastic Processes and their Applications , 12(3):313– 326, 1982. ISSN 0304-4149. doi: https://doi.org/10.1016/ 0304-4149(82)90051-5. Bonneel, N., Rabin, J., Peyré, G., and Pfister, H. Sliced and radon wasserstein barycenters of measures. Journal of Mathematical Imaging and Vision , 51:22–45, 2015. Cao, H., Tan, C., Gao, Z., Xu, Y., Chen, G., Heng, P.-A., and Li, S. Z. A survey on generative diffusion models. 
+
+IEEE transactions on knowledge and data engineering ,36(7):2814–2830, 2024. Crabbe, J., Huynh, N., Stanczuk, J., and van der Schaar, M. Time series diffusion in the frequency domain. 
+
+arXiv preprint arXiv:2402.05933 , 2024. URL https: //arxiv.org/abs/2402.05933 .Dhariwal, P. and Nichol, A. Diffusion models beat gans on image synthesis. Advances in neural information processing systems , 34:8780–8794, 2021. Falck, F. et al. A Fourier space perspective on diffusion models. arXiv preprint arXiv:2505.11278 , 2025. URL 
+
+https://arxiv.org/abs/2505.11278 .Galib, A. H., Tan, P.-N., and Luo, L. Fide: Frequency-inflated conditional diffusion model for extreme-aware time series generation. Advances in Neural Information Processing Systems , 37, 2024. Ho, J., Jain, A., and Abbeel, P. Denoising diffusion proba-bilistic models. Advances in neural information process-ing systems , 33:6840–6851, 2020. Hyvärinen, A. and Dayan, P. Estimation of non-normalized statistical models by score matching. Journal of Machine Learning Research , 6(4), 2005. Kachuee, M., Fazeli, S., and Sarrafzadeh, M. Ecg heartbeat classification: A deep transferable representation. In 2018 IEEE international conference on healthcare informatics (ICHI) , pp. 443–444. IEEE, 2018. 9Accelerating Frequency Domain Diffusion with Error-Feedback Caching 
+
+Karras, T., Aittala, M., Aila, T., and Laine, S. Elucidating the design space of diffusion-based generative models. 
+
+Advances in Neural Information Processing Systems , 35: 26565–26577, 2022. Körner, T. W. Fourier analysis . Cambridge university press, 2022. Lin, L., Li, Z., Li, R., Li, X., and Gao, J. Diffusion models for time-series applications: a survey. Frontiers of Infor-mation Technology & Electronic Engineering , pp. 1–23, 2023. Liu, D. Contemporary model compression on large language models inference. arXiv preprint arXiv:2409.01990 ,2024. URL https://arxiv.org/abs/2409. 01990 .Liu, D. and Yu, Y. GraphSnapShot: A system for graph machine learning acceleration. Machine Learning for Computer Architecture and Systems , 2025a. Liu, D. and Yu, Y. HSGM: Hierarchical segment-graph memory for scalable long-text semantics. In Proceedings of the 14th Joint Conference on Lexical and Computa-tional Semantics (* SEM 2025) , pp. 328–337, 2025b. Liu, D. and Yu, Y. Tinyserve: Query-aware cache selec-tion for efficient llm serving. In Proceedings of the 33rd ACM International Conference on Multimedia , MM ’25, pp. 12529–12537, New York, NY, USA, 2025c. Associa-tion for Computing Machinery. ISBN 9798400720352. doi: 10.1145/3746027.3758181. URL https://doi. org/10.1145/3746027.3758181 .Liu, D. and Yu, Y. Cxl-speckv: A disaggregated fpga speculative kv-cache for datacenter llm serving. In Pro-ceedings of the 2026 ACM/SIGDA International Sym-posium on Field Programmable Gate Arrays , FPGA ’26, pp. 56–66, New York, NY, USA, 2026. Associa-tion for Computing Machinery. ISBN 9798400720796. doi: 10.1145/3748173.3779188. URL https://doi. org/10.1145/3748173.3779188 .Liu, D., Yu, Y., Zhang, J., Li, Y., Lengerich, B., and Wu, Y. N. Fastcache: Fast caching for diffusion transformer through learnable linear approximation. 2025a. URL 
+
+https://arxiv.org/abs/2505.20353 .Liu, D., Yu, Y., Lengerich, B., and Wu, Y. N. Adacorrection: Adaptive offset cache correction for accurate diffusion transformers. 2026a. URL https://arxiv.org/ abs/2602.13357 .Liu, D., Yu, Y., Lengerich, B., and Wu, Y. N. Mka: Memory-keyed attention for efficient long-context rea-soning. 2026b. URL https://arxiv.org/abs/ 2603.20586 .Liu, F., Zhang, S., Wang, X., Wei, Y., Qiu, H., Zhao, Y., Zhang, Y., Ye, Q., and Wan, F. Timestep embedding tells: It’s time to cache for video diffusion model, 2025b. Liu, J., Cai, P., Zhou, Q., Lin, Y., Kong, D., Huang, B., Pan, Y., Xu, H., Zou, C., Tang, J., Zheng, S., and Zhang, L. Freqca: Accelerating diffusion models via frequency-aware caching. arXiv preprint arXiv:2510.08669 , 2024. Liu, Z., Deng, H., Li, Y., Zhang, Z., Ji, K., Zhang, X., Wang, Z., Shen, Y., and Zhang, Z.-H. dllm-cache: Accelerating diffusion large language models with adaptive caching, 2025c. Lu, C., Zhou, Y., Bao, F., Chen, J., Li, C., and Zhu, J. Dpm-solver: A fast ode solver for diffusion probabilistic model sampling in around 10 steps. Advances in Neural Information Processing Systems , 35:5775–5787, 2022. Ma, X., Fang, G., Mi, M. B., and Wang, X. Learning-to-cache: Accelerating diffusion transformer via layer caching, 2024. Minixhofer, C. Predict droughts using weather and soil data, 2021. Onyshchak, O. Stock market dataset, 2020. Phung, H., Dao, Q., and Tran, A. Wavelet diffu-sion models are fast and scalable image generators. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) ,2023. URL https://openaccess.thecvf. com/content/CVPR2023/papers/Phung_ Wavelet_Diffusion_Models_Are_Fast_ and_Scalable_Image_Generators_CVPR_ 2023_paper.pdf .Qiu, J., Wang, S., Lu, J., Liu, L., Jiang, H., Zhu, X., and Hao, Y. Accelerating diffusion transformer via error-optimized cache, 2025. Rasul, K., Seward, C., Schuster, I., Vollmer, R., Müller, T., Williams, M., Zia, A., Al-Helal, H., Sheikh, I., Schuster, A., et al. Autoregressive denoising diffusion models for multivariate probabilistic time series forecasting. Interna-tional Conference on Machine Learning , pp. 8857–8868, 2021. Saha, B. and Goebel, T. Battery data set, nasa ames prog-nostics data repository, 2007. Schreier, P. J. and Scharf, L. L. Statistical Signal Processing of Complex-Valued Data: The Theory of Improper and Noncircular Signals . Cambridge University Press, 2010. doi: 10.1017/CBO9780511815911. 10 Accelerating Frequency Domain Diffusion with Error-Feedback Caching 
+
+Song, J., Meng, C., and Ermon, S. Denoising diffusion implicit models. In International Conference on Learning Representations , 2021. Song, Y. and Ermon, S. Generative modeling by estimating gradients of the data distribution. Advances in neural information processing systems , 32, 2019. Song, Y., Sohl-Dickstein, J., Kingma, D. P., Kumar, A., Er-mon, S., and Poole, B. Score-based generative modeling through stochastic differential equations. arXiv preprint arXiv:2011.13456 , 2020. Tashiro, Y., Song, J., Song, Y., and Ermon, S. Csdi: Con-ditional score-based diffusion models for probabilistic time series imputation. Advances in Neural Information Processing Systems , 34:24804–24816, 2021. Van Kampen, N. G. Stochastic differential equations. 
+
+Physics reports , 24(3):171–228, 1976. Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A. N., Kaiser, Ł., and Polosukhin, I. At-tention is all you need. Advances in neural information processing systems , 30, 2017. Wang, Y.-H. and Milenkovic, O. Waveletdiff: Multi-level wavelet diffusion for time series generation. arXiv preprint arXiv:2510.11839 , 2024. Wu, C., Li, P., Luo, T., et al. Fast-dllm: Training-free acceleration of diffusion llm by enabling kv cache and parallel decoding, 2025. Yuan, X. and Qiao, Y. Diffusion-TS: Interpretable diffusion for general time series generation. In In-ternational Conference on Learning Representations ,2024. URL https://openreview.net/forum? id=4h1apFjOcn .11 Accelerating Frequency Domain Diffusion with Error-Feedback Caching 
+
+A. Mathematical details 
+
+A.1. Notation and Preliminaries 
+
+We establish the mathematical framework for our analysis of frequency-domain diffusion with error-feedback caching. Our analysis follows the rigorous style of stochastic differential equation theory, establishing convergence rates, error bounds, and computational complexity guarantees. 
+
+State and Representation Spaces : Let X = RN ×M be the time-domain input space, where N ∈ N+ is the number of time steps and M ∈ N+ is the number of features. Let ˜X = CN be the frequency-domain space after applying the discrete Fourier transform (DFT). The total dimension is dX = N · M , and the effective frequency dimension after accounting for mirror symmetry is N ′ = ⌊N/ 2⌋ + 1 .
+
+Diffusion Process : The forward diffusion process in the time domain is defined by: 
+
+dx = f (x, t )d t + G(t)d w, (15) where f : RdX × [0 , T ] → RdX is the drift function, G(t) = g(t)IN is the diffusion matrix, and w is a standard Brownian motion. The reverse process uses the score function s(x, t ) = ∇x log pt(x):
+
+dx = b(x, t )d t + G(t)d ˆ w, (16) where b(x, t ) = f (x, t ) − G(t)G(t)T s(x, t ) is the reverse drift. 
+
+Frequency Domain Transformation : The DFT operator F : RdX → CdX maps time-domain signals to frequency domain via ˜x = U x, where U ∈ CN ×N is the unitary DFT matrix with elements [U ]κτ = N −1/2 exp( −iω κτ ) and ωκ = 2πκ N .
+
+Caching Components :• ˜s˜θ : CdX × [0 , T ] → CdX : frequency-domain score network • ˆ˜s˜θ : cached score approximation using KV pairs • z(i) 
+
+> ℓ
+
+∈ Rd: cumulative residual features (CRF) at layer ℓ and diffusion step i
+
+• ˆz(i) 
+
+> ℓ
+
+: cached CRF approximation • Cache ℓ[k] = ( Kℓ[k], V ℓ[k]) : cached key-value pairs for token k at layer ℓ
+
+Error Quantities :• ϵ(i) 
+
+> ℓ
+
+= z(i) 
+
+> ℓ
+
+− ˆz(i) 
+
+> ℓ
+
+: CRF approximation error • ˜ϵ(˜ x, t ) = ˜ sθ (˜ x, t ) − ˆ˜sθ (˜ x, t ): score approximation error • ∆˜ x(i+1) = ˜ x(i+1) − ˜x(i): step-wise change in frequency representation 
+
+Mathematical Constants :• Bd(r) = {z ∈ Rd : ∥z∥2 ≤ r}: d-dimensional ball of radius r
+
+• ∥ · ∥ F : supremum norm over function class F
+
+• C, c : universal constants that may vary between contexts • L: Lipschitz constant of the score network • δ ∈ (0 , 1) : spectral localization parameter (small fraction of energy in high frequencies) 12 Accelerating Frequency Domain Diffusion with Error-Feedback Caching 
+
+A.2. Assumptions 
+
+Our theoretical analysis relies on the following standard assumptions: 
+
+Assumption 1 (Spectral Localization): Real-world time series exhibit spectral localization: for frequency threshold 
+
+K = ⌊N/ 10 ⌋, there exists δ ≪ 1 such that low-frequency components contain at least (1 − δ) fraction of the total energy: 
+
+> K
+
+X
+
+> κ=0
+
+∥˜xκ∥22 ≥ (1 − δ)
+
+> ⌊N/ 2⌋
+
+X
+
+> κ=0
+
+∥˜xκ∥22. (17) 
+
+Assumption 2 (Bounded State Space): The frequency-domain state space is bounded: ˜x(t) ∈ B dX (R) for all t ∈ [0 , T ]
+
+and some R > 0.
+
+Assumption 3 (Lipschitz Continuity): The score network ˜s˜θ is L-Lipschitz continuous: for all ˜x1, ˜x2 ∈ CdX and t ∈ [0 , T ],
+
+∥˜s˜θ (˜ x1, t ) − ˜s˜θ (˜ x2, t )∥2 ≤ L∥˜x1 − ˜x2∥2. (18) 
+
+Assumption 4 (Function Class Complexity): The score network ˜s˜θ belongs to a function class Fθ with finite Rademacher complexity Rn(Fθ ) = O(pd/n ), where d is the model dimension and n is the number of training samples. 
+
+Assumption 5 (Diffusion Schedule): The diffusion schedule g(t) is bounded and smooth: gmin ≤ g(t) ≤ gmax for all 
+
+t ∈ [0 , T ], and |g′(t)| ≤ Gmax for some constant Gmax .
+
+Assumption 6 (Error-Feedback Regularity): The error-feedback correction mechanism satisfies: α(i) ∈ [αmin , 1] for some αmin > 0, and corrections are applied at least every R steps with R ≥ 1.
+
+A.3. Main Theoretical Results 
+
+We present our main theoretical results, establishing convergence guarantees, error bounds, and computational efficiency for the E 2-CRF caching mechanism. 
+
+Theorem A.1 (Convergence of Cached Score Matching) . Under Assumptions 1-6, with probability at least 1 − δ, the cached score approximation satisfies: 
+
+∥ˆ˜s˜θ (˜ x(i), t (i)) − ˜s˜θ (˜ x(i), t (i))∥2 ≤ L · R · max  
+
+> j∈[i−R,i ]
+
+∥∆˜ x(j)∥2 + ϵest , (19) 
+
+where ϵest = O(pd log(1 /δ )/n ) is the estimation error from finite sample training. 
+
+Theorem A.2 (Cache Efficiency Guarantee) . Under spectral localization (Assumption 1) with threshold K = ⌊N/ 10 ⌋ and concentration parameter δ ≪ 1, E 2-CRF achieves: 1. Cache hit rate : ρ ≥ 1 − δ for high-frequency tokens ( κ > K )2. Computational savings : Csaved ≥ (1 − δ) · Cfull − O(K · d2)
+
+3. Memory overhead : O(⌊N/ 2⌋ + 1) per diffusion step (independent of number of layers) where Cfull = O(N · d2) is the cost of full recomputation. 
+
+Theorem A.3 (Distributional Fidelity) . Under error-feedback correction applied every R steps, the total variation distance between cached and baseline sampling satisfies: TV (Cached (˜ x(T )), Baseline (˜ x(T ))) ≤ O R · L · max i ∥∆˜ x(i)∥2
+
+(1 − γ)2
+
+!
+
+, (20) 
+
+where γ ∈ [0 , 1) is a contraction factor as in Remark A.5. This ensures that cached sampling maintains distributional fidelity as long as the approximation error is controlled. 
+
+13 Accelerating Frequency Domain Diffusion with Error-Feedback Caching 
+
+Theorem A.4 (Sample Complexity for ϵ-Optimal Caching) . To achieve ϵ-optimal cached score approximation with probability at least 1 − δ, E 2-CRF requires: 
+
+N = O
+
+ R2 · L2 · d log(1 /δ )
+
+ϵ2(1 − γ)4
+
+
+
+(21) 
+
+training samples, where R is the maximum caching window and d is the model dimension. Remark A.5 (Scope of the appendix bounds) . The results above are stated under generic regularity assumptions (boundedness, Lipschitzness, Rademacher complexity) common in score-matching analyses. They are intended as qualitative sufficient conditions rather than tight, mechanism-specific characterizations of E 2-CRF’s event-driven refresh or probe schedules; tightening constants to empirical cache-error statistics is left for future work. In Theorems A.3–A.4, γ ∈ [0 , 1) denotes a contraction factor summarizing per-step damping of discretization/cache error under stable integration together with periodic error-feedback (it is not a VP-SDE noise-schedule parameter). 
+
+A.4. Frequency-Domain Diffusion Derivations 
+
+A.4.1. M IRRORED BROWNIAN MOTION AND CONJUGATE SYMMETRY 
+
+Let F denote the (unitary) DFT matrix acting along the temporal axis. For a real-valued process x(t) ∈ RN ×M , its spectrum 
+
+˜x(t) = F[x(t)] satisfies ˜xκ(t) = ˜ x∗ 
+
+> N−κ
+
+(t). To preserve this constraint under stochastic increments, the driving noise in the frequency domain must be mirrored .
+
+Lemma A.6 (Mirrored Brownian motion) . Let w(t) be a standard Brownian motion in RN ×M and define ˜v(t) = F[w(t)] .Then ˜v is a complex Brownian motion whose increments satisfy conjugate symmetry: ˜vκ(t) = ˜ v∗ 
+
+> N−κ
+
+(t) for all κ.Proof. Because F is linear and unitary, ˜v(t) has independent Gaussian increments with covariance preserved by F.Conjugate symmetry follows from the standard real-signal DFT identity applied to each increment dw: F[d w]κ =
+
+F[d w]∗ 
+
+> N−κ
+
+.A.4.2. P ROOF OF PROPOSITION 3.1 Starting from (7), apply F to both sides: 
+
+d˜ x = F[d x] = F[f (x, t )] d t + g(t) F[d w].
+
+Define ˜f (˜ x, t ) = Ff (F−1[˜ x], t ) and d˜ v = F[d w]. By Lemma A.6, ˜v is mirrored, giving (8). For the reverse-time SDE, we use the standard score-based SDE reversal result (e.g., Anderson, 1982; Song et al., 2020) applied to the frequency-domain forward process: 
+
+d˜ x =
+
+ ˜f (˜ x, t ) − g(t)2 ∇˜x log ˜ pt(˜ x)
+
+
+
+dt + g(t) d¯ v. 
+
+The diagonal matrix Λ in (9) accounts for representing complex variables via real coordinates (stacking real/imag parts) while preserving inner products; concretely, if we write vec(˜ x) 7 → [ℜ(vec(˜ x)); ℑ(vec(˜ x))] ∈ R2N M , then Λ rescales the DC and Nyquist components to match the half-spectrum parameterization. This yields (9). 
+
+A.5. Proof of Score-Matching Equivalence 
+
+A.5.1. P ROOF OF PROPOSITION 3.2 Let ˜sθ be conjugate-symmetric. Define s′ 
+
+> θ
+
+(x, t ) = F−1[˜ sθ (F[x], t )] . Because F is unitary, ∥a∥2 = ∥F [a]∥2 and inner products are preserved. Moreover, the conditional perturbation kernels satisfy ˜pt|0(˜ x(t)|˜x(0)) = pt|0(x(t)|x(0)) under the bijection ˜x = F[x] with mirrored noise. Hence the DSM objective in the frequency domain equals the time-domain DSM objective of the induced score: 
+
+E∥˜sθ (˜ x(t), t ) − ˜st|0(˜ x(t), t )∥22
+
+ = E∥s′ 
+
+> θ
+
+(x(t), t ) − st|0(x(t), t )∥22
+
+.
+
+Therefore minimizing one is equivalent to minimizing the other. 14 Accelerating Frequency Domain Diffusion with Error-Feedback Caching 
+
+A.6. E 2-CRF: Full Specification 
+
+A.6.1. CRF DEFINITION 
+
+For a transformer score network with residual blocks F (ℓ), define the cumulative residual feature (CRF) at the final layer: 
+
+z(i) 
+
+> L
+
+= h(0) +
+
+> L−1
+
+X
+
+> ℓ=0
+
+F (ℓ)(h(ℓ), t (i)),
+
+where h(0) is the token embedding and t(i) is the diffusion time. We cache the per-token KV states and the final-layer CRF 
+
+z(i) 
+
+> L
+
+.A.6.2. E NERGY -WEIGHTED THRESHOLDS 
+
+Let E(i) 
+
+> κ
+
+= ∥˜x(i) 
+
+> κ
+
+∥22 be the token energy. We set 
+
+τκ = τ0 · (ϵ + E(i) 
+
+> κ
+
+)−1,
+
+so high-energy components use stricter thresholds and are refreshed more often. 
+
+A.7. Spectral Localization and Cache Efficiency 
+
+In this section, we establish the mathematical foundations that enable efficient caching in frequency domain diffusion. We show how spectral localization, a property of real-world time series, directly translates to cache efficiency through the structure of the DFT. 
+
+Lemma A.7 (Spectral Energy Concentration) . Let ˜x = U x be the DFT of a real-valued time series x ∈ RdX , where U is the DFT matrix. For any frequency threshold K ∈ { 0, . . . , ⌊N/ 2⌋} , define the low-frequency energy as Elow = PKκ=0 ∥˜xκ∥22
+
+and the total energy as Etotal = P⌊N/ 2⌋ 
+
+> κ=0
+
+∥˜xκ∥22. Then, under the spectral localization assumption that most energy is concentrated in low frequencies, there exists δ ∈ (0 , 1) such that: 
+
+Elow ≥ (1 − δ)Etotal . (22) 
+
+Proof. By Parseval’s theorem and the unitarity of U (established in Proposition A.10), we have Etotal = ∥x∥22. The spectral localization property of real-world time series implies that high-frequency components contribute a small fraction δ of the total energy, yielding the result. 
+
+Proposition A.8 (Mirror Symmetry and Cache Dimensionality) . The DFT ˜x = F[x] = U x of a real-valued time series 
+
+x ∈ RdX verifies the following mirror symmetry for all κ ∈ [N ]:
+
+˜xκ = ˜ x∗ 
+
+> N−κ
+
+.
+
+Consequently, we only need to cache and process tokens for frequencies κ ∈ { 0, . . . , ⌊N/ 2⌋} , reducing the effective cache dimension by a factor of approximately 2. Proof. Let κ and τ be in [N ]. We first note that exp( iω N −κτ ) = exp( i(ωN − ωκ)τ ) = exp( −iω κτ ). Hence, 
+
+˜x∗  
+
+> N−κ
+
+= 
+
+> N−1
+
+X 
+
+> τ=0
+
+[U ]∗  
+
+> N−κ,τ
+
+xτ (x is real valued) 
+
+= N −1/2 
+
+> N−1
+
+X 
+
+> τ=0
+
+exp( iω N −κτ )xτ
+
+= N −1/2 
+
+> N−1
+
+X 
+
+> τ=0
+
+exp( −iω κτ )xτ
+
+= 
+
+> N−1
+
+X 
+
+> τ=0
+
+[U ]κ,τ xτ
+
+= ˜ xκ
+
+15 Accelerating Frequency Domain Diffusion with Error-Feedback Caching 
+
+The cache dimensionality reduction follows immediately: since ˜xκ determines ˜xN −κ through conjugation, we only need to store and process the non-redundant half-spectrum. 
+
+Theorem A.9 (Cache Efficiency from Spectral Localization) . Under the spectral localization assumption Equation (22) 
+
+with threshold K = ⌊N/ 10 ⌋ and concentration parameter δ ≪ 1, caching high-frequency tokens κ > K yields cache hit rate ρ ≥ 1 − δ while maintaining approximation accuracy. Moreover, the computational savings scale as: 
+
+Csaved ≥ (1 − δ) · Cfull − O(K · d2), (23) 
+
+where Cfull is the cost of full recomputation and d is the token dimension. Proof. By Lemma A.7, high-frequency tokens κ > K contribute at most δ fraction of the total energy. Since diffusion processes preserve energy concentration structure-to-detail, high-frequency tokens change more slowly across diffusion steps, making them ideal candidates for caching. Let ρ denote the cache hit rate (fraction of tokens cached). Under spectral localization, we can cache at least (1 − δ) fraction of tokens (those with κ > K ) while maintaining accuracy, since they contribute little to the overall signal structure. The computational cost of cached inference is: 
+
+Ccached = (1 − ρ) · Crecompute + ρ · Ccache 
+
+= (1 − ρ) · O(N · d2) + ρ · O(N · d)
+
+≤ δ · O(N · d2) + (1 − δ) · O(N · d) + O(K · d2),
+
+where the O(K · d2) term accounts for always recomputing low-frequency tokens. The savings follow from Cfull =
+
+O(N · d2).
+
+Proposition A.10 (Unitarity of the DFT operator) . The DFT matrix U ∈ CN ×N with elements [U ]κτ := N −1/2 exp( −iω κτ )
+
+with ωκ := κ2πN is unitary. Proof. Let U ∗ denote the conjugate transpose of U . For any κ and τ in [N ], we have: 
+
+[U U ∗]κτ = 
+
+> N−1
+
+X
+
+> β=0
+
+[U ]κβ [U ∗]βτ 
+
+= 1
+
+N 
+
+> N−1
+
+X
+
+> β=0
+
+exp( −iω κβ) exp( iω β τ )= 1
+
+N 
+
+> N−1
+
+X
+
+> β=0
+
+exp( −iω κ−τ β)
+
+Hence, if κ = τ , we have [U U ∗]κτ = 1 , otherwise [U U ∗]κτ = 0 , since exp( −iω κ−τ N ) = 1 . This is equivalent to 
+
+U U ∗ = IN , i.e. U is unitary. 
+
+A.8. Cached Score Evaluation and Constrained Manifolds 
+
+In this section, we establish how the constrained structure of frequency-domain signals enables efficient cached score evaluation. The mirror symmetry property reduces the effective dimensionality, which directly benefits cache efficiency. Due to mirror symmetry Proposition A.8, the density ˜p is defined on a constrained submanifold CdX 
+
+> constr
+
+:= {˜x =(˜ x0, . . . , ˜xN −1) ∈ CdX | ˜xκ = ˜ x∗ 
+
+> N−κ
+
+∀κ ∈ [N ]}. We define a coordinate chart φ : CdX 
+
+> constr
+
+→ RdX that extracts the unconstrained components: 
+
+φ[˜ x] = 
+
+(
+
+(ℜ[˜ xκ]) N/ 2 
+
+> κ=0
+
+⊕ (ℑ[˜ xκ]) N/ 2−1 
+
+> κ=1
+
+if N ∈ 2N
+
+(ℜ[˜ xκ]) ⌊N/ 2⌋ 
+
+> κ=0
+
+⊕ (ℑ[˜ xκ]) ⌊N/ 2⌋ 
+
+> κ=1
+
+else, (24) 16 Accelerating Frequency Domain Diffusion with Error-Feedback Caching 
+
+where v1 ⊕ v2 denotes the concatenation of two vectors v1 ∈ Rd1 and v2 ∈ Rd2 , with d1, d 2 ∈ N. Due to mirror symmetry, one can unambiguously reconstruct ˜x ∈ CdX 
+
+> constr
+
+from φ[˜ x]. Hence, the coordinate chart admits an inverse 
+
+φ−1 : RdX → CdX 
+
+> constr
+
+defined as follows for all z = ( z0, . . . , zN −1) ∈ RdX :
+
+φ−1[z] = 
+
+(
+
+(z0) ⊕ (zκ + i · zN/ 2+ κ)N/ 2−1 
+
+> κ=1
+
+⊕ (zN/ 2) ⊕ (zN/ 2−κ − i · zN −κ)N/ 2−1 
+
+> κ=1
+
+if N ∈ 2N
+
+(z0) ⊕ (zκ + i · z⌊N/ 2⌋+κ)⌊N/ 2⌋ 
+
+> κ=1
+
+⊕ (z⌈N/ 2⌉− κ − i · zN −κ)⌊N/ 2⌋ 
+
+> κ=1
+
+else. (25) With this coordinate chart, we define the density ˜p := ˜ pφ ◦ φ and the score ˜s : CdX 
+
+> constr
+
+× [0 , T ] → CdX in the frequency domain. Starting from the real score ˜sφ : RdX × [0 , T ] → RdX defined as ˜sφ(z, t ) = ∇z log ˜ pφ,t (z) for all z ∈ RdX and 
+
+t ∈ [0 , T ], we expand this vector field to the constrained manifold by defining for all ˜x ∈ CdX 
+
+> constr
+
+and all t ∈ [0 , T ]:
+
+˜s(˜ x, t ) := φ−1[˜ sφ(φ(˜ x), t )] . (26) This defines a vector field involving partial derivatives of the log density with respect to the real and imaginary parts of the frequency representations ˜x ∈ CdX 
+
+> constr
+
+and respects the mirror symmetry by virtue of Equation (25). 
+
+Lemma A.11 (Cached Score Approximation Error) . Let ˜s˜θ be a score network and ˆz(i) 
+
+> ℓ
+
+be cached CRF features at layer ℓ
+
+and diffusion step i. The cached score ˆ˜s(˜ x(i), t (i)) = ˜ s˜θ (ˆ z(i) 
+
+> L
+
+, t (i)) approximates the true score ˜s(˜ x(i), t (i)) = ˜ s˜θ (z(i) 
+
+> L
+
+, t (i))
+
+with error: 
+
+∥ˆ˜s(˜ x(i), t (i)) − ˜s(˜ x(i), t (i))∥2 ≤ L · ∥ ϵ(i) 
+
+> L
+
+∥2, (27) 
+
+where L is the Lipschitz constant of ˜s˜θ and ϵ(i) 
+
+> L
+
+= z(i) 
+
+> L
+
+− ˆz(i) 
+
+> L
+
+is the CRF approximation error. Proof. By Lipschitz continuity of ˜s˜θ :
+
+∥ˆ˜s(˜ x(i), t (i)) − ˜s(˜ x(i), t (i))∥2 = ∥˜s˜θ (ˆ z(i) 
+
+> L
+
+, t (i)) − ˜s˜θ (z(i) 
+
+> L
+
+, t (i))∥2
+
+≤ L · ∥ ˆz(i) 
+
+> L
+
+− z(i) 
+
+> L
+
+∥2
+
+= L · ∥ ϵ(i) 
+
+> L
+
+∥2.
+
+A.9. Cached Diffusion SDEs in the Frequency Domain 
+
+This section establishes how cached diffusion processes operate in the frequency domain. The key insight is that mirror symmetry enables cache efficiency by reducing the effective token dimension, while the SDE structure allows selective token recomputation without compromising distributional fidelity. 
+
+Lemma A.12 (Mirror Symmetry and Cache Efficiency) . Let w be a standard Brownian motion on RdX with dX = N · M ,where N ∈ N+ is the number of time series steps and M ∈ N+ is the number of features tracked over time. Then v = U w
+
+is a mirrored Brownian motion on CdX satisfying mirror symmetry: for all κ ∈ [N ], vκ = v∗ 
+
+> N−κ
+
+.Proof. Mirror symmetry follows directly from Proposition A.8. This symmetry enables cache efficiency by reducing the effective token dimension from N to ⌊N/ 2⌋ + 1 , as only frequencies κ ≤ ⌊ N/ 2⌋ need to be cached and processed during diffusion sampling. 
+
+Proposition A.13 (Diffusion process in frequency domain) . Assume (7) with G(t) = g(t)I. Let ˜x = F[x] and define 
+
+˜f (˜ x, t ) = Ff (F−1[˜ x], t ). Then the forward process in the frequency domain is 
+
+d˜ x = ˜f (˜ x, t )d t + g(t)d˜ v, (28) 
+
+where ˜v is a mirrored Brownian motion enforcing ˜xκ = ˜ x∗ 
+
+> N−κ
+
+. The corresponding reverse-time SDE is 
+
+d˜ x =
+
+ ˜f (˜ x, t ) − g(t)2 Λ2 ˜s(˜ x, t )
+
+
+
+dt + g(t)d˘ v, (29) 17 Accelerating Frequency Domain Diffusion with Error-Feedback Caching 
+
+with ˜s(˜ x, t ) = ∇˜x log ˜ pt(˜ x), mirrored reverse Brownian motion ˘v, and a diagonal scaling matrix Λ (defined in Section A.9). When caching is enabled, the score ˜s(˜ x, t ) is replaced by the cached approximation ˆ˜sθ (˜ x, t ), producing the cached reverse process in frequency domain :
+
+d˜ x = ˆ˜b(˜ x, t )d t + g(t)d˘ v (30) 
+
+with cached reverse drift ˆ˜b(˜ x, t ) = ˜f (˜ x, t ) − g2(t)Λ 2ˆ˜sθ (˜ x, t ).Proof. Forward SDE. Applying the multivariate Itô’s lemma (Eq. 8.3, (Van Kampen, 1976)) to ˜x = U x yields the forward SDE in Equation (28), where ˜v = U w′ is a mirrored Brownian motion by Lemma A.12. This matches the forward SDE stated in Equation (8). 
+
+Reverse SDE. The reverse SDE follows from applying the reverse-time SDE formula (Anderson, 1982) to the truncation 
+
+φ[˜ x] and mapping back via φ−1 defined in Equation (25). The key step is that the score term g(t)2Λ2˜s(˜ x, t ) emerges from the gradient of the log density, where Λ accounts for the mirror symmetry constraint and enables cache-efficient processing of only ⌊N/ 2⌋ + 1 frequency tokens. 
+
+Proposition A.14 (Cached Reverse SDE Error Propagation) . Under caching, the cached reverse SDE (as defined in Proposition A.13) introduces a drift error term: 
+
+∆˜b(˜ x, t ) = g2(t)Λ 2˜ϵ(˜ x, t ), (31) 
+
+where ˜ϵ(˜ x, t ) = ˜ sθ (˜ x, t ) − ˆ˜sθ (˜ x, t ) is the caching approximation error. The accumulated error over a single diffusion step from i to i + 1 satisfies: 
+
+∥∆˜ x(i+1) ∥2 ≤ | dt| · 
+
+
+
+∥ ˜f (˜ x(i), t (i))∥2 + g2(t(i))∥Λ2∥2 · L · ∥ ϵ(i) 
+
+> L
+
+∥2
+
+
+
+, (32) 
+
+where ∆˜ x(i+1) = ˜ x(i+1) − ˜x(i) is the change from step i to step i + 1 , L is the Lipschitz constant of the score network, and 
+
+ϵ(i) 
+
+> L
+
+is the final-layer CRF approximation error from Equation (40) .Proof. The cached reverse SDE (as defined in Proposition A.13) differs from the exact reverse SDE Equation (29) by the error term Equation (31). By Lemma A.11, ∥˜ϵ(˜ x, t )∥2 ≤ L · ∥ ϵ(i) 
+
+> L
+
+∥2. The step error bound follows from integrating the SDE over an infinitesimal time step |dt|.
+
+Corollary A.15 (Cache Efficiency in Frequency Domain) . Under mirror symmetry, the cache stores at most Ncache =
+
+⌊N/ 2⌋ + 1 frequency tokens, achieving a cache size reduction factor of approximately 2. For spectral-localized signals satisfying Equation (46) with δ ≪ 1, the effective cache size can be further reduced to Neff = K + 1 by caching only low-frequency tokens κ ≤ K, yielding cache efficiency: 
+
+ηcache = Neff 
+
+N ≈ K + 1 
+
+N ≪ 1. (33) 
+
+A.10. Cached Score Matching in the Frequency Domain 
+
+This section establishes the equivalence between score matching in time and frequency domains, which enables training score networks in the frequency domain for efficient caching. We also analyze how cached score evaluation affects the matching objective. 
+
+Proposition A.16 (Score-matching equivalence) . Consider a score ˜s˜θ : CdX × [0 , T ] → CdX defined in the frequency domain and satisfying the mirror symmetry [˜ s˜θ ]κ = [˜ s∗ 
+
+> ˜θ
+
+]N −κ for all κ ∈ [N ]. Let us define an auxiliary score s′ 
+
+> ˜θ
+
+:
+
+RdX × [0 , T ] → RdX as (x, t ) 7 → s′ 
+
+> ˜θ
+
+(x, t ) = U ∗˜s˜θ (U x, t ) in the time domain. The score matching loss in the frequency domain is equivalent to the score matching loss for the auxiliary score in the time domain: 
+
+LSM 
+
+ ˜s˜θ , Λ2˜st|0, ˜x, t  = LSM 
+
+ s′ 
+
+> ˜θ
+
+, st|0, x, t  (34) 
+
+where ˜st|0(˜ x, t ) = ∇˜x(t) log ˜ pt|0(˜ x(t)|˜x(0)) , st|0(x, t ) = ∇x(t) log pt|0(x(t)|x(0)) , and Λ is the diagonal matrix in Proposi-tion A.13. 
+
+18 Accelerating Frequency Domain Diffusion with Error-Feedback Caching 
+
+Proof. Let Λ ∈ RN ×N be the diagonal matrix such that [Λ] κ,κ =
+
+(1 if κ = 0 , or N is even and κ = N/ 2 
+
+> 1√2
+
+otherwise Step 1: We first express the score of x with respect to the score of the truncation φ[˜ x].By definition of φ−1 in Equation (25), we have x = U ∗φ−1(φ[˜ x]) . Hence, we can write, using the change of variable formula: 
+
+pt|0(x(t)|x(0)) = C · ˜pt|0
+
+ φ[˜ x(t)] |φ[˜ x(0)]  (35) where C is a constant which does not depend on x, since x 7 → φ[U x] is linear. Moreover, let us write x 7 → φ[U x] in matrix form, i.e. ∀x ∈ RdX , φ[U x] = V U col x = Qx, where V ∈ RN ×2N , Ucol =
+
+ Ure 
+
+Uim 
+
+
+
+and Q is an invertible matrix in RN ×N .For the rest of the proof, we shall build on the below results: Result 1. QQ T = Λ 2. To see this, write QQ T = V U col U Tcol V T . The matrix Ucol U Tcol is equal to 
+
+U 2 
+
+> re
+
+0N
+
+0N U 2
+
+> im
+
+
+
+(cf. the proof to Lemma A.12), while the multiplication by V , on the left and on the right of Ucol U Tcol , extracts the submatrix corresponding to the indices represented by the truncature φ. Hence, V U col U Tcol V T = Λ 2.Result 2. For any x ∈ RdX , we have QT x = U ∗φ−1[Λ 2x]. To see this, notice that Result 1 implies that QT x = Q−1Λ2x =
+
+U ∗φ−1[Λ 2x] for all x ∈ RdX .Equipped with these results, we can now complete the rest of the proof. First, we have: 
+
+∇x(t) log pt|0(x(t)|x(0)) = ∇x(t) log ˜ pt|0
+
+ φ[˜ x(t)] |φ[˜ x(0)]  (36) 
+
+= QT ∇φ[˜ x(t)] log ˜ pt|0(φ[˜ x(t)] |φ[˜ x(0)]) (Chain rule) (37) Step 2: We then obtain: 
+
+LSM 
+
+ s′ 
+
+> ˜θ
+
+, st|0, x, t  := ∥s′ 
+
+> ˜θ
+
+(x, t ) − ∇ x(t) log pt|0(x(t)|x(0)) ∥2
+
+= ∥U s′ 
+
+> ˜θ
+
+(x, t ) − U ∇x(t) log pt|0(x(t)|x(0)) ∥2 (Parseval identity) 
+
+= ∥˜s˜θ (˜ x, t ) − U Q T ∇φ[˜ x(t)] log ˜ pt|0(φ[˜ x(t)] |φ[˜ x(0)]) ∥2 (Equation (37)) 
+
+= ∥˜s˜θ (˜ x, t ) − U U ∗φ−1[Λ 2∇φ[˜ x(t)] log ˜ pt|0(φ[˜ x(t)] |φ[˜ x(0)]] ∥2 (Result 2) 
+
+= ∥˜s˜θ (˜ x, t ) − Λ2φ−1[∇φ[˜ x(t)] log ˜ pt|0(φ[˜ x(t)] |φ[˜ x(0)]] ∥2 (Proposition A.10 & Definition of φ−1)
+
+= ∥˜s˜θ (˜ x, t ) − Λ2˜st|0(˜ x, t )∥2 (Equation (26)) 
+
+= LSM 
+
+ ˜s˜θ , Λ2˜st|0, ˜x, t  .
+
+Corollary A.17 (Cached Score Matching Bound) . Under caching with approximation error ϵ(i) 
+
+> L
+
+bounded by Proposition A.18, the cached score matching objective satisfies: 
+
+|L SM (ˆ˜s˜θ , Λ2˜st|0, ˜x, t ) − L SM (˜ s˜θ , Λ2˜st|0, ˜x, t )| ≤ O(L2 · ∥ ϵ(i) 
+
+> L
+
+∥22), (38) 
+
+where ˆ˜s˜θ denotes the cached score evaluation and L is the Lipschitz constant. Proof. By Lemma A.11, the cached score error is bounded by L · ∥ ϵ(i) 
+
+> L
+
+∥2. The score matching objective involves squared differences, yielding the quadratic bound in the approximation error. 
+
+A.11. E 2-CRF Caching: Mathematical Analysis 
+
+In this section, we provide a rigorous mathematical analysis of the E 2-CRF caching mechanism and its behavior under caching. We analyze error accumulation, error bounds, and the relationship between cache efficiency and diffusion dynamics. 19 Accelerating Frequency Domain Diffusion with Error-Feedback Caching 
+
+A.11.1. C UMULATIVE RESIDUAL FEATURES (CRF) IN CACHED DIFFUSION 
+
+Consider a transformer-based score network ˜s˜θ operating on frequency-domain inputs ˜x(i) ∈ CdX at diffusion step i. Let 
+
+z(i) 
+
+> ℓ
+
+denote the CRF at layer ℓ and step i, defined as in Equation (39): 
+
+z(i) 
+
+> ℓ
+
+= ϕℓ(˜ x(i)) = h(0) +
+
+> ℓ−1
+
+X
+
+> l=0
+
+F (l)(h(l), t (i)), (39) where h(0) is the initial embedding, F (l) represents the residual block at layer l, and t(i) is the diffusion time at step i.Under caching, we distinguish between recomputed CRF z(i) 
+
+> ℓ
+
+(ground truth) and cached CRF ˆz(i) 
+
+> ℓ
+
+(approximation). The approximation error at step i is defined as: 
+
+ϵ(i) 
+
+> ℓ
+
+= z(i) 
+
+> ℓ
+
+− ˆz(i) 
+
+> ℓ
+
+. (40) A.11.2. E VENT INTENSITY AND ADAPTIVE RECOMPUTATION 
+
+The event intensity r(i) measures the relative change in the final-layer CRF, as defined in Equation (41): 
+
+r(i) = ∥z(i) 
+
+> L
+
+− z(i−∆)  
+
+> L
+
+∥22
+
+∥z(i−∆)  
+
+> L
+
+∥22 + η , (41) where L is the number of layers, ∆ is the step interval, and η > 0 is a small constant for numerical stability. This metric naturally captures the diffusion process’s structure-to-detail progression: early steps (high r(i)) correspond to structure formation, while later steps (low r(i)) correspond to detail refinement. The recompute set S(i) is determined adaptively based on Equation (13): • Low-frequency tokens: {0, 1, . . . , K } are always recomputed (critical for signal structure), • High-change tokens: {k > K : δ(i) 
+
+> k
+
+> τ k}, where δ(i) 
+
+> k
+
+= ∥z(i) 
+
+> k
+
+− z(i−∆)  
+
+> k
+
+∥2 and τk = τ0 · (ϵ + ∥˜x(i) 
+
+> k
+
+∥22)−1 is an energy-weighted threshold, • Random probes: A small fraction of high-frequency tokens are randomly selected for periodic recalibration. A.11.3. E RROR ACCUMULATION AND BOUNDS 
+
+Let ϵ(i) 
+
+> ℓ
+
+denote the approximation error at layer ℓ and step i. Under caching, tokens k /∈ S(i) reuse cached features 
+
+ˆz(i) 
+
+> ℓ
+
+= ˆ z(i−1)  
+
+> ℓ
+
+, while tokens k ∈ S(i) are recomputed. The error evolution follows: 
+
+ϵ(i) 
+
+> ℓ
+
+=
+
+(
+
+0 if k ∈ S(i) (recomputed) 
+
+ϵ(i−1)  
+
+> ℓ
+
++ ∆ (i) 
+
+> ℓ
+
+if k / ∈ S(i) (cached) , (42) where ∆(i) 
+
+> ℓ
+
+= z(i) 
+
+> ℓ
+
+− z(i−1)  
+
+> ℓ
+
+is the true change in CRF between steps. Under the assumption that the score network ˜s˜θ is L-Lipschitz continuous with respect to its input, we can bound the error growth. Specifically, if ∥∇ ˜x˜s˜θ (˜ x, t )∥2 ≤ L for all ˜x and t, then: 
+
+Proposition A.18 (Error Bound Under Caching) . Let ϵ(i) 
+
+> ℓ
+
+be the approximation error at layer ℓ and step i. If tokens are cached for at most R consecutive steps before recomputation, and the score network is L-Lipschitz continuous, then: 
+
+∥ϵ(i) 
+
+> ℓ
+
+∥2 ≤ L · R · max  
+
+> j∈[i−R,i ]
+
+∥∆˜ x(j)∥2, (43) 
+
+where ∆˜ x(j) = ˜ x(j) − ˜x(j−1) is the change in frequency representation at step j.Proof. The error accumulates only for cached tokens. Since recomputation occurs at least every R steps, the maximum error accumulation is bounded by the product of the Lipschitz constant L, the caching window R, and the maximum change in input ∆˜ x(j) over the caching window. 20 Accelerating Frequency Domain Diffusion with Error-Feedback Caching 
+
+A.11.4. E RROR -F EEDBACK CORRECTION 
+
+To mitigate error accumulation, we apply error-feedback correction as described in Equation (14). Periodically (every R
+
+steps) or when event intensity exceeds a threshold, we perform a probe computation to estimate the approximation error: 
+
+ϵ(i) 
+
+> k
+
+= z(i) 
+
+> k
+
+− ˆz(i) 
+
+> k
+
+, (44) and apply correction: 
+
+ˆz(i) 
+
+> k
+
+← ˆz(i) 
+
+> k
+
++ α(i) · ϵ(i) 
+
+> k
+
+, (45) where α(i) ∈ [0 , 1] is an adaptive step size. This correction reduces the error from ϵ(i) 
+
+> k
+
+to (1 − α(i))ϵ(i) 
+
+> k
+
+, effectively suppressing error accumulation. A.11.5. C ACHE EFFICIENCY AND SPECTRAL LOCALIZATION 
+
+The cache efficiency depends on the spectral localization property. Under the assumption that most energy is concentrated in low frequencies κ ≤ K, high-frequency tokens κ > K change more slowly and are ideal candidates for caching. Formally, if the spectral density satisfies: 
+
+> K
+
+X
+
+> κ=0
+
+∥˜xκ∥22 ≥ (1 − δ)
+
+> ⌊N/ 2⌋
+
+X
+
+> κ=0
+
+∥˜xκ∥22, (46) for some small δ > 0, then caching high-frequency tokens κ > K yields high cache hit rates while maintaining accuracy, since these tokens contribute less to the overall signal energy and change more slowly during diffusion. A.11.6. KV C ACHE AND ATTENTION COMPUTATION 
+
+For each transformer layer ℓ, we cache key-value pairs Cache ℓ[k] = ( Kℓ[k], V ℓ[k]) for all frequency tokens k, as defined in the main text. At diffusion step i:• If k ∈ S(i): Recompute Kℓ[k] = WK z(i) 
+
+> k
+
+and Vℓ[k] = WV z(i) 
+
+> k
+
+, where WK and WV are projection matrices. • If k / ∈ S(i): Reuse Cache ℓ[k] from the previous step. The attention computation for cached tokens reduces from O(d2) (full recomputation) to O(d) (lookup), where d is the dimension. For a cache hit rate of ρ, the computational savings scale as (1 − ρ) · Crecompute + ρ · Ccache , where Crecompute and 
+
+Ccache are the costs of recomputation and caching, respectively. A.11.7. C ONVERGENCE GUARANTEES 
+
+Under mild assumptions, the cached diffusion process converges to the same distribution as the baseline (non-cached) process. Specifically, if the error-feedback correction is applied sufficiently frequently and the approximation error remains bounded (as guaranteed by Proposition A.18), then the discrepancy between cached and baseline sampling scales with the maximum approximation error: TV (Cached (˜ x(T )), Baseline (˜ x(T ))) ≤ O(max  
+
+> i
+
+∥ϵ(i) 
+
+> L
+
+∥2), (47) where TV denotes total variation distance and ϵ(i) 
+
+> L
+
+is the final-layer approximation error at step i. This bound ensures that cached sampling maintains distributional fidelity as long as the approximation error is controlled. 
+
+B. Empirical details 
+
+Compute resources. All the models were trained and used for sampling on 4×A100 GPUs. 
+
+B.1. Details on datasets 
+
+In this subsection, we give detailed information about the 5 datasets used throughout our experiments and the preprocessing steps for each of them. 21 Accelerating Frequency Domain Diffusion with Error-Feedback Caching 
+
+ECG. We use two collections of heartbeat signals, from the MIT-BIH Arrhythmia Dataset and the PTB Diagnostic ECG Database (Kachuee et al., 2018). No preprocessing was performed on this dataset. 
+
+NASDAQ-2019. This dataset (Onyshchak, 2020) contains daily prices for tickers trading on NASDAQ, and contains prices for up to 1st of April 2020. Preprocessing. We considered one year of daily prices from 1st of January 2019 to 1st of January 2020. Each sample corresponds to one stock, and we remove the stocks which are not active in this whole time interval, or contain missing values. 
+
+NASA battery. The NASA battery dataset (Saha & Goebel, 2007) consists of profiles for Li-on batteries, under charge and discharge. Preprocessing. For both the charge and discharge datasets, we bin the time values (bins of size 10 for Charge, 15 
+
+for Discharge) and compute the mean of each feature inside each bin. 
+
+US-Droughts. This dataset (Minixhofer, 2021) consists of drought levels in different US counties, from 2000 to 2020. 
+
+Preprocessing. We consider one year of history, from 1st of January 2011 to 1st of January 2012, and drop the columns with missing values. 
+
+B.2. Details on evaluation Sliced Wasserstein distances. The sliced Wasserstein distance (Bonneel et al., 2015) is a metric which can handle high-dimensional distributions. It is motivated by the fact that the Wasserstein distance is easy to compute when comparing two one-dimensional distributions. The idea of the sliced Wasserstein distance is to map the high-dimensional distributions of interest to one-dimensional distributions, by considering random projections on vectors of the unit sphere. For two distributions μ1 and μ2, it can be written as: 
+
+SW p(μ1, μ 2) := 
+
+Z
+
+> Sd−1
+
+Wp(Pu#μ1, P u#μ2)du (48) where Sd−1 is the unit sphere in dimension d, Pu(x) = u · x denotes the projection of x on u, Pu#μ is the push-forward of μ by Pu, and Wp is the Wasserstein distance of order p. To estimate this quantity in practice, we sample n = 10 , 000 
+
+random vectors {ui|i ∈ [n]} which follow a uniform distribution in Sd−1 and consider p = 2 . Hence, we can approximate 
+
+SW p by the Monte-carlo estimator: 
+
+ˆSW p(μ1, μ 2) = 1
+
+n
+
+> n
+
+X
+
+> i=1
+
+Wp(Pui #μ1, P ui #μ2) (49) 
+
+Marginal Wasserstein distances. In addition to the sliced Wasserstein distance, we also consider the marginal Wasserstein distance. For any j ∈ { 1, ..., d }, the j-th marginal Wasserstein distance is defined as: 
+
+M W p(j)(μ1, μ 2) = Wp(Pej #μ1, P ej #μ2) (50) where ej is the j-th vector of the standard basis of Rd. Throughout our experiments in Section 4, we compute the Wasserstein distances with respect to Dtrain and ˜Dtrain .22
