@@ -1,0 +1,2032 @@
+Title: Unsupervised Learning for AC Optimal Power Flow with Fast Physics-Aware Layer
+
+URL Source: https://arxiv.org/pdf/2604.23548v1
+
+Published Time: Tue, 28 Apr 2026 01:00:17 GMT
+
+Number of Pages: 18
+
+Markdown Content:
+# Unsupervised Learning for AC Optimal Power Flow with Fast Physics-Aware Layer 
+
+## Jiebao Zhang †, Haoyu Yan †, Haoyu Wang Ye Shi ∗
+
+{zhangjb2023,yanhy2023,wanghy,shiye}@shanghaitech.edu.cn School of Information Science and Technology, ShanghaiTech University Shanghai, China 
+
+## Zhichao Sheng, Hongwen Yu 
+
+{zcsheng,hw_yu}@shu.edu.cn School of Communication and Information Engineering, Shanghai University Shanghai, China 
+
+## Shuang Ye 
+
+yes@sari.ac.cn Institute of Carbon Neutrality, ShanghaiTech University Shanghai, China 
+
+## Zhifang Yang 
+
+zfyang@cqu.edu.cn State Key Laboratory of Power Transmission Equipment Technology, Chongqing University Chongqing, China 
+
+Abstract 
+
+Learning to solve the Alternating Current Optimal Power Flow (AC-OPF) problem by neural networks (NNs) is a promising approach in real-time applications. Existing methods to ensure the physical feasibility of NN outputs embed a power flow (PF) solver within networks. However, the gradient through the PF solver, namely, implicit differentiation, needs manual Jacobian derivation and the solution of linear systems, which is computationally prohibitive and hinders integration with modern automatic differentiation (AD) frameworks. To address these challenges, we propose FPL-OPF, a novel unsupervised learning framework that incorporates a Fast Physics-aware Layer for AC-OPF problems. FPL-OPF embeds a fast PF iterative solver within the NN and takes solely the last few or even the final iterations into the AD graph. This design ensures high computational efficiency for both the forward and backward passes, circumventing complex custom backward implementations. Theoretically, we rigorously prove that the gradient from this de-sign serves as a high-fidelity surrogate of the true implicit gradient under mild conditions. Extensive experiments demonstrate that FPL-OPF achieves significant speedups over state-of-the-art unsu-pervised learning approaches, while maintaining near-zero con-straint violations and competitive optimality. Our code is available at https://github.com/wowotou1998/fpl-opf 
+
+CCS Concepts 
+
+• Computing methodologies → Neural networks .
+
+Keywords 
+
+AC Optimal Power Flow, Fixed-Point Iteration, Implicit Differentia-tion, Physics-Aware Learning, Unsupervised Learning 
+
+1 Introduction 
+
+The Alternating Current Optimal Power Flow (AC-OPF) problem is a cornerstone of modern power system operations, tasked with determining the most economic and secure generator dispatch. The 
+
+> †The two authors contribute equally to this work. *Corresponding author.
+
+AC-OPF problem is inherently non-convex and NP-hard, making global optimization extremely challenging [ 30 , 31 ]. With the in-creasing penetration of variable renewable energy sources and the growing complexity of the grid, it becomes critically important to solve the non-convex, non-linear AC-OPF problem in real-time. Traditional numerical solvers, while accurate, often struggle to meet the severe time requirements of real-time market operations, which can be as frequent as every five minutes [ 9]. This compu-tational bottleneck motivates the development of faster and more efficient methods. To this end, the learning-based paradigm has emerged as a promising alternative, leveraging deep learning to approximate AC-OPF solutions [ 19 , 25 , 39 ]. Supervised learning approaches, which train neural networks (NNs) on large datasets of pre-solved AC-OPF instances, have demonstrated the ability to pro-duce solutions rapidly [ 12 , 19 , 25 , 32 ]. However, their performance is fundamentally limited by the quality and diversity of the train-ing data, which is computationally expensive to generate and may contain sub-optimal solutions due to the problem’s non-convexity. Unsupervised learning methods circumvent this data-dependency by directly incorporating the physics of the optimization problem, i.e., the objective and constraints, into the loss function. A fundamental challenge remains in guaranteeing that the NN outputs strictly satisfy the physical and operational constraints of the power grid. Existing approaches address this feasibility issue with some limitations. Penalty-based approaches [ 6, 17 , 18 , 24 , 36 ]integrate constraint violations as soft penalties within the loss function. While straightforward, they inherently fail to guarantee strict feasibility and are highly sensitive to hyperparameter tun-ing [ 18 ]. Post-processing methods [ 19 , 26 , 27 , 37 ] attempt to project infeasible predictions onto the feasible regions. However, for the non-convex AC-OPF, this projection may introduce significant com-putational overhead and is detached from the end-to-end training pipeline, limiting the model’s ability to learn physics-aware outputs. More recently, implicit differentiation layers [ 7, 11 , 16 , 20 , 21 , 38 ]have been proposed to enforce strict physical constraints by em-bedding power flow (PF) solvers directly into the network. How-ever, these implicit layer-based approaches, while powerful, face some significant practical limitations. Even though specialized PF 
+
+> arXiv:2604.23548v1 [cs.CE] 26 Apr 2026 Jiebao Zhang et al.
+
+Table 1: Comparison of learning-based AC-OPF methods with feasibility enforcement . Method Constraint Satisfaction Backward Complexity Implementation Effort Training Efficiency Inference Speed                                         
+
+> Supervised NN [12, 19, 25] Limited (data-dependent) No Backward Low High High Penalty-based losses [6, 17, 18, 24, 36] Soft (violation possible) No Backward Low High High Post-processing methods [19, 26, 27, 37] Moderate (post-projection) No Backward Moderate Moderate Moderate DC3 [11], DeepLDE [21], [7] Strong (exact PF embedding) High (large Jacobian system) High (custom backward) Low Moderate FRMNet [16] Strong (feasibility restoration) High (large Jacobian system) High (custom backward) Moderate Moderate OptNet Embedded [20] Strong (lifted constraints) High (large Jacobian system) High (custom backward) Low Moderate QCQP-Net [38] Strong (relaxed PF equations) High (large Jacobian system) High (custom backward) Low Moderate
+> FPL-OPF (ours) Strong (fixed-point layer) Low (ID approximation) Low (no custom backward) High High
+
+solvers are efficient in the forward process, e.g., fast decoupled power flow (FDPF) [ 6 , 7, 33 ], the exact implicit gradient is com-putationally burdensome, as it necessitates solving a large-scale linear system involving the constraint Jacobian at every backward pass [ 7]. Second, the implementation is often complex and error-prone, requiring hand-crafted derivations of the Jacobian matrix. This manual process runs contrary to the streamlined workflow of modern automatic differentiation (AD) frameworks, hindering development and broader adoption. Fortunately, recent advances in implicit differentiation have shown that approximations can effectively guide network train-ing. Methods such as truncated backpropagation [ 29 ], Jacobian-Free [ 14 ], phantom gradients [ 15 ], and one-step differentiation [ 4]offer high-fidelity gradients at a fraction of the computational cost and integrate seamlessly into standard AD pipelines, presenting a compelling path forward. 
+
+Contributions. These challenges motivate our proposal of FPL-OPF, a novel unsupervised learning framework that incorporates a Fast Physics-aware Layer for fast solving AC-OPF problems. Our framework is architected around two core design components. For the forward pass, we model the PF balance as a fixed-point problem and embed an efficient FDPF solver as an implicit layer. Unlike standard Newton-Raphson (NR) methods with O( 𝑛 3) complexity per iteration, the FDPF solver achieves a more favorable O( 𝑛 2)
+
+complexity, where 𝑛 denotes the number of buses in the power grid. For the backward pass, we harness standard AD solely for the final, strongly contractive refinement stage, comprising a single NR step or a few FDPF iterations, which circumvents complex cus-tom backward implementations. We provide rigorous theoretical justification for this manner, proving that under near-convergence conditions, the approximation implicit gradient calculated by mod-ern AD frameworks maintains a positive cosine similarity with the true one, ensuring it is a high-fidelity descent direction. This elegant backward design yields O( 𝑛 2) complexity and leads to a drastic reduction in computational overhead, resulting in a highly efficient end-to-end framework. Extensive experiments on diverse power grids show that FPL-OPF achieves orders-of-magnitude faster in-ference than the oracle solver and substantially faster to train than state-of-the-art unsupervised approaches, while maintaining near-zero constraint violations and optimality gaps below 3%. These results validate FPL-OPF as an efficient framework for real-time, non-convex AC-OPF applications. The main contributions of this work are threefold: 
+
+• We introduce FPL-OPF, a fast physics-aware and unsuper-vised learning framework for solving the AC-OPF problem. By embedding an efficient FDPF iterative solver as a fixed-point implicit layer, FPL-OPF achieves O( 𝑛 2) complexity for both the forward and backward passes, offering a substan-tial reduction compared with existing implicit-layer-based approaches. 
+
+• We theoretically establish that the approximate implicit gradient obtained from the refinement stage is well aligned with the true gradient under near-convergence conditions, thereby guaranteeing a high-fidelity descent direction for an efficient training pipeline. 
+
+• We empirically validate FPL-OPF on standard IEEE bench-mark systems, showing that it achieves orders-of-magnitude faster inference than the oracle solver and substantially faster training than state-of-the-art unsupervised approaches, while maintaining near-zero constraint violations and opti-mality gaps below 3%. The rest of the paper is organized as follows. Section 2 reviews the related work on learning-based AC-OPF with feasibility con-siderations. Section 3 introduces the AC-OPF problem formulation. Section 4 details the proposed FPL-OPF framework. Section 5 re-ports experimental evaluations on diverse power grids. Finally, Section 6 concludes the paper and outlines future research direc-tions. 
+
+2 Related Work 
+
+Many works, as summarized in Table 1, have been proposed to en-force the network outputs’ feasibility that satisfy the strict physical and operational constraints of power systems, including penalty-based losses, post-processing methods, and implicit differentiation layers. Penalty-based methods represent a straightforward approach that formulates the violations of constraints, such as the PF balance equations, generator limits, and line thermal ratings, as penalty terms inside the loss function. Kejun et al. [ 6] utilize a modified augmented Lagrangian function as the training loss, and the multi-pliers are adjusted dynamically based on the degree of constraint violation. DeepOPF-NGT [ 17 , 18 ] proposes a properly designed loss function and develops an adaptive learning rate algorithm to dynamically balance the gradient contributions from different loss terms during training. PG-GNN [ 36 ] trains a graph neural network, which takes the Karush-Kuhn–Tucker condition on the Lagrangian function as the training goal. However, this approach essentially does not guarantee the feasibility of the network’s output. Further-more, penalty-based methods are highly sensitive to the penalty coefficients [18]. Unsupervised Learning for AC Optimal Power Flow with Fast Physics-Aware Layer 
+
+min 
+
+> 𝑽 ,𝜽 ,𝑷 𝑔 ,𝑸 𝑔
+
+∑︁ 𝑖 
+
+𝑐 𝑖 (𝑃 𝑔 𝑖 ) (1a) s.t. 𝑃 𝑔 𝑖 − 𝑃 𝑑 𝑖 =∑︁  
+
+> (𝑖,𝑗 ) ∈ L
+
+𝑃 𝑙 𝑖 𝑗 , ∀𝑖 ∈ N , (1b) 
+
+𝑄 𝑔 𝑖 − 𝑄 𝑑 𝑖 =∑︁  
+
+> (𝑖,𝑗 ) ∈ L
+
+𝑄 𝑙 𝑖 𝑗 , ∀𝑖 ∈ N , (1c) 
+
+𝑃 𝑙 𝑖 𝑗 = 𝐺 𝑖 𝑗 𝑉 2 
+
+> 𝑖
+
+− 𝑉 𝑖 𝑉 𝑗 
+
+ 𝐵 𝑖 𝑗 sin 𝜃 𝑖 𝑗 + 𝐺 𝑖 𝑗 cos 𝜃 𝑖 𝑗 
+
+ ∀( 𝑖, 𝑗 ) ∈ L (1d) 
+
+𝑄 𝑙 𝑖 𝑗 = −𝐵 𝑖 𝑗 𝑉 2 
+
+> 𝑖
+
+− 𝑉 𝑖 𝑉 𝑗 
+
+ 𝐺 𝑖 𝑗 sin 𝜃 𝑖 𝑗 − 𝐵 𝑖 𝑗 cos 𝜃 𝑖 𝑗 
+
+ ∀( 𝑖, 𝑗 ) ∈ L (1e) 
+
+𝑃 𝑔 𝑖 ≤ 𝑃 𝑔 𝑖 ≤ 𝑃 𝑔 𝑖 , 𝑄 𝑔 𝑖 ≤ 𝑄 𝑔 𝑖 ≤ 𝑄 𝑔 𝑖 , ∀𝑖 ∈ ˜G, (1f) 
+
+(𝑃 𝑙 𝑖 𝑗 )2 + ( 𝑄 𝑙 𝑖 𝑗 )2 ≤ 𝑆 𝑖 𝑗 , ∀( 𝑖, 𝑗 ) ∈ L , (1g) 
+
+𝑉 𝑖 ≤ 𝑉 𝑖 ≤ 𝑉 𝑖 , ∀𝑖 ∈ N , (1h) 
+
+𝜃 𝑖 𝑗 ≤ 𝜃 𝑖 𝑗 ≤ 𝜃 𝑖 𝑗 , ∀𝑖 ∈ N , ∀𝑗 ∈ N (1i) Post-processing methods project the infeasible prediction from the NN onto the feasible region. DeepOPF [ 26 ] proposes a quadratic programming projection that finds the closest feasible solution within the polyhedron defined by DC-OPF linear constraints. For the security-constrained DC-OPF problem, Pan et al. [ 27 ] develop an 𝐿 1-projection procedure that recovers feasibility by solving a lin-ear programming problem. In the AC-OPF learning task, Zamzam et al. [ 37 ] ensure solution feasibility by solving PF equations and adjusting reactive power outputs through a modified PF problem when limits are violated. DeepOPF-V [ 19 ] predicts voltages of all buses and uses them to reconstruct the remaining variables without solving non-linear AC PF equations with a fast post-processing pro-cess to enforce the box constraints. While effective, the projection itself may introduce significant computational overhead. Critically, the post-processing procedure is detached from the end-to-end training pipeline, fundamentally limiting the network’s ability to produce inherently physics-aware outputs. Implicit differentiation layers enforce the constraint satisfaction via embedding physical constraints directly within the network architecture, which fundamentally preserve the physical character-istics of the output of NNs, i.e. , Kirchhoff’s Current Law inside the nonlinear PF equations. By defining a layer as the solution to the PF equations, feasibility can be more rigorously maintained. DC3 [ 11 ], a deep learning method for optimization problems with hard con-straints that implicitly completes partial solutions to satisfy PF equality constraints and applies differentiable gradient-based cor-rections to enforce inequality constraints, yielding near-optimal and feasible solutions in AC-OPF applications. Similarly, DeepLDE [ 21 ]adopts an equation embedding strategy to strictly satisfy equal-ity constraints by solving the PF equations. Distinct from DC3, DeepLDE enforces inequality constraints through a primal-dual learning scheme rather than applying iterative corrections. The work in [ 7] proposes a novel physics-informed gradient estimation that simplifies the computationally intensive backpropagation. This is achieved by utilizing a batch-mean approximation of the Jacobian tensor, linearized and decoupled Jacobian models, and a reduced set of branch flow constraints that are most likely to be active. FRM-Net [ 16 ] guarantees feasibility through a differentiable Feasibility Restoration Mapping block. This optimization block maps the po-tentially infeasible output from the neural network to the closest point within the feasible region, thereby satisfying the PF equations and other operational constraints. OptNet-embedded data-driven approach [ 20 ] utilizes OptNet layer [ 1] as a proxy for the AC-OPF problem. Feasibility is enforced by first lifting the problem to a higher-dimensional space where PF equations are approximated as linear constraints, which are then explicitly included in the em-bedded optimization layer. QCQP-Net (Quadratically Constrained Quadratic Program) [ 38 ], which addresses potential infeasibility by solving a relaxed version of the PF equations when an exact solution may not exist for a given NN prediction. This relaxation is formulated as a differentiable non-convex QCQP that minimizes constraint violations, ensuring a stable solution can always be found during training. 
+
+3 AC-OPF Problem Formulation 
+
+The AC-OPF is a constrained optimization problem aiming to find a power system operating point that minimizes a certain objective function, typically the total active power generation cost, while sat-isfying both physical laws and operational limits. Mathematically, the problem can be formulated as (1). The objective function (1a) minimizes the total active power generation cost, where 𝑐 𝑖 (·) denotes the cost function for generator 
+
+𝑖 . The vector 𝒚 = [𝑽 ⊤, 𝜽 ⊤, (𝑷 𝑔 )⊤, (𝑸 𝑔 )⊤]⊤ represents the complete set of system decision variables. The equality constraints (1b) – (1e) , denoted by 𝒉 (𝒚 , 𝒅 ) = 0, en-force the nodal active and reactive power balance, where 𝒅 =
+
+[( 𝑷 𝑔 )⊤, (𝑸 𝑔 )⊤]⊤ represents the load profile, and N and L denote the sets of buses and transmission lines, respectively. The branch power flows 𝑃 𝑙 𝑖 𝑗 and 𝑄 𝑙 𝑖 𝑗 are derived from the voltage magnitudes 
+
+𝑽 , voltage angles 𝜽 , and the conductance 𝐺 𝑖 𝑗 and susceptance 𝐵 𝑖 𝑗 
+
+of the admittance matrix. The inequality constraints (1f) – (1i) , denoted by 𝒈 (𝒚 ) ≤ 0, define the operational limits within their respective lower ( ·) and upper (·) security bounds. (1f) constrains the active and reactive outputs for the set of generators (within the slack bus) ˜G. (1g) limits the apparent power flow on line (𝑖, 𝑗 ) to its thermal rating 𝑆 𝑖 𝑗 . (1h) – (1i) keep voltage magnitudes and phase angle differences. 
+
+4 Methodology 
+
+In this section, we present the details of our proposed FPL-OPF framework. We begin by describing the overall architecture of our physics-aware learning model, which embeds the PF equations as a differentiable implicit layer. 
+
+4.1 FPL-OPF Unsupervised Learning Framework 
+
+For the parametric version of problem (1): 
+
+arg min 
+
+> 𝒚
+
+𝑓 (𝒚 , 𝒅 ) s.t. 𝒉 (𝒚 , 𝒅 ) = 0, 𝒈 (𝒚 , 𝒅 ) ≤ 0.
+
+Our framework trains a deep neural network M𝝓 parameterized by weights 𝝓 , to rapidly predict high-quality solutions to the AC-OPF problem in an unsupervised, physics-aware manner. Jiebao Zhang et al. 
+
+Algorithm 1: Training of FPL-OPF 
+
+Input: Training dataset S = 𝒅 𝑙 𝑛 𝑙 =1, forward pass iterations T , inner iterations I, learning rate 𝜂 𝝓 ,Lagrangian step size 𝜂 𝝀 , 𝜂 𝝂 , initial Lagrange multipliers 𝝀 0, 𝝂 0
+
+Output: The optimal NN weights 𝝓  
+
+> 1
+
+Initialize  
+
+> 2
+
+for 𝑘 = 0, 1, ..., T do  
+
+> 3
+
+for 𝑖 = 0, 1, ..., I do  
+
+> 4
+
+for all 𝒅 ∈ S do  
+
+> 5
+
+𝒙 ← M 𝝓 (𝒅 ) 
+
+> 6
+
+𝒛 ← Obtain 𝒛 via Algorithm 2  
+
+> 7
+
+˜𝒛 ← Obtain ˜𝒛 via Post-completion in Section 4.2  
+
+> 8
+
+𝒚 ← Obtain 𝒚 via Concatenation of 𝒙 , 𝒛 , and ˜𝒛  
+
+> 9
+
+∇𝝓 L( 𝒚 , 𝝀 , 𝝂 ) ← Calculated via (2)  
+
+> 10
+
+𝝓 ← 𝝓 − 𝜂 𝜙 ∇𝝓 L( 𝒚 , 𝝀 , 𝝂 ) 
+
+> 11
+
+𝝀 ← 𝝀 + 𝜂 𝝀 
+
+Í𝒅 ∈ S max (0, 𝒈 (𝒚 , 𝒅 ))  
+
+> 12
+
+𝝂 ← 𝝂 + 𝜂 𝝂 
+
+Í𝒅 ∈ S |𝒉 (𝒚 , 𝒅 )| return 𝝓 
+
+We formulate the training M𝝓 as a min-max game on the La-grangian [ 13 , 21 , 28 ], which incorporates the objective function and penalties for equality and inequality constraint violations: 
+
+L( 𝝓 , 𝝀 , 𝝂 , 𝒅 ) = 𝑓 (𝒚 , 𝒅 ) + 𝝀 ⊤ (𝒈 (𝒚 , 𝒅 )) + + 𝝂 ⊤ |𝒉 (𝒚 , 𝒅 )| ,
+
+where (·) + denotes max (0, ·) , | · | denotes the element-wise abso-lute value, 𝒚 = M𝝓 (𝒅 ) is the output of the forward pass, and the dual variables 𝝀 ∈ Rineq and 𝝂 ∈ Req adjusted to penalize any constraint violations. The goal is to find the optimal NN weights 𝝓 
+
+that minimize the loss taken over the dataset S of load profiles 𝒅 :
+
+min  
+
+> 𝝓
+
+max   
+
+> 𝝀 ≥0,𝝂 ≥0
+
+1
+
+|S| ∑︁ 𝒅 ∈ S 
+
+L( 𝝓 , 𝝀 , 𝝂 , 𝒅 ).
+
+The training is structured as a primal-dual algorithm via alternating gradient-based steps. For the primal update, the NN weights are adjusted using gradi-ent descent on the Lagrangian: 
+
+𝝓 ← 𝝓 − 𝜂 𝝓 ∇𝝓 L. (2) For the dual update, the Lagrange multipliers are updated using gradient ascent, effectively increasing the penalties on violated constraints: 
+
+𝝀 ← 𝝀 + 𝜂 𝝀 ∇𝝀 L( 𝝓 , 𝝀 , 𝝂 ),
+
+𝝂 ← 𝝂 + 𝜂 𝝂 ∇𝝂 L( 𝝓 , 𝝀 , 𝝂 ),
+
+where 𝜂 𝝓 , 𝜂 𝝀 , and 𝜂 𝝂 are the learning rates. This iterative process, detailed in Algorithm 1, drives the NN to produce solutions that are not only low-cost but also feasible with respect to all physical laws and operational limits. 
+
+4.2 Solving Power Flow with a FDPF Fixed-Point Solver 
+
+To strictly enforce the power flow equations 𝒉 (𝒚 , 𝒅 ) = 0, we clas-sify the system buses into sets of slack buses R, generator buses (without the slack bus) G, and load buses D. The decision vector 𝒚 With   
+
+> Gradient
+> Forward Backward
+> Fixed Point Power Flow Iteration Physics -aware Layer
+> Stop
+> Gradient
+
+Figure 1: The overall architecture of the Fast Differentiable Physics-Aware Layer. This layer embeds a fixed-point PF solver that utilizes a rapid guide phase (Stop Gradient) to approximate the solution, followed by a differentiable refine-ment step (With Gradient) to efficiently compute gradients. 
+
+is partially predicted and partially derived. Specifically, we partition 
+
+𝒚 into three subsets 𝒙 , 𝒛 , and ˜𝒛 as illustrated in Figure 1. The neural network M𝝓 (𝒅 ) predicts only the independent controls 𝒙 while the remaining dependent states are resolved via physical constraints. 
+
+Prediction Variables. 𝒙 = [( 𝑃 𝑔  
+
+> G
+
+)⊤, (𝑉 G∪R )⊤]⊤ ∈ R2| G |+| R | . The vector 𝒙 is the direct output of the neural network M𝝓 (𝒅 ), condi-tioned on the system load profile 𝒅 .
+
+Completion Variables. 𝒛 = [( 𝜃 G∪D )⊤, (𝑉 D )⊤]⊤ ∈ R| G |+ 2| D | . These are the dependent variables determined by the prediction variables 
+
+𝒙 and the load profile 𝒅 through the non-linear PF equations, namely the active power balance constraints (1b) at buses G and the reactive power balance constraints (1c) at buses D.
+
+Post-completion Variables. ˜𝒛 = [( 𝑃 𝑔  
+
+> R
+
+)⊤, (𝑄 𝑔  
+
+> R∪G
+
+)⊤]⊤ ∈ R2| R |+| G | .Once 𝒛 is found, the remaining system variables, i.e. , the active power generation 𝑃 𝑔  
+
+> R
+
+and the reactive power generation 𝑄 𝑔  
+
+> R∪G
+
+, can be explicitly computed from the power balance equations (1b) at buses R and equations (1c) at buses R ∪ G to complete the system state. The process of finding the completion variables 𝒛 given the prediction variables 𝒙 is formulated as a fixed-point problem, 𝒛 =
+
+𝑇 (𝒛 , 𝒙 ), where 𝑇 denotes the FDPF iteration. We here omit the dependency on the load profile 𝒅 for simplicity. FDPF [ 23 , 33 ] is a highly efficient variant of the NR method that leverages key physical characteristics of high-voltage transmission systems, i.e., negligible lines’ series resistances and shunt reactances and small voltage angle differences [ 5 ]. These physical properties allow the full PF Jacobian to be decoupled and approximated by two constant, sparse matrices, 𝑩 ′ and 𝑩 ′′ . This decouples the PF problem into two smaller, independent linear systems that are solved iteratively: 
+
+𝜽 (𝑘 +1) = 𝜽 (𝑘 ) + [ 𝑩 ′]−1 
+
+Δ𝑷 (𝑘 ) /𝑽 (𝑘 ) 
+
+,
+
+𝑽 (𝑘 +1) = 𝑽 (𝑘 ) + [ 𝑩 ′′ ]−1 
+
+Δ𝑸 (𝑘 ) /𝑽 (𝑘 ) 
+
+.
+
+Since 𝑩 ′ and 𝑩 ′′ are constant, they can be computed and factorized only once before the training and inference process begin, hence each FDPF iteration reduces to inexpensive forward and backward substitutions. Unsupervised Learning for AC Optimal Power Flow with Fast Physics-Aware Layer 
+
+4.3 Fast Differentiable Physics-Aware Layer 
+
+The main computational bottleneck of physics-aware OPF learning lies in the backward pass through the PF completion map. From Section 4.2, the loss L depends on (𝒙 , 𝒛 , ˜𝒛 ), the gradient with respect to the network parameters 𝝓 follows from the chain rule: 
+
+𝜕 L
+
+𝜕 𝝓 =
+
+ 𝜕 L
+
+𝜕 𝒙 + 𝜕 L
+
+𝜕 ˜𝒛 
+
+𝜕 ˜𝒛 
+
+𝜕 𝒙 +
+
+ 𝜕 L
+
+𝜕 𝒛 ★ + 𝜕 L
+
+𝜕 ˜𝒛 
+
+𝜕 ˜𝒛 
+
+𝜕 𝒛 ★
+
+ 𝜕 𝒛 ★
+
+𝜕 𝒙 
+
+ 𝜕 𝒙 
+
+𝜕 𝝓 , (3) which requires the critical Jacobian 𝜕 𝒛 ★/𝜕 𝒙 , representing the sensi-tivity of the PF solution 𝒛 ★ to the NN’s prediction 𝒙 . Prior methods typically compute this implicit gradient by applying the Implicit Function Theorem (IFT) [ 10 ] to the static PF equations, 𝒉 (𝒛 , 𝒙 ) = 0
+
+at the exact satisfaction point 𝒛 ★. This yields 𝜕 𝒛 ★ 
+
+> 𝜕 𝒙
+
+= −  𝜕ℎ 𝜕 𝒛 ★
+
+ −1  𝜕ℎ 𝜕 𝒙 
+
+
+
+,but necessitates forming and solving a large-scale linear system in-volving the PF Jacobian at each training step, creating a significant computational burden. Our framework introduces a more efficient and user-friendly alternative by following the contraction property of the FDPF solver originally established in [35]: 
+
+Lemma 4.1 (Local Contraction of FDPF Iteration [ 35 ]). 
+
+The FDPF fixed-point operator, 𝒛 𝑘 +1 = 𝑇 (𝒛 𝑘 , 𝒙 ), is continuously differ-entiable around the power flow solution 𝒛 ★ (𝒙 ). For each fixed input 𝒙 ,there exists a neighborhood Z of flat start point (one per unit voltage magnitude with the zero voltage angle) including the solution 𝒛 ★ (𝒙 )
+
+such that: (1) 𝑇 (𝒛 , 𝒙 ) ⊆ Z , ∀𝒛 ∈ Z ;(2) the Jacobian operator norm ∥𝐽 𝒛 𝑇 (𝒛 , 𝒙 )∥ op ≤ 𝜌 < 1, ∀𝒛 ∈ Z .
+
+This assumption implies that for a given input 𝒙 , there exists a neighborhood Z around the solution 𝒛 ★ (𝒙 ) such that for any iter-ate 𝒛 ∈ Z , the next iterate 𝑇 (𝒛 , 𝒙 ) remains in Z. Furthermore, the Jacobian of the operator is bounded, ∥𝐽 𝒛 𝑇 (𝒛 , 𝒙 )∥ op = 𝜌 < 1, ∀𝒛 ∈ Z ,ensuring linear convergence to 𝒛 ★ (𝒙 ) for any initial point within this neighborhood. The contraction constant 𝜌 depends on system parameters such as the 𝑅 /𝑋 ratio of transmission lines and the load level, and typically remains sufficiently below 1 in high-voltage transmission networks [ 35 ]. Instead of relying on the static con-straint equation, from Lemma 4.1, we derive the implicit gradient from the fixed point iterative dynamics 𝒛 𝑘 +1 = 𝑇 (𝒛 𝑘 , 𝒙 ), which converges to the solution 𝒛 ★ under standard assumptions [ 22 , 35 ]. The exact Jacobian 𝜕 𝒛 ★/𝜕 𝒙 can again be found by applying the IFT at the 𝒛 ★ − 𝑇 (𝒛 ★, 𝒙 ) = 0:                   
+
+> 𝐽 ID
+> 𝒙 𝒛 ★(𝒙 )≜𝜕 𝒛 ★
+> 𝜕 𝒙 =
+> 
+> 𝑰 −𝜕𝑇 (𝒛 ★,𝒙 )
+> 𝜕 𝒛
+> −1𝜕𝑇 (𝒛 ★,𝒙 )
+> 𝜕 𝒙
+> 
+> .(4)
+
+However, forming and solving with the PF Jacobian at every train-ing step is still computationally costly. In this work, our key inno-vation is to approximate the true implicit gradient by embedding the final fixed-point iteration into the AD graph and reducing im-plicit differentiation to a one-step operation that can be captured by the AD framework, as shown in Figure 1. Concretely, we execute the 𝑘 iterations that produce 𝒛 𝑘 outside the computational graph and then insert only the final fixed-point iteration inside the AD computation graph: 
+
+𝒛 𝑘 +1 = 𝑇 (𝒛 𝑘 , 𝒙 ), 𝒛 ★ = 𝑇 (𝒛 ★, 𝒙 ),
+
+where 𝒛 𝑘 is treated as a detached constant. The gradient of the output 𝒛 𝑘 +1 with respect to the input 𝒙 is then simply the partial derivative of 𝑇 :
+
+𝐽 OS  
+
+> 𝒙
+
+𝒛 𝑘 +1 ≜ 𝜕𝑇 (𝒛 𝑘 , 𝒙 )
+
+𝜕 𝒙 .
+
+This one-step Jacobian 𝐽 OS serves as an approximation for the true Jacobian in (4) . The following lemma establishes a formal error bound for the one-step Jacobian approximation. 
+
+Lemma 4.2 (One-step Jacobian Approximation Error [ 4]). 
+
+Under Lemma 4.1, let 𝒙 ↦ → 𝑇 (𝒛 , 𝒙 ) be 𝐿 𝑇 -Lipschitz continuous and 
+
+𝒛 ↦ → 𝐽 𝒙 𝑇 (𝒛 , 𝒙 ) be 𝐿 𝐽 -Lipschitz continuous in operator norm for all 
+
+𝒛 ∈ Z . Then, for the power flow solution 𝒛 ★ (𝒙 ) and its (𝑘 + 1)-th iterate 𝒛 𝑘 +1 (𝒙 ), the one-step Jacobian approximation error satisfies: 
+
+𝐽 OS  
+
+> 𝒙
+
+𝒛 𝑘 +1 (𝒙 ) − 𝐽 ID  
+
+> 𝒙
+
+𝒛 ★ (𝒙 ) op ≤ 𝜌𝐿 𝑇 
+
+1 − 𝜌 + 𝐿 𝐽 ∥𝒛 𝑘 − 𝒛 ★ ∥,
+
+where 𝐽 OS  
+
+> 𝒙
+
+𝒛 𝑘 +1 (𝒙 ) ≜ 𝜕𝑇 (𝒛 𝑘 ,𝒙 ) 
+
+> 𝜕 𝒙
+
+and 𝐽 ID  
+
+> 𝒙
+
+𝒛 ★ (𝒙 ) is the true Jacobian of the fixed point solution with respect to 𝒙 .
+
+Lemma 4.2 provides a formal bound on the approximation error, showing that the one-step Jacobian 𝐽 OS  
+
+> 𝒙
+
+𝒛 𝑘 +1 converges to the true implicit Jacobian 𝐽 ID  
+
+> 𝒙
+
+𝒛 ★ (𝒙 ) as the forward iterate 𝒛 𝑘 +1 approaches the fixed point 𝒛 ★. We use modern AD engines to compute 𝐽 OS  
+
+> 𝒙
+
+𝒛 𝑘 +1
+
+efficiently without unrolling the entire solver. We replace exact sensitivity Jacobian 𝜕 𝒛 ★/𝜕 𝒙 in (3) with 𝐽 OS  
+
+> 𝒙
+
+𝒛 𝑘 +1, which leads to the following approximate parameter gradient:                       
+
+> d𝜕 L
+> 𝜕 𝝓 =
+> 𝜕 L
+> 𝜕 𝒙 +𝜕 L
+> 𝜕 ˜𝒛
+> 𝜕 ˜𝒛
+> 𝜕 𝒙 +
+> 𝜕 L
+> 𝜕 𝒛 𝑘 +1+𝜕 L
+> 𝜕 ˜𝒛
+> 𝜕 ˜𝒛
+> 𝜕 𝒛 𝑘 +1
+> 
+> 𝐽 OS
+> 𝒙 𝒛 𝑘 +1
+> 𝜕 𝒙
+> 𝜕 𝝓 .(5)
+
+To theoretically justify the effectiveness of the proposed approxi-mation strategy, in this work, we focus on the directional alignment between the true and approximate gradients with respect to the NN’s parameters 𝝓 . For notation brevity, we define the intermediate partial gradient with respect to 𝒙 as: 
+
+𝜕 𝒙 Lpart ≜ 𝜕 L
+
+𝜕 𝒙 + 𝜕 L
+
+𝜕 ˜𝒛 
+
+𝜕 ˜𝒛 
+
+𝜕 𝒙 ,
+
+and the intermediate total gradient with respect to 𝒛 as: 
+
+𝜕 𝒛 Ltotal ≜ 𝜕 L
+
+𝜕 𝒛 + 𝜕 L
+
+𝜕 ˜𝒛 
+
+𝜕 ˜𝒛 
+
+𝜕 𝒛 .
+
+Furthermore, we rely on the following mild assumptions. 
+
+Assumption 4.1. There exist constants 𝐿 𝒙 , 𝐿 𝒛 ≥ 0 such that for all 𝒛 , 𝒛 ′ ∈ Z ,
+
+∥𝜕 𝒙 Lpart (𝒙 , 𝒛 ) − 𝜕 𝒙 Lpart (𝒙 , 𝒛 ′)∥ ≤ 𝐿 𝒙 ∥𝒛 − 𝒛 ′ ∥,
+
+∥𝜕 𝒛 Ltotal (𝒙 , 𝒛 ) − 𝜕 𝒛 Ltotal (𝒙 , 𝒛 ′)∥ ≤ 𝐿 𝒛 ∥𝒛 − 𝒛 ′ ∥.
+
+Assumption 4.2. There exist constants 𝐶 𝒛 > 0 such that for all 
+
+𝒛 ∈ Z , ∥𝜕 𝒛 Ltotal (𝒙 , 𝒛 )∥ ≤ 𝐶 𝒛 .
+
+Assumption 4.3. There exists a constant 𝐶 𝒈 > 0 such that the true gradient 𝜕 L/ 𝜕 𝝓 is non-vanishing, satisfying ∥𝜕 L/ 𝜕 𝝓 ∥ ≥ 𝐶 𝒈 .
+
+Assumption 4.4. There exists a constant 𝜎 𝑨 , 𝜎 𝐽 > 0 such that the neural network Jacobian 𝑨 ≜ 𝜕 𝒙 /𝜕 𝝓 is bounded by ∥𝑨 ∥op ≤
+
+𝜎 𝑨 , and the exact physical sensitivity Jacobian 𝐽 ID  
+
+> 𝒙
+
+𝒛 ★ is bounded by 
+
+∥𝐽 ID  
+
+> 𝒙
+
+𝒛 ★ ∥op ≤ 𝜎 𝐽 .
+
+Building on the Jacobian convergence in Lemma 4.2 and mild assumptions above, we further obtain a directional agreement guar-antee stated below. Jiebao Zhang et al. 
+
+Theorem 4.1 (Gradient Directional Alignment). Assume Lemmas 4.1 and 4.2 and Assumptions 4.1–4.4 hold. Let 𝑑 0 ≜ ∥𝒛 0 −𝒛 ★ ∥,
+
+𝐶 1 ≜ 𝜌 (𝐿 𝒙 + 𝐿 𝒛 𝜎 𝐽 ) + 𝐶 𝒛 𝐿 𝐽 , and 𝜀 𝑘 ≜ 𝜎 𝑨 
+
+> 𝐶 𝒈
+
+ 𝜌𝐿 𝑇 𝐶 𝒛  
+
+> 1−𝜌
+
++ 𝜌 𝑘 𝑑 0𝐶 1
+
+
+
+. Then, for every 𝑘 satisfying 𝜀 𝑘 < 1, the cosine similarity between the true gradient 𝜕 L 
+
+> 𝜕 𝝓
+
+and its approximation gradient c𝜕 L 
+
+> 𝜕 𝝓
+
+satisfies: 
+
+*
+
+𝜕 L
+
+𝜕 𝝓 , d𝜕 L
+
+𝜕 𝝓 
+
++
+
+≥ 1 − 𝜀 𝑘 
+
+1 + 𝜀 𝑘 
+
+> 0.
+
+Proof. The proof is provided in Appendix A.1. □
+
+Remark 4.1 (Asymptotic Alignment Lower Bound). The error bound 𝜀 𝑘 can be decoupled into an irreducible asymptotic approxima-tion error 𝜀 ∞ ≜ 𝜎 𝑨   
+
+> 𝐶 𝒈
+> 𝜌𝐿 𝑇 𝐶 𝒛
+> 1−𝜌
+
+and a forward pass error Δ𝜀 𝑘 ≜ 𝜎 𝑨  
+
+> 𝐶 𝒈
+
+𝜌 𝑘 𝑑 0𝐶 1.As the number of fixed-point iterations 𝑘 → ∞ , Δ𝜀 𝑘 decays geo-metrically to zero at the rate of 𝜌 𝑘 . Consequently, provided that 𝜌 is sufficiently small to ensure 𝜀 ∞ < 1, the asymptotic cosine similarity satisfies: 
+
+lim inf  
+
+> 𝑘 →∞
+
+cos 𝜕 L
+
+𝜕 𝝓 , d𝜕 L
+
+𝜕 𝝓 
+
+!
+
+≥ 1 − 𝜀 ∞
+
+1 + 𝜀 ∞
+
+> 0.
+
+This result yields a crucial theoretical insight that the asymptotic alignment is characterized by the irreducible term 𝜀 ∞.
+
+This result formally establishes that, once the forward solver is sufficiently close to convergence, the one-step gradient is direction-ally aligned with the exact implicit gradient. This ensures that it provides a valid descent direction for training. This approach in-tegrates seamlessly with standard AD frameworks, circumventing the cumbersome and error-prone manual derivation of implicit dif-ferentiation procedures. The one-step differentiation schema of this method yields substantial computational savings by differentiating only a single, shallow computation. However, the FDPF method exhibits linear convergence, and its contraction constant 𝜌 may not be small enough to satisfy 𝜀 𝑘 < 1
+
+in Theorem 4.1. To address this, we can compose the operator 𝑇 
+
+with itself [ 4]. If we define a new operator ˜𝑇 = 𝑇 𝐾 , i.e., applying 𝑇 
+
+for 𝐾 iterations, this single composite operator will have a stronger contraction constant of ˜𝜌 = 𝜌 𝐾 . By choosing a sufficient but not large 𝐾 , we can make ˜𝜌 arbitrarily small, thus satisfying the theo-rem’s condition. In this case, the one-step estimator applied to ˜𝑇 
+
+becomes a 𝐾 -step estimator on 𝑇 , where we differentiate through the final 𝐾 steps of the algorithm. This concept is central to our hybrid solver design, which we detail in the next subsection and quantify empirically in Section 5.3. 
+
+4.4 Hybrid Iterative Solver for Accelerated Training 
+
+The forward pass solver must be both fast for rapid training and accurate enough to satisfy the near-convergence assumptions of our differentiation approach. A key requirement is ensuring the operator used in the final, differentiable step has a sufficiently small contraction constant 𝜌 to meet the condition 𝜀 𝑘 < 1 from Theorem 4.1. To achieve this, we design a two-phase hybrid solver that combines the strengths of different numerical methods. 
+
+Rapid Guide Phase with Non-Differentiable FDPF . The first phase rapidly guides the completion variables 𝒛 from an initial 
+
+Algorithm 2: Forward Pass Fixed-Point Solver 
+
+Input: Load profile 𝒅 , prediction variables 𝒙 , initial completion variables 𝒛 0
+
+Output: Converged completion variables 𝒛 ★ 
+
+> 13
+
+Initialize 𝒛 ← 𝒛 0 
+
+> //
+
+stop_gradient, fast-decoupled iterations  
+
+> 14
+
+for 𝑘 = 0 to 𝐾 𝐺 do  
+
+> 15
+
+𝒛 𝑘 +1 ← Guide_Iteration (𝒛 𝑘 , 𝒙 ) 
+
+> //
+
+with_gradient, final high-precision refinement  
+
+> 16
+
+𝒛 ★ ← Refinement_Step (𝒛 𝐾 𝐺 , 𝒙 ) 
+
+> 17
+
+return 𝒛 ★
+
+guess into the neighborhood of the correct solution. We employ a fixed number of 𝐾 𝐺 FDPF iterations. Since the FDPF method uses constant, pre-factorized matrices, these iterations are com-putationally inexpensive. This phase is performed outside the AD computation graph, e.g., within a torch.no_grad() context, in-curring no memory overhead for backpropagation and efficiently bringing the solution close to the convergence point. 
+
+High-Precision Phase with Differentiable Refinement . Fol-lowing the guide phase, the second phase refines the solution to high precision using a differentiable operator with a strong contrac-tion property. This is the only part of the solver executed within the gradient tracking context, e.g., torch.enable_grad() . We con-sider two effective strategies for this refinement step: 
+
+4.4.1 Single NR Step. The NR method exhibits quadratic conver-gence near the solution, meaning its effective contraction constant 
+
+𝜌 is extremely close to zero. A single NR step thus serves as a pow-erful refinement that easily satisfies the condition in Theorem 4.1. While highly effective, one NR step requires forming and factorizing the full PF Jacobian, which can be computationally intensive. 
+
+4.4.2 Multi-Step FDPF Block. As discussed previously, we can use a block of 𝐾 FDPF iterations as the differentiable operator. The composite operator 𝑇 𝐾 has a contraction constant of 𝜌 𝐾 . By choos-ing a suitable 𝐾 , we can ensure 𝜌 𝐾 is small enough to satisfy the condition in Theorem 4.1. This approach avoids the costly Jacobian formation of the NR step, relying only on repeated, efficient forward and backward substitutions with the pre-factored FDPF matrices. The entire hybrid procedure is summarized in Algorithm 2. This architecture ensures the mathematical conditions for our efficient backpropagation method are met while leveraging domain-specific solvers for speed, leading to an accelerated and stable training process. 
+
+4.5 Time and Computation Cost Analysis 
+
+We analyze the time and space complexities of the forward and backward processes for three strategies solving the PF equations: traditional Implicit Differentiation, and two variants of our pro-posed FPL-OPF framework distinguished by their refinement stage, i.e., employing a Single NR step versus a K FDPF steps. Let 𝑛 = |G| + 2|D| be the dimension of the completion variables 
+
+𝒛 and 𝑚 = 2|G| + |R| be the dimension of the prediction variables 
+
+𝒙 . Let 𝑘 be the number of forward solver iterations. Let 𝐶 ℎ denote Unsupervised Learning for AC Optimal Power Flow with Fast Physics-Aware Layer 
+
+Table 2: Complexity Analysis of Differentiation Methods Method Forward Backward Time                              
+
+> Implicit Diff. O( 𝑘𝑛 3)O( 𝑛𝑚 +𝑛 2)
+> Single NR O( 𝐾 𝐺 𝑛 2+𝑛 3)O( 𝜔𝑛 2)
+> K-Step FDPF O(( 𝐾 𝐺 +𝐾 𝑅 )𝑛 2)O( 𝐾 𝑅 𝜔𝑛 2)
+> Memory
+> Implicit Diff. O( 𝑛 2)O( 𝑛 2)
+> Single NR O( 𝑛 2)O( 𝑛 2)
+> K-Step FDPF O( 𝑛 2)O( 𝑛 2)
+> 1𝑛 =| G | + 2| D | ,𝑚 =2| G | + | R | , and 𝜔 is the multiplicative overhead of gradient evaluation relative to function evaluation.
+
+the time cost of evaluating the PF residual function 𝒉 (𝒛 , 𝒙 ), which is typically O(|N | 2) for dense admittance matrices. Let 𝐶 𝐽 𝒛 denote the time cost of constructing the Jacobian 𝐽 𝒛 𝒉 (𝒛 , 𝒙 ) with respect to 𝒛 , which has a time complexity of O( 𝑛 2) due to its 𝑛 × 𝑛 size. Let 𝐶 𝐽 𝒙 denote the time cost of constructing the Jacobian 𝐽 𝒙 𝒉 (𝒛 , 𝒙 )
+
+with respect to 𝒙 , which has a time complexity of O( 𝑛𝑚 ) due to its 
+
+𝑛 × 𝑚 size. Let 𝐶 𝑇 denote the time cost of a NR fixed-point iteration 
+
+𝒛 𝑘 +1 = 𝒛 𝑘 − [ 𝐽 𝒛 𝒉 (𝒛 𝑘 , 𝒙 )] −1𝒉 (𝒛 𝑘 , 𝒙 ). Typically, the NR iteration costs 
+
+O( 𝑛 2) when using pre-factored matrices, while the factorization for 
+
+𝐽 𝒛 𝒉 (𝒛 𝑘 , 𝒙 ) costs O( 𝑛 3). Let 𝜔 > 0 be the multiplicative overhead of gradient evaluation relative to function evaluation, which typically satisfies 𝜔 ≤ 5 by the cheap gradient principle [ 3 ]. For simplicity, we do not account for batching effects. 
+
+Single NR . The forward pass combines an FDPF iteration with a single NR refinement step. The FDPF phase performs 𝐾 𝐺 it-erations, where each iteration computes the active and reactive power mismatches, involving two residual evaluations with a to-tal costing 𝐶 ℎ , followed by solving two reduced linear systems using pre-factored decomposition of 𝑩 ′ and 𝑩 ′′ with reduced di-mensions approximately 𝑛 /2. The pre-factorization costs O(( 𝑛 /2)3)
+
+but is performed once outside the iteration procedure, while each solve costs O(( 𝑛 /2)2). Thus, the FDPF forward time complexity is O( 𝐾 𝐺 (𝐶 ℎ + ( 𝑛 /2)2)) , which simplifies to O( 𝐾 𝐺 𝑛 2) under the assumption that 𝐶 ℎ ≤ 𝑛 2. After the FDPF loop, a single NR step follows at cost O( 𝑛 3) since the need for a factorization. The total forward time complexity is therefore O( 𝐾 𝐺 𝑛 2 + 𝑛 3). Space com-plexity is O( 𝑛 2) for storing the Jacobian and its factors, plus O( 𝑛 )
+
+for the iterates. The backward propagation computes the gradient of the loss 
+
+L with respect to inputs 𝒙 by differentiating through the single NR update, the FDPF output 𝒛 𝑘 detached from the computation graph. This leads to a backward time complexity of O( 𝜔𝐶 𝑇 ) since the cheap gradient principle. Space complexity remains O( 𝑛 2) for the stored Jacobian. 
+
+Implicit Differentiation [11 , 21 ]. The forward pass performs full NR iterations on the reduced system. Total forward time com-plexity is O( 𝑘 (𝑛 3 + 𝑛 2)) up to 𝑘 iterations, which simplifies to 
+
+O( 𝑘𝑛 3) when inversion dominates. Space complexity is O( 𝑛 2) for storing the final Jacobian and its inverse. The backward pass uses implicit differentiation on the PF equation 𝒉 (𝒛 ★, 𝒙 ) = 0, yielding: 
+
+∇𝒙 L = − 𝐽 𝒙 𝒉 (𝒛 ★, 𝒙 )⊤ 𝒖 where 𝐽 𝒛 𝒉 (𝒛 ★, 𝒙 )⊤ 𝒖 = ∇𝒛 L.
+
+This requires computing 𝐽 𝒙 𝒉 (𝒛 ★, 𝒙 ) at cost O( 𝑛𝑚 ), and solving the linear system at cost O( 𝑛 2) by reusing the factorization from the final forward iteration. Total backward time complexity is O( 𝑛𝑚 +
+
+𝑛 2), with space complexity O( 𝑛 2) for stored Jacobians and inverses. 
+
+K-Step FDPF . The forward pass consists of 𝐾 𝐺 guide FDPF steps and 𝐾 𝑅 differentiable FDPF steps. Since FDPF matrices are constant and pre-factored, each iteration costs only O( 𝑛 2). The total forward time is therefore O(( 𝐾 𝐺 + 𝐾 𝑅 )𝑛 2). The backward pass differentiates through the final 𝐾 𝑅 FDPF iterations. This is equivalent to unrolling the loop 𝐾 𝑅 times, with each step backpropagation costing O( 𝜔𝑛 2).The total backward time is O( 𝐾 𝑅 𝜔𝑛 2). The main overhead is storing these matrix factors, leading to a space complexity of O( 𝑛 2), which does not grow significantly during backpropagation through the 
+
+𝐾 𝑅 steps. The complexity analysis is summarized in Table 2. The compar-ison reveals the significant advantages of the K-Step FDPF refine strategy. Both the ID and Single NR refine strategy suffer from an 
+
+O( 𝑛 3) time complexity in the forward pass due to Jacobian fac-torization for the NR steps. In contrast, the K-Step FDPF method avoids this bottleneck entirely, achieving a much more favorable 
+
+O( 𝑛 2) forward time complexity. While its backward pass cost scales with the number of unrolled steps 𝐾 𝑅 , this is a tunable hyperpa-rameter that can be kept small in practice. For large-scale power systems where 𝑛 is large, the K-Step FDPF method can offer the most computationally efficient choice for both forward and back-ward passes without compromising the theoretical guarantees for gradient validity. 
+
+5 Experiments 
+
+To evaluate the proposed FPL-OPF framework, we consider four benchmark systems: the IEEE 57-bus, PEGASE 89-bus, and IEEE 118-bus from MATPOWER [ 40 ] and NESTA 189-bus from NESTA [ 8]. These benchmarks cover increasingly challenging AC-OPF instances and enable us to assess both solution quality and computational scalability. 
+
+5.1 Experimental Setup 
+
+5.1.1 Datasets and Load Profiles. We generate feasible load-profile datasets by perturbing the base operating points of each benchmark. For the IEEE 57-bus, PEGASE 89-bus, and IEEE 118-bus systems, we sample 5,000 instances per case, using an 80%/20% train-test split and independent active and reactive demand perturbations drawn uniformly from [80% , 120% ] of the nominal load. For the NESTA 189-bus system, we generate 10,000 feasible samples with both active and reactive demands perturbed within [90% , 110% ] of the nominal load. All experiments are implemented in PyTorch and run on an NVIDIA RTX 4090D GPU with an Intel i9-12600K CPU. 
+
+5.1.2 Baselines. To evaluate the effectiveness of the proposed ap-proach, we compare different variants of FPL-OPF against several established benchmarks: 
+
+• MIPS Solver [ 34 ]: A primal dual interior point method in MATPOWER for solving non-linear programming prob-lems. It serves as the ground-truth benchmark for feasibility and optimality. 
+
+• OPF-DNN [ 12 , 13 ]: Unsupervised version of [ 12 , 13 ] that directly optimizes the Lagrangian function using a penalty-based approach, without incorporating any explicit physics-informed layers. Jiebao Zhang et al. 
+
+Table 3: Performance comparison of different learning methods on the IEEE 57-bus, PEGASE 89-bus, IEEE 118-bus, and NESTA 189-bus systems. Bold numbers indicate the best result for each metric, excluding the MIPS Solver baseline. 
+
+Method Eq. Mean Mismatch Eq. Max. Mismatch Eq. Viol. Num. Ineq. Mean Mismatch Ineq. Max Mismatch Ineq. Viol. Num. Objective Cost ($) Objective Gap (%) 
+
+IEEE 57-bus system 
+
+MIPS Solver 0.00e+00 0.00e+00 0.00e+00 0.00e+00 0.00e+00 0.00e+00 41659.62 0.00% DC3 3.37e-08 1.97e-06 0.00e+00 3.64e-07 1.10e-04 0.00e+00 41696.90 0.09% OPF-DNN 0.0670 0.7387 85.97 0.00e+00 0.00e+00 0.00e+00 39725.79 -4.39% 
+
+DeepLDE 1.70e-15 1.47e-14 0.00e+00 3.69e-07 1.12e-04 0.00e+00 41672.69 0.03% FPL-OPF (NR) 4.16e-11 6.39e-10 0.00e+00 4.49e-07 1.35e-04 0.00e+00 41670.51 0.02% FPL-OPF (K-Decoupling) 2.85e-09 4.55e-08 0.00e+00 4.52e-07 1.37e-04 0.00e+00 41674.59 0.03% 
+
+PEGASE 89-bus system 
+
+MIPS Solver 0.00e+00 0.00e+00 0.00e+00 0.00e+00 0.00e+00 0.00e+00 5794.07 0.00% DC3 6.18e-06 2.07e-04 0.00e+00 2.06e-04 0.0507 4.17 5799.94 0.10% OPF-DNN 2.42 32.56 177.00 0.4046 130.60 3.00 3223.58 -44.29% 
+
+DeepLDE 9.54e-09 1.14e-06 0.00e+00 1.12e-04 0.0333 2.24 5807.48 0.23% FPL-OPF (NR) 5.63e-09 4.10e-07 0.00e+00 1.13e-04 0.0333 2.25 5807.11 0.23% FPL-OPF (K-Decoupling) 1.37e-09 6.22e-08 0.00e+00 1.11e-04 0.0327 2.23 5807.35 0.23% 
+
+IEEE 118-bus system 
+
+MIPS Solver 0.00e+00 0.00e+00 0.00e+00 0.00e+00 0.00e+00 0.00e+00 129673.19 0.00% DC3 6.41e-06 6.49e-04 0.00e+00 5.02e-07 4.10e-04 0.0180 130090.96 0.32% OPF-DNN 0.0245 0.3829 141.22 0.00e+00 0.00e+00 0.00e+00 126730.01 -2.24% 
+
+DeepLDE 7.06e-14 6.05e-12 0.00e+00 2.53e-08 2.09e-05 0.0010 129749.35 0.06% FPL-OPF (NR) 2.77e-12 1.70e-10 0.00e+00 3.69e-08 3.04e-05 0.0010 129748.15 0.06% FPL-OPF (K-Decoupling) 2.59e-09 1.38e-07 0.00e+00 9.92e-08 8.18e-05 0.0020 129757.46 0.06% 
+
+NESTA 189-bus system 
+
+MIPS Solver 0.00e+00 0.00e+00 0.00e+00 0.00e+00 0.00e+00 0.00e+00 849.67 0.00% OPF-DNN 0.6828 26.54 311.64 0.6331 111.29 38.94 901.67 6.34% DeepLDE 4.09e-14 3.09e-12 0.00e+00 5.44e-05 0.0252 1.17 988.50 16.43% FPL-OPF (NR) 6.53e-10 4.34e-08 0.00e+00 1.54e-06 6.58e-04 0.0215 885.60 4.30% FPL-OPF (K-Decoupling) 1.35e-11 1.41e-09 0.00e+00 5.21e-07 2.81e-04 0.0075 861.75 1.48% 25      
+
+> 50
+> 75
+> IEEE 57-bus system Test Optimality Gap (%)
+> 0.5
+> 1.0
+> Gap Percentage (%)
+> DC3
+> OPF-DNN
+> DeepLDE
+> FPL-OPF (NR)
+> FPL-OPF (K-Decoupling)
+> 0100 200 300 400 500
+> Epoch
+> 50
+> 0
+
+(a) Optimality comparison at IEEE 57-bus system. 1.0      
+
+> 1.5
+> PEGASE 89-bus system Test Optimality Gap (%)
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> Gap Percentage (%)
+> DC3
+> OPF-DNN
+> DeepLDE
+> FPL-OPF (NR)
+> FPL-OPF (K-Decoupling)
+> 0100 200 300 400 500
+> Epoch
+> 40
+> 20
+
+(b) Optimality comparison at PEGASE 89-bus system. 20      
+
+> 40
+> IEEE 118-bus system Test Optimality Gap (%)
+> 0.5
+> 1.0
+> 1.5
+> Gap Percentage (%)
+> DC3
+> OPF-DNN
+> DeepLDE
+> FPL-OPF (NR)
+> FPL-OPF (K-Decoupling)
+> 0100 200 300 400 500
+> Epoch
+> 50
+> 0
+
+(c) Optimality comparison at IEEE 118-bus system. 29      
+
+> 30
+> 31
+> NESTA 189-bus system Test Optimality Gap (%)
+> 10
+> 20
+> 30
+> Gap Percentage (%)
+> OPF-DNN
+> DeepLDE
+> FPL-OPF (NR)
+> FPL-OPF (K-Decoupling)
+> 0200 400 600 800 1000
+> Epoch
+> 50
+> 0
+
+(d) Optimality comparison at the NESTA 189-bus system. 
+
+Figure 2: Optimality comparison on (a) IEEE 57-bus, (b) PEGASE 89-bus, (c) IEEE 118-bus, and (d) NESTA 189-bus systems. 
+
+• DC3 [ 11 ]: A prominent physics-informed unsupervised method that embeds power flow physics via implicit differ-entiation. 
+
+• DeepLDE [ 21 ]: This method follows the DC3’s exact im-plicit differentiation but without the DC3’s correction mech-anism. DeepLDE handles inequality constraints through a primal-dual learning scheme. 
+
+• FPL-OPF (NR) : This hybrid variant utilizes the FDPF solver for the rapid guide phase to bring the solution near conver-gence, followed by a single differentiable NR step for the refinement phase. 
+
+• FPL-OPF (K-Decoupling) : This hybrid variant utilizes FDPF for the guide phase and employs 𝐾 𝑅 FDPF iterations for the differentiable refinement phase. By maintaining strict O( 𝑛 2) complexity for both forward and backward passes. Unsupervised Learning for AC Optimal Power Flow with Fast Physics-Aware Layer 10       
+
+> 20
+> 30
+> 33.997
+> MATPOWER
+> DC3
+> DeepLDE
+> FPL-OPF
+> (NR)
+> FPL-OPF
+> (K-Decoupling)
+> OPF-DNN
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> Time (s)
+> 5.370
+> 0.820 0.642 0.670
+> 0.126 0.558 0.154 0.066 0.069 0.001
+> Epoch Train Time
+> Epoch Inference Time
+
+(a) Time comparison at IEEE 57-bus sys-tem. 60        
+
+> 80
+> 100
+> 120
+> 140 128.168
+> MATPOWER
+> DC3
+> DeepLDE
+> FPL-OPF
+> (NR)
+> FPL-OPF
+> (K-Decoupling)
+> OPF-DNN
+> 0
+> 10
+> 20
+> 30
+> Time (s)
+> 36.270
+> 3.013 1.397 0.742 0.128
+> 3.967
+> 0.702 0.153 0.094 0.001
+> Epoch Train Time
+> Epoch Inference Time
+
+(b) Time comparison at PEGASE 89-bus system. 40        
+
+> 50
+> 60 58.402
+> MATPOWER
+> DC3
+> DeepLDE
+> FPL-OPF
+> (NR)
+> FPL-OPF
+> (K-Decoupling)
+> OPF-DNN
+> 0
+> 10
+> 20
+> 30
+> Time (s)
+> 32.774
+> 3.228 2.018 0.716 0.130
+> 3.684
+> 0.755 0.208 0.080 0.001
+> Epoch Train Time
+> Epoch Inference Time
+
+(c) Time comparison at IEEE 118-bus sys-tem. 100    
+
+> 200
+> 300
+> 400 400.600
+> MATPOWER
+> DeepLDE
+> FPL-OPF
+> (NR)
+> FPL-OPF
+> (K-Decoupling)
+> OPF-DNN
+> 0
+> 5
+> 10
+> 15
+> 20
+> 25
+> Time (s)
+> 26.212
+> 11.123
+> 2.504
+> 0.397
+> 6.359
+> 1.176 0.322 0.023
+> Epoch Train Time
+> Epoch Inference Time
+
+(d) Time comparison at the NESTA 189-bus system. 
+
+Figure 3: Time-efficiency comparison on (a) IEEE 57-bus, (b) PEGASE 89-bus, (c) IEEE 118-bus, and (d) NESTA 189-bus systems. Blue bars report training time per epoch, and orange bars report inference time on the test set. Table 4: Model architectures and training hyperparameter settings 
+
+Power Grid IEEE 57-bus PEGASE 89-bus IEEE 118-bus NESTA 189-bus 
+
+|G| 7 12 54 35 
+
+|E| 80 210 186 206 Eq. Num. 114 178 236 378 Ineq. Num. 302 646 824 930 Hidden Layers 200-200 300-300 200-200 4096-4096 Activation Function ELU ELU ELU ELU Learning Rate 𝜂 𝝓 1e-3 1e-3 1e-3 1e-4 Learning Rate 𝜂 𝝀 0.1 0.01 0.01 0.01 Learning Rate 𝜂 𝝂 0.5 0.05 0.05 0.05 Optimizer Adam Adam Adam Adam Outer Iterations T 20 20 20 40 Inner Iterations I 25 25 25 25 Batch Size 200 200 200 200 Epochs 500 500 500 1000 
+
+Table 5: Detailed configurations of the power flow solvers used in the forward pass. “N/A” indicates that this configura-tion item does not apply to the method.                                        
+
+> Power Grid Method Solver Total Iterations Guide
+> 𝐾 𝐺
+> Refinement
+> 𝐾 𝑅
+> Stopping Tolerence IEEE 57-bus PEGASE 89-bus IEEE 118-bus DC3, DeepLDE NR 10 N/A N/A <10 −5
+> FPL-OPF (NR) Hybrid 10 9 FDPF 1 NR <10 −5
+> FPL-OPF (K-Decoupling) Hybrid 12 8 FDPF 4 FDPF <10 −5
+> NESTA 189-bus DeepLDE NR 18 N/A N/A <10 −5
+> FPL-OPF (NR) Hybrid 18 17 FDPF 1 NR <10 −5
+> FPL-OPF (K-Decoupling) Hybrid 18 10 FDPF 8 FDPF <10 −5
+
+We train all methods for 500 epochs on the IEEE 57-bus, PE-GASE 89-bus, and IEEE 118-bus systems, and for 1000 epochs on the NESTA 189-bus system. Model architectures and training hy-perparameters are detailed in Table 4. Note that the DC3 baseline is excluded from the evaluations on the large NESTA 189-bus system. The inequality correction mechanism in DC3 requires excessive memory allocations that exceed the capacity of an NVIDIA RTX 4090D GPU under a batch size of 200. This memory bottleneck be-comes even more severe on larger grids. As detailed in Appendix B, all Newton-Raphson and exact implicit differentiation baselines encounter Out-Of-Memory failures on the PGLib 500-bus system, leaving FPL-OPF (K-Decoupling) as the only workable learning-based approach. 
+
+5.1.3 Power Flow Solver Settings. To ensure a fair comparison, we align the stopping criterion and the total power flow iteration budget within each test grid. The detailed settings are summarized in Table 5. Specifically, the maximum iteration budget for exact implicit differentiation methods is rigorously justified by an ablation study detailed in Appendix C. 
+
+5.1.4 Evaluation Metrics. We evaluate model performance on the training and test sets using a suite of metrics covering feasibility, optimality, and computational efficiency: 
+
+• Constraint Satisfaction: Evaluated via the mean and maxi-mum mismatch for both equality and inequality constraints, along with the average number of violations exceeding a tolerance of 10 −4.
+
+• Optimality: Measured by the average objective cost and the relative optimality gap on the test set, calculated as 
+
+100% × 1
+
+| S | ( ˆO−O★)/ O★, where ˆO and O★ denote the optimal cost given by the NN and MIPS, respectively. 
+
+• Computational Efficiency: Assessed by measuring the total training time on the training set and inference time on the test set per epoch. 
+
+5.2 Results and Analysis 
+
+5.2.1 Training Convergence. Figure 2 reports the test optimality gap curves on all four systems. On the IEEE 57-bus, PEGASE 89-bus, and IEEE 118-bus systems, the physics-aware methods, including DC3, DeepLDE, and both FPL-OPF variants, converge stably and typically approach their final gaps within roughly the first 200 epochs. The more fine-grained analysis of the training dynamics for these three benchmarks are provided in Appendix D. The NESTA 189-bus case is substantially more challenging. Even so, FPL-OPF Jiebao Zhang et al. 
+
+(K-Decoupling) continues to decrease the gap throughout train-ing and reaches 1.48% after 1000 epochs, outperforming FPL-OPF (NR) at 4.30% and DeepLDE at 16.43%. The numerical instability may be the reason behind the degraded performance of exact im-plicit differentiation methods like DeepLDE on this complex system. Specifically, the required Jacobian-inverse computation can become highly unstable when encountering ill-conditioned Jacobian ma-trices, which severely impairs the training dynamics [ 2, 15 ]. In contrast, OPF-DNN remains highly unstable and exhibits large neg-ative gaps caused by severe infeasibility, confirming the importance of embedding physical principles into the learning pipeline. 
+
+5.2.2 Constraint Satisfaction and Optimality. Table 3 summarizes feasibility and optimality on the four benchmarks, with the MIPS solver providing the reference optimum. The results first high-light the limitation of methods without an embedded physics layer. Although OPF-DNN attains artificially low objective values, its solutions are severely infeasible. For example, its equality mean mismatches are 2.42 on the PEGASE 89-bus system and 0.4188 on the NESTA 189-bus system, which leads to misleading objective gaps of −44 .29% and 6.34% , respectively. In contrast, DeepLDE and both FPL-OPF variants maintain very small equality mismatches across all systems, typically at or below the 10 −8 level, and substantially reduce inequality violations relative to OPF-DNN and DC3. On the harder PEGASE 89-bus and NESTA 189-bus cases, FPL-OPF (K-Decoupling) achieves the best feasibility among the learned methods, with inequality mean mismatches of 
+
+1.11 × 10 −4 and 5.21 × 10 −7 and average inequality violation counts of 2.23 and 0.0075, respectively. Under the fairer solver settings, physics-aware baselines become noticeably stronger on the first three benchmarks, and FPL-OPF remains competitive in optimality while retaining better efficiency. On the IEEE 57-bus system, FPL-OPF (NR) achieves the small-est learned optimality gap at 0.02%. On the IEEE 118-bus system, DeepLDE and both FPL-OPF variants all attain a 0.06% gap. On the large NESTA 189-bus system, FPL-OPF (K-Decoupling) clearly de-livers the best trade-off, reducing the optimality gap to 1.48%, com-pared with 4.30% for FPL-OPF (NR) and 16.43% for DeepLDE. These results show that FPL-OPF remains robust under the larger power grid, with its main advantage becoming especially pronounced on the more challenging system. 
+
+5.2.3 Computational Efficiency. Figure 3 shows that FPL-OPF pre-serves a clear computational advantage under the matched solver budgets. For training, FPL-OPF (K-Decoupling) requires only 0.716 seconds per epoch on the IEEE 118-bus system, compared with 32.774 seconds for DC3 and 3.228 seconds for DeepLDE, corre-sponding to speedups of about 45 .8× and 4.5×, respectively. The computational gain becomes even more remarkable on the large NESTA 189-bus system, where FPL-OPF (K-Decoupling) reduces the training time to 2.504 seconds per epoch, achieving a speedup of over 10 × compared to DeepLDE’s 26.212 seconds, versus 11.123 seconds for FPL-OPF (NR). This efficiency stems directly from our design that replaces the expensive full Jacobian factorization with the computationally efficient FDPF iterations, and we strictly main-tain 𝑂 (𝑛 2) complexity. For inference, once trained, FPL-OPF solves the full test set within a fraction of a second on the first three systems and within 0.322 seconds on the NESTA 189-bus system. 0 100 200 300 400 500             
+
+> Epoch
+> 7.03E-05
+> 3.60E-04
+> 2.50E-03
+> 0.018
+> 0.135
+> 1.0
+> 7.4
+> Mean Mismatch (Log Scale)
+> PEGASE 89-bus system Ineq. Mean Mismatch
+> DC3
+> FPL-OPF (NR)
+> DeepLDE
+> FPL-OPF (K-Decoupling, KG= 8, KR= 1)
+> FPL-OPF (K-Decoupling, KG= 8, KR= 4)
+> FPL-OPF (K-Decoupling, KG= 8, KR= 8)
+
+(a) Inequality Mean Mismatch during training. 0 100 200 300 400 500             
+
+> Epoch
+> 1.1
+> 1.4
+> 2.0
+> 3.7
+> 8.4
+> 21.1
+> Viol. Num. (Log Scale)
+> PEGASE 89-bus system Ineq. Viol. Num.
+> DC3
+> FPL-OPF (NR)
+> DeepLDE
+> FPL-OPF (K-Decoupling, KG= 8, KR= 1)
+> FPL-OPF (K-Decoupling, KG= 8, KR= 4)
+> FPL-OPF (K-Decoupling, KG= 8, KR= 8)
+
+(b) Inequality Violation Number dur-ing training. 0 100 200 300 400 500             
+
+> Epoch
+> 1.6
+> 8.0
+> 55.2
+> 404.1
+> 2981.6
+> 22027.1
+> 162755.4
+> Loss (Log Scale)
+> PEGASE 89-bus system Test Loss
+> DC3
+> FPL-OPF (NR)
+> DeepLDE
+> FPL-OPF (K-Decoupling, KG= 8, KR= 1)
+> FPL-OPF (K-Decoupling, KG= 8, KR= 4)
+> FPL-OPF (K-Decoupling, KG= 8, KR= 8)
+
+(c) Test Loss convergence. 0 100 200 300 400 500              
+
+> Epoch
+> -0.039
+> 0.065
+> 0.199
+> 0.371
+> 0.593
+> 0.877
+> 1.2
+> 1.7
+> Gap Percentage (%) (Log Scale)
+> PEGASE 89-bus system Test Opt. Gap (%)
+> DC3
+> FPL-OPF (NR)
+> DeepLDE
+> FPL-OPF (K-Decoupling, KG= 8, KR= 1)
+> FPL-OPF (K-Decoupling, KG= 8, KR= 4)
+> FPL-OPF (K-Decoupling, KG= 8, KR= 8)
+
+(d) Test Optimality Gap (%) conver-gence. 
+
+Figure 4: Ablation study on the PEGASE 89-bus system about the number of refinement iterations 𝐾 𝑅 in the FPL-OPF (K-Decoupling) method, compared with DC3, DeepLDE, and FPL-OPF (NR). The guide iterations are fixed at 𝐾 𝐺 = 8.
+
+In particular, FPL-OPF (K-Decoupling) requires 0.080 seconds on the IEEE 118-bus system and 0.322 seconds on the NESTA 189-bus system, whereas MIPS takes 58.402 seconds and 400.600 seconds, respectively, yielding speedups of about 730 × and 1244 ×. This sub-stantial acceleration, together with the competitive feasibility and optimality reported above, highlights the practical value of FPL-OPF for time-sensitive AC-OPF applications. Crucially, this strict 
+
+𝑂 (𝑛 2) complexity allows the framework to scale to even larger grids without catastrophic memory overheads, as evidenced by our 500-bus system evaluations detailed in Appendix B. 
+
+5.3 Impact of Differentiable Refinement Iterations in FPL-OPF 
+
+As discussed in Sections 4.3 and 4.4, the validity of the proposed implicit gradient approximation relies on the contraction property of the fixed-point operator. While a single FDPF iteration may not possess a sufficiently small contraction constant 𝜌 to guarantee strict gradient directional alignment in Theorem 4.1, composing 𝐾 𝑅 
+
+iterations yields a stronger block operator 𝑇 𝐾 𝑅 with 𝐾 𝑅 -dependent constants 𝜌 𝐾 𝑅 , 𝐿 𝑇 ,𝐾 𝑅 , 𝐿 𝐽 ,𝐾 𝑅 , and 𝐶 1,𝐾 𝑅 . We therefore conduct the training ablation and an empirical estimation of the constants of Theorem 4.1 on the PEGASE 89-bus system. We first perform the training ablation in Figure 4, where the number of non-differentiable guide iterations is fixed at 𝐾 𝐺 = 8 and the differentiable refinement depth is varied across 𝐾 𝑅 ∈ { 1, 4, 8}.Figures 4a and 4b show that the configuration with 𝐾 𝑅 = 1 exhibits substantially larger inequality violations and more unstable training Unsupervised Learning for AC Optimal Power Flow with Fast Physics-Aware Layer 2.5 5.0 7.5 10.0       
+
+> Refine Steps KR
+> 1.0
+> 0.5
+> 0.0
+> 0.5
+> 1.0
+> cos(  / , / )
+> Gradient Alignment
+> Cosine (Empirical)
+> Cosine (Lower Bound 1k
+> 1 + k
+> )
+> Cosine (Lower Bound 11 + )
+
+(a) Gradient cosine simi-larity and theorem lower bounds. 2.5 5.0 7.5 10.0  
+
+> Refine Steps KR
+> 0
+> 2
+> 4
+> 6
+> / //
+> Gradient Relative Error
+> Relative Error
+
+(b) Relative gradient er-ror. d0 Lx Lz Cz J Cg A       
+
+> 10 1
+> 10 1
+> 10 3
+> 10 5
+> Value
+> d0LxLzCzJCgA
+
+(c) Fixed constants 𝑑 0,
+
+𝐿 𝒙 , 𝐿 𝒛 , 𝐶 𝒛 , 𝜎 𝐽 , 𝐶 𝒈 , and 
+
+𝜎 𝑨 .2.5 5.0 7.5 10.0    
+
+> Refine Steps KR
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> 10 4
+> 10 5
+> Value
+> C1, KR
+> C1, KR
+
+(d) Constant 𝐶 1,𝐾 𝑅 .2.5 5.0 7.5 10.0        
+
+> Refine Steps KR
+> 0
+> 2
+> 4
+> 6
+> Value
+> LT,KRLJ,KR
+> LT,KR
+> LJ,KR
+
+(e) Composite Lipschitz constants 𝐿 𝑇 ,𝐾 𝑅 and 
+
+𝐿 𝐽 ,𝐾 𝑅 .2.5 5.0 7.5 10.0         
+
+> Refine Steps KR
+> 10 5
+> 10 4
+> 10 3
+> 10 2
+> 10 1
+> Value
+> KR(Empirical)
+> KR(Empirical)
+
+(f) Contraction factors 
+
+𝜌 𝐾 𝑅 of the composite op-erator. 
+
+Figure 5: Empirical estimation in Theorem 4.1 on the PEGASE 89-bus system. The solid curves represent the mean value, and the shaded region spans the standard deviation obtained over 50 samples. Table 6: The fixed estimated constants 𝑑 0, 𝐿 𝒙 , 𝐿 𝒛 , 𝐶 𝒛 , 𝜎 𝐽 , 𝐶 𝒈 ,and 𝜎 𝑨 of Theorem 4.1 on the PEGASE 89-bus system. All entries report mean ± standard deviation.                                   
+
+> Constant Mean ±Std. Constant Mean ±Std.
+> 𝐶 𝒛 3.982 ±0.027 𝑑 00.918 ±0.076
+> 𝜎 𝐽 1.234 ±0.005 𝐶 𝒈 (1.351 ±0.145 ) × 10 −2
+> 𝐿 𝒙 (1.150 ±0.085 ) × 10 3𝜎 𝑨 9.61 ±2.25
+> 𝐿 𝒛 (9.818 ±0.730 ) × 10 4
+
+than the settings with larger 𝐾 𝑅 . The test loss and optimality gap in Figures 4c and 4d further show that 𝐾 𝑅 = 1 fails to converge to a high-quality solution. In contrast, increasing 𝐾 𝑅 to 4 and 8
+
+drastically improves feasibility and training stability, indicating that differentiating through only one FDPF step does not provide a sufficiently accurate descent direction on this system. To connect this behavior directly to Theorem 4.1, we estimate the theorem constants on 50 samples drawn from the PEGASE 89-bus system by using the exact implicit gradient of DeepLDE as reference and treating the last 𝐾 𝑅 FDPF refinement steps as the composite operator 𝑇 𝐾 𝑅 . The key estimates are collected in Tables 6 and 7, while Figure 5 visualizes the comprehensive and detailed constant estimation results from 𝐾 𝑅 = 1 to 𝐾 𝑅 = 10 . Figure 5c shows that the fixed constants remain finite and concentrated in the neighborhood reached by the hybrid solver. This does not claim a global guarantee over arbitrary states, but it provides direct numerical evidence that the local boundedness and Lipschitz assumptions required by Theorem 4.1 are satisfied in the actual power grid system on the operating region during training. 
+
+Table 7: The estimated composite-operator constants 𝐶 1,𝐾 𝑅 ,
+
+𝜌 𝐾 𝑅 , 𝐿 𝑇 ,𝐾 𝑅 , and 𝐿 𝐽 ,𝐾 𝑅 of Theorem 4.1 on the PEGASE 89-bus system. All entries report mean ± standard deviation. 
+
+𝐾 𝑅 𝜌 𝐾 𝑅 (Empirical) 𝐿 𝑇 ,𝐾 𝑅 𝐿 𝐽 ,𝐾 𝑅 𝐶 1,𝐾 𝑅 
+
+1 0.125 ± 0.004 1.195 ± 0.001 5.870 ± 0.442 (1.122 ± 0.084 ) × 10 5
+
+4 0.0609 ± 0.0166 1.228 ± 0.005 0.274 ± 0.008 (1.755 ± 0.109 ) × 10 2
+
+8 (3.211 ± 1.023 ) × 10 −4 1.228 ± 0.005 0.274 ± 0.008 1.127 ± 0.029 
+
+Figures 5f–5d together with Tables 6–7 further show how com-posing FDPF refinement steps improves the bound. From 𝐾 𝑅 = 1 to 
+
+𝐾 𝑅 = 4 and 8, the empirical contraction factor shrink rapidly, and the constant 𝐶 1,𝐾 𝑅 collapses by several orders of magnitude. In com-parison, 𝐿 𝑇 ,𝐾 𝑅 changes little once 𝐾 𝑅 ≥ 2, while 𝐿 𝐽 ,𝐾 𝑅 drops sharply from the one-step case and then stabilizes. Hence, the dominant im-provement in the theorem lower bound comes from the geometric decay of 𝜌 𝐾 𝑅 and the associated reduction of the transient term. This improvement is reflected directly in the gradients. In Fig-ure 5a, the empirical cosine similarity between the exact and ap-proximate parameter gradients increases from 0.42 at 𝐾 𝑅 = 1 and 
+
+0.48 at 𝐾 𝑅 = 2 to above 0.98 once 𝐾 𝑅 ≥ 3, while Figure 5b shows that the relative gradient error drops from about 5.0 to about 0.19 .The theorem-based lower bounds are conservative but informative. The asymptotic lower bound 1−𝜀 ∞ 
+
+> 1+𝜀 ∞
+
+becomes positive at 𝐾 𝑅 = 5, and the lower bound 1−𝜀 𝑘  
+
+> 1+𝜀 𝑘
+
+becomes positive at 𝐾 𝑅 ≥ 6. This explains why the practical transition in Figure 4 already occurs between 
+
+𝐾 𝑅 = 1 and 𝐾 𝑅 ∈ { 4, 8}, while a larger 𝐾 𝑅 provides an additional theory-driven safety margin. In practice, we therefore choose the smallest refinement depth at which the empirical alignment has essentially saturated and the forward cost remains low. For the PEGASE 89-bus case, this transition occurs around 𝐾 𝑅 = 4.
+
+6 Conclusion 
+
+We introduced FPL-OPF, a physics-aware unsupervised framework that solves AC-OPF by embedding an FDPF solver as an implicit layer. Our method ensures strict adherence to the physical laws of power systems while circumventing the significant computa-tional overhead of traditional approaches. We theoretically proved that the gradient derived from the refinement stage aligns well with the true implicit gradient, enabling efficient automatic differ-entiation without Jacobian inversions. Experiments demonstrate that FPL-OPF offers a substantial acceleration compared to existing methods without compromising physical feasibility or optimality. Future work will focus on developing more sophisticated theoreti-cal estimators to strictly determine 𝐾 𝑅 , extending the framework to the dynamic grid topology, and designing distributed learning architectures for large-scale, multi-area power systems. 
+
+Acknowledgment 
+
+This work was supported by National Natural Science Foundation of China (62303319), ShanghaiTech AI4S Initiative SHTAI4S202404, HPC Platform of ShanghaiTech University, and MoE Key Labora-tory of Intelligent Perception and Human-Machine Collaboration (ShanghaiTech University). Jiebao Zhang et al. 
+
+References 
+
+[1] Brandon Amos and J. Zico Kolter. 2017. OptNet: Differentiable Optimization as a Layer in Neural Networks. In Proceedings of the International Conference on Machine Learning (ICML) (Proceedings of Machine Learning Research, Vol. 70) .136–145. [2] Shaojie Bai, Vladlen Koltun, and Zico Kolter. 2021. Stabilizing Equilibrium Models by Jacobian Regularization. In International Conference on Machine Learning .PMLR, 554–565. [3] Walter Baur and Volker Strassen. 1983. The Complexity of Partial Derivatives. 
+
+Theoretical Computer Science 22, 3 (1983), 317–330. doi:10.1016/0304-3975(83) 90110-X [4] Jérôme Bolte, Edouard Pauwels, and Samuel Vaiter. 2023. One-Step Differen-tiation of Iterative Algorithms. In Advances in Neural Information Processing Systems , Vol. 36. 77089–77103. [5] Paprapee Buason and Daniel K. Molzahn. 2021. Analysis of Fast Decoupled Power Flow via Multiple Axis Rotations. 1–6. [6] Kejun Chen, Shourya Bose, and Yu Zhang. 2022. Unsupervised Deep Learning for AC Optimal Power Flow via Lagrangian Duality. In IEEE Global Communications Conference (GLOBECOM) . 5305–5310. [7] Kejun Chen, Shourya Bose, and Yu Zhang. 2025. Physics-Informed Gradient Estimation for Accelerating Deep Learning-Based AC-OPF. IEEE Transactions on Industrial Informatics 21, 6 (2025), 4649–4660. doi:10.1109/TII.2025.3545080 [8] Carleton Coffrin, Dan Gordon, and Paul Scott. 2014. NESTA, the NICTA energy system test case archive. arXiv preprint arXiv:1411.0359 (2014). [9] Frederik Diehl. 2019. Warm-Starting AC Optimal Power Flow With Graph Neural Networks. In Advances in Neural Information Processing Systems . 1–6. [10] Asen L Dontchev and R Tyrrell Rockafellar. 2009. Implicit Functions and Solution Mappings . Vol. 543. Springer. [11] Priya L Donti, David Rolnick, and J Zico Kolter. 2021. DC3: A Learning Method for Optimization With Hard Constraints. In International Conference on Learning Representations .[12] Ferdinando Fioretto, Terrence W.K. Mak, and Pascal Van Hentenryck. 2020. Predicting AC Optimal Power Flows: Combining Deep Learning and Lagrangian Dual Methods. Proceedings of the AAAI Conference on Artificial Intelligence 34, 01 (2020), 630–637. doi:10.1609/aaai.v34i01.5403 [13] Ferdinando Fioretto, Pascal Van Hentenryck, Terrence WK Mak, Cuong Tran, Federico Baldo, and Michele Lombardi. 2020. Lagrangian Duality for Constrained Deep Learning. In Joint European conference on machine learning and knowledge discovery in databases . 118–135. [14] Samy Wu Fung, Howard Heaton, Qiuwei Li, Daniel McKenzie, Stanley Osher, and Wotao Yin. 2022. JFB: Jacobian-Free Backpropagation for Implicit Networks. In 
+
+Proceedings of the AAAI Conference on Artificial Intelligence , Vol. 36. 6648–6656. [15] Zhengyang Geng, Xin-Yu Zhang, Shaojie Bai, Yisen Wang, and Zhouchen Lin. 2022. On Training Implicit Models. In Advances in Neural Information Processing Systems , Vol. 34. 24247–24260. [16] Jiayu Han, Wei Wang, Chao Yang, Mengyang Niu, Cheng Yang, Lei Yan, and Zuyi Li. 2024. FRMNet: A Feasibility Restoration Mapping Deep Neural Network for AC Optimal Power Flow. IEEE Transactions on Power Systems 39, 5 (2024), 6566–6577. doi:10.1109/TPWRS.2024.3354733 [17] Wanjun Huang and Minghua Chen. 2021. DeepOPF-NGT: A Fast Unsupervised Learning Approach for Solving AC-OPF Problems Without Ground Truth. In 
+
+ICML Workshop on Tackling Climate Change with Machine Learning .[18] Wanjun Huang, Minghua Chen, and Steven H Low. 2024. Unsupervised Learning for Solving AC Optimal Power Flows: Design, Analysis, and Experiment. IEEE Transactions on Power Systems 39, 6 (2024), 7102–7114. [19] Wanjun Huang, Xiang Pan, Minghua Chen, and Steven H. Low. 2022. DeepOPF-V: Solving AC-OPF Problems Efficiently. IEEE Transactions on Power Systems 37, 1 (2022), 800–803. doi:10.1109/TPWRS.2021.3114092 [20] Yixiong Jia, Yiqin Su, Chenxi Wang, and Yi Wang. 2024. OptNet-Embedded Data-Driven Approach for Optimal Power Flow Proxy. IEEE Transactions on Industry Applications (2024), 1–9. doi:10.1109/TIA.2024.3462658 [21] Minsoo Kim and Hongseok Kim. 2025. Unsupervised Deep Lagrange Dual With Equation Embedding for AC Optimal Power Flow. IEEE Transactions on Power Systems 40, 1 (2025), 1078–1090. doi:10.1109/TPWRS.2024.3406437 [22] Jerome Meisel and Robert D. Barnard. 1970. Application of Fixed-Point Tech-niques to Load-Flow Studies. IEEE Transactions on Power Apparatus and Systems 
+
+PAS-89, 1 (1970), 136–140. doi:10.1109/TPAS.1970.292681 [23] A.J. Monticelli, A. Garcia, and O.R. Saavedra. 1990. Fast Decoupled Load Flow: Hypothesis, Derivations, and Testing. IEEE Transactions on Power Systems 5, 4 (1990), 1425–1431. doi:10.1109/59.99396 [24] Damian Owerko, Fernando Gama, and Alejandro Ribeiro. 2024. Unsupervised Op-timal Power Flow Using Graph Neural Networks. In IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP) . 6885–6889. [25] Xiang Pan, Minghua Chen, Tianyu Zhao, and Steven H. Low. 2023. DeepOPF: A Feasibility-Optimized Deep Neural Network Approach for AC Optimal Power Flow Problems. IEEE Systems Journal 17, 1 (2023), 673–683. doi:10.1109/JSYST. 2022.3201041 [26] Xiang Pan, Tianyu Zhao, and Minghua Chen. 2019. DeepOPF: Deep Neural Net-work for DC Optimal Power Flow. In IEEE International Conference on Communi-cations, Control, and Computing Technologies for Smart Grids (SmartGridComm) .IEEE, 1–6. doi:10.1109/SmartGridComm.2019.8909795 [27] Xiang Pan, Tianyu Zhao, Minghua Chen, and Shengyu Zhang. 2021. DeepOPF: A Deep Neural Network Approach for Security-Constrained DC Optimal Power Flow. 36, 3 (2021), 1725–1735. doi:10.1109/TPWRS.2020.3026379 [28] Seonho Park and Pascal Van Hentenryck. 2023. Self-Supervised Primal-Dual Learning for Constrained Optimization. Proceedings of the AAAI Conference on Artificial Intelligence 37, 4 (2023), 4052–4060. doi:10.1609/aaai.v37i4.25520 [29] Amirreza Shaban, Ching-An Cheng, Nathan Hatch, and Byron Boots. 2019. Trun-cated Back-Propagation for Bilevel Optimization. In The International Conference on Artificial Intelligence and Statistics . PMLR, 1723–1732. [30] Ye Shi, Hoang Duong Tuan, Pierre Apkarian, and Andrey V Savkin. 2018. Global Optimal Power Flow Over Large-Scale Power Transmission Networks. Systems & Control Letters 118 (2018), 16–21. [31] Ye Shi, Hoang Duong Tuan, Hoang Tuy, and S Su. 2017. Global Optimization for Optimal Power Flow Over Transmission Networks. Journal of Global Optimiza-tion 69, 3 (2017), 745–760. [32] Manish K Singh, Vassilis Kekatos, and Georgios B Giannakis. 2021. Learning to Solve the AC-OPF Using Sensitivity-Informed Deep Neural Networks. IEEE Transactions on Power Systems 37, 4 (2021), 2833–2846. [33] B. Stott and O. Alsac. 1974. Fast Decoupled Load Flow. IEEE Transactions on Power Apparatus and Systems PAS-93, 3 (1974), 859–869. doi:10.1109/TPAS.1974.293985 [34] Hongye Wang, Carlos E Murillo-Sanchez, Ray D Zimmerman, and Robert J Thomas. 2007. On Computational Issues of Market-Based Optimal Power Flow. 
+
+IEEE Transactions on Power Systems 22, 3 (2007), 1185–1193. [35] F.F. Wu. 1977. Theoretical Study of the Convergence of the Fast Decoupled Load Flow. IEEE Transactions on Power Apparatus and Systems 96, 1 (1977), 268–275. doi:10.1109/T-PAS.1977.32334 [36] Mei Yang, Gao Qiu, Junyong Liu, Youbo Liu, Tingjian Liu, Zhiyuan Tang, Li-jie Ding, Yue Shui, and Kai Liu. 2024. Topology-Transferable Physics-Guided Graph Neural Network for Real-Time Optimal Power Flow. IEEE Transactions on Industrial Informatics 20, 9 (2024), 10857–10872. [37] Ahmed S Zamzam and Kyri Baker. 2020. Learning Optimal Solutions for Ex-tremely Fast AC Optimal Power Flow. In IEEE International Conference on Ommu-nications, Control, and Computing Technologies for Smart Grids (SmartGridComm) .1–6. [38] Sihan Zeng, Youngdae Kim, Yuxuan Ren, and Kibaek Kim. 2024. QCQP-Net: Reliably Learning Feasible Alternating Current Optimal Power Flow Solutions under Constraints. In Proceedings of the Annual Learning for Dynamics & Control Conference . 1539–1551. [39] Min Zhou, Minghua Chen, and Steven H. Low. 2023. DeepOPF-FT: One Deep Neural Network for Multiple AC-OPF Problems With Flexible Topology. IEEE Transactions on Power Systems 38, 1 (2023), 964–967. doi:10.1109/TPWRS.2022. 3217407 [40] Ray Daniel Zimmerman, Carlos Edmundo Murillo-Sánchez, and Robert John Thomas. 2010. MATPOWER: Steady-State Operations, Planning, and Analysis Tools for Power Systems Research and Education. IEEE Transactions on Power Systems 26, 1 (2010), 12–19. Unsupervised Learning for AC Optimal Power Flow with Fast Physics-Aware Layer 
+
+Appendix A Proof for Theorem 4.1 
+
+Theorem A.1 (Gradient Directional Alignment). Assume Lemmas 4.1 and 4.2 and Assumptions 4.1–4.4 hold. Let 𝑑 0 ≜ ∥𝒛 0 − 𝒛 ★ ∥,
+
+𝐶 1 ≜ 𝜌 (𝐿 𝒙 + 𝐿 𝒛 𝜎 𝐽 ) + 𝐶 𝒛 𝐿 𝐽 , and 𝜀 𝑘 ≜ 𝜎 𝑨 
+
+> 𝐶 𝒈
+
+ 𝜌𝐿 𝑇 𝐶 𝒛  
+
+> 1−𝜌
+
++ 𝜌 𝑘 𝑑 0𝐶 1
+
+
+
+. Then, for every 𝑘 satisfying 𝜀 𝑘 < 1, the cosine similarity between the true gradient   
+
+> 𝜕 L
+> 𝜕 𝝓
+
+and its approximation gradient c𝜕 L 
+
+> 𝜕 𝝓
+
+satisfies: 
+
+*
+
+𝜕 L
+
+𝜕 𝝓 , d𝜕 L
+
+𝜕 𝝓 
+
++
+
+≥ 1 − 𝜀 𝑘 
+
+1 + 𝜀 𝑘 
+
+> 0.
+
+Proof. For notation brevity, define 𝒂 ★ ≜ 𝜕 𝒙 Lpart (𝒙 , 𝒛 ★), 𝒃 ★ ≜ 𝜕 𝒛 Ltotal (𝒙 , 𝒛 ★), 𝑱 ★ ≜ 𝑱 ID  
+
+> 𝒙
+
+𝒛 ★, and 𝒂 𝑘 +1, 𝒃 𝑘 +1, 𝑱 𝑘 +1 denote their counter-parts evaluated at the (𝑘 + 1)-th iterate. Let 
+
+𝒗 ★ ≜ 𝒂 ★ + 𝒃 ★ 𝑱 ★, 𝒗 𝑘 +1 ≜ 𝒂 𝑘 +1 + 𝒃 𝑘 +1 𝑱 𝑘 +1, Δ𝒗 ≜ 𝒗 𝑘 +1 − 𝒗 ★. (A.1) Then, 
+
+𝜕 L
+
+𝜕 𝝓 = 𝒈 ★ = 𝒗 ★𝑨 , d𝜕 L
+
+𝜕 𝝓 = b𝒈 𝑘 +1 = 𝒗 𝑘 +1𝑨 = 𝒈 ★ + Δ𝒗 𝑨 . (A.2) We first bound Δ𝒗 . By the triangle inequality, 
+
+∥Δ𝒗 ∥ ≤ ∥ 𝒂 𝑘 +1 − 𝒂 ★ ∥ + ∥ 𝒃 𝑘 +1 ∥ ∥ 𝑱 𝑘 +1 − 𝑱 ★ ∥op + ∥ 𝒃 𝑘 +1 − 𝒃 ★ ∥ ∥ 𝑱 ★ ∥op . (A.3) By smoothness and contraction, 
+
+∥𝒂 𝑘 +1 − 𝒂 ★ ∥ ≤ 𝐿 𝒙 𝜌 𝑘 +1𝑑 0, ∥𝒃 𝑘 +1 − 𝒃 ★ ∥ ≤ 𝐿 𝒛 𝜌 𝑘 +1𝑑 0, ∥𝑱 𝑘 +1 − 𝑱 ★ ∥op ≤ 𝜌𝐿 𝑇 
+
+1 − 𝜌 + 𝐿 𝐽 𝜌 𝑘 𝑑 0. (A.4) Combining with ∥𝒃 𝑘 +1 ∥ ≤ 𝑈 1 and ∥𝑱 ★ ∥ ≤ 𝑈 2,
+
+∥Δ𝒗 ∥ ≤ 𝜌𝐿 𝑇 𝐶 𝒛 
+
+1 − 𝜌 + 𝜌 𝑘 𝑑 0
+
+𝜌 (𝐿 𝒙 + 𝐿 𝒛 𝜎 𝐽 ) + 𝐶 𝒛 𝐿 𝐽 
+
+ = 𝜌𝐿 𝑇 𝐶 𝒛 
+
+1 − 𝜌 + 𝜌 𝑘 𝑑 0𝐶 1. (A.5) By Assumption 4.4, 
+
+∥Δ𝒗 𝑨 ∥ ≤ ∥ Δ𝒗 ∥∥ 𝑨 ∥op ≤ 𝜎 𝑨 ∥Δ𝒗 ∥. (A.6) Next, by Assumption 4.3, 
+
+∥𝒈 ★ ∥ = ∥𝒗 ★𝑨 ∥ ≥ 𝐶 𝒈 . (A.7) Hence, 
+
+⟨𝒈 ★, b𝒈 𝑘 +1⟩ = ⟨𝒈 ★, 𝒈 ★ + Δ𝒗 𝑨 ⟩ ≥ ∥ 𝒈 ★ ∥2 − ∥ 𝒈 ★ ∥∥ Δ𝒗 𝑨 ∥ ≥ ∥ 𝒈 ★ ∥  ∥𝒈 ★ ∥ − 𝜎 𝑨 ∥Δ𝒗 ∥ . (A.8) Similarly, 
+
+∥b𝒈 𝑘 +1 ∥ ≤ ∥ 𝒈 ★ ∥ + ∥ Δ𝒗 𝑨 ∥ ≤ ∥ 𝒈 ★ ∥ + 𝜎 𝑨 ∥Δ𝒗 ∥. (A.9) Therefore, 
+
+cos  𝒈 ★, b𝒈 𝑘 +1  = ⟨𝒈 ★, b𝒈 𝑘 +1⟩∥𝒈 ★ ∥∥ b𝒈 𝑘 +1 ∥ ≥ ∥𝒈 ★ ∥ − 𝜎 𝑨 ∥Δ𝒗 ∥∥𝒈 ★ ∥ + 𝜎 𝑨 ∥Δ𝒗 ∥ . (A.10) Using ∥𝒈 ★ ∥ ≥ 𝐶 𝒈 and the bound on ∥Δ𝒗 ∥, we obtain 
+
+cos 
+
+
+
+𝒈 ★, b𝒈 𝑘 +1 
+
+≥
+
+1 − 𝜎 𝑨 
+
+> 𝐶 𝒈
+
+ 𝜌𝐿 𝑇 𝐶 𝒛  
+
+> 1−𝜌
+
++ 𝜌 𝑘 𝑑 0𝐶 1
+
+
+
+1 + 𝜎 𝑨 
+
+> 𝐶 𝒈
+
+ 𝜌𝐿 𝑇 𝐶 𝒛  
+
+> 1−𝜌
+
++ 𝜌 𝑘 𝑑 0𝐶 1
+
+ = 1 − 𝜀 𝑘 
+
+1 + 𝜀 𝑘 
+
+. (A.11) Thus, whenever 𝜀 𝑘 < 1, the cosine similarity is strictly positive. □Jiebao Zhang et al. 5
+
+10 
+
+15 
+
+IEEE 57-bus system Eq. Mean Mismatch 
+
+2
+
+4
+
+> Mean Mismatch
+
+1e 6
+
+> DC3
+> OPF-DNN
+> DeepLDE
+> FPL-OPF (NR)
+> FPL-OPF (K-Decoupling)
+
+0 100 200 300 400 500 
+
+Epoch 
+
+1.4 
+
+1.6 
+
+1e 15 
+
+(a) Equality mean mismatch com-parison at the IEEE 57-bus system. 500 
+
+> 1000
+
+PEGASE 89-bus system Eq. Mean Mismatch        
+
+> 0.5
+> 1.0
+> 1.5
+> Mean Mismatch  1e 5
+> DC3
+> OPF-DNN
+> DeepLDE
+> FPL-OPF (NR)
+> FPL-OPF (K-Decoupling)
+> 0100 200 300 400 500
+> Epoch
+> 1.3
+> 1.4
+> 1e 9
+
+(b) Equality mean mismatch com-parison at PEGASE 89-bus system. 10 
+
+> 20
+> 30
+
+IEEE 118-bus system Eq. Mean Mismatch         
+
+> 0.5
+> 1.0
+> 1.5
+> Mean Mismatch  1e 5
+> DC3
+> OPF-DNN
+> DeepLDE
+> FPL-OPF (NR)
+> FPL-OPF (K-Decoupling)
+> 0100 200 300 400 500
+> Epoch
+> 2.5
+> 2.6
+> 2.7 1e 15
+
+(c) Equality mean mismatch com-parison at the IEEE 118-bus system. 0
+
+> 200
+> 400
+
+NESTA 189-bus system Eq. Mean Mismatch         
+
+> 0.5
+> 1.0
+> Mean Mismatch  1e 9
+> OPF-DNN
+> DeepLDE
+> FPL-OPF (NR)
+> FPL-OPF (K-Decoupling)
+> 0200 400 600 800 1000
+> Epoch
+> 4.00
+> 4.25 1e 14
+
+(d) Equality mean mismatch com-parison at the NESTA 189-bus sys-tem. 
+
+Figure A.1: Equality mean mismatch comparison on (a) IEEE 57-bus, (b) PEGASE 89-bus, (c) IEEE 118-bus, and (d) NESTA 189-bus systems. 0.01 
+
+> 0.02
+
+IEEE 57-bus system Ineq. Mean Mismatch       
+
+> 0.00005
+> 0.00010
+> Mean Mismatch
+> DC3
+> OPF-DNN
+> DeepLDE
+> FPL-OPF (NR)
+> FPL-OPF (K-Decoupling)
+> 0100 200 300 400 500
+> Epoch
+> 0.0
+> 2.5
+> 1e 7
+
+(a) Inequality mean mismatch com-parison at the IEEE 57-bus system. 250000 
+
+> 500000
+
+PEGASE 89-bus system Ineq. Mean Mismatch      
+
+> 0.0025
+> 0.0050
+> 0.0075
+> Mean Mismatch
+> DC3
+> OPF-DNN
+> DeepLDE
+> FPL-OPF (NR)
+> FPL-OPF (K-Decoupling)
+> 0100 200 300 400 500
+> Epoch
+> 0.0000
+> 0.0001
+
+(b) Inequality mean mismatch com-parison at PEGASE 89-bus system. 0.02 
+
+> 0.04
+
+IEEE 118-bus system Ineq. Mean Mismatch       
+
+> 0.0
+> 2.5
+> 5.0
+> 7.5
+> Mean Mismatch  1e 5
+> DC3
+> OPF-DNN
+> DeepLDE
+> FPL-OPF (NR)
+> FPL-OPF (K-Decoupling)
+> 0100 200 300 400 500
+> Epoch
+> 0.05
+> 0.00
+> 0.05
+
+(c) Inequality mean mismatch comparison at the IEEE 118-bus system. 0.5 
+
+> 1.0
+> 1e6
+
+NESTA 189-bus system Ineq. Mean Mismatch       
+
+> 0.005
+> 0.010
+> Mean Mismatch
+> OPF-DNN
+> DeepLDE
+> FPL-OPF (NR)
+> FPL-OPF (K-Decoupling)
+> 0200 400 600 800 1000
+> Epoch
+> 5.75
+> 6.00
+> 1e 8
+
+(d) Inequality mean mismatch comparison at the NESTA 189-bus system. 
+
+Figure A.2: Inequality mean mismatch comparison on (a) IEEE 57-bus, (b) PEGASE 89-bus, (c) IEEE 118-bus, and (d) NESTA 189-bus systems. 5
+
+> 10
+> 15
+
+IEEE 57-bus system Ineq. Viol Num      
+
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> Viol. Num.  DC3
+> OPF-DNN
+> DeepLDE
+> FPL-OPF (NR)
+> FPL-OPF (K-Decoupling)
+> 0100 200 300 400 500
+> Epoch
+> 0.05
+> 0.00
+> 0.05
+
+(a) Inequality violation number comparison at IEEE 57-bus system. 50 
+
+100 
+
+PEGASE 89-bus system Ineq. Viol Num 
+
+5
+
+10 
+
+> Viol. Num.  DC3
+> OPF-DNN
+> DeepLDE
+> FPL-OPF (NR)
+> FPL-OPF (K-Decoupling)
+
+0 100 200 300 400 500 
+
+Epoch 
+
+0
+
+2
+
+(b) Inequality violation number comparison at PEGASE 89-bus sys-tem. 10 
+
+> 20
+
+IEEE 118-bus system Ineq. Viol Num      
+
+> 0.0
+> 0.5
+> 1.0
+> Viol. Num.  DC3
+> OPF-DNN
+> DeepLDE
+> FPL-OPF (NR)
+> FPL-OPF (K-Decoupling)
+> 0100 200 300 400 500
+> Epoch
+> 0.05
+> 0.00
+> 0.05
+
+(c) Inequality violation number comparison at IEEE 118-bus system. 100 
+
+> 200
+> 300
+
+NESTA 189-bus system Ineq. Viol Num      
+
+> 0
+> 10
+> 20
+> Viol. Num.
+> OPF-DNN
+> DeepLDE
+> FPL-OPF (NR)
+> FPL-OPF (K-Decoupling)
+> 0200 400 600 800 1000
+> Epoch
+> 0.05
+> 0.00
+> 0.05
+
+(d) Inequality violation number comparison at NESTA 189-bus sys-tem. 
+
+Figure A.3: Inequality violation number comparison on (a) IEEE 57-bus, (b) PEGASE 89-bus, (c) IEEE 118-bus, and (d) NESTA 189-bus systems. 
+
+B Supplementary Experimental Results for PGLib 500-bus System 
+
+To further evaluate the scalability and robustness of the proposed framework, we conduct experiments on the PGLib 500-bus system 1, a significantly larger and more complex benchmark comprising 500 buses, 597 branches, and 56 generators. This system introduces a highly constrained optimization space defined by 1,000 equality constraints and 2,418 inequality constraints. The dataset generation, load profile perturbations, and general training configurations remain consistent with the NESTA 189-bus system setup. However, to accommodate the increased system scale, we expand the neural network architecture to use hidden layers of 6000-6000, reduce the learning rate to 1e-5, and set the outer iterations to 80, resulting in a total of 2,000 training epochs. In this evaluation, we compare the performance of FPL-OPF (K-Decoupling) exclusively against the traditional MIPS solver. Physics-aware learning baselines relying on exact implicit differentiation or Newton-Raphson steps, such as DC3, DeepLDE, and FPL-OPF (NR), are excluded from this benchmark. The dense matrix operations and large-scale Jacobian inversions required by these methods, combined with the 
+
+1https://github.com/power-grid-lib/pglib-opf/blob/master/pglib_opf_case500_goc.m Unsupervised Learning for AC Optimal Power Flow with Fast Physics-Aware Layer 500      
+
+> 1000
+> 1500
+> IEEE 57-bus system Test Loss
+> 4.20
+> 4.25
+> 4.30
+> Loss
+> DC3
+> OPF-DNN
+> DeepLDE
+> FPL-OPF (NR)
+> FPL-OPF (K-Decoupling)
+> 0100 200 300 400 500
+> Epoch
+> 4.00
+> 4.25
+
+(a) Loss comparison at IEEE 57-bus system. 2.5      
+
+> 5.0
+> 1e8
+> PEGASE 89-bus system Test Loss
+> 20
+> 40
+> 60
+> Loss
+> DC3
+> OPF-DNN
+> DeepLDE
+> FPL-OPF (NR)
+> FPL-OPF (K-Decoupling)
+> 0100 200 300 400 500
+> Epoch
+> 1.7
+> 1.8
+
+(b) Loss comparison at PEGASE 89-bus system. 2500      
+
+> 5000
+> IEEE 118-bus system Test Loss
+> 13.00
+> 13.25
+> 13.50
+> 13.75
+> Loss
+> DC3
+> OPF-DNN
+> DeepLDE
+> FPL-OPF (NR)
+> FPL-OPF (K-Decoupling)
+> 0100 200 300 400 500
+> Epoch
+> 12.5
+> 13.0
+> 13.5
+
+(c) Loss comparison at IEEE 118-bus system. 2.5       
+
+> 5.0
+> 7.5 1e10
+> NESTA 189-bus system Test Loss
+> 2.5
+> 5.0
+> 7.5
+> Loss
+> OPF-DNN
+> DeepLDE
+> FPL-OPF (NR)
+> FPL-OPF (K-Decoupling)
+> 0200 400 600 800 1000
+> Epoch
+> 0.375
+> 0.400
+
+(d) Loss comparison at NESTA 189-bus system. 
+
+Figure A.4: Loss comparison on (a) IEEE 57-bus, (b) PEGASE 89-bus, (c) IEEE 118-bus, and (d) NESTA 189-bus systems. 50000      
+
+> 60000
+> 70000
+> IEEE 57-bus system Test Obj. Cost
+> 41800
+> 42000
+> Obj. Cost  DC3
+> OPF-DNN
+> DeepLDE
+> FPL-OPF (NR)
+> FPL-OPF (K-Decoupling)
+> 0100 200 300 400 500
+> Epoch
+> 20000
+> 40000
+
+(a) Objective cost comparison at IEEE 57-bus system. 5850      
+
+> 5875
+> PEGASE 89-bus system Test Obj. Cost
+> 5800
+> 5820
+> Obj. Cost  DC3
+> OPF-DNN
+> DeepLDE
+> FPL-OPF (NR)
+> FPL-OPF (K-Decoupling)
+> 0100 200 300 400 500
+> Epoch
+> 4000
+> 5000
+
+(b) Objective cost comparison at PE-GASE 89-bus system. 150000      
+
+> 175000
+> IEEE 118-bus system Test Obj. Cost
+> 130000
+> 130500
+> 131000
+> 131500
+> Obj. Cost  DC3
+> OPF-DNN
+> DeepLDE
+> FPL-OPF (NR)
+> FPL-OPF (K-Decoupling)
+> 0100 200 300 400 500
+> Epoch
+> 50000
+> 100000
+
+(c) Objective cost comparison at IEEE 118-bus system. 1100      
+
+> 1150
+> NESTA 189-bus system Test Obj. Cost
+> 900
+> 1000
+> 1100
+> Obj. Cost  OPF-DNN
+> DeepLDE
+> FPL-OPF (NR)
+> FPL-OPF (K-Decoupling)
+> 0200 400 600 800 1000
+> Epoch
+> 250
+> 500
+> 750
+
+(d) Objective cost comparison at NESTA 189-bus system. 
+
+Figure A.5: Objective cost comparison on (a) IEEE 57-bus, (b) PEGASE 89-bus, (c) IEEE 118-bus, and (d) NESTA 189-bus systems. 
+
+memory overhead of backpropagation, exceed the 24 GB capacity of an NVIDIA RTX 4090D GPU, even at a severely reduced batch size of 16. These Out-Of-Memory failures highlight a critical scalability bottleneck in existing implicit-layer-based approaches. Conversely, our proposed FPL-OPF (K-Decoupling) successfully scales to this challenging scenario by avoiding Jacobian matrix formations and strictly maintaining an 𝑂 (𝑛 2) memory and time complexity. As detailed in Table A.1 and Figures A.6 and A.7, FPL-OPF (K-Decoupling) trains stably and achieves a highly competitive optimality gap of 0.35% while strictly satisfying the complex physical constraints. Furthermore, it demonstrates an overwhelming computational advantage, accelerating the inference process by a factor of over 1100 × compared to the MIPS solver, i.e., 0.746 seconds versus 827.748 seconds. These results underscore the exceptional memory efficiency, computational speed, and practical viability of the K-Decoupling strategy for large-scale power grid operations. 
+
+Table A.1: Performance Comparison On PGLib 500-bus System 
+
+Method Eq. Mean Mismatch Eq. Max. Mismatch Eq. Viol. Num. Ineq. Mean Mismatch Ineq. Max Mismatch Ineq. Viol. Num. Objective Cost ($) Objective Gap (%) 
+
+PGLib 500-bus system 
+
+MIPS Solver 0.00e+00 0.00e+00 0.00e+00 0.00e+00 0.00e+00 0.00e+00 72566.66 0.00% FPL-OPF (K-Decoupling) 1.07e-13 3.87e-12 0.00e+00 1.54e-05 0.0302 0.6550 72821.54 0.35% 
+
+C Impact of Iteration Budgets on Exact Implicit Differentiation 
+
+To justify the power flow solver configurations detailed in Table 5, we conduct an ablation study investigating the impact of the forward-pass iteration budget on the exact implicit differentiation baseline, DeepLDE. All experimental configurations and neural network hyperparameters strictly follow the setup described in Section 5.1. The sole parameter varied is the maximum number of iterations allocated to the solver, tested across 𝐾 ∈ { 4, 6, 8, 10 } on the IEEE 118-bus system. Figure A.8 illustrates the training dynamics under these varying iteration budgets, tracking the optimality gap, test loss, and physical constraint mismatches. The empirical results demonstrate that a larger iteration budget fundamentally enhances convergence stability. Most notably, as depicted in Figure A.8d, extending the iteration cap to 𝐾 = 10 yields a consistently better and more stable equality mean mismatch compared to lower thresholds, such as 𝐾 = 4. Furthermore, Figure A.9 evaluates the computational overhead associated with increasing this budget. The comparison reveals that scaling the iteration cap from 4 to 10 does not increase training and inference times per Jiebao Zhang et al. 5
+
+> 10
+
+PGLib 500-bus system Test Optimality Gap (%)     
+
+> 2
+> 4
+> Gap Percentage (%)
+> FPL-OPF (K-Decoupling)
+> 0500 1000 1500 2000
+> Epoch
+> 10
+> 0
+
+(a) Test Optimality gap at PGLib 500-bus system. 100 
+
+> 200
+
+PGLib 500-bus system Test Loss     
+
+> 2.2
+> 2.4
+> Loss
+> FPL-OPF (K-Decoupling)
+> 0500 1000 1500 2000
+> Epoch
+> 2.0
+> 2.1
+
+(b) Test loss curve at PGLib 500-bus system. 77500 
+
+> 80000
+> 82500
+
+PGLib 500-bus system Test Obj. Cost     
+
+> 73000
+> 74000
+> 75000
+> Obj. Cost  FPL-OPF (K-Decoupling)
+> 0500 1000 1500 2000
+> Epoch
+> 60000
+> 70000
+
+(c) Test objective at PGLib 500-bus system. 0.05      
+
+> 0.10
+> PGLib 500-bus system Ineq. Mean Mismatch
+> 0.00005
+> 0.00010
+> 0.00015
+> Mean Mismatch
+> FPL-OPF (K-Decoupling)
+> 0500 1000 1500 2000
+> Epoch
+> 9.0
+> 9.5
+> 1e 6
+
+(d) Inequality mean mismatch at PGLib 500-bus system. 10 
+
+> 20
+> 30
+
+PGLib 500-bus system Ineq. Viol Num     
+
+> 1
+> 2
+> 3
+> Viol. Num.  FPL-OPF (K-Decoupling)
+> 0500 1000 1500 2000
+> Epoch
+> 0.450
+> 0.475
+
+(e) Inequality violation number at PGLib 500-bus system. 1.75  
+
+> 1.80
+> 1.85
+> 1e 13
+
+PGLib 500-bus system Eq. Mean Mismatch        
+
+> 1.2
+> 1.4
+> 1.6
+> Mean Mismatch  1e 13
+> FPL-OPF (K-Decoupling)
+> 0500 1000 1500 2000
+> Epoch
+> 0.5
+> 1.0 1e 13
+
+(f) Equality mean mismatch at PGLib 500-bus system. 0.05  
+
+> 0.00
+> 0.05
+
+PGLib 500-bus system Eq. Viol Num     
+
+> 0.050
+> 0.025
+> 0.000
+> 0.025
+> 0.050
+> Viol. Num.  FPL-OPF (K-Decoupling)
+> 0500 1000 1500 2000
+> Epoch
+> 0.05
+> 0.00
+> 0.05
+
+(g) Equality violation number at PGLib 500-bus system. 
+
+Figure A.6: PGLib 500-bus system training performance visualization. 200 
+
+400 
+
+600 
+
+800 827.748 
+
+> MATPOWER
+> FPL-OPF
+> (K-Decoupling)
+
+0
+
+2
+
+4
+
+6
+
+> Time (s)
+
+6.707 
+
+0.746 
+
+Epoch Train Time 
+
+Epoch Inference Time 
+
+Figure A.7: Time-efficiency comparison on PGLib 500-bus system. Blue bars report training time per epoch, and orange bars report inference time on the test set. 
+
+epoch. Given the marked improvements in numerical stability and physical feasibility, an iteration budget of 10 is a robust configuration for exact implicit differentiation methods in our evaluations. 
+
+D Supplementary Experimental Results for Section 5.2 
+
+To further evaluate the stability and convergence behavior of the proposed framework, we analyze key performance metrics over the course of training. Figures A.1–A.5 illustrate the trajectories of equality mismatches, inequality mismatches, violation numbers, test losses, and objective costs on the IEEE 57-bus, PEGASE 89-bus, IEEE 118-bus, and NESTA 189-bus systems. 
+
+D.1 Constraint Satisfaction 
+
+Figures A.1, A.2, and A.3 depict the equality mean mismatch, inequality mean mismatch, and the number of inequality violations per epoch, respectively. The results highlight a remarkable difference in convergence behavior. First, the OPF-DNN method fails to converge to the Unsupervised Learning for AC Optimal Power Flow with Fast Physics-Aware Layer 20          
+
+> 40
+> IEEE 118-bus system Test Optimality Gap (%)
+> 0.2
+> 0.4
+> Gap Percentage (%)
+> DeepLDE ( K= 4)
+> DeepLDE ( K= 6)
+> DeepLDE ( K= 8)
+> DeepLDE ( K= 10)
+> 0100 200 300 400 500
+> Epoch
+> 0.0500
+> 0.0525
+
+(a) Test optimality gap at IEEE 118-bus system. 25          
+
+> 50
+> IEEE 118-bus system Test Loss
+> 13.00
+> 13.05
+> Loss
+> DeepLDE ( K= 4)
+> DeepLDE ( K= 6)
+> DeepLDE ( K= 8)
+> DeepLDE ( K= 10)
+> 0100 200 300 400 500
+> Epoch
+> 12.5
+> 13.0
+> 13.5
+
+(b) Test loss curve at IEEE 118-bus system. 0.02             
+
+> 0.04
+> IEEE 118-bus system Ineq. Mean Mismatch
+> 2.5
+> 5.0
+> 7.5
+> Mean Mismatch  1e 5
+> DeepLDE ( K= 4)
+> DeepLDE ( K= 6)
+> DeepLDE ( K= 8)
+> DeepLDE ( K= 10)
+> 0100 200 300 400 500
+> Epoch
+> 1.00
+> 1.05 1e 8
+
+(c) Test Ineq. mean mismatch at IEEE 118-bus system. 0.8              
+
+> 1.0
+> 1e 13
+> IEEE 118-bus system Eq. Mean Mismatch
+> 2
+> 4
+> 6
+> Mean Mismatch  1e 14
+> DeepLDE ( K= 4)
+> DeepLDE ( K= 6)
+> DeepLDE ( K= 8)
+> DeepLDE ( K= 10)
+> 0100 200 300 400 500
+> Epoch
+> 2.5
+> 2.6
+> 2.7 1e 15
+
+(d) Test Eq. mean mismatch at IEEE 118-bus system. 
+
+Figure A.8: Training convergence and constraint mismatch of DeepLDE under varying iteration budgets 𝐾 on the IEEE 118-bus system. 20 
+
+40 
+
+60 58.40 Epoch Train Time 
+
+Epoch Inference Time 
+
+> MATPOWER
+> DeepLDE ( K = 4)
+> DeepLDE ( K = 6)
+> DeepLDE ( K = 8)
+> DeepLDE ( K = 10)
+> FPL-OPF (NR)
+> (KG = 9,  KR = 1)
+> FPL-OPF (K-Decoupling)
+> (KG = 8,  KR = 4)
+> OPF-DNN
+
+0
+
+1
+
+2
+
+3
+
+> Time (s)
+
+3.44 3.42 3.41 3.23 
+
+2.02 
+
+0.72 
+
+0.13 
+
+0.77 0.78 0.77 0.76 
+
+0.21 0.08 0.00 
+
+Figure A.9: Computational time efficiency of DeepLDE under varying iteration budgets on the IEEE 118-bus system. Blue bars report training time per epoch, and orange bars report inference time on the test set. 
+
+physical region, exhibiting mismatches orders of magnitude higher than other approaches. This confirms the limitations of the soft penalty method in satisfying strict physical constraints. The physics-aware methods, i.e., DC3, DeepLDE, and our FPL-OPF variants, exhibit a rapid and monotonic decrease in inequality constraint violations, effectively reaching the feasible region within the early stages of training. Notably, the FPL-OPF (K-Decoupling) method matches the convergence speed and stability of the exact implicit differentiation method, e.g., DeepLDE, despite using an approximate implicit gradient. As observed across the benchmarks, particularly in more challenging NESTA 189-bus system in Figures A.1d and A.2d, the mismatch for the FPL-OPF framework rapidly descends to a highly accurate range. This empirical evidence across increasingly complex power grids demonstrates that the gradients derived from the K-Decoupling approximation are consistently robust and accurate enough to drive the neural network parameters to a strictly feasible region, matching the fidelity of computationally expensive exact implicit gradients. 
+
+D.2 Optimality and Loss Convergence 
+
+The training dynamics of the test loss and objective cost are presented in Figures A.4 and A.5. On smaller systems, the FPL-OPF framework demonstrates smooth convergence trajectories comparable to DeepLDE. However, on the large-scale NESTA 189-bus system, FPL-OPF exhibits significantly more stable and superior convergence behavior shown in Figures A.4d and A.5d compared to DeepLDE, which struggles with larger optimality gaps. While OPF-DNN appears to achieve lower objective costs, this is an artifact of its failure to satisfy physical constraints. Conversely, FPL-OPF consistently minimizes the objective function while strictly adhering to the feasible region, validating the Jiebao Zhang et al. 
+
+robustness and scalability of the proposed fixed-point layer in balancing optimality and physical constraints even for highly complex power grids.
