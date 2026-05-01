@@ -542,7 +542,7 @@ window.SubscriptionsManager = (function () {
     return runQuickFetch(days, quickRunMsgEl || msgEl, tip, options);
   };
 
-  const runQuickConferenceMaintain = (msgEl) => {
+  const runQuickConferenceRetrieval = (msgEl) => {
     const years = selectedConferenceYears.slice();
     const conf = String(selectedConference || '').trim();
     if (!years.length || !conf) {
@@ -552,16 +552,16 @@ window.SubscriptionsManager = (function () {
       }
       return;
     }
-    if (!window.DPRWorkflowRunner || typeof window.DPRWorkflowRunner.runConferenceMaintain !== 'function') {
+    if (!window.DPRWorkflowRunner || typeof window.DPRWorkflowRunner.runConferenceRetrieval !== 'function') {
       if (msgEl) {
         msgEl.textContent = '工作流触发器未加载到当前页面。';
         msgEl.style.color = '#c00';
       }
       return;
     }
-    window.DPRWorkflowRunner.runConferenceMaintain(conf, years);
+    window.DPRWorkflowRunner.runConferenceRetrieval(conf, years);
     if (msgEl) {
-      msgEl.textContent = `已发起 ${conf} ${years.join(', ')} 会议论文拉取任务。`;
+      msgEl.textContent = `已发起 ${conf} ${years.join(', ')} 会议论文检索任务。`;
       msgEl.style.color = '#080';
     }
   };
@@ -861,11 +861,11 @@ window.SubscriptionsManager = (function () {
             hidden
           >
             <div class="dpr-conference-pane">
-              <div class="dpr-conference-title">会议论文拉取</div>
-              <div class="dpr-conference-subtitle">独立维护会议论文数据源，不参与每日论文抓取。</div>
+              <div class="dpr-conference-title">会议论文检索</div>
+              <div class="dpr-conference-subtitle">按会议和年份从 Supabase 召回候选，不参与每日论文抓取。</div>
 
               <div class="dpr-conference-note">
-                会议论文任务不会写入 config；这里只触发一次性 Supabase 拉取任务。
+                会议论文任务不会写入 config；这里只触发一次性 BM25 / Embedding 候选检索。
               </div>
 
               <div class="dpr-choice-field">
@@ -881,10 +881,10 @@ window.SubscriptionsManager = (function () {
                 class="chat-quick-run-run-btn"
                 type="button"
               >
-                开始拉取
+                开始检索
               </button>
               <div id="arxiv-admin-conference-run-msg" class="chat-quick-run-msg">
-                选择会议和年份后，会一次性触发 Supabase 会议论文拉取。
+                选择会议和年份后，会一次性触发 Supabase 会议论文检索。
               </div>
             </div>
           </div>
@@ -1165,7 +1165,7 @@ window.SubscriptionsManager = (function () {
       quickRunConferenceBtn._bound = true;
       quickRunConferenceBtn.addEventListener('click', () => {
         const conferenceMsgEl = document.getElementById('arxiv-admin-conference-run-msg');
-        runQuickConferenceMaintain(conferenceMsgEl || quickRunMsgEl);
+        runQuickConferenceRetrieval(conferenceMsgEl || quickRunMsgEl);
       });
     }
 

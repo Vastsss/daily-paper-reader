@@ -25,12 +25,14 @@ window.DPRWorkflowRunner = (function () {
       desc: '将 docs 恢复为 docs_init 基线，并清空 archive。该操作为危险操作。',
     },
     {
-      key: 'maintain-conference',
-      id: 'maintain-supabase.yml',
-      name: '会议论文 Supabase 拉取',
-      desc: '一次性触发 NIPS/ICML OpenReview 抓取并同步到 Supabase。',
+      key: 'conference-retrieval',
+      id: 'conference-paper-retrieval.yml',
+      name: '会议论文检索',
+      desc: '按会议和年份触发 Supabase BM25/Embedding 候选召回与 RRF 融合。',
       dispatchInputs: {
-        maintain_target: 'conference',
+        top_k: '50',
+        rrf_top_n: '200',
+        run_rerank: 'false',
       },
     },
   ];
@@ -845,7 +847,7 @@ window.DPRWorkflowRunner = (function () {
     return out;
   };
 
-  const runConferenceMaintain = async (conference, years) => {
+  const runConferenceRetrieval = async (conference, years, options = {}) => {
     const normalizedConference = normalizeConferenceName(conference);
     const normalizedYears = normalizeConferenceYears(years);
     if (!normalizedConference || !normalizedYears.length) {
@@ -853,16 +855,25 @@ window.DPRWorkflowRunner = (function () {
       setStatus('请先选择支持的会议和年份。', '#c00');
       return false;
     }
-    return runWorkflowByKey('maintain-conference', {
+    const extraInputs =
+      options && typeof options === 'object' && options.dispatchInputs
+        ? options.dispatchInputs
+        : {};
+    return runWorkflowByKey('conference-retrieval', {
       conference: normalizedConference,
       years: normalizedYears.join(','),
+      ...extraInputs,
     });
   };
+
+  const runConferenceMaintain = async (conference, years) =>
+    runConferenceRetrieval(conference, years);
 
   return {
     open,
     runWorkflowByKey,
     runQuickFetchByDays,
+    runConferenceRetrieval,
     runConferenceMaintain,
   };
 })();
