@@ -1,0 +1,419 @@
+Title: ADE: Adaptive Dictionary Embeddings -- Scaling Multi-Anchor Representations to Large Language Models
+
+URL Source: https://arxiv.org/pdf/2604.24940v2
+
+Published Time: Thu, 30 Apr 2026 00:38:47 GMT
+
+Number of Pages: 13
+
+Markdown Content:
+# ADE: Adaptive Dictionary Embeddings — Scaling Multi-Anchor Representations to Large Language Models 
+
+Orhan Demirci 
+
+Department of Computer Engineering Hacettepe University Ankara, Turkey 
+
+orhandemirci@cs.hacettepe.edu.tr 
+
+Sezer Aptourachman 
+
+Department of Computer Engineering Hacettepe University Ankara, Turkey 
+
+sezeraptourachman@hacettepe.edu.tr 
+
+Aydın Kaya 
+
+Department of Computer Engineering Hacettepe University Ankara, Turkey 
+
+aydinkaya@cs.hacettepe.edu.tr 
+
+# Abstract 
+
+Word embeddings are fundamental to natural language processing, yet traditional approaches represent each word with a single vector, creating representational bottlenecks for polysemous words and limiting semantic expressiveness. While multi-anchor representations have shown promise by representing words as com-binations of multiple vectors, they have been limited to small-scale models due to computational inefficiency and lack of integration with modern transformer architectures. We introduce Adaptive Dictionary Embeddings (ADE), a frame-work that successfully scales multi-anchor word representations to large language models. ADE makes three key contributions: (1) Vocabulary Projection (VP), which transforms the costly two-stage anchor lookup into a single efficient matrix operation; (2) Grouped Positional Encoding (GPE), a novel positional encoding scheme where anchors of the same word share positional information, preserving semantic coherence while enabling anchor-level variation; and (3) context-aware anchor reweighting, which leverages self-attention to dynamically compose anchor contributions based on sequence context. We integrate these components into the Segment-Aware Transformer (SAT), which provides context-aware reweight-ing of anchor contributions at inference time. We evaluate ADE on AG News and DBpedia-14 text classification benchmarks. With 98.7% fewer trainable parameters than DeBERTa-v3-base, ADE surpasses DeBERTa on DBpedia-14 (98.06% vs. 97.80%) and approaches it on AG News (90.64% vs. 94.50%), while compressing the embedding layer over 40 × — demonstrating that multi-anchor representations are a practical and parameter-efficient alternative to single-vector embeddings in modern transformer architectures. 
+
+# 1 Introduction 
+
+Word embeddings are a foundational component of modern natural language processing, providing dense vector representations that capture semantic and syntactic properties of language. The dominant paradigm, from Word2Vec [Mikolov et al., 2013] to contextualized models like BERT [Devlin et al., 2019], assigns each vocabulary entry a single dense vector. Despite their effectiveness, single-vector 
+
+> Preprint.
+> arXiv:2604.24940v2 [cs.CL] 29 Apr 2026
+
+representations face a fundamental bottleneck: one vector must simultaneously encode all possible meanings, syntactic roles, and compositional properties of a word. This is particularly limiting for polysemous words, where distinct senses collapse into a single point in embedding space. A parallel line of work has sought to decompose word embeddings into combinations of shared, reusable components — an idea we broadly term codebook-based [Shu and Nakayama, 2017, Ren and Lu, 2022] or multi-anchor representations [Liang et al., 2020]. These methods represent each word not as a single learned vector but as a sparse composition over a smaller shared codebook, offering both richer representational capacity and significant storage efficiency [Li et al., 2024]. However, existing approaches share a critical limitation: they are designed for static, context-free composition. The combination weights are determined at the word level and remain fixed regardless of the surrounding sentence, preventing the model from disambiguating word senses in context. Despite their promise, codebook-based representations have not successfully scaled to modern transformer architectures, for reasons that are architectural as much as computational. Retrieving anchor embeddings through a two-stage lookup resists GPU parallelization and accumulates latency at large vocabulary sizes. More fundamentally, expanding a single word into multiple anchor embeddings creates an unresolved tension with positional encoding: treating co-anchors as distinct sequence positions breaks word-level coherence, while collapsing them to a single position prevents the model from distinguishing among them. Most critically, all existing codebook methods assign anchor combination weights at the word-type level, independently of context. A word like bank carries the same anchor mixture in every sentence it appears in — precisely the limitation that motivates our work. We introduce Adaptive Dictionary Embeddings (ADE), a framework that enables context-aware composition of multi-anchor representations within a transformer architecture through three tightly integrated contributions: 
+
+Vocabulary Projection (VP) We replace the two-stage anchor lookup with a single embedding-matrix operation that concatenates all anchor vectors per word into a flattened lookup table. VP eliminates the memory and latency overhead of traditional multi-anchor retrieval while remaining fully compatible with standard backpropagation pipelines (Section 3.2). 
+
+Grouped Positional Encoding (GPE) We introduce a positional encoding scheme in which all anchors belonging to the same word share an identical positional signal, while anchors from different words receive distinct positions. GPE preserves word-level semantic coherence — the defining property of codebook representations — while permitting anchor-level variation in embedding space (Section 3.4). 
+
+Context-aware anchor reweighting via SAT We present the Segment-Aware Transformer (SAT), a single-layer transformer that processes the flattened anchor sequence and dynamically reweights anchor contributions through self-attention. SAT enables context-dependent word composition without requiring a full deep encoder, and is shown to be the critical component separating effective from ineffective multi-anchor representations (Section 3.5). 
+
+# 2 Related work 
+
+2.1 Codebook and compositional embedding methods 
+
+A natural response to the single-vector bottleneck is to decompose word embeddings into combina-tions of shared, reusable components. Shu and Nakayama [2017] proposed learning compositional codes via a two-level code assignment scheme, representing each word as a product of sub-codebook vectors. Their method achieves substantial compression of large embedding matrices—compressing embeddings to 1–2% of their original size in some configurations—but the code assignments and composition weights are static: once learned, they do not vary with context. [Liang et al., 2020] introduced Anchor & Transform (A&T) embeddings, the most direct predecessor to ADE. Each word is represented as a sparse weighted combination of vectors drawn from a shared anchor vocabulary, with anchor assignments and weights determined at the word type level. A&T demonstrated improved performance on word similarity benchmarks and better handling of polysemy, 2but inherits the static-composition limitation and relies on a two-stage lookup that is computationally expensive at scale. [Ren and Lu, 2022] extended this direction to text classification via a capsule network with composi-tional coding and k-means routing. Their method groups token-level information into higher-level capsules using learned routing, enabling richer compositional representations at the sentence level. However, the compositional structure operates over capsule outputs rather than over the embedding layer itself, and routing is not conditioned on global sequence context in the same way as attention. ADE is distinguished from all of the above by enabling context-aware reweighting: the contribution of each anchor is determined dynamically by the self-attention mechanism, conditioned on the full input sequence. This means the same word can activate different anchor combinations depending on context—a property none of the static codebook methods above can provide. 
+
+2.2 Contextualized word representations 
+
+ELMo [Peters et al., 2018] and BERT [Devlin et al., 2019] address polysemy by producing different representations for the same word token in different contexts, using deep bidirectional language models. DeBERTa [He et al., 2020] further refined this with disentangled attention, representing each token through separate content and position vectors computed independently, while DeBERTaV3 [He et al., 2021] improved training efficiency via an ELECTRA-style [Clark et al., 2020] replaced token detection objective. Most recently, ModernBERT [Warner et al., 2025] pushed encoder-only performance further with rotary embeddings and hardware-aware optimizations, representing the current state of the art among encoder models. While highly effective, all of these approaches abandon static word-level representations entirely: the embedding of a word is inseparable from the sentence it appears in, which limits interpretability and increases inference cost. ADE takes a complementary approach, maintaining a fixed anchor vocabulary that can be inspected and reused, while still achieving context-dependent composition through the SAT layer. 
+
+2.3 Positional encoding 
+
+Standard positional encoding schemes assign a unique signal to each position in a token sequence, either through fixed sinusoidal functions [Vaswani et al., 2017], learned absolute embeddings [Devlin et al., 2019], relative distance-based encodings [Shaw et al., 2018], rotary transformations of query-key pairs (RoPE) [Su et al., 2024], or attention-score biases (ALiBi) [Press et al., 2021]. All of these schemes share the implicit assumption of a one-to-one correspondence between tokens and positions. Character-level models such as CANINE [Clark et al., 2022], Charformer [Tay et al., 2021], and ByT5 [Xue et al., 2022] face an analogous challenge when multiple characters or bytes must be associated with a single word-level position, but resolve it through downsampling — strided convolution or pooling that collapses the expanded sequence before deep encoding. No prior work, to our knowledge, addresses the case where multiple vectors per word must be preserved 
+
+throughout processing while sharing word-level positional information, which is the setting our Grouped Positional Encoding (GPE) targets. 
+
+2.4 Embedding compression 
+
+Beyond compositional coding, embedding compression has been approached through quantiza-tion [Han et al., 2015], low-rank factorization [Lan et al., 2019], and hashing tricks [Chen et al., 2015]. Knowledge distillation has emerged as a particularly prominent direction: DistilBERT [Sanh et al., 2019] applies distillation during pre-training to produce a model 40% smaller and 60% faster than BERT while retaining 97% of its language understanding capability. More recently, TensorGPT [Xu et al., 2023] proposed compressing LLM embedding layers via Tensor-Train Decomposition, treating each token embedding as a Matrix Product State and achieving compression ratios of up to 38 × on GPT-2 with negligible performance loss. At the extreme end, CARVQ [Gou et al., 2025] introduced group residual vector quantization specifically targeting the embedding layer of modern LLMs such as LLaMA and Phi-4, achieving near-lossless compression at 2.4 bits per parameter. All of these methods treat compression as an operation applied to a fully trained model. ADE instead builds compression into the architecture from the outset: the anchor vocabulary is an order of 3magnitude smaller than the full vocabulary, and the fixed lookup table achieves over 40 × compression of the DeBERTa-v3-base embedding layer without any post-training quantization step. 
+
+# 3 Methodology 
+
+3.1 Adaptive Dictionary Embeddings framework 
+
+Traditional embedding layers map each word in the vocabulary to a single dense vector. In contrast, Adaptive Dictionary Embeddings (ADE) represent each word using multiple anchor vectors drawn from a shared codebook, which are dynamically composed at inference time based on sequence context. At a high level, each vocabulary entry is associated with a small set of anchor vectors and scalar weights; Vocabulary Projection (VP) constructs this codebook offline, and the Segment-Aware Transformer (SAT) performs context-aware composition at runtime. The following subsections formalize each step in pipeline order. 
+
+3.2 Vocabulary Projection (VP) 
+
+To enable efficient training and inference at scale, we introduce Vocabulary Projection (VP), which replaces the two-stage anchor lookup of traditional A&T with a direct sparse codebook representation. 
+
+Traditional A&T approach 
+
+1. Ti → Transform matrix where [T 1, . . . , Tki ] (requires N × K integer matrix). 2. Anchor embedding A ∈ RK×d.
+
+Our VP approach Given the Transform matrix T ∈ RN ×K from A&T, we apply a threshold τ to determine which anchors are active for each word: 
+
+Ii = {j : Ti,j ≥ τ }. (1) The indices in Ii form a sparse codebook entry for word wi, and their corresponding weights 
+
+βi,j = Ti,j , ∀ j ∈ I i, (2) are extracted and stored alongside the indices. The effective anchor cardinality is then ki = |I i| ≤ K.At lookup time, only the ki active anchor vectors and their weights are retrieved for each word, reducing the effective sequence length processed by SAT to SL = PLi=1 ki. The anchor cardinalities 
+
+s = [ k1, . . . , k L] are stored to enable correct grouped positional encoding during the forward pass. 
+
+3.3 Multi-anchor word representation 
+
+Let V be a vocabulary of size N . In ADE, each word wi ∈ V is associated with an anchor set 
+
+Ai = {ai, 1, . . . , ai,k i }, where ki is the anchor cardinality for word i, satisfying 1 ≤ ki ≤ K. Here 
+
+K is a global hyperparameter representing the maximum number of anchors per word, allowing the model to allocate representational capacity based on word complexity or frequency. Each anchor vector ai,j ∈ R1×d is a learnable embedding stored in a shared anchor matrix A ∈ RK×d, and each anchor is associated with a scalar importance weight βi,j ∈ R, collected into a weight matrix 
+
+β ∈ RN ×K .Vocabulary Projection (Section 3.2) constructs, for each word wi, a sparse entry recording which anchor indices Ii are active and their corresponding weights βi,j . At each forward pass, the model retrieves the anchor vectors indexed by Ii from A and composes them via a weighted sum governed by β.
+
+3.4 Grouped Positional Encoding (GPE) 
+
+Given a sequence of L words with anchor cardinalities s, expanding each word into its anchors yields a flattened sequence of length SL . Standard positional encoding would assign unique positions 
+
+[0 , 1, . . . , T − 1] to each anchor, incorrectly treating co-anchors of the same word as distinct sequence 4positions. We introduce Grouped Positional Encoding (GPE), which assigns the same positional encoding to all anchors within an anchor group while preserving distinct positions across words: 
+
+PE grouped [t] = PE(word _position( t)) , (3) where word _position( t) maps the flattened anchor position t to its corresponding word position in the original sequence. 
+
+Algorithm Given anchor cardinalities s = [ k1, . . . , k L]:1. Generate standard positional encodings for L word positions. 2. Create position indices mapping: 
+
+pos _indices = [0 , . . . , 0
+
+| {z }
+
+> k1
+
+, 1, . . . , 1
+
+| {z }
+
+> k2
+
+, . . . , L −1, . . . , L −1
+
+| {z }
+
+> kL
+
+], (4) where position i is repeated ki times. 3. Index the positional encodings: PE grouped = PE[pos _indices] .
+
+Example For a 3-word sequence with s = [3 , 1, 4] :Anchor positions: [0 , 1, 2, 3, 4, 5, 6, 7] 
+
+Word positions: [0 , 0, 0, 1, 2, 2, 2, 2] 
+
+Grouped PE: [PE(0) , PE(0) , PE(0) , PE(1) , PE(2) , PE(2) , PE(2) , PE(2)] .
+
+This ensures that anchors [0 , 1, 2] all receive PE(0) , anchor [3] receives PE(1) , and anchors [4 , 5, 6, 7] 
+
+all receive PE(2) .
+
+3.5 Segment-Aware Transformer (SAT) 
+
+While anchors within the same group share positional information via GPE, they retain distinct embedding values. This enables the self-attention mechanism to dynamically reweight anchor contributions based on global sequence context. 
+
+Attention-based composition After adding grouped positional encodings, each anchor representa-tion becomes: 
+
+xt = at + PE grouped [t], (5) where at is the anchor embedding and t indexes the flattened anchor sequence. The multi-head self-attention mechanism computes contextualized representations: 
+
+Attention( Q, K, V) = softmax 
+
+ QK ⊤
+
+√dk
+
+
+
+V, (6) where Q = XW Q, K = XW K , V = XW V . For anchor position t, the output is: 
+
+ht =
+
+> T
+
+X
+
+> t′=1
+
+αt,t ′ vt′ , (7) where the attention weights αt,t ′ = softmax t′ (qt · kt′ /√dk) are computed dynamically based on query-key similarity. 
+
+3.6 ADE architecture 
+
+We integrate VP, GPE, and SAT into a unified pipeline that processes variable-length anchor sequences efficiently. VP is executed once prior to training: for each vocabulary entry it stores a sparse record of which anchor indices Ii are active and their corresponding weights βi,j , alongside the anchor cardinality ki. The anchor vectors themselves reside in the shared anchor matrix A ∈ RK×d.At inference time, the model retrieves the active anchor vectors from A using the stored indices, composes them into token embeddings via a weighted sum, adds grouped positional encodings (GPE) to preserve word-level coherence, and passes the resulting sequence through a single transformer layer where self-attention performs context-aware anchor reweighting. A padding mask is applied throughout to prevent attention from leaking into padded positions. Algorithm 1 summarizes the full forward pass. 5Algorithm 1 ADE forward pass 
+
+Require: Anchor matrix A ∈ RK×d, sparse index-weight pairs {I i, βi}Ni=1 , and cardinality map 
+
+k ∈ ZN (constructed offline by Vocabulary Projection; see Section 3.2) 
+
+Require: Input IDs [w1, . . . , w L] ∈ ZB×L, attention mask m ∈ { 0, 1}B×L 
+
+> 1:
+
+// Anchor lookup  
+
+> 2:
+
+a, β, batch_map , pos_map ← A[Iw1 , . . . , IwL ] ▷ retrieve active anchor vectors and weights via stored indices  
+
+> 3:
+
+global_id i ← batch_map i · L + pos_map i 
+
+> 4:
+
+sb ← [kb, 1, . . . , kb,L b ] for each b, clamped to ≥ 1 ▷ sub-length map for GPE  
+
+> 5:
+
+// Weighted anchor aggregation  
+
+> 6:
+
+˜ai ← βi · ai 
+
+> 7:
+
+X ← SCATTER ADD (˜ a, global_id , B × L). view (B, L, d ) ▷ compose anchors into token embeddings  
+
+> 8:
+
+X ← LAYER NORM (X) 
+
+> 9:
+
+// Segment-Aware Transformer (SAT) with GPE  
+
+> 10:
+
+X ← SAT (X, s) ▷ GPE and masked self-attention applied internally  
+
+> 11:
+
+// Classification head  
+
+> 12:
+
+p ← POOLER (X, m) 
+
+> 13:
+
+ˆy ← CLASSIFIER (DROPOUT (p))  
+
+> 14:
+
+return ˆy
+
+Efficient batching with padding masks To handle variable anchor cardinalities in batched training, sequences are padded to maximum length Tmax = max batch 
+
+P 
+
+> i
+
+ki, and a Boolean mask M ∈{0, 1}B×Tmax indicates valid anchor positions: 
+
+M[b, t ] = 
+
+(
+
+1 if t < PLb 
+
+> i=1
+
+kb,i 
+
+0 otherwise (8) Attention to padding positions is prevented by setting attention scores to −∞ for masked positions. 
+
+# 4 Experiments 
+
+4.1 Datasets 
+
+We evaluate ADE on two standard text classification benchmarks with different levels of label granularity. 
+
+AG News [Zhang et al., 2015] AG News is a four-class news topic classification dataset constructed from the AG corpus, with categories World, Sports, Business, and Science/Technology. It contains 120,000 training and 7,600 test samples, evenly distributed across classes. Due to its balanced distribution and clear topical separation, it serves as a reliable benchmark for evaluating discriminative embedding quality. 
+
+DBpedia-14 [Lehmann et al., 2015] DBpedia-14 is a 14-class ontology classification dataset derived from DBpedia [Auer et al., 2007], where each sample includes a Wikipedia title and abstract labeled by ontology class (e.g., Company, Artist, Athlete, NaturalPlace). It comprises 560,000 training and 70,000 test samples. Compared to AG News, its finer-grained labels and semantic overlap make it a more challenging benchmark for fine-grained semantic disambiguation. 
+
+4.2 Training procedure 
+
+Training ADE involves three stages: (1) pre-training anchor embeddings via knowledge distillation, (2) applying vocabulary projection to create an efficient lookup table, and (3) integrating the embedding layer with the Segment-Aware Transformer for end-to-end training. 
+
+Stage 1: Anchor embedding pre-training with knowledge distillation We initialize our multi-anchor embeddings by distilling knowledge from the embedding matrix of DeBERTa-v3-base, used 6here as a frozen teacher. Formally, let Eteacher ∈ RN ×d denote this pre-trained embedding matrix. For each word wi with anchor set Ai = {ai, 1, . . . , ai,k i }, we learn to reconstruct the teacher embedding through a weighted combination: 
+
+ˆei =
+
+> ki
+
+X
+
+> j=1
+
+βi,j ai,j . (9) The distillation loss minimizes the angular distance between student and teacher embeddings at the token level: 
+
+Ldistill = 1 − 1
+
+|M| 
+
+X
+
+> (b,t )∈M
+
+ˆeb,t 
+
+∥ˆeb,t ∥ · eteacher 
+
+> b,t
+
+∥eteacher  
+
+> b,t
+
+∥ , (10) where M denotes the set of non-padding token positions. This cosine formulation measures direc-tional alignment rather than magnitude, making the loss invariant to embedding scale. 
+
+Stage 2: Vocabulary projection construction After pre-training anchor embeddings, we apply vocabulary projection. For each word wi, we concatenate its ki anchor embeddings and pad to maximum length K:
+
+E[i] = [ ai, 1; ai, 2; . . . ; ai,k i ; 0; . . . ; 0] ∈ RK·d. (11) This produces the flattened embedding matrix E ∈ RN ×(K·d) used for efficient lookup during training. We store anchor cardinalities s to enable proper unpadding and grouped positional encoding during forward passes. 
+
+Stage 3: end-to-end training The flattened embedding matrix E replaces the standard embedding layer. The SAT architecture processes variable-length anchor sequences using grouped positional encoding and masked self-attention as described in Section 3.6. We fine-tune ADE for classification using standard cross-entropy loss: 
+
+Lcls = −
+
+> C
+
+X
+
+> c=1
+
+yc log ˆ yc, (12) where ˆyc is the predicted probability for class c produced by the classifier head over the pooled SAT output. Crucially, the anchor embeddings within E are not frozen — they continue to be updated during training, allowing anchors to adapt from distilled representations to task-specific, context-aware representations. 
+
+Hyperparameters For both datasets, we use AdamW with learning rate 2 × 10 −5, batch size 32, and 500–1000 warm-up steps. AG News is trained for 30,000 steps (8 epochs over 120k samples); DBpedia-14 for 70,000 steps (4 epochs over 560k samples). 
+
+4.3 Results 
+
+Table 1 compares ADE against established baselines. On AG News, ADE achieves 90.64% accuracy, approaching DeBERTa (94.50%) while operating with 98.7% fewer trainable parameters and no full encoder; it falls marginally below ANT (91.00%), a gap we attribute to task characteristics discussed in Section 5. On DBpedia-14, ADE surpasses DistilBERT (95.21%), ANT (97.20%), and DeBERTa (97.80%), achieving 98.06% accuracy — within 0.94 points of BERT despite eliminating the transformer encoder entirely from the downstream model. These results suggest that anchor-based sparse embeddings combined with SAT can recover a substantial portion of full-model performance at a fraction of the parameter cost. Table 2 quantifies storage efficiency relative to the full DeBERTa-v3-base word embedding matrix. Across all tested anchor counts, our representation achieves compression ratios exceeding 40 ×, reduc-ing embedding storage from 375.3 MB to approximately 8.5–9.3 MB. Importantly, the compression ratio remains nearly flat as K increases ( 44 .2× at K=100 vs. 40 .4× at K=500), since storage is dominated by the fixed per-token index–weight pairs rather than the anchor matrix itself. 7Table 1: Performance comparison of ADE against published baselines on AG News and DBpedia-14. Underlined results are ADE (ours). N/R = not reported. ADE results use K=700 for AG News and K=500 for DBpedia-14. 
+
+Dataset Model Accuracy (%) F1 (%) 
+
+AG News BERT 94.48 94.45 DistilBERT 92.76 94.78 DeBERTa 94.50 94.48 ELECTRA 91.80 91.80 ANT 91.00 N/R ADE (ours) 90.64 90.62 DBpedia-14 BERT 99.00 99.00 DistilBERT 95.21 96.20 DeBERTa 97.80 97.74 ELECTRA 99.20 99.20 ANT 97.20 N/R ADE (ours) 98.06 98.06 Table 2: Embedding layer compression: DeBERTa-v3-base vs. anchor-based sparse representation across anchor counts K.
+
+Configuration A-matrix params Storage (MB) Ratio Reduction 
+
+DeBERTa-v3-base (full) 98,380,800 375.3 1.0× —ADE, K = 100 (ours) 76,800 8.49 44 .2× 97.7% ADE, K = 200 (ours) 153,600 8.79 42 .7× 97.7% ADE, K = 300 (ours) 230,400 9.08 41 .3× 97.6% ADE, K = 500 (ours) 384,000 9.28 40 .4× 97.5% 
+
+# 5 Discussion 
+
+5.1 The role of contextualisation 
+
+The ablation results in Table 3 reveal the most fundamental finding of this work: multi-anchor representations are not inherently useful — they require a contextualisation mechanism to unlock their representational capacity. Without SAT, accuracies on AG News range from 62.2% to 73.8% and show no consistent trend with increasing K, indicating that raw anchor capacity does not translate to downstream performance when anchors are composed through a static weighted sum alone. This confirms the hypothesis motivating our context-aware anchor reweighting contribution: fixed linear combinations at the word level are insufficient to exploit the semantic diversity encoded across multiple anchors. With SAT, accuracy scales monotonically from 87.96% at K=100 to 90.64% at K=700, a 2.68 percentage point improvement achieved purely by increasing anchor expressiveness within the same architecture. This is consistent with GPE’s design intent: shared positional information within anchor groups is intended to preserve word-level coherence while still allowing attention to differentiate individual anchor contributions; a dedicated ablation of GPE remains for future work. 
+
+5.2 Task complexity and anchor scaling 
+
+The contrast between AG News and DBpedia-14 results illuminates an important property of ADE. On DBpedia-14, ADE achieves 98.06% at K=500, surpassing DistilBERT (95.21%), ANT (97.20%), and DeBERTa (97.80%), despite operating with 98.7% fewer trainable parameters. On AG News, ADE achieves 90.64%, below the BERT-family baselines. We attribute this asymmetry to the nature of the classification tasks. AG News is a coarse 4-class topic classification task where surface-level lexical signals are highly predictive; a full pretrained encoder has already extracted rich contextual features, and the gap between full fine-tuning and 8our lightweight approach is more pronounced. DBpedia-14, by contrast, involves 14 fine-grained entity categories where precise semantic disambiguation is required — exactly the setting where multi-anchor representations excel, since different anchors can specialize for fine-grained semantic distinctions that a single vector conflates. This interpretation is further supported by the anchor scaling behaviour: on DBpedia-14, performance peaks at K=500 and plateaus at K=700 (98.06% vs. 97.99%), suggesting sufficient anchor diversity at K=500 to cover the relevant semantic distinctions. On AG News, performance continues to improve through K=700 without saturating, consistent with a harder task where additional anchor capacity continues to contribute marginal gains. 
+
+5.3 Parameter efficiency and deployment footprint 
+
+Tables 2 and C together quantify the efficiency gains of ADE. ADE achieves its parameter reduction through architectural substitution rather than post-hoc compression: the 12-layer DeBERTa encoder is replaced entirely by a single SAT layer at downstream training time, reducing trainable parameters from 184.4M to 2.37M — a 98.7% reduction. The embedding layer is additionally compressed 
+
+44 .2× at K=100 through the anchor representation itself. The compression ratio is notably insensitive to K, since storage is dominated by the fixed per-token index–weight pairs rather than the anchor matrix. This means practitioners can freely increase K to improve accuracy without meaningfully increasing storage footprint. In terms of memory footprint, ADE (K=100) requires approximately 18.5 MB of GPU memory for model weights at float32 precision, compared to approximately 700 MB for DeBERTa-v3-base — a reduction of over 37 ×. ADE’s 2.37M parameters are fine-tunable on commodity hardware without multi-GPU setups. Note, however, that ADE’s single-layer architecture currently incurs higher inference latency than DeBERTa due to anchor sequence expansion (Table 6), and throughput optimisation remains an open direction for future work. 
+
+5.4 Limitations 
+
+Several limitations merit acknowledgment. First, our experiments are restricted to text classification tasks; it remains to be demonstrated whether ADE’s benefits extend to generative tasks, structured prediction, or sequence-to-sequence settings. Second, the anchor embedding pre-training via knowl-edge distillation introduces an upstream training cost not reflected in downstream parameter counts. While amortized across tasks, this represents a non-trivial prerequisite. Third, the quality of anchor embeddings is inherently bounded by the quality of the teacher model: ADE’s representational ceiling is partially determined by DeBERTa’s embedding space. 
+
+# 6 Conclusion 
+
+This paper introduced Adaptive Dictionary Embeddings (ADE), a framework for scaling multi-anchor word representations to large language models through three tightly integrated contributions: Vocabu-lary Projection (VP) for efficient single-operation anchor lookup, Grouped Positional Encoding (GPE) for word-level positional coherence across anchor groups, and context-aware anchor reweighting via the Segment-Aware Transformer (SAT). Our experiments on AG News and DBpedia-14 yield two central conclusions. First, contextualisation is essential: without SAT, multi-anchor representations fail to improve consistently with K, while SAT-equipped ADE scales monotonically to 90.64% at K=700. Second, ADE demonstrates that architectural substitution — replacing a 12-layer encoder with a single SAT layer and an anchor-based embedding — can match or surpass large pretrained models on semantically demanding tasks at a fraction of the parameter cost, while compressing the embedding layer 44 .2× at K=100 with negligible storage sensitivity to anchor count. Future work will explore dynamic anchor allocation, where anchor cardinalities adapt during training, pruning unused anchors and expanding capacity where semantically needed. Beyond classification, adapting ADE to generative and encoder-decoder architectures remains an open direction, as does extending the anchor paradigm to multimodal settings where visual and linguistic anchors are jointly learned and composed. 9References 
+
+Sören Auer, Christian Bizer, Georgi Kobilarov, Jens Lehmann, Richard Cyganiak, and Zachary Ives. DBpedia: A nucleus for a web of open data. In The Semantic Web , pages 722–735. Springer, 2007. Wenlin Chen, James Wilson, Stephen Tyree, Kilian Weinberger, and Yixin Chen. Compressing neural networks with the hashing trick. In International conference on machine learning , pages 2285–2294. PMLR, 2015. Jonathan H Clark, Dan Garrette, Iulia Turc, and John Wieting. Canine: Pre-training an efficient tokenization-free encoder for language representation. Transactions of the Association for Computational Linguistics , 10: 73–91, 2022. Kevin Clark, Minh-Thang Luong, Quoc V Le, and Christopher D Manning. Electra: Pre-training text encoders as discriminators rather than generators. arXiv preprint arXiv:2003.10555 , 2020. Jacob Devlin, Ming-Wei Chang, Kenton Lee, and Kristina Toutanova. Bert: Pre-training of deep bidirectional transformers for language understanding. In Proceedings of the 2019 conference of the North American chapter of the association for computational linguistics: human language technologies, volume 1 (long and short papers) , pages 4171–4186, 2019. Dayin Gou, Sanghyun Byun, Nilesh Malpeddi, Gabrielle De Micheli, Prathamesh Vaste, Jacob Song, and Woo Seong Chung. Carvq: Corrective adaptor with group residual vector quantization for llm embedding compression. In Findings of the Association for Computational Linguistics: EMNLP 2025 , pages 18594– 18604, 2025. Song Han, Huizi Mao, and William J Dally. Deep compression: Compressing deep neural networks with pruning, trained quantization and huffman coding. arXiv preprint arXiv:1510.00149 , 2015. Pengcheng He, Xiaodong Liu, Jianfeng Gao, and Weizhu Chen. Deberta: Decoding-enhanced bert with disentangled attention. arXiv preprint arXiv:2006.03654 , 2020. Pengcheng He, Jianfeng Gao, and Weizhu Chen. Debertav3: Improving deberta using electra-style pre-training with gradient-disentangled embedding sharing. arXiv preprint arXiv:2111.09543 , 2021. Zhenzhong Lan, Mingda Chen, Sebastian Goodman, Kevin Gimpel, Piyush Sharma, and Radu Soricut. Albert: A lite bert for self-supervised learning of language representations. arXiv preprint arXiv:1909.11942 , 2019. Jens Lehmann, Robert Isele, Max Jakob, Anja Jentzsch, Dimitris Kontokostas, Pablo N. Mendes, Sebastian Hellmann, Mohamed Morsey, Patrick van Kleef, Sören Auer, and Christian Bizer. DBpedia – a large-scale, multilingual knowledge base extracted from Wikipedia. Semantic Web , 6(2):167–195, 2015. Shiwei Li, Huifeng Guo, Xing Tang, Ruiming Tang, Lu Hou, Ruixuan Li, and Rui Zhang. Embedding compression in recommender systems: A survey. ACM Computing Surveys , 56(5):1–21, 2024. Paul Pu Liang, Manzil Zaheer, Yuan Wang, and Amr Ahmed. Anchor & transform: Learning sparse embeddings for large vocabularies. arXiv preprint arXiv:2003.08197 , 2020. Tomas Mikolov, Kai Chen, Greg Corrado, and Jeffrey Dean. Efficient estimation of word representations in vector space. arXiv preprint arXiv:1301.3781 , 2013. Matthew E Peters, Mark Neumann, Mohit Iyyer, Matt Gardner, Christopher Clark, Kenton Lee, and Luke Zettlemoyer. Deep contextualized word representations. arxiv 2018. arXiv preprint arXiv:1802.05365 , 12, 2018. Ofir Press, Noah A Smith, and Mike Lewis. Train short, test long: Attention with linear biases enables input length extrapolation. arXiv preprint arXiv:2108.12409 , 2021. Hao Ren and Hong Lu. Compositional coding capsule network with k-means routing for text classification. 
+
+Pattern Recognition Letters , 160:1–8, 2022. Victor Sanh, Lysandre Debut, Julien Chaumond, and Thomas Wolf. Distilbert, a distilled version of bert: smaller, faster, cheaper and lighter. arXiv preprint arXiv:1910.01108 , 2019. Peter Shaw, Jakob Uszkoreit, and Ashish Vaswani. Self-attention with relative position representations. In 
+
+Proceedings of the 2018 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies, Volume 2 (Short Papers) , pages 464–468, 2018. Raphael Shu and Hideki Nakayama. Compressing word embeddings via deep compositional code learning. 
+
+arXiv preprint arXiv:1711.01068 , 2017. 
+
+10 Jianlin Su, Murtadha Ahmed, Yu Lu, Shengfeng Pan, Wen Bo, and Yunfeng Liu. Roformer: Enhanced transformer with rotary position embedding. Neurocomputing , 568:127063, 2024. Yi Tay, Vinh Q Tran, Sebastian Ruder, Jai Gupta, Hyung Won Chung, Dara Bahri, Zhen Qin, Simon Baumgart-ner, Cong Yu, and Donald Metzler. Charformer: Fast character transformers via gradient-based subword tokenization. arXiv preprint arXiv:2106.12672 , 2021. Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz Kaiser, and Illia Polosukhin. Attention is all you need. Advances in neural information processing systems , 30, 2017. Benjamin Warner, Antoine Chaffin, Benjamin Clavié, Orion Weller, Oskar Hallström, Said Taghadouini, Alexis Gallagher, Raja Biswas, Faisal Ladhak, Tom Aarsen, et al. Smarter, better, faster, longer: A modern bidirectional encoder for fast, memory efficient, and long context finetuning and inference. In Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pages 2526–2547, 2025. Mingxue Xu, Yao Lei Xu, and Danilo P Mandic. Tensorgpt: Efficient compression of the embedding layer in llms based on the tensor-train decomposition. arXiv preprint arXiv:2307.00526 , 13, 2023. Linting Xue, Aditya Barua, Noah Constant, Rami Al-Rfou, Sharan Narang, Mihir Kale, Adam Roberts, and Colin Raffel. Byt5: Towards a token-free future with pre-trained byte-to-byte models. Transactions of the Association for Computational Linguistics , 10:291–306, 2022. Xiang Zhang, Junbo Zhao, and Yann LeCun. Character-level convolutional networks for text classification. In 
+
+Advances in Neural Information Processing Systems , volume 28, 2015. 
+
+# A Ablation study: effect of SAT 
+
+Table 3 compares ADE with and without the Segment-Aware Transformer across anchor sizes on AG News, isolating the contribution of context-aware reweighting from raw anchor capacity. Table 3: Performance comparison of ADE with and without SAT across anchor sizes on AG News. Best results per column (with SAT) are highlighted in bold .
+
+Anchors Accuracy F1 Precision Recall 
+
+With SAT 
+
+100 0.8796 0.8794 0.8796 0.8796 200 0.8897 0.8896 0.8902 0.8897 300 0.8916 0.8913 0.8912 0.8916 500 0.9018 0.9016 0.9016 0.9018 
+
+700 0.9064 0.9063 0.9064 0.9064 
+
+Without SAT 
+
+100 0.7343 0.7308 0.7341 0.7343 200 0.7049 0.7014 0.7076 0.7049 300 0.7380 0.7367 0.7522 0.7380 500 0.7220 0.7192 0.7330 0.7220 700 0.6218 0.6144 0.6475 0.6218 Without SAT, performance degrades significantly across all anchor sizes (62.2%–73.8%), and shows no consistent improvement with increasing K. With SAT, accuracy scales monotonically from 87.96% at K=100 to 90.64% at K=700, confirming that SAT effectively leverages richer anchor representations at higher K.
+
+# B Effect of anchor size 
+
+Tables 3 and 4 together show how anchor cardinality K affects performance across both datasets. On AG News, accuracy improves monotonically through K=700, suggesting the task benefits from continued anchor diversity without saturation. On DBpedia-14, performance peaks at 98.06% at 11 K=500 and plateaus thereafter (98.06% vs. 97.99% at K=700), indicating that sufficient semantic coverage for fine-grained classification is reached at K=500. This contrast suggests that task complexity governs the anchor count at which diminishing returns set in. Table 4: ADE (with SAT) on DBpedia-14 across anchor sizes. Best results per column are shown in 
+
+bold .
+
+Anchors Accuracy F1 Precision Recall 
+
+100 0.9710 0.9710 0.9710 0.9710 200 0.9718 0.9717 0.9717 0.9718 300 0.9759 0.9759 0.9759 0.9759 
+
+500 0.9806 0.9806 0.9807 0.9806 
+
+700 0.9799 0.9799 0.9799 0.9799 
+
+# C Efficiency and parameter analysis 
+
+Table C provides a full component-level breakdown of trainable parameters for DeBERTa-v3-base and ADE at K=100. ADE achieves its 98.7% parameter reduction by eliminating the word embedding matrix, positional embeddings, and the full 12-layer transformer encoder from the downstream training pipeline, replacing them with a single SAT layer (2.36M parameters). Note that anchor embeddings (76,800 params at K=100) are excluded from this count as they are trained offline via knowledge distillation and frozen during downstream fine-tuning. Table 5: Full model parameter comparison: trainable parameters excluding frozen lookup tables. 
+
+Component DeBERTa-v3-base Ours ( K=100) 
+
+Word embedding 98,380,800 0Positional / type embeddings 394,752 0Transformer encoder (12L) 85,054,464 0Contextualizer (SAT, 1L) — 2,362,368 LayerNorm 1,536 1,536 Pooler 590,592 769 Classifier head 3,076 3,076 
+
+Total trainable 184,424,220 2,367,749 
+
+The dominant cost in ADE is the SAT contextualizer, which accounts for 99.8% of all trainable parameters. This means that scaling K — which increases only the frozen lookup table — adds negligible trainable cost while improving representational capacity. 
+
+# D Inference latency and throughput analysis 
+
+Table 6: Inference latency and throughput comparison at batch size 32, sequence length 128, single GPU (NVIDIA GeForce RTX 5080 Laptop, 17.09 GB VRAM). Lower latency and higher throughput are better.                     
+
+> Model Params (M) Latency (ms) Throughput (samples/s) Speedup
+> DeBERTa-v3-base 184.4 26.3 1217.13 1.0×
+> ADE ( K=100) 2.4 180.4 177.39 0.15 ×
+> ADE ( K=300) 2.4 174.0 183.90 0.15 ×
+> ADE ( K=500) 2.4 156.9 203.98 0.17 ×
+
+Despite reducing sequential attention computations from 12 layers to one, the dominant inference cost arises from the anchor-expanded sequence length processed by SAT, which more than offsets the encoder reduction. Beyond latency, ADE’s reduced parameter count translates directly to GPU memory savings: DeBERTa-v3-base requires approximately 700 MB of GPU memory for model weights at float32 precision, whereas ADE ( K=100) requires approximately 18.5 MB in total — a 12 reduction of over 37 ×. This makes ADE deployable on edge devices and in memory-constrained environments where full encoder models are impractical. Beyond inference, training is also computationally lightweight: AG News completes in approximately 22 minutes (30,000 steps) and DBpedia-14 in approximately 20 minutes (70,000 steps at larger batch throughput), both on a single NVIDIA GeForce RTX 5080 Laptop GPU. 13
