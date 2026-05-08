@@ -1,0 +1,2480 @@
+Title: One Algorithm, Two Goals: Dual Scoring for Parameter and Data Selection in LLM Fine-Tuning
+
+URL Source: https://arxiv.org/pdf/2605.06166v1
+
+Published Time: Fri, 08 May 2026 01:28:19 GMT
+
+Number of Pages: 35
+
+Markdown Content:
+# One Algorithm, Two Goals: Dual Scoring for Parameter and Data Selection in LLM Fine-Tuning 
+
+Xinrui Chen 1 Liu Yang 2 Ou Wu 1∗
+
+chenxinrui25@mails.ucas.ac.cn yangliuyl@tju.edu.cn wuou@ucas.ac.cn 
+
+> 1
+
+Hangzhou Institute for Advanced Study, University of Chinese Academy of Sciences 
+
+> 2
+
+College of Intelligence and Computing, Tianjin University 
+
+## Abstract 
+
+In Large Language Model (LLM) fine-tuning, parameter and data selection are common strategies for reducing fine-tuning cost, yet they are typically driven by separate scoring mechanisms. When a parameter mask and data subset jointly de-termine restricted fine-tuning, this separation incurs redundant overhead and makes coordinated selection difficult. We cast parameter and data selection as two bilevel selection problems under a common validation objective and derive a shared lo-cal response-surrogate scoring rule. Under first- and second-order validation-improvement approximations, parameter importance and data utility emerge as column-wise and row-wise aggregations of a single gradient interaction matrix, yielding a closed-form row–column correspondence for co-extracting both signals. Building on this structure, we propose DualSFT (Dual -Selection Fine-Tuning), a one-shot dual-scoring algorithm that produces a parameter mask and data subset from shared gradient statistics. On 3B–9B LLMs, single-axis DualSFT variants strengthen target-task performance and stability–plasticity trade-offs within their comparison groups, while full DualSFT yields a more favorable joint-constrained trade-off than sequential hybrid baselines under matched budgets. 
+
+## 1 Introduction 
+
+Full fine-tuning adapts Large Language Models (LLMs) to downstream tasks [1–3], but is prohibitive at modern model and data scales [4–8]. This motivated cost-efficient fine-tuning research, evolving into separate parameter-side and data-side lines. Parameter-efficient fine-tuning (PEFT) includes ap-proaches like additive modules, low-rank updates, and parameter selection [4, 8–15]. Data-efficient fine-tuning (DEFT) includes approaches like data selection, weighting, and scheduling [16–21]. Within PEFT and DEFT, parameter selection [22–30] and data selection [16, 31–35] share a budgeted-scoring pattern yet evolved independently, targeting complementary resources: data selection reduces optimization workload, while parameter selection reduces trainable-state memory. Recent pipeline combinations seek savings [36–39], yet retain redundant scoring and coordination mismatch. Since parameter mask and data subset jointly determine restricted updates, this motivates the question: can one algorithm serve both goals via a shared scoring rule, rather than disconnected mechanisms? 
+
+Instead of heuristically combining parameter and data selection, we formulate separate bilevel prob-lems sharing a validation objective, analyzing responses at a common checkpoint. This reveals scoring-level row-column duality: under first- and second-order validation-improvement surrogates, aggregating a gradient interaction matrix along parameter and sample axes yields parameter impor-tance and data utility. Thus, separate scoring problems become views of one local interaction object, enabling closed-form signal co-extraction from shared gradient statistics. This aggregation admits a localized Shapley interpretation, linking scores to surrogate cooperative-game credit assignment. 
+
+> ∗Corresponding author. Preprint.
+> arXiv:2605.06166v1 [cs.LG] 7 May 2026
+
+Building on this duality, we propose DualSFT , realizing one algorithm for two goals : a lightweight warmup establishes a stable scoring checkpoint, one-shot dual scoring reads parameter importance and data utility from a shared projection vector, and restricted fine-tuning updates selected parameters on selected data. By scoring both axes before the final update, DualSFT coordinates them during scoring, avoiding independent scoring rules and repeated conditional passes of sequential hybrids. DualSFT preserves pre-trained capabilities via corpus-free CWSD (Confidence-Weighted Self-
+
+Distillation), mitigating catastrophic forgetting during downstream fine-tuning [17, 40–45]. Experi-ments on 3B to 9B LLMs for code generation [46] and mathematical reasoning [47] show DualSFT re-duces fine-tuning cost while improving target-task performance. Furthermore, DualSFT strengthens stability-plasticity trade-offs: one-sided variants achieve best mean trade-offs within their groups, and full DualSFT yields best mean joint-constrained trade-off against sequential pipelines under matched budgets. Ablations and sensitivity analyses support its scoring and preservation components. Our main contributions are summarized as follows: • We derive a shared response-surrogate scoring rule for parameter and data selection from separate bilevel formulations with a common validation objective. Within this tractable scoring regime, pa-rameter importance and data utility are the column-wise and row-wise aggregations of one gradient interaction matrix, with a localized Shapley interpretation of the resulting closed-form scores. • We propose DualSFT, a one-shot dual scoring algorithm that co-extracts both signals from shared gradient statistics, reducing redundant scoring and repeated conditional passes in sequential com-binations while coordinating the two restricted axes at scoring time. • We construct a practical preservation direction using CWSD without pre-training data. • On 3B–9B LLMs, DualSFT reduces tunable parameters and training data, improving target perfor-mance. Single-axis variants strengthen intra-group performance and stability-plasticity trade-offs, while full DualSFT outperforms sequential hybrid baselines in joint-constrained trade-offs. 
+
+## 2 Related Work 
+
+2.1 Parameter and Data Efficient Fine-tuning 
+
+PEFT efficiently restricts updates via additive modules [9, 10], low-rank updates [4, 11, 12], and parameter selection [8, 13, 15, 22, 23]. Recent works combine structured or dynamic sparsity with criteria like Fisher guidance, regularization, and importance tracking [14, 24–30, 45, 48–55]. Al-though conceptually related, game-theoretic evaluations [56] and Shapley-based methods primarily target post-training compression, including rank allocation [57] and layer pruning [58]. DEFT improves data efficiency via reweighting [17, 44], scheduling [18, 19], token filtering [59–61], and sample selection [16, 31, 35, 62], respectively reallocating effort, reordering signals, dropping low-value tokens, and choosing subsets. Sample selection evolved from static gradient/subspace matching [16, 34] to trajectory-aware, validation-guided scoring [32, 62–65], refined by Shapley attribution [66], submodular conflict resolution [35], and quality-diversity tradeoffs [33, 67–70]. Recent cost-efficient fine-tuning methods increasingly couple efficiency and retention. They restrict adaptation via low-rank or subspace adapters [71–76], partial updates, optimizer filtering [28, 53, 77, 78], and data/token selection [40, 64]. While preserving pre-trained capabilities downstream, they mostly operate on a single axis, lacking a shared scoring rule for parameter and data selection. Recent cross-axis studies show that jointly considering parameter- and data-side resources can further reduce fine-tuning cost [36–39, 79]. Yet they lack explicitly coordinated data-subset and parameter-mask scoring under a shared validation objective. DualSFT derives both scores from a shared validation-improvement surrogate, yielding a row–column scoring rule for coordination. 
+
+2.2 Bilevel Optimization 
+
+Bilevel optimization (BLO) is widely used for meta-learning, hyperparameter optimization, and ar-chitecture search [80–82]. It supports validation-guided data selection before and after LLMs [65, 83, 84], and efficient fine-tuning and compression [85–87]. Unlike prior BLO optimizing data, prompts, parameters, or compression targets separately, DualSFT links separate validation-guided bilevel for-mulations through a shared local surrogate, enabling coordinated data–parameter selection. 2(a) Separate Selection Problems                                                
+
+> Parameter Selection 1
+> Training Set
+> 𝒟 !"#$%
+> Pre -trained
+> Model 𝜽 &'(
+> Validation Set
+> 𝒟 )#'
+> Outer level: choose parameter mask 𝐦 *
+> min
+> 𝐦 !""#ℒ$%& 𝜽 old +𝐦 '⨀𝜹 ∗𝐦 '
+> Inner level: optimize masked parameters ( 𝜹 )
+> 𝜹 ∗𝐦 '=arg min
+> 𝜹 ℒ*+%,-𝜽 old +𝐦 '⨀𝜹 ;𝒟 *+%,-
+> Data Selection
+> Outer level: select data mask 𝐦 𝒟
+> min
+> 𝐦 𝒟 "".ℒ$%& 𝜽 old +𝜹 ∗𝐦 𝒟
+> Inner level: optimize selected examples ( 𝜹 )
+> 𝜹 ∗𝐦 𝒟 =arg min
+> 𝜹 𝟏 !𝐦 𝒟 ⨀ℓ*+%,-𝜽 old +𝜹
+> 2
+> Shared validation objective
+> ℒ$%& =ℒ-01 +𝜆ℒ 2+,3+
+
+(b) Shared Local Surrogate Scoring                          
+
+> Common checkpoint from warmup: 𝜽 &
+> Δ𝜽 𝐦 '≈−𝜂 𝑮 ⨀𝐦 'Δ𝜽 𝐦 𝒟 ≈−𝜂 7𝐦 𝒟 4𝐠 4
+> 5
+> 467
+> Gradient Interaction Matrix 𝑀 ,,.
+> parameters 𝑑
+> samples  𝑛
+> Σ.
+> Σ,
+> Row -wise
+> Aggregation
+> Data utility
+> 𝑠 𝒟 ,4=7𝑀 4,9
+> 9
+> Column -wise
+> Aggregation
+> Parameter
+> importance
+> 𝑠 ',9=7𝑀 4,9
+> 4
+> One interaction matrix, two aggregation
+
+(c) One -Shot DualSFT Pipeline                                               
+
+> 1Pilot Warmup
+> 𝜽 3&: 𝒟 1%+;
+> scoring checkpoint 𝜽 ;
+> diagonal curvature 𝐜 ̂
+> 111
+> 2Shared Score Construction
+> 𝐆 =$𝐠 "
+> 𝒏
+> training
+> gradient
+> 𝐯 $%& =∇ℒnew (𝜽 +)
+> target -task
+> direction
+> 𝐯 '()*( from CWSD
+> preservation
+> direction
+> 𝐮 =𝜂 𝐯 -01 +𝜆 𝐯 2+,3+ −𝜂 <
+> 2𝐜 ̂⨀𝐆
+> interaction projection vector
+> Parameter Selection 3Data Selection
+> 𝑠 𝒟 ,4=𝐮 ,𝐠 4𝑠 ',9=𝑢 9𝐺 9
+> Top -𝑘 →sparse
+> parameter mask 𝐦 '
+> Top -𝑏 →compact
+> training subset 𝒟 =0&
+> 4Restricted Fine -Tuning
+> Fine -tune on
+> masked parameters
+> and selected data
+> Fine -tuned
+> model
+> One algorithm for two goals
+> ✓
+
+✨ 
+
+> Parameter -side surrogate Data -side surrogate
+
+Figure 1: DualSFT overview. Separate parameter and data bilevel problems share a local surrogate: scores aggregate columns and rows of the same conceptual gradient interaction matrix. DualSFT uses one-shot streaming dual scoring with CWSD before restricted fine-tuning. 
+
+## 3 Bilevel Formulations and Surrogates for Parameter and Data Selection 
+
+As summarized in Figure 1, we formulate parameter and data selection under a shared outer validation objective and derive tractable local surrogates for their bilevel responses. 
+
+3.1 Problem Setting 
+
+Consider a pre-trained LLM with 𝜽 old ∈ R𝐷 . Let 𝜹 ∈ R𝐷 denote the update applied to 𝜽 old , and let 𝜽 = 𝜽 old + 𝜹 be the adapted parameter vector. Let Dtrain = {( 𝑥 𝑛 , 𝑦 𝑛 )} 𝑁 𝑛 =1 be the training set and Dval a validation set. We index updatable coordinates by a binary mask m𝜃 ∈ { 0, 1}𝐷 with 
+
+∥m𝜃 ∥0 ≤ 𝑘 , so that 𝛿 𝑑 = 0 whenever (m𝜃 )𝑑 = 0, and we index training examples by a binary mask mD ∈ { 0, 1}𝑁 with ∥mD ∥0 ≤ 𝑏 , inducing the selected subset Dsel (mD ) ≜ {( 𝑥 𝑛 , 𝑦 𝑛 ) ∈ Dtrain | ( mD )𝑛 = 1}. The two masks act on different objects but share the same outer criterion. To balance target-task adaptation and prior-capability preservation, we define the validation objective as Lval (𝜽 ) ≜ Lnew (𝜽 ) + 𝜆 Lprior (𝜽 ), where Lnew is the target-task validation loss, Lprior the prior-capability preservation loss, and 𝜆 > 0 controls the stability–plasticity trade-off. 
+
+3.2 Bilevel Optimization Problems for Parameter and Data Selection 
+
+Under the shared outer criterion Lval , parameter selection and data selection can be formulated as two exact bilevel optimization problems. In both cases, the outer level selects a budget-constrained mask, while the inner level determines the training-induced parameter update under the corre-sponding restriction. Accordingly, the quality of a selection is determined by the induced update and its resulting validation performance. Here, ℓ(𝑥 𝑛 , 𝑦 𝑛 ; 𝜽 ) denotes the per-example training loss, 
+
+ℓtrain (𝜽 ) ≜ [ℓ(𝑥 1, 𝑦 1; 𝜽 ), . . . , ℓ (𝑥 𝑁 , 𝑦 𝑁 ; 𝜽 )] ⊤ ∈ R𝑁 is the vector of per-sample training losses, 
+
+1 ∈ R𝑁 is the all-ones vector, and Ltrain (𝜽 ; Dtrain ) ≜ 1⊤ℓtrain (𝜽 ) is the full training objective. For parameter selection during LLM fine-tuning, the outer mask determines which parameters are allowed to update, and the inner problem computes the optimal update under this restriction: 
+
+min 
+
+∥m𝜃 ∥0 ≤ 𝑘 Lval (𝜽 old + m𝜃 ⊙ 𝜹 ∗ (m𝜃 )) s.t. 𝜹 ∗ (m𝜃 ) = arg min 
+
+𝜹 Ltrain (𝜽 old + m𝜃 ⊙ 𝜹 ; Dtrain ) . (1) For data selection during LLM fine-tuning, the outer mask determines which training examples are used for learning, and the inner problem computes the update induced by the selected subset: 
+
+min 
+
+∥mD ∥0 ≤𝑏 Lval (𝜽 old + 𝜹 ∗ (mD )) s.t. 𝜹 ∗ (mD ) = arg min 
+
+𝜹 1⊤(
+
+mD ⊙ ℓtrain (𝜽 old + 𝜹 )
+
+)
+
+. (2) Here, 𝜹 ∗ (m𝜃 ) and 𝜹 ∗ (mD ) denote the optimal updates induced by the corresponding masks. 33.3 Local Surrogate Approximation of the Exact Bilevel Problems 
+
+Solving Eqs. (1) and (2) is intractable at LLM scale, as each candidate mask requires constrained fine-tuning. Following In-Run Data Shapley [66] and scalable proxy-based scoring methods [32, 62, 65, 88–91], we approximate both updates via one gradient step of the inner objective at a common checkpoint ¯𝜽 ∈ R𝐷 , yielding local response surrogates sharing this reference point. Let g𝑛 ≜ ∇𝜽 ℓ(𝑥 𝑛 , 𝑦 𝑛 ; ¯ 𝜽 ) be the 𝑛 -th example’s gradient at ¯𝜽 and G ≜ Õ𝑁 𝑛 =1 g𝑛 the aggregated training gradient. The masked parameter-side step then descends along G ⊙ m𝜃 , while the data-side step descends along Õ𝑁 𝑛 =1 (mD )𝑛 g𝑛 , giving the one-step inner-level updates: 
+
+Δ𝜽 (m𝜃 ) ≈ − 𝜂 (G ⊙ m𝜃 ), Δ𝜽 (mD ) ≈ − 𝜂 
+
+’𝑁 𝑛 =1 (mD )𝑛 g𝑛 , (3) with 𝜂 the effective local step size. Appendix A.1 gives the derivation. The parameter-side surrogate masks the aggregate gradient, whereas the data-side surrogate sums selected-example gradients. For notational convenience, let [𝐷 ] ≜ {1, . . . , 𝐷 }, [𝑁 ] ≜ {1, . . . , 𝑁 }, and identify each mask with its selected index set 𝑆 𝜃 ≜ {𝑑 ∈ [ 𝐷 ] | ( m𝜃 )𝑑 = 1}, 𝑆 D ≜ {𝑛 ∈ [ 𝑁 ] | ( mD )𝑛 = 1}. Substituting Eq. (3) into the validation gain at ¯𝜽 yields the localized utilities: 
+
+𝑈 𝜃 (𝑆 𝜃 ) ≜ Lval ( ¯𝜽 ) − L val 
+
+( ¯𝜽 + Δ𝜽 𝜃 (𝑆 𝜃 )) , 𝑈 D (𝑆 D ) ≜ Lval ( ¯𝜽 ) − L val 
+
+( ¯𝜽 + Δ𝜽 D (𝑆 D )) , (4) where 𝐺 𝑑 denotes the 𝑑 -th entry of G, e𝑑 ∈ R𝐷 the 𝑑 -th standard basis vector, Δ𝜽 𝜃 (𝑆 𝜃 ) ≜
+
+−𝜂 Õ𝑑 ∈𝑆 𝜃 𝐺 𝑑 e𝑑 , and Δ𝜽 D (𝑆 D ) ≜ −𝜂 Õ𝑛 ∈𝑆 D g𝑛 . These utilities measure validation-objective re-duction at ¯𝜽 from local updates, providing a tractable basis for shared scoring analysis. 
+
+## 4 Shared Interaction Matrix and Dual Scores 
+
+Deriving the DualSFT scoring rule, parameter and data updates from different spaces share a validation-improvement expansion around ¯𝜽 . Here, their scores reduce to column and row aggrega-tions of one gradient interaction matrix, providing a single algebraic basis to co-extract both signals. 
+
+4.1 Shared Taylor Approximation, Interaction Matrix, and Closed-Form Scores 
+
+Let vnew ≜ ∇𝜽 Lnew ( ¯𝜽 ), vprior ≜ ∇𝜽 Lprior ( ¯𝜽 ), vval ≜ ∇𝜽 Lval ( ¯𝜽 ) = vnew + 𝜆 vprior , and H ≜ ∇2 
+
+> 𝜽
+
+Lval ( ¯𝜽 ).Although the localized utilities in Eq. (4) act on different selection spaces, the surrogate updates in Eq. (3) place them around the same checkpoint ¯𝜽 under one outer objective, so both admit a common local second-order expansion. For either 𝑎 ∈ { 𝜃, D} and its selected set 𝑆 𝑎 :
+
+𝑈 𝑎 (𝑆 𝑎 ) = −v⊤
+
+> val
+
+Δ𝜽 𝑎 (𝑆 𝑎 ) − 12 Δ𝜽 𝑎 (𝑆 𝑎 )⊤HΔ𝜽 𝑎 (𝑆 𝑎 ) + 𝑅 𝑎 (𝑆 𝑎 ), (5) where 𝑅 𝑎 (𝑆 𝑎 ) = O(∥ Δ𝜽 𝑎 (𝑆 𝑎 )∥ 3) is the Taylor remainder. We use the first- or second-order trunca-tion of Eq. (5); Appendix A.2 shows utility errors are 𝑂 (𝜂 2) and 𝑂 (𝜂 3), respectively. Following tractable diagonal curvature approximations for scalable and stable LLM fine-tuning [92– 95], we adopt the diagonal approximation H ≈ Diag (𝑐 1, . . . , 𝑐 𝐷 ) for this instantiation. With 𝐺 𝑑 and 
+
+𝑔 𝑛,𝑑 denoting the 𝑑 -th entries of G and g𝑛 , we define three interaction matrices: 
+
+𝑀 (1) 
+
+> 𝑛,𝑑
+
+≜ 𝜂 (vval )𝑑 𝑔 𝑛,𝑑 , 𝑀 (diag ) 
+
+> 𝑛,𝑑
+
+≜ 𝑀 (1) 
+
+> 𝑛,𝑑
+
+− 𝜂 2
+
+2 𝑐 𝑑 𝐺 𝑑 𝑔 𝑛,𝑑 , 𝑀 (full ) 
+
+> 𝑛,𝑑
+
+≜ 𝑀 (1) 
+
+> 𝑛,𝑑
+
+− 𝜂 2
+
+2 (HG )𝑑 𝑔 𝑛,𝑑 , (6) and let M( 𝛼 ) ∈ R𝑁 ×𝐷 collect the entries 𝑀 ( 𝛼 ) 
+
+> 𝑛,𝑑
+
+. For 𝛼 ∈ { 1, diag , full }, the corresponding scores are 
+
+𝑠 ( 𝛼 ) 
+
+> 𝜃 ,𝑑
+
+≜
+
+’𝑁 𝑛 =1 𝑀 ( 𝛼 ) 
+
+> 𝑛,𝑑
+
+, 𝑠 ( 𝛼 )D,𝑛 ≜
+
+’𝐷 𝑑 =1 𝑀 ( 𝛼 ) 
+
+> 𝑛,𝑑
+
+. (7) Within the local validation-improvement surrogate, the scoring relation takes an explicit form: param-eter importance and data utility are column and row aggregations of one shared interaction matrix. 
+
+4.2 Shapley Interpretation of the Closed-Form Scores 
+
+The closed-form scores admit a Shapley interpretation. For each 𝛼 ∈ { 1, diag , full }, localized utilities 
+
+𝑈 ( 𝛼 ) 
+
+> 𝜃
+
+and 𝑈 ( 𝛼 )D from Eq. (5) define cooperative games G ( 𝛼 ) 
+
+> 𝜃
+
+= ([ 𝐷 ], 𝑈 ( 𝛼 ) 
+
+> 𝜃
+
+) and G ( 𝛼 )D = ([ 𝑁 ], 𝑈 ( 𝛼 )D ).4Theorem 1. For any 𝛼 ∈ { 1, diag , full }, the Shapley values of the two localized surrogate games are given by the closed-form scores in Eq. (7) :
+
+𝜙 ( 𝛼 ) 
+
+> 𝜃 ,𝑑
+
+= 𝑠 ( 𝛼 ) 
+
+> 𝜃 ,𝑑
+
+=
+
+’𝑁 𝑛 =1 𝑀 ( 𝛼 ) 
+
+> 𝑛,𝑑
+
+, 𝜙 ( 𝛼 )D,𝑛 = 𝑠 ( 𝛼 )D,𝑛 =
+
+’𝐷 𝑑 =1 𝑀 ( 𝛼 ) 
+
+> 𝑛,𝑑
+
+. (8) 
+
+The Shapley view interprets closed-form scores as attributions: first-order localized utilities decom-pose additively; in diagonal and full second-order cases, permutation averaging redistributes pairwise interactions into row and column aggregations of Eq. (7). Within surrogate games, the interaction matrix yields practical scores and Shapley-consistent attributions. Appendix A.3 details derivations. 
+
+4.3 Coordination Gap under Isolated Scoring 
+
+The shared interaction matrix exposes the cost of isolated scoring under joint restricted updates. Let 
+
+G = Õ𝑁 𝑛 =1 g𝑛 and G𝑆 D = Õ𝑛 ∈𝑆 D g𝑛 . Under both restrictions, Δ𝜽 (𝑆 D , m𝜃 ) = −𝜂 (m𝜃 ⊙ G𝑆 D ), induc-ing mask-aware first-order scores ¯𝑠 D,𝑛 (m𝜃 ) = 𝜂 ⟨vval ⊙ m𝜃 , g𝑛 ⟩ and ¯𝑠 𝜃 ,𝑑 (𝑆 D ) = 𝜂 (vval )𝑑 (G𝑆 D )𝑑 .
+
+Proposition 1. Let 𝑠 iso  
+
+> D,𝑛
+
+= 𝜂 ⟨vval , g𝑛 ⟩ and 𝑠 iso  
+
+> 𝜃 ,𝑑
+
+= 𝜂 (vval )𝑑 𝐺 𝑑 be the isolated first-order data and parameter scores. Let ¯𝑆 𝜃 = {𝑑 ∈ [ 𝐷 ] : (m𝜃 )𝑑 = 0} and ¯𝑆 D = [𝑁 ] \ 𝑆 D . Then: 
+
+𝑠 iso  
+
+> D,𝑛
+
+− ¯𝑠 D,𝑛 (m𝜃 ) = 𝜂 Õ𝑑 ∈ ¯𝑆 𝜃 (vval )𝑑 𝑔 𝑛,𝑑 , 𝑠 iso  
+
+> 𝜃 ,𝑑
+
+− ¯𝑠 𝜃 ,𝑑 (𝑆 D ) = 𝜂 (vval )𝑑 
+
+Õ𝑛 ∈ ¯𝑆 D 𝑔 𝑛,𝑑 . (9) Gaps in Eq. (9) arise from opposite sides of the joint restriction: data scores use m𝜃 -frozen co-ordinates; parameter scores use 𝑆 D -excluded samples. Combining independent selections mixes mutually unverified signals. DualSFT mitigates this by extracting marginals from one validation-improvement projection, aligning axes before the joint update. Appendix A.4 proves Proposition 1. 
+
+## 5 The DualSFT Algorithm 
+
+5.1 Pilot Warmup and Global Dual Scoring 
+
+Sections 3 and 4 define diagonal-curvature scores at ¯𝜽 , which DualSFT extracts. To stabilize scoring and reduce gradient noise [16, 32, 34], DualSFT obtains ¯𝜽 via Dwarm warmup, using a damped AdamW RMS-gradient scale as curvature proxy ˆc [96–100]. Given AdamW second-moment buffer 
+
+r𝑡 𝑤 , set ˆr𝑡 𝑤 = r𝑡 𝑤 /( 1 − 𝛽 𝑡 𝑤  
+
+> 2
+
+) and ˆc = √ˆr𝑡 𝑤 + 𝜖 adam elementwise. Appendix B relates this proxy to our analyzed local surrogate. Let accumulated scoring-pool gradient G = Õ𝑁 sc  
+
+> 𝑛 =1
+
+g𝑛 ; set 𝜂 sc = 𝜂 ft /𝑁 sc via 
+
+𝜂 ft . With G, vnew , and CWSD-based vprior , DualSFT forms the validation-improvement projection: 
+
+u ≜ 𝜂 sc vval − 𝜂 2sc 
+
+2 ˆc ⊙ G = 𝜂 sc (vnew + 𝜆 vprior ) − 𝜂 2sc 
+
+2 ˆc ⊙ G, (10) which combines the first-order validation gradient with the optimizer-aware diagonal correction. The diagonal-curvature interaction score then reduces to a rank-one form along u:
+
+𝑀 (diag ) 
+
+> 𝑛,𝑑
+
+= 𝑢 𝑑 𝑔 𝑛,𝑑 , 𝑠 𝜃 ,𝑑 = Õ𝑁 sc  
+
+> 𝑛 =1
+
+𝑀 (diag ) 
+
+> 𝑛,𝑑
+
+= 𝑢 𝑑 𝐺 𝑑 , 𝑠 D,𝑛 = Õ𝐷 𝑑 =1 𝑀 (diag ) 
+
+> 𝑛,𝑑
+
+= ⟨u, g𝑛 ⟩. (11) Both scores share u: s𝜃 ≜ [𝑠 𝜃 , 1, . . . , 𝑠 𝜃 ,𝐷 ]⊤ = u ⊙ G by columns and sD ≜ [𝑠 D,1, . . . , 𝑠 D, 𝑁 sc ]⊤
+
+by rows. Top-𝑘 /𝑏 use largest signed, not absolute, scores. Appendix A.5 shows the diagonal proxy induces only 𝑂 (𝜂 2sc ) perturbations and preserves Top-𝑘 /𝑏 selections when boundary gaps exceed them. While accumulating G, we stream 𝑠 D,𝑛 with Ghost Dot Product [66, 88], avoiding per-sample-gradient materialization. For affine layers, 𝑠 D,𝑛 = Õlayers 𝝐 ⊤ 
+
+> 𝑛
+
+Ulayer a𝑛 , with activation a𝑛 ,pre-activation gradient 𝝐 𝑛 , and Ulayer the corresponding u segment reshaped layer-wise. Pretraining-data-free CWSD instantiates vprior at ¯𝜽 . With Danchor ∩D train = ∅, let Xanchor be its inputs: 
+
+vprior ≈ ∇ ¯𝜽 
+
+1
+
+|X anchor |
+
+Õ𝑥 ∈ X anchor 𝜔 (𝑥 )𝜏 2KL 
+
+(
+
+𝑃 𝜏 (· | 𝜽 old , 𝑥 ) 𝑃 𝜏 (· | ¯𝜽 , 𝑥 )
+
+)
+
+, (12) where 𝜏 is the distillation temperature and 𝜔 (𝑥 ) = 1 − 𝐻 𝜽 old (𝑥 )/ log |V | upweights old-model-confident inputs, with 𝐻 𝜽 old (𝑥 ) the mean per-token predictive entropy. The KL term is implemented as the mean token-wise KL over non-padding response tokens, then averaged over anchor examples. Forward KL emphasizes old-model high-probability regions, aligning vprior with confident behav-iors. Appendix C shows that CWSD induces the logit-level gradient 𝜔 (𝑥 )𝜏 (p − q) and obtains the 
+
+𝐷 -dimensional preservation direction through the student Jacobian at ¯𝜽 .55.2 Restricted Fine-Tuning and Complexity 
+
+In Algorithm 1, pilot warmup yields ¯𝜽 , ˆc; one-shot dual scoring via u selects Dsel , m𝜃 ; restricted fine-tuning updates selected parameters on Dsel . Restarting from 𝜽 old decouples scoring from adap-tation, following warmup-then-select-from-scratch pipelines [16, 32, 34]. Final AdamW fine-tuning, MASKEDFT 𝜂 ft (𝜽 old , Dsel , m𝜃 ), masks gradients, adaptive moments, and decoupled weight decay. 
+
+Algorithm 1 DualSFT                                                                                     
+
+> Require: 𝜽 old ,Dtrain ,Dval ,Dwarm ,Danchor , 𝜂 ft , 𝜆, 𝜏, 𝑏, 𝑘
+> 1: (¯𝜽 ,ˆc) ← WARMUP (𝜽 old ,Dwarm )
+> 2: Dpool ← D train \ D warm
+> 3: G←GRADSUM (¯𝜽 ,Dpool )
+> 4: 𝑁 sc ← |D pool |,𝜂 sc ←𝜂 ft /𝑁 sc
+> 5: vnew ← ∇ ¯𝜽 Lnew (¯𝜽 )
+> 6: vprior ←CWSD (¯𝜽 ,𝜽 old ,Danchor , 𝜏 )
+> 7: u←𝜂 sc (vnew +𝜆 vprior ) − ( 𝜂 2sc /2)ˆc⊙G
+> 8: s𝜃 ←u⊙G,sD←GHOSTDOT (u,¯𝜽 ,Dpool )
+> 9: m𝜃 ←TOPK signed (s𝜃 , 𝑘 )
+> 10: mD←TOPB signed (sD, 𝑏 )
+> 11: Dsel ← {( 𝑥 𝑛 , 𝑦 𝑛 ) ∈ D pool :(mD)𝑛 =1}
+> 12: 𝜽 ★←MASKEDFT 𝜂 ft (𝜽 old ,Dsel ,m𝜃 )
+> 13: return mD,m𝜃 ,𝜽 ★
+
+DualSFT avoids materializing the O( 𝑁 sc ×
+
+𝐷 ) interaction matrix, confining selection to lightweight warmup and two streaming passes. First accumulates G, constructing u; second computes sample scores, maintaining the Top-𝑏 
+
+subset. Parameter scoring uses full-model vec-tors ( G, u, ˆc), incurring O( 𝐷 ) auxiliary mem-ory, linear in model size, implementable block-wise or via sharding. For data scoring, Ghost Dot Product avoids materializing per-sample gradients g𝑛 ∈ R𝐷 . Restricted fine-tuning proceeds on Dsel masked by m𝜃 . Thus, Du-alSFT reduces scoring redundancy and avoids interaction-matrix materialization, with param-eter scoring requiring linear auxiliary state. 
+
+## 6 Experiments 
+
+We evaluate DualSFT on matched-budget performance, component and hyperparameter sensitivity, diagnostic faithfulness, and comparison with forgetting-specific baselines. 
+
+6.1 Experimental Setup Baselines. We compare against 1 standard methods (Standard SFT, LoRA [4]); 2 parameter-only sparse methods (S 2FT [24], SMT [26], LIFT [27], NanoAdam [28]); 3 data-only methods (Random, LESS [16], FisherSFT [31], SPICE [35]); 4 sequential hybrids (LESS + S 2FT, SPICE + NanoAdam); and 5 forgetting-aware baselines (DavIR [101], FLOW [17], STM [40], FAPM [45], TALR [44]). 
+
+Datasets & Metrics. We evaluate on Magicoder [46] and MetaMathQA [47], each reserving 1,024 validation samples and 2,048 disjoint anchor samples for CWSD. Following prior studies [17, 41, 44, 102], we assess both plasticity and stability. For code, plasticity is measured by HumanEval [103] and stability by the four out-of-domain benchmarks PIQA [104], ARC-C [105], MMLU [106], and GSM8K [107]; for math, GSM8K and HumanEval swap roles. We report Plasticity, Stability (four-benchmark mean), and Overall (their arithmetic mean); see Appendix F.1.2 for partitioning. 
+
+Implementation. Base models are Llama-3.2-3B [108], Gemma-3-4B-PT [109], and Qwen-3.5-9B-Base [110]. Training uses LlamaFactory [111] with AdamW and cosine decay (Magicoder: 3 epochs, batch 64; MetaMathQA: 2 epochs, batch 128). DualSFT uses 𝜆 = 0.8, 𝜏 = 1.0, a 1-epoch warmup with fraction 𝑟 warm = 5% , and budgets 𝑏 = 10% for data and 𝑘 = 5% for parameters. For scoring, 
+
+𝜂 sc = 𝜂 ft /𝑁 sc , with 𝜂 ft reported in Appendix F.1.3; budget-constrained baselines use matched budgets within their comparison groups. We report 3-seed means and stds. Appendices F.1.3 and F.2 detail hyperparameters, separating adaptation budgets from scoring-only validation/anchors. 
+
+6.2 Main Results Matched-Budget Target-Task Performance. Under matched budgets, DualSFT improves target-task performance within each variant’s comparison group. On Llama-3.2-3B with Magicoder, the single-axis variants improve over their counterparts: DualSFT-Param raises HumanEval over NanoAdam from 43 .54% to 44 .52% , and DualSFT-Data raises HumanEval over LESS from 42 .66% 
+
+to 44 .05% . In the harder joint-constrained regime, where both axes are restricted, full DualSFT reaches 43 .67% HumanEval, 4.15 points above SPICE+NanoAdam under the same joint budget. 
+
+Retention and Overall Performance. DualSFT raises Overall beyond target-task performance, pre-serving general capabilities with less plasticity loss. Single-axis DualSFT-Param/Data lead their groups in Overall; full DualSFT is compared to joint-budget hybrids. Here, it keeps Stability Avg. 6Table 1: Fine-tuning results on Magicoder (%). Pre-trained, Standard SFT, and LoRA (gray) are excluded from group ranking. In each group, best and second-best results are highlighted. 
+
+Model Method Stability ↑ Plasticity ↑ Overall ↑
+
+ARC-C PIQA MMLU GSM8K Avg HE Score Llama-3.2-3B 
+
+Pre-trained 43.00 ±1.45 76.61 ±0.99 56.52 ±0.40 27.45 ±0.73 50.90 ±0.49 28.66 ±0.54 39.78 ±0.36 
+
+Standard SFT 39.99 ±1.46 72.09 ±0.98 48.18 ±0.39 20.69 ±0.85 45.24 ±0.50 44.68 ±0.56 44.96 ±0.37 
+
+LoRA ICLR’22 42.61 ±1.45 74.43 ±0.99 51.87 ±0.41 23.29 ±0.83 48.05 ±0.50 41.46 ±0.56 44.76 ±0.37 
+
+S2FT NIPS’24 41.80 ±1.45 76.26 ±0.98 52.10 ±0.40 22.58 ±0.72 48.19 ±0.48 42.78 ±0.76 45.48 ±0.45 
+
+SMT ICLR’25 40.97 ±1.45 74.15 ±0.98 52.59 ±0.40 23.89 ±0.75 47.90 ±0.49 43.09 ±0.61 45.50 ±0.39 
+
+LIFT ICML’25 41.22 ±1.45 72.50 ±0.99 52.14 ±0.40 23.23 ±0.73 47.27 ±0.49 42.21 ±0.52 44.74 ±0.36 
+
+NanoAdam NIPS’25 42.66 ±1.44 74.68 ±0.98 52.71 ±0.40 24.39 ±0.73 48.61 ±0.48 43.54 ±0.87 46.08 ±0.50 
+
+DualSFT-Param (Ours) 42.54 ±1.46 76.19 ±0.99 54.01 ±0.41 26.27 ±0.75 49.75 ±0.49 44.52 ±0.72 47.14 ±0.44 
+
+Random 42.99 ±1.46 76.09 ±0.98 55.31 ±0.40 26.99 ±0.78 50.35 ±0.49 38.59 ±0.77 44.47 ±0.46 
+
+LESS ICML’24 42.18 ±1.45 75.66 ±0.99 53.97 ±0.40 23.46 ±0.63 48.82 ±0.48 42.66 ±0.82 45.74 ±0.47 
+
+FisherSFT ICML’25 41.55 ±1.44 74.17 ±0.99 52.83 ±0.40 22.92 ±0.62 47.87 ±0.47 41.37 ±0.74 44.62 ±0.44 
+
+SPICE ICLR’26 40.54 ±1.45 76.09 ±0.98 53.13 ±0.40 24.52 ±0.73 48.57 ±0.48 42.32 ±0.66 45.45 ±0.41 
+
+DualSFT-Data (Ours) 42.66 ±1.44 76.44 ±0.99 55.28 ±0.40 26.54 ±0.73 50.23 ±0.48 44.05 ±0.74 47.14 ±0.44 
+
+LESS + S 2FT 42.57 ±1.44 76.68 ±0.96 53.55 ±0.39 22.86 ±0.71 48.92 ±0.48 38.85 ±0.66 43.88 ±0.41 
+
+SPICE + NanoAdam 42.16 ±1.46 76.61 ±0.98 54.87 ±0.40 25.93 ±0.71 49.89 ±0.48 39.52 ±0.68 44.71 ±0.42 
+
+DualSFT (Ours) 42.94 ±1.45 76.23 ±0.98 56.09 ±0.40 26.88 ±0.70 50.54 ±0.48 43.67 ±0.71 47.10 ±0.43 
+
+> Gemma-3-4B-PT
+
+Pre-trained 51.45 ±1.46 79.16 ±0.95 59.61 ±0.39 37.00 ±0.83 56.81 ±0.49 35.37 ±0.74 46.09 ±0.44 
+
+Standard SFT 47.17 ±1.46 76.39 ±0.99 53.87 ±0.40 24.03 ±0.81 50.37 ±0.50 58.10 ±0.89 54.23 ±0.51 
+
+LoRA ICLR’22 49.15 ±1.46 75.57 ±1.00 56.71 ±0.39 31.63 ±0.82 53.27 ±0.50 54.66 ±0.91 53.96 ±0.52 
+
+S2FT NIPS’24 49.74 ±1.46 78.29 ±0.96 55.75 ±0.40 31.09 ±0.60 53.72 ±0.47 55.29 ±0.88 54.50 ±0.50 
+
+SMT ICLR’25 49.92 ±1.46 77.98 ±0.93 56.44 ±0.39 32.74 ±0.84 54.27 ±0.49 56.44 ±0.86 55.36 ±0.50 
+
+LIFT ICML’25 50.02 ±1.46 77.16 ±0.95 54.56 ±0.40 30.61 ±0.63 53.09 ±0.47 55.61 ±0.63 54.35 ±0.39 
+
+NanoAdam NIPS’25 50.78 ±1.45 78.20 ±0.94 58.33 ±0.39 33.12 ±0.84 55.11 ±0.49 56.38 ±0.90 55.74 ±0.51 
+
+DualSFT-Param (Ours) 51.13 ±1.45 78.54 ±0.98 58.14 ±0.39 36.34 ±0.83 56.04 ±0.49 57.52 ±0.81 56.78 ±0.47 
+
+Random 51.25 ±1.46 78.89 ±0.95 56.91 ±0.40 34.65 ±0.67 55.43 ±0.48 49.24 ±0.80 52.33 ±0.47 
+
+LESS ICML’24 50.92 ±1.46 78.92 ±0.93 54.14 ±0.39 31.58 ±0.84 53.89 ±0.49 57.09 ±0.91 55.49 ±0.52 
+
+FisherSFT ICML’25 50.25 ±1.45 74.51 ±0.94 53.71 ±0.38 32.17 ±0.77 52.66 ±0.48 53.47 ±0.75 53.07 ±0.45 
+
+SPICE ICLR’26 50.47 ±1.44 78.16 ±0.95 55.12 ±0.40 32.63 ±0.72 54.10 ±0.48 56.82 ±0.77 55.46 ±0.45 
+
+DualSFT-Data (Ours) 51.01 ±1.45 78.52 ±0.98 58.33 ±0.40 36.55 ±0.79 56.10 ±0.49 56.94 ±0.68 56.52 ±0.42 
+
+LESS + S 2FT 51.01 ±1.46 78.66 ±0.93 55.68 ±0.39 31.14 ±0.78 54.12 ±0.48 53.12 ±0.85 53.62 ±0.49 
+
+SPICE + NanoAdam 50.78 ±1.45 78.54 ±0.94 57.29 ±0.40 33.89 ±0.82 55.13 ±0.49 52.65 ±0.82 53.89 ±0.48 
+
+DualSFT (Ours) 51.14 ±1.44 79.01 ±0.95 59.16 ±0.38 35.62 ±0.64 56.23 ±0.47 56.76 ±0.71 56.50 ±0.43 
+
+> Qwen-3.5-9B-Base
+
+Pre-trained 54.27 ±1.46 80.09 ±0.93 72.62 ±0.37 86.20 ±0.83 73.30 ±0.49 60.98 ±0.81 67.14 ±0.47 
+
+Standard SFT 49.22 ±1.46 74.31 ±0.98 66.14 ±0.40 78.64 ±0.75 67.08 ±0.49 75.56 ±0.85 71.32 ±0.49 
+
+LoRA ICLR’22 51.51 ±1.46 76.62 ±0.95 69.47 ±0.39 81.94 ±0.73 69.89 ±0.48 70.29 ±0.87 70.09 ±0.50 
+
+S2FT NIPS’24 51.74 ±1.45 78.96 ±0.93 70.35 ±0.37 82.05 ±0.45 70.78 ±0.45 72.51 ±0.81 71.64 ±0.46 
+
+SMT ICLR’25 50.33 ±1.45 76.51 ±0.95 68.41 ±0.39 82.64 ±0.74 69.47 ±0.48 73.68 ±0.78 71.58 ±0.46 
+
+LIFT ICML’25 51.23 ±1.44 77.06 ±0.96 68.75 ±0.40 82.14 ±0.72 69.80 ±0.48 71.74 ±0.72 70.77 ±0.43 
+
+NanoAdam NIPS’25 52.87 ±1.45 79.03 ±0.95 70.22 ±0.39 84.22 ±0.80 71.59 ±0.49 73.28 ±0.77 72.43 ±0.46 
+
+DualSFT-Param (Ours) 53.52 ±1.44 78.72 ±0.95 70.26 ±0.39 84.22 ±0.70 71.68 ±0.48 75.13 ±0.71 73.41 ±0.43 
+
+Random 54.10 ±1.44 79.64 ±0.97 71.55 ±0.40 85.47 ±0.77 72.69 ±0.49 65.20 ±0.79 68.95 ±0.46 
+
+LESS ICML’24 50.27 ±1.45 79.02 ±0.97 69.65 ±0.41 81.28 ±0.80 70.06 ±0.49 72.77 ±0.64 71.41 ±0.40 
+
+FisherSFT ICML’25 50.94 ±1.46 76.16 ±0.93 68.49 ±0.37 81.36 ±0.72 69.24 ±0.48 71.61 ±0.69 70.42 ±0.42 
+
+SPICE ICLR’26 50.85 ±1.44 76.16 ±0.98 69.22 ±0.40 83.01 ±0.63 69.81 ±0.47 72.12 ±0.72 70.97 ±0.43 
+
+DualSFT-Data (Ours) 53.66 ±1.45 80.03 ±0.95 70.75 ±0.39 85.04 ±0.70 72.37 ±0.48 74.21 ±0.65 73.29 ±0.40 
+
+LESS + S 2FT 50.98 ±1.45 79.54 ±0.96 69.14 ±0.40 81.28 ±0.75 70.24 ±0.48 67.86 ±0.70 69.05 ±0.43 
+
+SPICE + NanoAdam 50.55 ±1.44 79.35 ±0.95 70.09 ±0.39 80.74 ±0.72 70.18 ±0.48 69.24 ±0.68 69.71 ±0.42 
+
+DualSFT (Ours) 54.01 ±1.43 79.64 ±0.94 70.33 ±0.38 84.61 ±0.68 72.15 ±0.47 73.75 ±0.65 72.95 ±0.40 
+
+near pre-trained references, maintains strong HumanEval, and leads joint-budget methods in Stability Avg. and Overall, outperforming the strongest sequential hybrid by 2.39 , 2.61 , and 3.24 points on Lla-ma/Gemma/Qwen. Appendix F.3 corroborates this advantage. Appendix F.4 details MetaMathQA trends; Sections 4.3 and 6.4 examine coordination gaps and one-shot selection. 
+
+Efficiency and Trade-offs. Fig. 2 compares Overall against time and peak memory. For pa-rameters, DualSFT-Param achieves the highest Overall with the lowest peak fine-tuning memory (19 .3 GB) among parameter-selection methods, despite not being the fastest. On the data and joint side, DualSFT-Data attains the best Overall, and full DualSFT maintains 47 .10% with 28 .5 GB peak selection memory and 7.4 GPU-hours. Under the same joint budget, full DualSFT improves Overall over sequential hybrids, trading modest selection cost for stronger stability-plasticity outcomes. SMT 45.50 
+
+10.4h 25.8GB 
+
+Overall Score 
+
+NanoAdam 46.08 
+
+11.5h 22.6GB DualSFT -Param 47.14 
+
+13.4h 19.3GB 
+
+S2FT 45.48 
+
+12.5h 28.4GB 
+
+LoRA 44.76 
+
+15.2h 11.5GB 
+
+LIFT 44.74 
+
+13.6h 27.1GB 
+
+Standard SFT 44.96 
+
+23.6h 74.9GB 
+
+Total Time (GPU -h) 
+
+10 12 14 16 24 …
+
+10 
+
+20 
+
+30 
+
+80 …
+
+> Peak FT Mem (GB)
+
+(a) Parameter selection efficiency frontier. Total Time (GPU -h) 
+
+4 8 9 11 10 
+
+24 
+
+26 
+
+28 
+
+30 
+
+32 
+
+> Peak Sel. Mem (GB)
+
+5 6 7
+
+SPICE + NanoAdam 
+
+44.71 5.3h 29.8GB SPICE 45.45 
+
+6.5h 29.8GB 
+
+LESS + S2FT 
+
+43.88 8.1h 26.8GB 
+
+LESS 45.74 
+
+9.0h 26.8GB 
+
+FisherSFT 44.62 
+
+10.5h 24.5GB 
+
+DualSFT 47.10 
+
+7.4h 28.5GB 
+
+DualSFT -Data 47.14 
+
+8.9h 28.5GB 
+
+Overall Score (b) Data selection efficiency frontier. 
+
+Figure 2: Efficiency frontiers comparing against various baselines on Magicoder with Llama-3.2-3B. 72 5 8 10 12 15                  
+
+> (a) Data budget b(%)
+> 40
+> 50
+> Score  Best: b=10
+> 0.5 3.0 5.0 7.0 10.0
+> (b) Parameter budget k(%)
+> Best: k=5
+> 0.5 0.8 1.0 1.3 1.5 2.0
+> (c) Prior weight
+> Best: =0.8
+> 0.5 1.0 1.5 2.0
+> (d) CWSD temperature
+> Best: =1.0 Stability
+> Plasticity
+> Overall
+
+Figure 4: Sensitivity to key hyperparameters on Llama-3.2-3B (Magicoder). 
+
+6.3 Ablation & Sensitivity Analysis 
+
+We address two questions: 1 Which DualSFT components contribute most under joint data– parameter restrictions? 2 How sensitive is DualSFT to budgets and scoring hyperparameters? Stability        
+
+> 48
+> 50
+> 50.54
+> 49.08
+> 47.28 47.57
+> Plasticity
+> 40
+> 42
+> 44 43.67
+> 41.24
+> 42.16
+> 40.61
+> Overall
+> 44
+> 46
+> 48 47.10
+> 45.16 44.72
+> 44.09
+> DualSFT (Ours) - w/o Warmup - w/o CWSD - First-Order Only
+
+Figure 3: Component ablation on Llama-3.2-3B. 
+
+Component Ablation. Fig. 3 shows comple-mentary roles under joint data–parameter re-strictions: removing warmup hurts plasticity (43 .67% → 41 .24% ), omitting CWSD hurts sta-bility ( 50 .54% → 47 .28% ), and first-order scor-ing causes the largest Overall drop ( 47 .10% →
+
+44 .09% ), supporting diagonal second-order cor-rection. Together, the three components im-prove different axes. Appendix F.6 further compares preservation directions and anchor sizes. 
+
+Hyperparameter Sensitivity. Fig. 4 indicates that DualSFT is robust to moderate hyperparameter variations and peaks under balanced settings. Overall follows an inverted-U trend over the data and parameter budgets, peaking at 𝑏 = 10% and 𝑘 = 5% , consistent with the stability–plasticity trade-off as adaptation capacity grows. The prior-preservation weight stays near-optimal across 𝜆 = 0.7–1.3
+
+with a peak at 𝜆 = 0.8, and the CWSD temperature shows a mild arch with optimum at 𝜏 = 1.0,suggesting that overly sharp or overly smooth teacher targets are suboptimal. 
+
+6.4 Diagnostic Analysis 
+
+Unless specified, all diagnostics in this section are conducted on Llama-3.2-3B with Magicoder. Table 2: Same-surrogate local-regret diagnostic. 
+
+Side Ckpt. Jacc. Ratio Reg. (%) 
+
+Data ( 𝑏 = 10% ) Init 0.71 0.972 2.8 Warmup 0.62 0.948 5.2 Param ( 𝑘 = 5% ) Init 0.76 0.981 1.9 Warmup 0.68 0.964 3.6 
+
+Same-Surrogate Local-Regret Diagnostic. Ta-ble 2 examines whether one-shot scores lose aware utility once the other-side restriction is im-posed under the shared surrogate u. Jacc., Ra-tio, and Reg. denote the aware-unaware overlap, the aware-utility ratio, and the relative drop. We compare ⟨u ⊙ m𝜃 , g𝑛 ⟩ vs. ⟨u, g𝑛 ⟩ for data, and 
+
+𝑢 𝑑 𝐺 𝑆 D ,𝑑 vs. 𝑢 𝑑 𝐺 𝑑 for parameters. At warmup the regret is bounded ( 5.2% on data, 3.6% on pa-rameters) with Jaccard 0.62 –0.68 ; the smaller init regret is consistent with noisier early gradients. Together with the fixed-side re-selection results below, this is consistent with one-shot dual scoring acting as low-cost ex-ante coordination. Appendix F.7 gives definitions and protocol. Table 3: Conditional re-selection. 
+
+Method Stab. Plas. Overall Re. Sel. Re. E2E 
+
+DualSFT 50.54 43.67 47.10 1.00 × 1.00 ×
+
+D. → P. 50.48 43.84 47.16 1.06 × 1.05 ×
+
+P. → D. 50.61 43.82 47.22 1.45 × 1.41 ×
+
+Table 4: Selected data statistics. 
+
+Data statistic Sel. Rand. Top-loss Pool 
+
+Val-grad alignment 0.42 0.18 0.31 0.15 Avg. training loss 1.45 1.39 2.83 1.38 Diversity score 0.82 0.84 0.71 0.86 0 3 6 9 12 15 18 21 24 27 
+
+> Layer Number
+> k_proj
+> o_proj
+> q_proj
+> v_proj
+> gate_proj
+> up_proj
+> down_proj
+> 0.0
+> 0.6
+> 1.2
+> 1.8
+> Mean Absolute Score
+
+Figure 5: Layer-wise parameter selection on Llama-3.2-3B (Magicoder). Cells show mean absolute block scores. Appendix F.8 reports exact aggregates. 
+
+Conditional Re-selection Analysis. Table 3 compares DualSFT with fixed-side re-selection (D./P.: data/parameter; Rel. Sel./Rel. E2E: relative selection/E2E costs). Re-selection improves Overall by at most 0.12 , while increasing selection and E2E costs by 6% –45% and 5% –41% . This is consistent 8Table 5: Score fidelity diagnostic.                      
+
+> Setting Data Param
+> 𝜌 Pair 𝜌 Pair Init + First-Order 0.28 58.6 0.21 56.3 Init + Diag-Second-Order 0.37 64.1 0.30 60.7 Warmup + First-Order 0.56 73.1 0.49 69.1
+> Warmup + Diag-Second-Order 0.82 79.8 0.79 75.3
+
+Table 6: Diagonal-vs-full rank agreement.                       
+
+> Checkpoint Data Param
+> 𝜌 Pair Top-5% 𝜌 Pair Top-5% Init 0.76 83.1 78.2 0.82 87.0 83.7
+> Warmup 0.86 89.8 86.5 0.90 92.6 89.4 45 46 47 48 49 50 51
+> Stability Score (Avg)
+> 39
+> 40
+> 41
+> 42
+> 43
+> 44
+> 45
+> Plasticity Score (HumanEval)  Pre-trained
+> Standard SFT
+> LoRA
+> DavIR
+> FLOW
+> STM
+> NanoAdam
+> FAPM
+> TALR
+> DualSFT-Param
+> DualSFT-Data
+> DualSFT
+
+Figure 6: Forgetting-aware baseline comparison on Magicoder using Llama-3.2-3B. with one-shot scoring already capturing most of the joint structure, with fixed-side passes mainly re-fining boundary cases after one side is fixed. The cost asymmetry follows from granularity: D. → P. aggregates selected-example gradients, whereas P. → D. rescores candidates under a fixed mask. Ap-pendix F.9 reports multi-round saturation, overlap, and cost breakdowns. 
+
+Analysis of Selected Data and Parameters. Table 4 shows DualSFT-selected data have higher validation-gradient alignment than random, top-loss, and pool baselines, maintaining pool-like loss and diversity, proving selection avoids mere high loss or redundancy. Fig. 5 reveals concentrated parameter scores: top five layers contain 42 .4% of selected parameters ( 2.38 × enrichment), whereas early layers (L0 to L9) contain 8.2% (0.23 ×). Module shares closely match the pool ( 0.91 × atten-tion, 1.03 × FFN), except over-selected FFN down_proj ( 1.44 ×). Reverse matched-budget selections underperform random controls, reflecting score directionality beyond magnitude or sparsity effects. 
+
+Score Fidelity and Diagonal Approximation. We test score reliability by comparing predicted and realized rankings of diagnostic data subsets and budget-matched parameter masks under the same validation objective and selection budgets. Table 5 reports Init/Warmup × First/Diag-Second-Order variants averaged over 𝐾 ∈ { 50 , 200 , 500 } AdamW steps, using Spearman 𝜌 and pairwise agreement; warmup and diagonal second-order scoring improve fidelity on both axes. Appendix F.10 extends the analysis to longer horizons, showing the expected horizon decay of scores while one-shot scoring remains cost-effective under the studied budgets. Table 6 compares the practical diagonal score with slice-level full-Hessian rankings, supporting the optimizer-aware diagonal proxy as a local ranking approximation; Appendix F.11 reports representative slice-level breakdowns. 
+
+6.5 Comparison with Forgetting-Specific Baselines 
+
+Fig. 6 compares DualSFT against forgetting-aware baselines on Llama-3.2-3B with Magicoder. The settings differ in operating points: baselines optimize retention under their update and data budgets, whereas DualSFT operates under explicit data and parameter restrictions. Here, DualSFT occupies a favorable stability-plasticity-resource frontier: among forgetting-aware methods, DualSFT-Param leads on plasticity; among DualSFT variants, full DualSFT delivers the highest stability; all DualSFT variants remain competitive on Overall while reducing at least one resource axis. Appendix F.12 pro-vides backbone and dataset comparisons, and Appendix F.13 reports an efficiency-aware comparison covering data fraction, trainable-parameter fraction, end-to-end time, and memory. 
+
+## 7 Conclusion 
+
+DualSFT casts parameter and data selection as two views of a shared validation-improvement sur-rogate, co-extracting both signals. Under first-order and diagonal/full second-order approximations, they become row-wise and column-wise aggregations of a gradient interaction matrix, with a Shap-ley interpretation in the localized surrogate game. This turns two historically separate procedures into an efficient one-shot dual-scoring algorithm, reducing trainable parameters and training data in restricted fine-tuning. Experiments on 3B–9B LLMs show favorable stability–plasticity–efficiency trade-offs under matched budgets. DualSFT suggests treating parameters and data as coupled adap-tation resources in future work, including longer horizons and post-training. 9References 
+
+[1] B. Roziere, J. Gehring, F. Gloeckle, S. Sootla, I. Gat, X. E. Tan, Y. Adi, J. Liu, R. Sauvestre, T. Remez 
+
+et al. , “Code llama: Open foundation models for code,” arXiv preprint arXiv:2308.12950 , 2023. [2] Z. Azerbayev, H. Schoelkopf, K. Paster, M. D. Santos, S. M. McAleer, A. Q. Jiang, J. Deng, S. Biderman, and S. Welleck, “Llemma: An open language model for mathematics,” in The Twelfth International Conference on Learning Representations , 2024. [3] Y. Li, Z. Li, K. Zhang, R. Dan, S. Jiang, and Y. Zhang, “Chatdoctor: A medical chat model fine-tuned on a large language model meta-ai (llama) using medical domain knowledge,” arXiv preprint arXiv:2303.14070 , 2023. [4] E. J. Hu, Y. Shen, P. Wallis, Z. Allen-Zhu, Y. Li, S. Wang, L. Wang, and W. Chen, “LoRA: Low-rank adaptation of large language models,” in International Conference on Learning Representations , 2022. [5] T. Dettmers, A. Pagnoni, A. Holtzman, and L. Zettlemoyer, “QLoRA: Efficient finetuning of quantized LLMs,” in Thirty-seventh Conference on Neural Information Processing Systems , 2023. [6] J. Hwang, W. Cho, and T. Kim, “Pica: Parameter-efficient fine-tuning with column space projection,” 
+
+arXiv preprint arXiv:2505.20211 , 2025. [7] H. Jeon, S. Lee, B. Kang, Y. Kim, and J.-J. Kim, “QWHA: Quantization-aware walsh-hadamard adapta-tion for parameter-efficient fine-tuning on large language models,” in The Fourteenth International Con-ference on Learning Representations , 2026. [8] L. Xu, H. Xie, S. J. Qin, X. Tao, and F. L. Wang, “Parameter-efficient fine-tuning methods for pretrained language models: A critical review and assessment,” IEEE Transactions on Pattern Analysis and Machine Intelligence , 2026. [9] X. Yang, J. Y. Huang, W. Zhou, and M. Chen, “Parameter-efficient tuning with special token adaptation,” in Proceedings of the 17th Conference of the European Chapter of the Association for Computational Linguistics , 2023, pp. 865–872. [10] Z. Wang, R. Panda, L. Karlinsky, R. Feris, H. Sun, and Y. Kim, “Multitask prompt tuning enables parameter-efficient transfer learning,” in The Eleventh International Conference on Learning Represen-tations , 2023. [11] J. Zhao, Z. Zhang, B. Chen, Z. Wang, A. Anandkumar, and Y. Tian, “Galore: Memory-efficient LLM training by gradient low-rank projection,” in Forty-first International Conference on Machine Learning ,2024. [12] S. yang Liu, C.-Y. Wang, H. Yin, P. Molchanov, Y.-C. F. Wang, K.-T. Cheng, and M.-H. Chen, “DoRA: Weight-decomposed low-rank adaptation,” in Forty-first International Conference on Machine Learning ,2024. [13] B. Liao, S. Tan, and C. Monz, “Make pre-trained model reversible: From parameter to memory efficient fine-tuning,” in Thirty-seventh Conference on Neural Information Processing Systems , 2023. [14] V. Lingam, A. T. Neerkaje, A. Vavre, A. Shetty, G. K. Gudur, J. Ghosh, E. Choi, A. Dimakis, A. Bo-jchevski, and S. Sanghavi, “SVFT: Parameter-efficient fine-tuning with singular vectors,” in 2nd Work-shop on Advancing Neural Network Training: Computational Efficiency, Scalability, and Resource Opti-mization (WANT@ICML 2024) , 2024. [15] H. SONG, H. Zhao, S. Majumder, and T. Lin, “Increasing model capacity for free: A simple strategy for parameter efficient fine-tuning,” in The Twelfth International Conference on Learning Representations ,2024. [16] M. Xia, S. Malladi, S. Gururangan, S. Arora, and D. Chen, “LESS: Selecting influential data for targeted instruction tuning,” in Forty-first International Conference on Machine Learning , 2024. [17] S. Sanyal, H. Prairie, R. Das, A. Kavis, and S. Sanghavi, “Upweighting easy samples in fine-tuning mitigates forgetting,” in Forty-second International Conference on Machine Learning , 2025. [18] H. Xu, W. Shen, Y. Wei, A. Wang, G. Runfan, T. Wang, Y. Li, M. Li, and W. Jia, “Skrull: Towards efficient long context fine-tuning through dynamic data scheduling,” in The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. [19] Z. Jiang, J. Han, T. Li, X. Wang, S. Jiang, X. Meng, J. Wei, J. Liang, and Y. Xiao, “Difficulty is not enough: Curriculum learning for llms fine-tuning must consider utility,” in Proceedings of the AAAI Conference on Artificial Intelligence , vol. 40, no. 37, 2026, pp. 31 365–31 373. [20] D. Das and V. Khetan, “Deft-ucs: Data efficient fine-tuning for pre-trained language models via unsuper-vised core-set selection for text-editing,” in Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing , 2024, pp. 20 296–20 312. [21] I. Agarwal, K. Killamsetty, L. Popa, and M. Danilevsky, “DELIFT: Data efficient language model in-struction fine-tuning,” in The Thirteenth International Conference on Learning Representations , 2025. 
+
+10 [22] A. Panigrahi, N. Saunshi, H. Zhao, and S. Arora, “Task-specific skill localization in fine-tuned language models,” in Proceedings of the 40th International Conference on Machine Learning , ser. Proceedings of Machine Learning Research, vol. 202. PMLR, 23–29 Jul 2023, pp. 27 011–27 033. [23] W. Song, Z. Li, L. Zhang, H. Zhao, and B. Du, “Sparse is enough in fine-tuning pre-trained large language models,” in Forty-first International Conference on Machine Learning , 2024. [24] X. Yang, J. Leng, G. Guo, J. Zhao, R. Nakada, L. Zhang, H. Yao, and B. Chen, “S$^{2}$FT: Efficient, scalable and generalizable LLM fine-tuning by structured sparsity,” in The Thirty-eighth Annual Confer-ence on Neural Information Processing Systems , 2024. [25] R. Pan, X. Liu, S. Diao, R. Pi, J. Zhang, C. Han, and T. Zhang, “LISA: Layerwise importance sampling for memory-efficient large language model fine-tuning,” in The Thirty-eighth Annual Conference on Neural Information Processing Systems , 2024. [26] H. He, J. B. Li, X. Jiang, and H. Miller, “SMT: Fine-tuning large language models with sparse matrices,” in The Thirteenth International Conference on Learning Representations , 2025. [27] Z. Liu, T. Pang, O. Balabanov, C. Yang, T. Huang, L. Yin, Y. Yang, and S. Liu, “LIFT the veil for the truth: Principal weights emerge after rank reduction for reasoning-focused supervised fine-tuning,” in 
+
+Forty-second International Conference on Machine Learning , 2025. [28] C. Zhou, T. Jacobs, A. Gadhikar, and R. Burkholz, “Pay attention to small weights,” in The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. [29] J. Lin, L. Zettlemoyer, G. Ghosh, W.-T. Yih, A. Markosyan, V.-P. Berges, and B. Oğuz, “Continual learning via sparse memory finetuning,” arXiv preprint arXiv:2510.15103 , 2025. [30] K. Yao, Z. Song, K. Wu, M. Zhong, D. Cheng, Z. Tan, Y. Ji, and P. Gao, “Gast: Gradient-aligned sparse tuning of large language models with data-layer selection,” in Proceedings of the 19th Conference of the European Chapter of the Association for Computational Linguistics (Volume 1: Long Papers) , 2026, pp. 4401–4416. [31] R. Deb, K. K. Thekumparampil, K. Kalantari, G. Hiranandani, S. Sabach, and B. Kveton, “FisherSFT: Data-efficient supervised fine-tuning of language models using information gain,” in Forty-second Inter-national Conference on Machine Learning , 2025. [32] X. Liang, L. Yang, J. Wang, Y. Lu, R. Wu, H. Chen, and J. HAO, “Boosting multi-domain fine-tuning of large language models through evolving interactions between samples,” in Forty-second International Conference on Machine Learning , 2025. [33] Z. Fan, Y. Xian, Y. Sun, L. Shen, and K. Shen, “Joint selection for large-scale pre-training data via policy gradient-based mask learning,” in The Fourteenth International Conference on Learning Representations ,2026. [34] G. Min, T. Huang, K. Wan, and C. Chen, “Gist: Targeted data selection for instruction tuning via coupled optimization geometry,” arXiv preprint arXiv:2602.18584 , 2026. [35] P. Chang, J. Zhang, B. Chen, C. Wang, C. Guo, Y. Zhang, Y. Gao, J. Xiang, Y. Gao, C. Sun, Y. Chen, and D. Kong, “SPICE: Submodular penalized information–conflict selection for efficient large language model training,” in The Fourteenth International Conference on Learning Representations , 2026. [36] B. Zhao, H. Tu, C. Wei, J. Mei, and C. Xie, “Tuning layernorm in attention: Towards efficient multi-modal LLM finetuning,” in The Twelfth International Conference on Learning Representations , 2024. [37] S. Khaki, X. Li, J. Guo, L. Zhu, K. N. Plataniotis, A. Yazdanbakhsh, K. Keutzer, S. Han, and Z. Liu, “SparseloRA: Accelerating LLM fine-tuning with contextual sparsity,” in Forty-second International Conference on Machine Learning , 2025. [38] S. Luo, H. Yang, Y. Xin, M. Yi, G. Wu, G. Zhai, and X. Liu, “Tr-pts: Task-relevant parameter and token selection for efficient tuning,” in Proceedings of the IEEE/CVF International Conference on Computer Vision , 2025, pp. 4360–4369. [39] D. McCoy, Y. Wu, and Z. Butzin-Dozier, “AI progress should be measured by capability-per-resource, not scale alone: A framework for gradient-guided resource allocation in LLMs,” in The Thirty-Ninth Annual Conference on Neural Information Processing Systems Position Paper Track , 2025. [40] C.-C. Wu, Z. R. Tam, C.-Y. Lin, Y.-N. Chen, S.-H. Sun, and H. yi Lee, “Mitigating forgetting in LLM fine-tuning via low-perplexity token learning,” in The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. [41] Y. Wang, A. Bai, N. Peng, and C.-J. Hsieh, “On the loss of context awareness in general instruction fine-tuning,” in The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. [42] J. Harmon, A. Hochlehnert, M. Bethge, and A. Prabhu, “Mapping post-training forgetting in language models at scale,” in The Fourteenth International Conference on Learning Representations , 2026. 
+
+11 [43] W. F. Shen, X. Qiu, N. Cancedda, and N. D. Lane, “Don’t make it up: Preserving ignorance awareness in LLM fine-tuning,” in NeurIPS 2025 Workshop: Reliable ML from Unreliable Data , 2025. [44] J. Lin, Z. Wang, K. Qian, T. Wang, A. Srinivasan, H. Zeng, R. Jiao, X. Zhou, J. Gesi, D. Wang, Y. Guo, K. Zhong, W. Zhang, S. Sanghavi, C. Chen, H. Yun, and L. Li, “SFT doesn’t always hurt general capa-bilities: Revisiting domain-specific fine-tuning in LLMs,” in The Fourteenth International Conference on Learning Representations , 2026. [45] W. Huang, A. Cheng, and Y. Wang, “Mitigating catastrophic forgetting in large language models with forgetting-aware pruning,” in Proceedings of the 2025 Conference on Empirical Methods in Natural Lan-guage Processing , 2025, pp. 21 853–21 867. [46] Y. Wei, Z. Wang, J. Liu, Y. Ding, and L. ZHANG, “Magicoder: Empowering code generation with OSS-instruct,” in Forty-first International Conference on Machine Learning , 2024. [47] L. Yu, W. Jiang, H. Shi, J. YU, Z. Liu, Y. Zhang, J. Kwok, Z. Li, A. Weller, and W. Liu, “Metamath: Bootstrap your own mathematical questions for large language models,” in The Twelfth International Conference on Learning Representations , 2024. [48] F. Yin, X. Ye, and G. Durrett, “Lofit: Localized fine-tuning on LLM representations,” in The Thirty-eighth Annual Conference on Neural Information Processing Systems , 2024. [49] A. Ansell, I. Vulić, H. Sterz, A. Korhonen, and E. M. Ponti, “Scaling sparse fine-tuning to large language models,” arXiv preprint arXiv:2401.16405 , 2024. [50] D. Miao, Y. Liu, J. Wang, C. Sun, Y. Zhang, D. Yan, S. Dong, Q. Zhang, and Y. Wu, “Taso: Task-aligned sparse optimization for parameter-efficient model adaptation,” in Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing , 2025, pp. 22 746–22 758. [51] S. Song, H. Xu, J. Ma, S. Li, L. Peng, Q. Wan, X. Liu, and J. Yu, “How to alleviate catastrophic forgetting in llms finetuning? hierarchical layer-wise and element-wise regularization,” arXiv preprint arXiv:2501.13669 , 2025. [52] X. Wang, L. Gao, H. Wang, Y. Zhang, and J. Zhao, “Floe: Fisher-based layer selection for efficient sparse adaptation of low-rank experts,” arXiv preprint arXiv:2506.00495 , 2025. [53] T. Hui, Z. Zhang, S. Wang, W. Xu, Y. Sun, and H. Wu, “Hft: Half fine-tuning for large language models,” in Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , 2025, pp. 12 791–12 819. [54] Y. Feng, X. Wang, Z. Lu, S. Fu, G. Shi, Y. Xu, Y. Wang, P. S. Yu, X. Chu, and X.-M. Wu, “Recurrent knowledge identification and fusion for language model continual learning,” in Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , 2025, pp. 27 396–27 413. [55] L. Wang, H. Zhang, and Z. Zheng, “Parameter importance-driven continual learning for foundation mod-els,” arXiv preprint arXiv:2511.15375 , 2025. [56] X. Chu, X. Jiang, R. Qiu, J. Gao, and J. Zhao, “MODEL SHAPLEY: Find your ideal parameter player via one gradient backpropagation,” in The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. [57] C. Zhao, Q. Yao, X. Song, and W. Zhu, “ShaploRA: Allocation of low-rank adaption on large language models via shapley value inspired importance estimation,” in The Third Conference on Parsimony and Learning (Proceedings Track) , 2026. [58] X. Ding, P. Tong, R. Duan, Y. Zhang, R. Sun, and Y. Zhu, “Pruning as a cooperative game: Surrogate-assisted layer contribution estimation for large language models,” in The Fourteenth International Con-ference on Learning Representations , 2026. [59] J. Pang, N. Di, Z. Zhu, J. Wei, H. Cheng, C. Qian, and Y. Liu, “Token cleaning: Fine-grained data selec-tion for LLM supervised fine-tuning,” in Forty-second International Conference on Machine Learning ,2025. [60] Y. Li, Z. Liu, Z. Li, Z. Lin, and J. Zhang, “Token-level data selection for safe LLM fine-tuning,” in The Fourteenth International Conference on Learning Representations , 2026. [61] X. Qin, X. Wang, N. Liao, C. Zhang, X. Zhang, M. Feng, J. Wang, and J. Yan, “sstoken: Self-modulated and semantic-aware token selection for LLM fine-tuning,” in The Fourteenth International Conference on Learning Representations , 2026. [62] A. Jain, A. Montanari, and E. Sasoglu, “Train on validation (tov): Fast data selection with applications to fine-tuning,” in The Fourteenth International Conference on Learning Representations , 2026. [63] Z. Yu, S. Das, and C. Xiong, “MATES: Model-aware data selection for efficient pretraining with data influence models,” in The Thirty-eighth Annual Conference on Neural Information Processing Systems ,2024. 
+
+12 [64] Z. Liu, Y. Liu, S. Wang, Z. Song, J. Wang, J. Liu, Q. Liu, G. Chen, and Y. Wang, “Learn more, forget less: A gradient-aware data selection approach for llm,” Signal Processing , p. 110611, 2026. [65] H. Shen, P.-Y. Chen, P. Das, and T. Chen, “SEAL: Safety-enhanced aligned LLM fine-tuning via bilevel data selection,” in The Thirteenth International Conference on Learning Representations , 2025. [66] J. T. Wang, P. Mittal, D. Song, and R. Jia, “Data shapley in one training run,” in The Thirteenth Interna-tional Conference on Learning Representations , 2025. [67] Y. Yan, M. Zhong, Q. Zhu, X. Gu, J. Chen, and H. Li, “CoIDO: Efficient data selection for visual instruc-tion tuning via coupled importance-diversity optimization,” in The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. [68] Z. Ling, D. Chen, L. Yao, Q. Shen, Y. Li, and Y. Shen, “Diversity as a reward: Fine-tuning LLMs on a mixture of domain-undetermined data,” in The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. [69] A. M. Das, G. Bhatt, S. Verma, Y. Wang, V. V. Muppirala, and J. Bilmes, “Matched data, better mod-els: Target aligned data filtering with sparse features,” in The Fourteenth International Conference on Learning Representations , 2026. [70] B. He, L. Yin, H.-L. Zhen, X. Zhang, M. Yuan, and C. Ma, “PASER: Post-training data selection for efficient pruned large language model recovery,” in The Fourteenth International Conference on Learning Representations , 2026. [71] D. Biderman, J. Portes, J. J. G. Ortiz, M. Paul, P. Greengard, C. Jennings, D. King, S. Havens, V. Chiley, J. Frankle, C. Blakeney, and J. P. Cunningham, “LoRA learns less and forgets less,” Transactions on Machine Learning Research , 2024. [72] Y. Yang, X. Li, Z. Zhou, S. L. Song, J. Wu, L. Nie, and B. Ghanem, “CorDA: Context-oriented de-composition adaptation of large language models for task-aware parameter-efficient fine-tuning,” in The Thirty-eighth Annual Conference on Neural Information Processing Systems , 2024. [73] H. Wang, Y. Li, S. Wang, G. Chen, and Y. Chen, “Milora: Harnessing minor singular components for parameter-efficient llm finetuning,” in Proceedings of the 2025 Conference of the Nations of the Americas Chapter of the Association for Computational Linguistics: Human Language Technologies (Volume 1: Long Papers) , 2025, pp. 4823–4836. [74] P. Tang, Y. Liu, D. Zhang, X. Wu, and D. Zhang, “Lora-null: Low-rank adaptation via null space for large language models,” arXiv e-prints arXiv:2503.02659 , 2025. [75] M. Luo, F. Kuang, Y. Wang, Z. Liu, and T. He, “Sc-lora: Balancing efficient fine-tuning and knowledge preservation via subspace-constrained lora,” arXiv preprint arXiv:2505.23724 , 2025. [76] J. Han, L. Du, H. Du, X. Zhou, Y. Wu, Y. Zhang, W. Zheng, and D. Han, “Slim: Let llm learn more and forget less with soft lora and identity mixture,” in Proceedings of the 2025 Conference of the Nations of the Americas Chapter of the Association for Computational Linguistics: Human Language Technologies (Volume 1: Long Papers) , 2025, pp. 4792–4804. [77] Y. Chen, S. Wang, Y. Zhang, Z. Lin, H. Zhang, W. Sun, T. Ding, and R. Sun, “MoFO: Momentum-filtered optimizer for mitigating forgetting in LLM fine-tuning,” Transactions on Machine Learning Research ,2025, j2C Certification. [78] R. Wang, P. Ping, Z. Guo, X. Zhang, Q. Shi, L. Zhou, and T. Ji, “Loki: Low-damage knowledge implant-ing of large language models,” in Proceedings of the AAAI Conference on Artificial Intelligence , vol. 40, no. 39, 2026, pp. 33 620–33 628. [79] W. Huang, H. Wei, and Y. Wang, “Damoc: Efficiently selecting the optimal large language model for fine-tuning domain tasks based on data and model compression,” in Findings of the Association for Com-putational Linguistics: EMNLP 2025 , 2025, pp. 13 012–13 027. [80] C. Finn, P. Abbeel, and S. Levine, “Model-agnostic meta-learning for fast adaptation of deep networks,” in International conference on machine learning . PMLR, 2017, pp. 1126–1135. [81] L. Franceschi, P. Frasconi, S. Salzo, R. Grazzi, and M. Pontil, “Bilevel programming for hyperparameter optimization and meta-learning,” in International conference on machine learning . PMLR, 2018, pp. 1568–1577. [82] H. Liu, K. Simonyan, and Y. Yang, “DARTS: Differentiable architecture search,” in International Con-ference on Learning Representations , 2019. [83] K. Killamsetty, D. Sivasubramanian, G. Ramakrishnan, and R. Iyer, “Glister: Generalization based data subset selection for efficient and robust learning,” in Proceedings of the AAAI conference on artificial intelligence , vol. 35, no. 9, 2021, pp. 8110–8118. [84] Y. Yu, K. Han, H. Zhou, Y. Tang, K. Huang, Y. Wang, and D. Tao, “LLM data selection and utilization via dynamic bi-level optimization,” in Forty-second International Conference on Machine Learning , 2025. 
+
+13 [85] Y. Liao, Z. Li, B. Wu, Z. Cheng, S. Zhao, S. Chen, and W. ZHANG, “Compress large language models via collaboration between learning and matrix approximation,” in The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. [86] R. Shirkavand, P. Yu, Q. He, and H. Huang, “Bilevel ZOFO: Efficient LLM fine-tuning and meta-training,” in The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. [87] L. Jiang, Q. Xiao, L. Chen, and T. Chen, “Beyond value functions: Single-loop bilevel optimization under flatness conditions,” in The Thirty-ninth Annual Conference on Neural Information Processing Systems ,2025. [88] J. T. Wang, T. Wu, D. Song, P. Mittal, and R. Jia, “GREATS: Online selection of high-quality data for LLM training in every iteration,” in The Thirty-eighth Annual Conference on Neural Information Processing Systems , 2024. [89] S. Chen, Y. Qi, M. Ai, Y. Sun, R. Qiu, J. Zou, and J. He, “Influence-preserving proxies for gradient-based data selection in LLM finetuning,” in The Fourteenth International Conference on Learning Representa-tions , 2026. [90] M. Nikdan, V. Cohen-Addad, D. Alistarh, and V. Mirrokni, “Efficient data selection at scale via influence distillation,” in The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. [91] Z. Yu, F. Peng, J. Lei, A. Overwijk, W. tau Yih, and C. Xiong, “Group-level data selection for efficient pretraining,” in The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. [92] Y. Zhao, S. Dang, H. Ye, G. Dai, Y. Qian, and I. Tsang, “Second-order fine-tuning without pain for LLMs: A hessian informed zeroth-order optimizer,” in The Thirteenth International Conference on Learning Representations , 2025. [93] H. Zhao, S. Ding, C. Fang, and Z. Lin, “PaZO: Preconditioned accelerated zeroth-order optimization for fine-tuning LLMs,” in The Thirty-ninth Annual Conference on Neural Information Processing Systems ,2025. [94] H. Zhao, J. Li, Y. Pan, S. Liang, X. Yang, F. Dou, T. Liu, and J. Lu, “Helene: Hessian layer-wise clipping and gradient annealing for accelerating fine-tuning llm with zeroth-order optimization,” in Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing , 2025, pp. 26 055–26 078. [95] J. Sliwa, F. Schneider, P. Hennig, and J. M. Hernández-Lobato, “Mitigating forgetting in low rank adap-tation,” in Second Workshop on Test-Time Adaptation: Putting Updates to the Test! at ICML 2025 , 2025. [96] Y. Zhang, C. Chen, Z. Li, T. Ding, C. Wu, D. P. Kingma, Y. Ye, Z.-Q. Luo, and R. Sun, “Adam-mini: Use fewer learning rates to gain more,” in The Thirteenth International Conference on Learning Repre-sentations , 2025. [97] D. S. Kalra, J. Kirchenbauer, M. Barkeshli, and T. Goldstein, “When can you get away with low memory adam?” in High-dimensional Learning Dynamics 2025 , 2025. [98] Z. Bai, Z. Zhou, J. Zhao, X. Li, Z. Li, F. Xiong, H. Yang, Y. Zhang, and Z.-Q. J. Xu, “Adaptive precon-ditioners trigger loss spikes in adam,” arXiv preprint arXiv:2506.04805 , 2025. [99] T. Robert, M. Safaryan, I.-V. Modoranu, and D. Alistarh, “LDAdam: Adaptive optimization from low-dimensional gradient statistics,” in The Thirteenth International Conference on Learning Representations ,2025. [100] N. Vyas, D. Morwani, R. Zhao, I. Shapira, D. Brandfonbrener, L. Janson, and S. M. Kakade, “SOAP: Improving and stabilizing shampoo using adam for language modeling,” in The Thirteenth International Conference on Learning Representations , 2025. [101] H. Zhou, T. Liu, Q. Ma, Y. Zhang, J. Yuan, P. Liu, Y. You, and H. Yang, “Davir: Data selection via implicit reward for large language models,” in Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , 2025, pp. 9220–9237. [102] X. Yuan, C. Shen, S. Yan, K. Liu, X. Zhang, S. Fan, L. Xie, W. Wang, R. Guan, Y. Wang, and J. Ye, “Dif-ferential fine-tuning large language models towards better diverse reasoning abilities,” in The Fourteenth International Conference on Learning Representations , 2026. [103] M. Chen, J. Tworek, H. Jun, Q. Yuan, H. P. D. O. Pinto, J. Kaplan, H. Edwards, Y. Burda, N. Joseph, G. Brockman et al. , “Evaluating large language models trained on code,” arXiv preprint arXiv:2107.03374 , 2021. [104] Y. Bisk, R. Zellers, J. Gao, Y. Choi et al. , “Piqa: Reasoning about physical commonsense in natural language,” in Proceedings of the AAAI conference on artificial intelligence , vol. 34, no. 05, 2020, pp. 7432–7439. [105] P. Clark, I. Cowhey, O. Etzioni, T. Khot, A. Sabharwal, C. Schoenick, and O. Tafjord, “Think you have solved question answering? try arc, the ai2 reasoning challenge,” arXiv preprint arXiv:1803.05457 , 2018. 
+
+14 [106] D. Hendrycks, C. Burns, S. Basart, A. Zou, M. Mazeika, D. Song, and J. Steinhardt, “Measuring massive multitask language understanding,” in International Conference on Learning Representations , 2021. [107] K. Cobbe, V. Kosaraju, M. Bavarian, M. Chen, H. Jun, L. Kaiser, M. Plappert, J. Tworek, J. Hilton, R. Nakano et al. , “Training verifiers to solve math word problems,” arXiv preprint arXiv:2110.14168 ,2021. [108] A. Grattafiori, A. Dubey, A. Jauhri, A. Pandey, A. Kadian, A. Al-Dahle, A. Letman, A. Mathur, A. Schel-ten, A. Vaughan et al. , “The llama 3 herd of models,” arXiv preprint arXiv:2407.21783 , 2024. [109] Gemma Team, “Gemma 3 technical report,” 2025. [110] Qwen Team, “Qwen3.5: Accelerating productivity with native multimodal agents,” February 2026. [111] Y. Zheng, R. Zhang, J. Zhang, Y. Ye, and Z. Luo, “Llamafactory: Unified efficient fine-tuning of 100+ language models,” in Proceedings of the 62nd annual meeting of the association for computational lin-guistics (volume 3: system demonstrations) , 2024, pp. 400–410. [112] F. Kunstner, R. Yadav, A. Milligan, M. Schmidt, and A. Bietti, “Heavy-tailed class imbalance and why adam outperforms gradient descent on language models,” in The Thirty-eighth Annual Conference on Neural Information Processing Systems , 2024. [113] A. Orvieto and R. M. Gower, “In search of adam’s secret sauce,” in The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. [114] L. Gao, J. Tow, S. Biderman, S. Black, A. DiPofi, C. Foster, L. Golding, J. Hsu, K. McDonell, N. Muen-nighoff et al. , “A framework for few-shot language model evaluation,” Zenodo , 2021. [115] A. Kulesza and B. Taskar, “Determinantal point processes for machine learning,” Foundations and Trends® in Machine Learning , vol. 5, no. 2-3, pp. 123–286, 2012. [116] O. Sener and S. Savarese, “Active learning for convolutional neural networks: A core-set approach,” in 
+
+International Conference on Learning Representations , 2018. [117] K. Wei, R. Iyer, and J. Bilmes, “Submodularity in data subset selection and active learning,” in Interna-tional conference on machine learning . PMLR, 2015, pp. 1954–1963. 
+
+15 Appendix Contents 
+
+A Detailed Theoretical Derivations and Shapley Proofs . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 17 A.1 From Exact Inner Objectives to One-Step Surrogate Updates . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 17 A.2 Local Truncation Error . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 17 A.3 Analytical Shapley Values under Approximation Hierarchies . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 18 A.5 Practical Diagonal Scores and Selection Stability . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 20 A.4 Proof of Proposition 1 . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 19 B Optimizer Compatibility: SGD Surrogate and Practical Curvature Proxy . . . . . . . . . . . . . . . . . . . . . . . . . . 21 C Detailed Derivation of Confidence-Weighted Self-Distillation . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 21 C.1 Objective and Evaluation Point . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 21 C.2 Gradient Derivation . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 21 D Comparison with MODEL SHAPLEY . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 22 D.1 Source Objectives of Sparse Fine-Tuning and MODEL SHAPLEY . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 22 D.2 From the Canonical Masked Objective to the Original MODEL SHAPLEY Formulas . . . . . . . . . . . . 22 D.3 Implications for Fine-Tuning . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 23 E Cross-Domain Perspective on Data and Parameter Selection . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 23 F Additional Experimental Details and Results . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 24 F.1 Detailed Experimental Settings . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 24 F.1.1 Detailed Baseline Descriptions . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 24 F.1.2 Datasets and Evaluation Details . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 24 F.1.3 Implementation Details . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 25 F.1.4 Prompt Templates . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 26 F.2 Resource Accounting under Matched Final Budgets . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 26 F.3 Additional Sequential-Combination Baselines . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 26 F.4 Additional Results on MetaMathQA . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 27 F.5 Detailed Runtime and Memory Profiling . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 28 F.6 Preservation Direction and Anchor-size Ablations . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 28 F.6.1 Anchor-size Sensitivity . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 29 F.7 Protocol for Same-Surrogate Local-Regret Diagnostic. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .29 F.8 Statistic Definitions and Reverse-selection Ablation . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 29 F.9 Fixed-side Re-selection Details . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 30 F.10 Score Fidelity Protocol and Extended Horizons . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 31 F.10.1 Local Surrogate Drift and Horizon Decay . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 31 F.10.2 Protocol . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 32 F.11 Diagonal-vs-Full Hessian Rank Protocol and Extended Results . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 33 F.12 Comparison with Forgetting-Specific Baselines . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 33 F.13 Efficiency-aware Forgetting Comparison . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 34 
+
+This appendix supplements the paper with theory, method details, and experiments. Appendix A gives derivations and proofs for the shared surrogate, Shapley scores, diagonal stability, and coordina-tion gap. Appendix B clarifies optimizer compatibility. Appendix C derives CWSD, and Appendix D contrasts DualSFT with MODEL SHAPLEY. Appendix E gives the cross-domain view. Appendix F collects experimental settings, results, diagnostics, ablations, and forgetting-aware comparisons. 16 A Detailed Theoretical Derivations and Shapley Proofs 
+
+This appendix provides four technical complements to the main text: the derivation of the shared one-step surrogate from exact bilevel problems, local truncation guarantees for the Taylor surrogate, detailed proofs of Theorem 1, and stability analysis of the practical diagonal scores used by DualSFT. 
+
+A.1 From Exact Inner Objectives to One-Step Surrogate Updates 
+
+We derive one-step surrogate updates in Eq. (3) from exact bilevel formulations in Eqs. (1)–(2). Fol-lowing Section 3, we linearize the inner response at common checkpoint ¯𝜽 and use local gradients 
+
+g𝑛 ≜ ∇𝜽 ℓ(𝑥 𝑛 , 𝑦 𝑛 ; ¯ 𝜽 ), G ≜
+
+> 𝑁
+
+’
+
+> 𝑛 =1
+
+g𝑛 . (13) For the parameter-side problem in Eq. (1), a single gradient step on the inner objective under the coordinate mask m𝜃 gives the local update 
+
+Δ𝜽 (m𝜃 ) ≈ − 𝜂 ∇𝜽 Ltrain ( ¯𝜽 ; Dtrain ) ⊙ m𝜃 = −𝜂 (G ⊙ m𝜃 ). (14) For the data-side problem in Eq. (2), the selected subset induces the masked empirical objective 
+
+1⊤(mD ⊙ ℓtrain (𝜽 )). A single gradient step at ¯𝜽 gives 
+
+Δ𝜽 (mD ) ≈ − 𝜂 ∇𝜽 
+
+[1⊤(mD ⊙ ℓtrain ( ¯𝜽 ))] = −𝜂 
+
+> 𝑁
+
+’
+
+> 𝑛 =1
+
+(mD )𝑛 g𝑛 . (15) Identifying each binary mask with its selected index set gives the localized functions in Eq. (4). These one-step surrogates underlie the Taylor analysis in Eq. (5) and shared-score derivation in Section 4. 
+
+A.2 Local Truncation Error 
+
+We now justify the first- and second-order truncations of Eq. (5). For either the parameter-side or data-side utility, define 
+
+𝑈 step (S) ≜ Lval ( ¯𝜽 ) − L val 
+
+( ¯𝜽 + Δ𝜽 (S)) , Δ𝜽 (S) = −𝜂 g(S). (16) 
+
+Proposition 2 (Local truncation error) . Assume Lval is 𝛽 -smooth in a neighborhood of ¯𝜽 . Then the first-order truncation 
+
+𝑈 1st (S) = −v⊤
+
+> val
+
+Δ𝜽 (S) (17) 
+
+satisfies 
+
+𝑈 step (S) − 𝑈 1st (S) ≤ 𝛽 
+
+2 𝜂 2 ∥g(S)∥ 22. (18) 
+
+If, in addition, ∇2Lval is 𝜌 -Lipschitz on a neighborhood containing the segment between ¯𝜽 and ¯𝜽 +
+
+Δ𝜽 (S), then the second-order truncation 
+
+𝑈 2nd (S) = −v⊤
+
+> val
+
+Δ𝜽 (S) − 12 Δ𝜽 (S)⊤HΔ𝜽 (S) (19) 
+
+satisfies 
+
+𝑈 step (S) − 𝑈 2nd (S) ≤ 𝜌 
+
+6 𝜂 3 ∥g(S)∥ 32. (20) 
+
+Proof. By 𝛽 -smoothness of Lval , for any Δ in a neighborhood of ¯𝜽 ,
+
+Lval ( ¯𝜽 + Δ) − L val ( ¯𝜽 ) − ∇L val ( ¯𝜽 )⊤Δ ≤ 𝛽 
+
+2 ∥Δ∥22. (21) Substituting Δ = Δ 𝜽 (S) gives 
+
+𝑈 step (S) − 𝑈 1st (S) ≤ 𝛽 
+
+2 𝜂 2 ∥g(S)∥ 22. (22) If ∇2Lval is 𝜌 -Lipschitz, then 
+
+Lval ( ¯𝜽 + Δ) − L val ( ¯𝜽 ) − ∇L val ( ¯𝜽 )⊤Δ − 12 Δ⊤HΔ ≤ 𝜌 
+
+6 ∥Δ∥32. (23) Substituting Δ = Δ 𝜽 (S) gives 
+
+𝑈 step (S) − 𝑈 2nd (S) ≤ 𝜌 
+
+6 𝜂 3 ∥g(S)∥ 32. (24) 
+
+□
+
+17 A.3 Analytical Shapley Values under Approximation Hierarchies 
+
+We now prove Theorem 1. For each 𝛼 ∈ { 1, diag , full }, let 
+
+G ( 𝛼 ) 
+
+> 𝜃
+
+= ([ 𝐷 ], 𝑈 ( 𝛼 ) 
+
+> 𝜃
+
+), G ( 𝛼 )D = ([ 𝑁 ], 𝑈 ( 𝛼 )D ) (25) be the localized surrogate games defined in Section 4, and write 
+
+𝜙 ( 𝛼 ) 
+
+> 𝜃 ,𝑑
+
+≜ 𝜙 𝑑 (G ( 𝛼 ) 
+
+> 𝜃
+
+), 𝜙 ( 𝛼 )D,𝑛 ≜ 𝜙 𝑛 (G ( 𝛼 )D ). (26) For a finite player set P, utility function 𝑣 : 2 P → R, and player 𝑖 ∈ P , the Shapley value is 
+
+𝜙 𝑖 (𝑣 ) =
+
+’ 
+
+> 𝑆 ⊆ P\{ 𝑖 }
+
+|𝑆 |!(|P | − | 𝑆 | − 1)!
+
+|P | ! [𝑣 (𝑆 ∪ { 𝑖 }) − 𝑣 (𝑆 )] . (27) Equivalently, if 𝜋 is a random permutation of P and 𝑃 𝜋 𝑖 denotes players preceding 𝑖 in 𝜋 ,
+
+𝜙 𝑖 (𝑣 ) = E𝜋 
+
+[𝑣 (𝑃 𝜋 𝑖 ∪ { 𝑖 }) − 𝑣 (𝑃 𝜋 𝑖 )] . (28) 
+
+Lemma 1 (Half-Averaging under Permutations) . Fix 𝑖 ∈ P . For any coefficients {𝑎 𝑗 } 𝑗 ∈ P\{ 𝑖 } ,
+
+E𝜋 
+
+’   
+
+> 𝑗 ∈𝑃 𝜋 𝑖
+
+𝑎 𝑗 
+
+
+
+= 12
+
+’
+
+> 𝑗 ≠𝑖
+
+𝑎 𝑗 . (29) 
+
+The same identity holds componentwise for vector-valued 𝑎 𝑗 .Proof. For each fixed 𝑗 ≠ 𝑖 , under a uniformly random permutation, the probability that 𝑗 appears before 𝑖 is 1/2. Applying linearity of expectation gives the result. □
+
+Proof of Theorem 1. Let 𝑀 (1) 
+
+> 𝑛,𝑑
+
+, 𝑀 (diag ) 
+
+> 𝑛,𝑑
+
+, and 𝑀 (full ) 
+
+> 𝑛,𝑑
+
+be defined as in Eq. (6). 
+
+First-order case. Using Eq. (5), the first-order parameter-side utility is 
+
+𝑈 (1) 
+
+> 𝜃
+
+(𝑆 ) = −v⊤
+
+> val
+
+Δ𝜽 𝜃 (𝑆 ) =
+
+’ 
+
+> 𝑑 ∈𝑆 𝑁
+
+’
+
+> 𝑛 =1
+
+𝑀 (1) 
+
+> 𝑛,𝑑
+
+. (30) For any 𝑆 ⊆ [ 𝐷 ] \ { 𝑑 },
+
+𝑈 (1) 
+
+> 𝜃
+
+(𝑆 ∪ { 𝑑 }) − 𝑈 (1) 
+
+> 𝜃
+
+(𝑆 ) =
+
+> 𝑁
+
+’
+
+> 𝑛 =1
+
+𝑀 (1) 
+
+> 𝑛,𝑑
+
+= 𝜙 (1) 
+
+> 𝜃 ,𝑑
+
+= 𝑠 (1) 
+
+> 𝜃 ,𝑑
+
+. (31) 
+
+𝑈 (1)D (𝑆 ) = −v⊤
+
+> val
+
+Δ𝜽 D (𝑆 ) =
+
+’
+
+> 𝑛 ∈𝑆 𝐷
+
+’
+
+> 𝑑 =1
+
+𝑀 (1) 
+
+> 𝑛,𝑑
+
+. (32) 
+
+𝑈 (1)D (𝑆 ∪ { 𝑛 }) − 𝑈 (1)D (𝑆 ) =
+
+> 𝐷
+
+’
+
+> 𝑑 =1
+
+𝑀 (1) 
+
+> 𝑛,𝑑
+
+= 𝜙 (1)D,𝑛 = 𝑠 (1)D,𝑛 . (33) 
+
+Diagonal-curvature case. For the parameter-side game, 
+
+𝑈 (diag ) 
+
+> 𝜃
+
+(𝑆 ) =
+
+’ 
+
+> 𝑑 ∈𝑆 𝑁
+
+’
+
+> 𝑛 =1
+
+𝑀 (1) 
+
+> 𝑛,𝑑
+
+− 𝜂 2
+
+2
+
+’ 
+
+> 𝑑 ∈𝑆
+
+𝑐 𝑑 𝐺 2 
+
+> 𝑑
+
+, (34) 
+
+𝑈 (diag ) 
+
+> 𝜃
+
+(𝑆 ∪ { 𝑑 }) − 𝑈 (diag ) 
+
+> 𝜃
+
+(𝑆 ) =
+
+> 𝑁
+
+’
+
+> 𝑛 =1
+
+𝑀 (diag ) 
+
+> 𝑛,𝑑
+
+= 𝜙 (diag ) 
+
+> 𝜃 ,𝑑
+
+= 𝑠 (diag ) 
+
+> 𝜃 ,𝑑
+
+. (35) For the data-side game, 
+
+𝑈 (diag )D (𝑆 ) =
+
+’
+
+> 𝑛 ∈𝑆 𝐷
+
+’
+
+> 𝑑 =1
+
+𝑀 (1) 
+
+> 𝑛,𝑑
+
+− 𝜂 2
+
+2
+
+> 𝐷
+
+’
+
+> 𝑑 =1
+
+𝑐 𝑑 
+
+( ’
+
+> 𝑚 ∈𝑆
+
+𝑔 𝑚,𝑑 
+
+)2
+
+. (36) 18 𝑈 (diag )D (𝑆 ∪ { 𝑛 }) − 𝑈 (diag )D (𝑆 ) =
+
+> 𝐷
+
+’
+
+> 𝑑 =1
+
+𝑀 (1) 
+
+> 𝑛,𝑑
+
+− 𝜂 2
+
+2
+
+> 𝐷
+
+’
+
+> 𝑑 =1
+
+𝑐 𝑑 
+
+[
+
+𝑔 2 
+
+> 𝑛,𝑑
+
++ 2𝑔 𝑛,𝑑 
+
+’
+
+> 𝑚 ∈𝑆
+
+𝑔 𝑚,𝑑 
+
+]
+
+. (37) Applying Eq. (28) and Lemma 1 coordinatewise replaces Õ𝑚 ∈𝑆 𝑔 𝑚,𝑑 by 12
+
+Õ𝑚 ≠𝑛 𝑔 𝑚,𝑑 under Shapley averaging, yielding 
+
+𝜙 (diag )D,𝑛 =
+
+> 𝐷
+
+’
+
+> 𝑑 =1
+
+(
+
+𝑀 (1) 
+
+> 𝑛,𝑑
+
+− 𝜂 2
+
+2 𝑐 𝑑 𝐺 𝑑 𝑔 𝑛,𝑑 
+
+)
+
+=
+
+> 𝐷
+
+’
+
+> 𝑑 =1
+
+𝑀 (diag ) 
+
+> 𝑛,𝑑
+
+= 𝑠 (diag )D,𝑛 . (38) 
+
+Full-Hessian case. For the parameter-side game, 
+
+𝑈 (full ) 
+
+> 𝜃
+
+(𝑆 ) =
+
+’ 
+
+> 𝑑 ∈𝑆 𝑁
+
+’
+
+> 𝑛 =1
+
+𝑀 (1) 
+
+> 𝑛,𝑑
+
+− 𝜂 2
+
+2
+
+’
+
+> 𝑖 ∈𝑆
+
+’ 
+
+> 𝑗 ∈𝑆
+
+𝐺 𝑖 𝐻 𝑖 𝑗 𝐺 𝑗 . (39) For any 𝑆 ⊆ [ 𝐷 ] \ { 𝑑 }, by symmetry of H,
+
+𝑈 (full ) 
+
+> 𝜃
+
+(𝑆 ∪ { 𝑑 }) − 𝑈 (full ) 
+
+> 𝜃
+
+(𝑆 ) =
+
+> 𝑁
+
+’
+
+> 𝑛 =1
+
+𝑀 (1) 
+
+> 𝑛,𝑑
+
+− 𝜂 2
+
+2
+
+[
+
+𝐺 𝑑 𝐻 𝑑𝑑 𝐺 𝑑 + 2𝐺 𝑑 
+
+’
+
+> 𝑙 ∈𝑆
+
+𝐻 𝑑𝑙 𝐺 𝑙 
+
+]
+
+. (40) Applying Eq. (28) and Lemma 1 with 𝑎 𝑙 = 𝐻 𝑑𝑙 𝐺 𝑙 gives 
+
+𝜙 (full ) 
+
+> 𝜃 ,𝑑
+
+=
+
+> 𝑁
+
+’
+
+> 𝑛 =1
+
+𝑀 (1) 
+
+> 𝑛,𝑑
+
+− 𝜂 2
+
+2 (HG )𝑑 𝐺 𝑑 =
+
+> 𝑁
+
+’
+
+> 𝑛 =1
+
+𝑀 (full ) 
+
+> 𝑛,𝑑
+
+= 𝑠 (full ) 
+
+> 𝜃 ,𝑑
+
+. (41) For the data-side game, 
+
+𝑈 (full )D (𝑆 ) =
+
+’
+
+> 𝑛 ∈𝑆 𝐷
+
+’
+
+> 𝑑 =1
+
+𝑀 (1) 
+
+> 𝑛,𝑑
+
+− 𝜂 2
+
+2
+
+( ’
+
+> 𝑚 ∈𝑆
+
+g𝑚 
+
+)⊤
+
+H
+
+( ’
+
+> 𝑚 ∈𝑆
+
+g𝑚 
+
+)
+
+. (42) 
+
+𝑈 (full )D (𝑆 ∪ { 𝑛 }) − 𝑈 (full )D (𝑆 ) =
+
+> 𝐷
+
+’
+
+> 𝑑 =1
+
+𝑀 (1) 
+
+> 𝑛,𝑑
+
+− 𝜂 2
+
+2
+
+[
+
+g⊤ 
+
+> 𝑛
+
+Hg 𝑛 + 2g⊤ 
+
+> 𝑛
+
+H
+
+’
+
+> 𝑚 ∈𝑆
+
+g𝑚 
+
+]
+
+. (43) Applying Eq. (28) and Lemma 1 in vector form yields 
+
+𝜙 (full )D,𝑛 =
+
+> 𝐷
+
+’
+
+> 𝑑 =1
+
+(
+
+𝑀 (1) 
+
+> 𝑛,𝑑
+
+− 𝜂 2
+
+2 (HG )𝑑 𝑔 𝑛,𝑑 
+
+)
+
+=
+
+> 𝐷
+
+’
+
+> 𝑑 =1
+
+𝑀 (full ) 
+
+> 𝑛,𝑑
+
+= 𝑠 (full )D,𝑛 . (44) This completes the proof. □
+
+A.4 Proof of Proposition 1 
+
+Under the joint restrictions, the first-order update is Δ𝜽 (𝑆 D , m𝜃 ) = −𝜂 (m𝜃 ⊙ G𝑆 D ), where G𝑆 D =Õ𝑛 ∈𝑆 D g𝑛 and 𝑆 𝜃 = {𝑑 ∈ [ 𝐷 ] : (m𝜃 )𝑑 = 1}. The corresponding first-order utility decomposes as 
+
+−v⊤
+
+> val
+
+Δ𝜽 (𝑆 D , m𝜃 ) = 𝜂 
+
+’
+
+> 𝑛 ∈𝑆 D
+
+⟨vval ⊙ m𝜃 , g𝑛 ⟩ = 𝜂 
+
+’ 
+
+> 𝑑 ∈𝑆 𝜃
+
+(vval )𝑑 𝐺 𝑆 D ,𝑑 . (45) Thus, the mask-aware marginal scores compatible with the joint restricted update are ¯𝑠 D,𝑛 (m𝜃 ) =
+
+𝜂 ⟨vval ⊙ m𝜃 , g𝑛 ⟩ and ¯𝑠 𝜃 ,𝑑 (𝑆 D ) = 𝜂 (vval )𝑑 𝐺 𝑆 D ,𝑑 .The isolated first-order scores are 𝑠 iso  
+
+> D,𝑛
+
+= 𝜂 ⟨vval , g𝑛 ⟩ and 𝑠 iso  
+
+> 𝜃 ,𝑑
+
+= 𝜂 (vval )𝑑 𝐺 𝑑 , where G = Õ𝑁 𝑛 =1 g𝑛 .Subtracting the mask-aware data score from the isolated data score gives 
+
+𝑠 iso  
+
+> D,𝑛
+
+− ¯𝑠 D,𝑛 (m𝜃 ) = 𝜂 ⟨vval ⊙ ( 1𝐷 − m𝜃 ), g𝑛 ⟩ = 𝜂 
+
+’   
+
+> 𝑑 :(m𝜃 )𝑑 =0
+
+(vval )𝑑 𝑔 𝑛,𝑑 . (46) Similarly, subtracting the mask-aware parameter score from the isolated parameter score gives 
+
+𝑠 iso  
+
+> 𝜃 ,𝑑
+
+− ¯𝑠 𝜃 ,𝑑 (𝑆 D ) = 𝜂 (vval )𝑑 (𝐺 𝑑 − 𝐺 𝑆 D ,𝑑 ) = 𝜂 (vval )𝑑 
+
+’  
+
+> 𝑛 ∈ [ 𝑁 ]\ 𝑆 D
+
+𝑔 𝑛,𝑑 . (47) These two identities prove Proposition 1. They show that the data-side gap is supported on frozen coordinates, whereas the parameter-side gap is supported on samples excluded by the data selection. This characterizes the isolated-scoring gap, but it does not mean that DualSFT performs fully condi-tional re-scoring. DualSFT instead extracts both marginal scores once from the same local surrogate, leaving fixed-side re-selection as an optional refinement analyzed in Section 6.4. 19 A.5 Practical Diagonal Scores and Selection Stability 
+
+We analyze scores in Eqs. (10)–(11). Let ̂ 𝐷 ≜ Diag (ˆc), and write ̂ 𝑠 𝜃 ,𝑑 and ̂ 𝑠 D,𝑛 for scores in Eq. (11). For comparison, write 𝑠 (full ) 
+
+> 𝜃 ,𝑑
+
+and 𝑠 (full )D,𝑛 for the local full-Hessian counterparts obtained from Eq. (7) with the step size instantiated as 𝜂 sc .
+
+Proposition 3 (Diagonal-Proxy Score Perturbation) . For parameter 𝑑 ∈ [ 𝐷 ] and sample 𝑛 ∈ [ 𝑁 ],̂
+
+𝑠 𝜃 ,𝑑 − 𝑠 (full ) 
+
+> 𝜃 ,𝑑
+
+= 𝜂 2sc 
+
+2
+
+((H −̂ 𝐷 )G) 
+
+> 𝑑
+
+𝐺 𝑑 ,̂ 𝑠 D,𝑛 − 𝑠 (full )D,𝑛 = 𝜂 2sc 
+
+2 g⊤ 
+
+> 𝑛
+
+(H −̂ 𝐷 )G. (48) 
+
+Consequently, 
+
+∥̂ s𝜃 − s(full ) 
+
+> 𝜃
+
+∥∞ ≤ 𝜂 2sc 
+
+2 ∥H −̂ 𝐷 ∥op ∥G∥22, ∥̂ sD − s(full )D ∥∞ ≤ 𝜂 2sc 
+
+2 𝐵 𝑔 ∥H −̂ 𝐷 ∥op ∥G∥2 (49) 
+
+if ∥g𝑛 ∥2 ≤ 𝐵 𝑔 for all 𝑛 .Proof. Subtracting the definitions of the diagonal scores and the full-Hessian scores gives the two identities directly. The ℓ∞ bounds follow from Cauchy–Schwarz and the operator-norm inequality. 
+
+□
+
+Corollary 1 (Top-𝑘 parameter selection stability) . Let ̂ 𝑠 𝜃 , (1) ≥ · · · ≥ ̂ 𝑠 𝜃 , (𝐷 ) denote the sorted practical parameter scores, and define 
+
+Δ𝜃 𝑘 ≜̂ 𝑠 𝜃 , (𝑘 ) −̂ 𝑠 𝜃 , (𝑘 +1) . (50) 
+
+If 
+
+Δ𝜃 𝑘 > 𝜂 2sc ∥H −̂ 𝐷 ∥op ∥G∥22, (51) 
+
+then the Top-𝑘 parameter set induced by ̂ s𝜃 is identical to that induced by s(full ) 
+
+> 𝜃
+
+.Proof. By Proposition 3, 
+
+∥̂ s𝜃 − s(full ) 
+
+> 𝜃
+
+∥∞ ≤ 𝜀 𝜃 ≜ 𝜂 2sc 
+
+2 ∥H −̂ 𝐷 ∥op ∥G∥22. (52) 
+
+Δ𝜃 𝑘 > 2𝜀 𝜃 implies Top-𝑘 stability by the standard boundary-gap argument. □
+
+Corollary 2 (Top-𝑏 data selection stability) . Let ̂ 𝑠 D, (1) ≥ · · · ≥ ̂ 𝑠 D, ( 𝑁 ) denote the sorted practical data scores, and define 
+
+ΔD 
+
+> 𝑏
+
+≜̂ 𝑠 D, (𝑏 ) −̂ 𝑠 D, (𝑏 +1) . (53) 
+
+If 
+
+ΔD 
+
+> 𝑏
+
+> 𝜂 2sc 𝐵 𝑔 ∥H −̂ 𝐷 ∥op ∥G∥2, (54) 
+
+then the Top-𝑏 data set induced by ̂ sD is identical to that induced by s(full )D .Proof. By Proposition 3, 
+
+∥̂ sD − s(full )D ∥∞ ≤ 𝜀 D ≜ 𝜂 2sc 
+
+2 𝐵 𝑔 ∥H −̂ 𝐷 ∥op ∥G∥2. (55) 
+
+ΔD 
+
+> 𝑏
+
+> 2𝜀 D implies Top-𝑏 stability by the same argument. □
+
+Remark 1 (Scope of the comparison) . This subsection compares practical diagonal scores with local full-Hessian counterparts. It does not claim to recover exact bilevel optimum but shows diagonal approximation is controlled and, under a boundary-gap condition, preserves Top-𝑘 /Top-𝑏 selection. 
+
+20 B Optimizer Compatibility: SGD Surrogate and Practical Curvature Proxy 
+
+Sections 3 to 4 analyze a localized single-step surrogate, for which Theorem 1 gives closed-form Shapley decompositions of its surrogate games. In practice, DualSFT retains this surrogate utility and instantiates its diagonal second-order coefficient with an optimizer-derived proxy. Let r𝑡 𝑤 de-note AdamW’s second-moment buffer after 𝑡 𝑤 warmup updates, with decay 𝛽 2 and stabilizer 𝜖 adam .Define ˆc =
+
+√
+
+r𝑡 𝑤 /( 1 − 𝛽 𝑡 𝑤  
+
+> 2
+
+) + 𝜖 adam and keep it fixed during one-shot scoring. This is a positive damped RMS-gradient scale, not an exact Hessian diagonal. It aligns with recent analyses of Adam-family preconditioning and memory-reduced adaptive optimizers [96–100, 112, 113]. Accordingly, the exact row-column Shapley decomposition remains that of the SGD-defined localized surrogate, while the practical second-order score should be interpreted as its optimizer-aware instantiation. Accordingly, any implementation-level mismatch introduced by the practical diagonal proxy is ab-sorbed into the curvature/proxy utility term analyzed in Appendix A.5, so that the resulting score perturbation and selection stability can be controlled within the same error-propagation framework. 
+
+## C Detailed Derivation of Confidence-Weighted Self-Distillation 
+
+Section 5 introduces CWSD in Eq. (12) as a tractable surrogate for prior-preserving direction vprior 
+
+without the pre-training corpus. This appendix proves CWSD is non-degenerate at warmup check-point ¯𝜽 , and its gradient reduces to a vector-Jacobian product. 
+
+C.1 Objective and Evaluation Point 
+
+Let Danchor be the held-out anchor set with Danchor ∩ D train = ∅, and let Xanchor denote its input set. 
+
+LCWSD ( ¯𝜽 ) = 1
+
+|X anchor |
+
+Õ𝑥 ∈ X anchor 𝜔 (𝑥 )𝜏 2KL 
+
+(
+
+𝑃 𝜏 (· | 𝜽 old , 𝑥 ) 𝑃 𝜏 (· | ¯𝜽 , 𝑥 )
+
+)
+
+. (56) The surrogate preservation direction is 
+
+vprior ≜ ∇¯𝜽 LCWSD ( ¯𝜽 ). (57) CWSD is evaluated at the warmup checkpoint ¯𝜽 rather than 𝜽 old . If evaluated at 𝜽 old , teacher and student distributions would coincide, and the KL term and its gradient would both be zero. Using ¯𝜽 
+
+avoids this degeneracy and yields a non-trivial surrogate preservation direction for one-shot scoring. 
+
+C.2 Gradient Derivation 
+
+For one anchor example 𝑥 , let 
+
+q = 𝑃 𝜏 (· | 𝜽 old , 𝑥 ), p = 𝑃 𝜏 (· | ¯𝜽 , 𝑥 ), (58) and let z denote the student logits at ¯𝜽 . The per-example CWSD loss is 
+
+ℓCWSD (𝑥 ) = 𝜔 (𝑥 )𝜏 2KL (q ∥ p) = 𝜔 (𝑥 )𝜏 2 ’ 
+
+> 𝑖
+
+𝑞 𝑖 (log 𝑞 𝑖 − log 𝑝 𝑖 ). (59) Since q is produced by the frozen reference model 𝜽 old , gradients flow only through p.Differentiating with respect to the student logit 𝑧 𝑗 gives 
+
+𝜕ℓ CWSD (𝑥 )
+
+𝜕𝑧 𝑗 
+
+= −𝜔 (𝑥 )𝜏 2 ’ 
+
+> 𝑖
+
+𝑞 𝑖 
+
+𝜕 log 𝑝 𝑖 
+
+𝜕𝑧 𝑗 
+
+. (60) Using 
+
+𝜕 log 𝑝 𝑖 
+
+𝜕𝑧 𝑗 
+
+= 1
+
+𝜏 (𝛿 𝑖 𝑗 − 𝑝 𝑗 ), (61) we obtain 𝜕ℓ CWSD (𝑥 )
+
+𝜕𝑧 𝑗 
+
+= 𝜔 (𝑥 )𝜏 ( 𝑝 𝑗 − 𝑞 𝑗 ). (62) 21 Therefore, in column-vector form, 
+
+∇zℓCWSD (𝑥 ) = 𝜔 (𝑥 )𝜏 (p − q) ∈ R| V | . (63) Let J𝑧 (𝑥 ; ¯ 𝜽 ) ≜ 𝜕 z 
+
+> 𝜕 ¯𝜽
+
+∈ R| V | × 𝐷 . Applying the chain rule from logits to parameters gives 
+
+∇¯𝜽 ℓCWSD (𝑥 ) = J𝑧 (𝑥 ; ¯ 𝜽 )⊤𝜔 (𝑥 )𝜏 (p − q) ∈ R𝐷 . (64) Summing over anchor inputs yields 
+
+vprior = ∇¯𝜽 LCWSD ( ¯𝜽 ) = 1
+
+|X anchor |
+
+’ 
+
+> 𝑥 ∈ X anchor
+
+J𝑧 (𝑥 ; ¯ 𝜽 )⊤𝜔 (𝑥 )𝜏 (p − q). (65) Equation (63) shows CWSD induces the logit-level gradient 𝜔 (𝑥 )𝜏 (p − q), and Eq. (65) shows vprior 
+
+is obtained by backpropagating this logit gradient through the student Jacobian. In practice, this gradient is obtained exactly with one backward pass at ¯𝜽 , without the pre-training corpus. CWSD is used once at the warmup checkpoint to define the one-shot scoring geometry; it is not used as an online regularizer during final restricted fine-tuning. 
+
+## D Comparison with MODEL SHAPLEY 
+
+This appendix compares DualSFT with MODEL SHAPLEY [56] at the source-objective level. The key distinction is the scored intervention: DualSFT scores train-time masked updates, whereas MODEL SHAPLEY scores static retention or deletion on a fixed checkpoint. 
+
+D.1 Source Objectives 
+
+Sparse fine-tuning is an update-selection problem. Starting from 𝜃 old ∈ R𝐷 , it selects coordinates opened for task-induced updates: 
+
+min    
+
+> ∥S∥0≤𝑘
+
+Lval (𝜃 old + S ⊙ 𝛿 ∗) s.t. 𝛿 ∗ = arg min  
+
+> 𝛿
+
+Ltrain (𝜃 old + S ⊙ 𝛿 ; B) , (66) where S ∈ { 0, 1}𝐷 is the update mask and Lval = Lnew + 𝜆 Lprior . Under the one-step surrogate, 
+
+Δ𝜃 (S) ≈ − 𝜂 (∇𝜃 Ltrain (𝜃 old ; B) ⊙ S). (67) By contrast, MODEL SHAPLEY is naturally a masked-checkpoint objective. For fixed 𝜃 ∈ R𝐷 and retention mask M ∈ { 0, 1}𝐷 , it solves 
+
+min   
+
+> M∈ { 0,1}𝐷 ,∥M∥0=𝑘
+
+L( 𝑥, 𝜃 ⊙ M, 𝑦 ), (68) or equivalently scores 𝑈 MS (M; 𝑥, 𝑦, 𝜃 ) ≜ −L( 𝑥, 𝜃 ⊙ M, 𝑦 ). Thus, sparse fine-tuning scores which coordinates should be updated, whereas MODEL SHAPLEY scores which parameters should be kept or removed from a fixed checkpoint. 
+
+D.2 Relation to the Original MODEL SHAPLEY Formulas 
+
+Let 𝑆 ⊆ { 1, . . . , 𝐷 } be a removed subset and define 
+
+𝜃 −𝑆 ≜ 𝜃 −
+
+’ 
+
+> 𝑖 ∈𝑆
+
+𝜃 𝑖 𝑒 𝑖 , ΔLmask (Θ𝑆 ) ≜ L( 𝑥, 𝜃 −𝑆 , 𝑦 ) − L( 𝑥, 𝜃, 𝑦 ). (69) With 𝑔 ≜ ∇𝜃 L( 𝑥, 𝜃, 𝑦 ) and 𝐻 ≜ ∇2 
+
+> 𝜃
+
+L( 𝑥, 𝜃, 𝑦 ), the second-order expansion gives 
+
+ΔLmask (Θ𝑆 ) ≈ − 
+
+’ 
+
+> 𝑖 ∈𝑆
+
+𝑔 𝑖 𝜃 𝑖 + 12
+
+’  
+
+> 𝑖, 𝑗 ∈𝑆
+
+𝐻 𝑖 𝑗 𝜃 𝑖 𝜃 𝑗 . (70) Therefore, adding 𝑖 ∉ 𝑆 changes the deletion loss by 
+
+ΔLmask (Θ𝑆 ∪{ 𝑖 } ) − ΔLmask (Θ𝑆 ) ≈ − 𝑔 𝑖 𝜃 𝑖 + 12 𝐻 𝑖𝑖 𝜃 2 
+
+> 𝑖
+
++
+
+’  
+
+> 𝑗 ∈𝑆
+
+𝐻 𝑖 𝑗 𝜃 𝑖 𝜃 𝑗 . (71) The original MODEL SHAPLEY derivation writes the subset-removal loss as 
+
+Δ𝐿 (Θ𝑆 ) ≈ − 
+
+’ 
+
+> 𝑖 ∈𝑆
+
+𝑔 𝜏 𝑖 𝜃 𝜏 𝑖 + 12
+
+’  
+
+> 𝑖, 𝑗 ∈𝑆
+
+𝑤 (𝑆 ) 
+
+> 𝑖 𝑗
+
+𝐻 𝜏 𝑖 𝑗 𝜃 𝜏 𝑖 𝜃 𝜏 𝑗 . (72) Both forms use the same second-order ingredients: gradient terms, diagonal curvature, and cross-parameter interactions. The only extra factor is the path-dependent coefficient 𝑤 (𝑆 ) 
+
+> 𝑖 𝑗
+
+, which the origi-nal implementation sets to 1 [56]. Under this simplification, Eq. (72) reduces to the same unweighted second-order deletion structure as Eq. (70). 22 D.3 Implications for Fine-Tuning 
+
+Even under this canonical masked form, MODEL SHAPLEY remains a static retention/deletion objec-tive, while sparse fine-tuning is a training-induced update-selection problem: 
+
+𝜃 old −→ 𝜃 old + Δ𝜃 (S), 𝜃 −→ 𝜃 ⊙ M. (73) Although MODEL SHAPLEY includes a fine-tuning setting, it ranks parameters by Shapley value and then updates the top 10% while freezing the rest [56]. This changes the intervention but keeps the score fixed. At the source level, MODEL SHAPLEY measures removal harm, whereas sparse fine-tuning asks update desirability. This mismatch appears in local fine-tuning utility. Let 
+
+𝐽 (Δ) ≜ Lnew (𝜃 old + Δ) + 𝜆 Lprior (𝜃 old + Δ), 𝑣 ≜ ∇Δ 𝐽 (0), 𝑄 ≜ ∇2 
+
+> Δ
+
+𝐽 (0). (74) Under 𝑄 ≈ diag (𝑞 1, . . . , 𝑞 𝐷 ), opening coordinate 𝑑 gives 
+
+˜𝑈 FT  
+
+> 𝑑
+
+(Δ𝑑 ) ≜ 𝐽 (0) − 𝐽 (Δ𝑑 𝑒 𝑑 ) ≈ − 𝑣 𝑑 Δ𝑑 − 12 𝑞 𝑑 Δ2 
+
+> 𝑑
+
+. (75) For 𝑞 𝑑 > 0, maximizing over Δ𝑑 yields Δ∗ 
+
+> 𝑑
+
+= −𝑣 𝑑 /𝑞 𝑑 and 
+
+˜𝑈 FT ,∗ 
+
+> 𝑑
+
+= 𝑣 2
+
+> 𝑑
+
+2𝑞 𝑑 
+
+≈ (𝑔 new  
+
+> 𝑑
+
++ 𝜆𝑔 prior  
+
+> 𝑑
+
+)2
+
+2𝑐 𝑑 
+
+, (76) where 𝑐 𝑑 is DualSFT’s positive damped AdamW second-moment proxy. By contrast, the masked-checkpoint deletion importance for 𝑆 = {𝑑 } is 
+
+ΔLmask (Θ{𝑑 } ) ≈ − 𝑔 𝑑 𝜃 𝑑 + 12 𝐻 𝑑𝑑 𝜃 2 
+
+> 𝑑
+
+, 𝐼 MS  
+
+> 𝑑
+
+≈ 12 𝐻 𝑑𝑑 𝜃 2 
+
+> 𝑑
+
+(77) near a stationary checkpoint. Even if 𝐻 𝑑𝑑 = 𝑐 𝑑 , the curvature dependence is opposite: 
+
+˜𝑈 FT ,∗ 
+
+> 𝑑
+
+∝ (𝑔 new  
+
+> 𝑑
+
++ 𝜆𝑔 prior  
+
+> 𝑑
+
+)2
+
+𝑐 𝑑 
+
+, 𝐼 MS  
+
+> 𝑑
+
+∝ 𝑐 𝑑 𝜃 2 
+
+> 𝑑
+
+. (78) Thus, a parameter may be important to preserve precisely because updating it is risky. This source-level mismatch means MODEL SHAPLEY’s parameter compensation better aligns with checkpoint-dependent static importance than with stable update desirability along a non-stationary fine-tuning trajectory. In summary, MODEL SHAPLEY is a masked-checkpoint objective whose Taylor expansion recovers the original static subset-removal structure. DualSFT instead scores train-time update selection over training-induced parameter increments, matching sparse fine-tuning more directly. 
+
+## E Cross-Domain Perspective on Data and Parameter Selection 
+
+Sections 3-4 show data and parameter selection share a surrogate-level structure. Though select-ing different objects, both address the stability–plasticity trade-off: data selection filters input-space signals, while parameter selection restricts parameter-space updates. Both use value quantification, constrained filtering, and optional refinement. The difference is object, not optimization logic. The gradient interaction matrix M ∈ R𝑁 ×𝐷 is the shared algebraic carrier. Rows denote samples and columns parameters; row aggregation gives data utility, while column aggregation gives parameter importance. This explains why gradient alignment, curvature-aware scoring, redundancy control, and structured constraints appear in both domains. Thus, data utility and parameter importance instantiate one value score, with budgets 𝑏, 𝑘 constraining axes of the same interaction structure. This perspective also suggests viewing parameters as an internal form of data. Data carry external task information, whereas parameters store internal model knowledge. Once equipped with gradient features, curvature proxies, and structural identifiers, parameters can be analyzed through a data-selection-like lens without being reduced to ordinary data. Conversely, data-selection ideas such as validation-aligned scoring, curvature-aware filtering, and diversity control suggest parameter-side analogues, while structured sparsity and hierarchical budgeting suggest data-side analogues. Overall, DualSFT does not just combine heuristics. It exploits a shared surrogate scoring data and parameters through one interaction matrix, enabling one-shot co-extraction of both utilities. 23 F Additional Experimental Details and Results 
+
+F.1 Detailed Experimental Settings F.1.1 Detailed Baseline Descriptions 
+
+To provide a comprehensive evaluation, we compare DualSFT against four groups of leading methods spanning standard, parameter-sparse, data-efficient, and hybrid fine-tuning paradigms. 
+
+Standard Fine-Tuning Baselines. 
+
+• Standard SFT : Full parameter updating without constraints, defined as 𝜃 𝑡 +1 = 𝜃 𝑡 − 𝜂 ∇𝜃 Ltrain .• LoRA [4]: Constrains weight updates within a low-rank subspace. For a pre-trained weight matrix 
+
+𝑊 0, the update is 𝑊 = 𝑊 0 + 𝐵𝐴 , where 𝐵 ∈ R𝑑 ×𝑟 and 𝐴 ∈ R𝑟 ×𝑘 (𝑟 ≪ min (𝑑, 𝑘 )). 
+
+Data-Efficient Fine-Tuning Baselines. These methods filter the candidate pool under a strict budget to identify samples yielding the highest contribution to target objectives. • Random : A baseline uniformly sampling a subset of size 𝑏 from Dtrain without heuristic scoring. • LESS [16]: Uses optimizer-trajectory influence approximations. A training sample 𝑥 𝑛 is scored by gradient matching with validation gradients: 𝑠 𝑛 ≈ ∇ 𝜃 Ltrain (𝑥 𝑛 )⊤∇𝜃 Lval , selecting samples helpful to the validation objective. DualSFT instead uses the same projection vector for data and parameter scores, sharing second-order and preservation-aware corrections across both axes. • FisherSFT [31]: Formulates sample selection as maximizing information gain. It scores samples using the Fisher Information Matrix (FIM), approximately calculated as 𝑠 𝑛 ≈ Tr ( ˆ𝐹 −1∇𝑙 𝑛 ∇𝑙 ⊤ 
+
+> 𝑛
+
+),prioritizing data that optimally resolves uncertainty. • SPICE [35]: Constructs a submodular optimization objective to mitigate gradient conflict. It maximizes alignment while penalizing redundancy within the selected subset 𝑆 , formulated as 
+
+max 𝑆 
+
+Õ𝑖 ∈𝑆 𝑢 𝑖 − 𝜇 sp 
+
+Õ𝑖, 𝑗 ∈𝑆 𝐶 𝑖, 𝑗 , where 𝐶 𝑖, 𝑗 denotes inter-sample gradient conflicts. 
+
+Sequential Baselines. These represent decoupled, pipeline-based data and parameter selection. • LESS + S 2FT and SPICE + NanoAdam : These methods stack independent scoring mechanisms. A subset Dsel is first extracted using the respective data-side metric. Subsequently, parameter-side sparsification is computed solely based on gradients derived from Dsel . This decoupled nature serves as the primary contrast to our joint, one-shot extraction mechanism in DualSFT. 
+
+F.1.2 Datasets and Evaluation Details Datasets. We evaluate across two domains: Code Generation using Magicoder [46] and Mathemati-cal Reasoning using MetaMathQA [47]. We denote each full corpus as Dfull and use it as the common budget base so that data-side budgets are directly comparable across all methods. For each corpus, we reserve a 1,024-sample validation set Dval that provides the meta-validation signal for scoring, and final performance is evaluated only on the benchmark suites described below, then draw a disjoint 2,048-sample anchor set Danchor for the prior-preserving direction vprior via CWSD. The remainder forms the candidate training pool Dtrain = Dfull \ (D val ∪ D anchor ), further partitioned during scoring as follows: • Warmup Set ( Dwarm ): A random 5% · |D full | subset of Dtrain , used for a 1-epoch pilot warmup to establish the scoring checkpoint ¯𝜽 and diagonal curvature proxy ˆc. After warmup, Dwarm is excluded from the scoring pool to avoid bias from already-updated samples. • Scoring Pool ( Dpool = Dtrain \ D warm ): The remainder of the candidate pool, over which one-shot shared-surrogate scoring is performed. • Selected Subset ( Dsel ): Top-𝑏 samples drawn from Dpool , with 𝑏 = 10% · |D full |.The anchor size is fixed in absolute terms because CWSD estimates a preservation direction rather than a training distribution. Appendix F.6.1 shows the CWSD direction and induced selections stabi-lize around 2,048 anchors, well below corpus scale. The reserved |D val | + |D anchor | = 3,072 samples (∼2.8% of Magicoder, ∼0.8% of MetaMathQA) are used only for scoring and preservation-direction 24 estimation, and never enter final restricted fine-tuning. All methods use identically sized final adap-tation subsets; Appendix F.2 separately reports validation and anchor usage as scoring resources. 
+
+Evaluation Protocol. All evaluations use lm-evaluation-harness [114] with the following per-benchmark settings. HumanEval [103] is evaluated with 0-shot pass@1 (temperature 0, greedy de-coding, up to 512 generation tokens). PIQA [104] and ARC-Challenge [105] are evaluated with 0-shot accuracy using log-likelihood scoring over answer options. MMLU [106] is evaluated with 5-shot accuracy, averaged across all 57 subjects. GSM8K [107] is evaluated with 5-shot chain-of-thought prompting and exact-match accuracy on the final numeric answer. We report Stability as the arithmetic mean of the four out-of-domain benchmarks, Plasticity as the in-domain benchmark score (HumanEval for code, GSM8K for math), and Overall as the arithmetic mean of Stability and Plastic-ity. All reported numbers are mean ± standard deviation over three random seeds ( {42 , 123 , 2026 }). 
+
+F.1.3 Implementation Details 
+
+For reproducibility, we distinguish shared optimization settings from method-specific configurations. All methods use the same dataset split, evaluation protocol, and reporting convention, run on four NVIDIA A100 (80GB) GPUs, and report the mean and standard deviation over three random seeds. Standard SFT, LoRA, and the supervised fine-tuning stage of data-selection baselines are imple-mented with LlamaFactory, whereas parameter-sparse baselines, including S 2FT, SMT, LIFT, and NanoAdam, follow their original codebases. Optimization hyper-parameters are selected separately for each method, base model, and dataset, and are reported in Tables 7 and 8. For sparse baselines, we also report the structural hyper-parameters that define their update spaces and sparsity patterns; these settings are summarized in Table 9. Specifically, LoRA is defined by rank, scaling, dropout, and target modules; S 2FT by structured selection ratios over attention and FFN sub-spaces; SMT by matrix/block sparsity and warm-start configuration; LIFT by mask type, no-gradient module setting, rank-reduction configuration, and projection update interval; and NanoAdam by den-sity budget, mask interval, dynamic-density schedule, and mask criterion. For DualSFT, the reported results use a 1-epoch warmup with 𝑟 warm = 5% , balance factor 𝜆 = 0.8,CWSD temperature 𝜏 = 1.0, data budget 𝑏 = 10% , and parameter budget 𝑘 = 5% . The final fine-tuning learning rate 𝜂 ft is listed in Tables 7–8; scoring uses 𝜂 sc = 𝜂 ft /𝑁 sc , where 𝑁 sc is the number of examples accumulated in G.Table 7: Fine-Tuning Hyper-parameters for Magicoder. Hyper-parameter Std. SFT LoRA Data-Only S2FT SMT LIFT NanoAdam DualSFT (Ours) LR (Llama-3.2-3B) 2e-5 2e-4 2e-5 5e-5 4e-5 4e-5 3e-5 2e-5 LR (Gemma-3-4B) 2e-5 2e-4 2e-5 5e-5 4e-5 4e-5 3e-5 2e-5 LR (Qwen-3.5-9B) 1e-5 2e-4 1e-5 2e-5 2e-5 1.5e-5 2e-5 1e-5 
+
+> Shared settings: AdamW, cosine decay, global batch size 64, max sequence length 4096, 3 epochs, LR warmup ratio 0.03, weight decay 0.0.
+
+Table 8: Fine-Tuning Hyper-parameters for MetaMathQA. Hyper-parameter Std. SFT LoRA Data-Only S2FT SMT LIFT NanoAdam DualSFT (Ours) LR (Llama-3.2-3B) 1e-5 2e-4 1e-5 5e-5 4e-5 3e-5 3e-5 1e-5 LR (Gemma-3-4B) 1e-5 2e-4 1e-5 5e-5 4e-5 3e-5 3e-5 1e-5 
+
+> Shared settings: AdamW, cosine decay, global batch size 128, max sequence length 1024, 2 epochs, LR warmup ratio 0.03, weight decay 0.0.
+
+Table 9: Method-specific structural hyper-parameters.                                                                 
+
+> Method Reported method-specific hyper-parameters LoRA rank 𝑟 =64 , scaling 𝛼 =128 , dropout =0.05 , target modules = all linear layers S2FT structured selection ratios: 𝑑 _𝑟 𝑎𝑡𝑖𝑜 =0.03 ,𝑢 _𝑟 𝑎𝑡𝑖𝑜 =𝑜 _𝑟 𝑎𝑡𝑖𝑜 =𝑣 _𝑟 𝑎𝑡𝑖𝑜 =0
+> SMT warm-start steps =100 , attention block ratio =0.25 , MLP block ratio =0.10
+> LIFT mask type = principle , no-gradient modules = gateupdown , LoRA rank =64 , filter rank =64 , update interval =200
+> NanoAdam mask interval =600 , dynamic density = False , density interval =1000 , mask criterion = weights
+> DualSFT warmup epochs =1, warmup fraction 𝑟 warm =5% of | D full |, balance factor 𝜆 =0.8, CWSD temperature
+> 𝜏 =1.0, data budget 𝑏 =10% , parameter budget 𝑘 =5%
+
+25 Table 10: Resource accounting under matched final budgets on Magicoder with Llama-3.2-3B. Final adaptation counts only data and parameters used during restricted fine-tuning. Peak memory denotes maximum single-GPU peak memory during final fine-tuning, not selection-stage memory.                                                 
+
+> Method Data % Param % Scoring passes Selection time E2E time Peak memory
+> S2FT 100 500.0h 12.5h 28.4GB NanoAdam 100 5in-train 0.0h 11.5h 22.6GB LESS 10 100 26.6h 9.0h 74.9GB SPICE 10 100 24.1h 6.5h 74.9GB LESS + S 2FT 10 526.6h 8.1h 28.4GB SPICE + NanoAdam 10 524.1h 5.3h 22.6GB DualSFT 10 526.5h 7.4h 19.3GB
+
+F.1.4 Prompt Templates 
+
+To ensure complete reproducibility, we provide the exact instruction templates used for fine-tuning and evaluation. We adhere to the standard Alpaca-style formats. For Magicoder, we utilize a specialized template with a coding-focused system preamble: Magicoder Instruction Template 
+
+You are a proficient coding assistant. Below is an instruction that describes a task. Write a response that appropriately completes the request. ### Instruction: {instruction} ### Response: 
+
+For MetaMathQA, we use the standard instruction template: MetaMathQA Instruction Template 
+
+Below is an instruction that describes a task. Write a response that appropriately completes the request. ### Instruction: {instruction} ### Response: 
+
+F.2 Resource Accounting under Matched Final Budgets 
+
+We distinguish final adaptation resources from scoring resources. Final adaptation resources refer to the examples and parameters used during restricted fine-tuning. Scoring resources include warmup, validation-gradient computation, CWSD, and streaming score extraction. This distinction is impor-tant because DualSFT uses Dval and Danchor only for scoring and preservation-direction estimation, not as final fine-tuning data. Table 10 reports the corresponding costs. 
+
+F.3 Additional Sequential-Combination Baselines 
+
+To examine pipeline-style hybrids, we evaluate a 2 × 2 grid combining two data selectors, LESS and SPICE, with two parameter selectors, S 2FT and NanoAdam. All combinations use the same final data budget ( 10% ) and parameter budget ( 5% ) as DualSFT. This comparison tests whether sequentially composing strong single-axis selectors can close the gap to coordinated dual scoring. Table 11 complements the main comparison by covering all pairings between the selected data-side and parameter-side baselines. Across all three backbones, SPICE + NanoAdam remains the strongest sequential hybrid in Overall, while DualSFT consistently achieves higher Stability Avg., Plasticity, and Overall under the same final data and parameter budgets. 26 Table 11: Additional 2×2 sequential-combination baselines on Magicoder (%). Best results are bold ,and second-best results are underlined. All methods use the same final data and parameter budgets. 
+
+Model Method Stability ↑ Plasticity ↑ Overall ↑
+
+ARC-C PIQA MMLU GSM8K Avg HE Score Llama-3.2  LESS + S 2FT 42.57 ±1.44 76.68 ±0.96 53.55 ±0.39 22.86 ±0.71 48.92 ±0.48 38.85 ±0.66 43.88 ±0.41 
+
+LESS + NanoAdam 42.74 ±1.46 76.31 ±0.97 54.06 ±0.41 24.83 ±0.76 49.49 ±0.49 39.78 ±0.73 44.63 ±0.44 
+
+SPICE + S 2FT 41.42 ±1.45 76.55 ±0.97 53.96 ±0.40 23.07 ±0.69 48.75 ±0.48 39.21 ±0.65 43.98 ±0.41 
+
+SPICE + NanoAdam 42.16 ±1.46 76.61 ±0.98 54.87 ±0.40 25.93 ±0.71 49.89 ±0.48 39.52 ±0.68 44.71 ±0.42 
+
+DualSFT (Ours) 42.94 ±1.45 76.23 ±0.98 56.09 ±0.40 26.88 ±0.70 50.54 ±0.48 43.67 ±0.71 47.10 ±0.43 
+
+> Gemma-3
+
+LESS + S 2FT 51.01 ±1.46 78.66 ±0.93 55.68 ±0.39 31.14 ±0.78 54.12 ±0.48 53.12 ±0.85 53.62 ±0.49 
+
+LESS + NanoAdam 50.34 ±1.47 78.21 ±0.96 56.18 ±0.40 32.04 ±0.81 54.19 ±0.49 52.96 ±0.79 53.58 ±0.47 
+
+SPICE + S 2FT 50.46 ±1.46 78.39 ±0.95 56.04 ±0.40 32.27 ±0.84 54.29 ±0.49 52.41 ±0.86 53.35 ±0.49 
+
+SPICE + NanoAdam 50.78 ±1.45 78.54 ±0.94 57.29 ±0.40 33.89 ±0.82 55.13 ±0.49 52.65 ±0.82 53.89 ±0.48 
+
+DualSFT (Ours) 51.14 ±1.44 79.01 ±0.95 59.16 ±0.38 35.62 ±0.64 56.23 ±0.47 56.76 ±0.71 56.50 ±0.43 
+
+> Qwen-3.5
+
+LESS + S 2FT 50.98 ±1.45 79.54 ±0.96 69.14 ±0.40 81.28 ±0.75 70.24 ±0.48 67.86 ±0.70 69.05 ±0.43 
+
+LESS + NanoAdam 51.42 ±1.46 79.16 ±0.95 69.78 ±0.39 80.61 ±0.74 70.24 ±0.48 68.94 ±0.69 69.59 ±0.42 
+
+SPICE + S 2FT 50.83 ±1.44 79.27 ±0.96 69.61 ±0.40 80.42 ±0.71 70.03 ±0.47 67.42 ±0.74 68.73 ±0.43 
+
+SPICE + NanoAdam 50.55 ±1.44 79.35 ±0.95 70.09 ±0.39 80.74 ±0.72 70.18 ±0.48 69.24 ±0.68 69.71 ±0.42 
+
+DualSFT (Ours) 54.01 ±1.43 79.64 ±0.94 70.33 ±0.38 84.61 ±0.68 72.15 ±0.47 73.75 ±0.65 72.95 ±0.40 
+
+Table 12: Fine-tuning results on MetaMathQA (%). Pre-trained, Standard SFT, and LoRA (gray) are excluded from group ranking. In each group, best and second-best results are highlighted. DualSFT is the joint setting; DualSFT-Param/Data are single-axis variants. 
+
+Model Method Stability ↑ Plasticity ↑ Overall ↑
+
+ARC-C PIQA MMLU HE Avg GSM8K Score Llama-3.2-3B 
+
+Pre-trained 43.00 ±1.45 76.61 ±0.99 56.52 ±0.40 28.66 ±0.54 51.20 ±0.47 27.45 ±0.73 39.32 ±0.43 
+
+Standard SFT 36.60 ±1.41 74.48 ±1.02 48.51 ±0.41 14.98 ±0.45 43.64 ±0.46 65.96 ±0.81 54.80 ±0.47 
+
+LoRA ICLR’22 40.61 ±1.44 74.21 ±0.98 52.11 ±0.39 25.05 ±0.56 48.00 ±0.47 61.08 ±0.75 54.54 ±0.44 
+
+S2FT NIPS’24 40.78 ±1.45 75.96 ±0.99 52.88 ±0.40 25.34 ±0.62 48.74 ±0.48 64.94 ±0.76 56.84 ±0.45 
+
+SMT ICLR’25 41.22 ±1.45 72.33 ±0.98 52.74 ±0.40 26.13 ±0.58 48.11 ±0.47 65.06 ±0.75 56.58 ±0.44 
+
+LIFT ICML’25 40.94 ±1.44 73.58 ±0.99 52.61 ±0.40 25.07 ±0.50 48.05 ±0.47 64.72 ±0.74 56.39 ±0.44 
+
+NanoAdam NIPS’25 42.55 ±1.44 74.51 ±0.98 53.74 ±0.40 26.61 ±0.71 49.35 ±0.48 65.17 ±0.78 57.26 ±0.46 
+
+DualSFT-Param (Ours) 42.43 ±1.45 75.82 ±0.99 55.96 ±0.40 28.01 ±0.67 50.56 ±0.48 65.84 ±0.76 58.20 ±0.45 
+
+Random 42.19 ±1.45 76.22 ±0.99 55.92 ±0.40 28.66 ±0.70 50.75 ±0.48 59.67 ±0.77 55.21 ±0.45 
+
+LESS ICML’24 41.52 ±1.45 74.66 ±0.99 53.58 ±0.40 26.35 ±0.79 49.03 ±0.49 63.57 ±0.79 56.30 ±0.47 
+
+FisherSFT ICML’25 40.69 ±1.44 74.25 ±0.99 55.12 ±0.40 27.04 ±0.73 49.28 ±0.48 61.69 ±0.76 55.48 ±0.45 
+
+SPICE ICLR’26 41.26 ±1.45 74.89 ±0.98 55.42 ±0.40 27.29 ±0.65 49.72 ±0.48 62.36 ±0.75 56.04 ±0.44 
+
+DualSFT-Data (Ours) 42.88 ±1.44 76.13 ±0.99 56.03 ±0.40 28.57 ±0.71 50.90 ±0.48 65.12 ±0.77 58.01 ±0.45 
+
+LESS + S 2FT 41.75 ±1.44 75.36 ±0.97 53.67 ±0.39 25.69 ±0.64 49.12 ±0.47 61.53 ±0.74 55.32 ±0.44 
+
+SPICE + NanoAdam 42.47 ±1.45 76.02 ±0.98 54.83 ±0.40 26.71 ±0.66 50.01 ±0.48 62.64 ±0.75 56.32 ±0.44 
+
+DualSFT (Ours) 42.88 ±1.45 76.42 ±0.98 56.34 ±0.40 29.88 ±0.69 51.38 ±0.48 64.51 ±0.75 57.95 ±0.45 
+
+> Gemma-3-4B-PT
+
+Pre-trained 51.45 ±1.46 79.16 ±0.95 59.61 ±0.39 35.37 ±0.74 56.40 ±0.48 37.00 ±0.83 46.70 ±0.48 
+
+Standard SFT 43.36 ±1.44 74.48 ±0.97 53.00 ±0.40 29.55 ±0.75 50.10 ±0.48 67.79 ±0.81 58.94 ±0.47 
+
+LoRA ICLR’22 48.91 ±1.44 77.94 ±0.95 55.80 ±0.40 30.47 ±0.74 53.28 ±0.48 62.48 ±0.79 57.88 ±0.46 
+
+S2FT NIPS’24 49.51 ±1.46 77.68 ±0.96 55.73 ±0.40 31.22 ±0.82 53.54 ±0.49 64.34 ±0.80 58.94 ±0.47 
+
+SMT ICLR’25 49.82 ±1.46 77.29 ±0.93 56.17 ±0.39 31.94 ±0.86 53.81 ±0.49 65.51 ±0.84 59.66 ±0.49 
+
+LIFT ICML’25 50.14 ±1.46 76.59 ±0.95 55.21 ±0.40 30.36 ±0.63 53.08 ±0.47 64.73 ±0.78 58.90 ±0.46 
+
+NanoAdam NIPS’25 50.67 ±1.45 78.16 ±0.94 58.25 ±0.39 33.57 ±0.90 55.16 ±0.50 65.89 ±0.81 60.53 ±0.48 
+
+DualSFT-Param (Ours) 51.06 ±1.45 78.88 ±0.98 59.79 ±0.39 34.98 ±0.81 56.18 ±0.49 67.14 ±0.80 61.66 ±0.47 
+
+Random 51.26 ±1.45 79.03 ±0.99 59.37 ±0.40 35.11 ±0.70 56.19 ±0.48 61.59 ±0.77 58.89 ±0.45 
+
+LESS ICML’24 48.65 ±1.45 77.53 ±0.99 56.07 ±0.40 30.94 ±0.79 53.30 ±0.49 65.28 ±0.79 59.29 ±0.47 
+
+FisherSFT ICML’25 49.81 ±1.45 77.61 ±0.94 56.49 ±0.38 32.49 ±0.75 54.10 ±0.48 63.81 ±0.77 58.96 ±0.45 
+
+SPICE ICLR’26 50.33 ±1.44 78.42 ±0.95 57.52 ±0.40 33.94 ±0.77 55.05 ±0.48 64.73 ±0.79 59.89 ±0.46 
+
+DualSFT-Data (Ours) 51.32 ±1.45 78.61 ±0.98 59.44 ±0.40 35.12 ±0.68 56.12 ±0.48 66.94 ±0.80 61.53 ±0.47 
+
+LESS + S 2FT 50.91 ±1.46 78.54 ±0.93 56.48 ±0.39 31.54 ±0.85 54.37 ±0.49 63.85 ±0.78 59.11 ±0.46 
+
+SPICE + NanoAdam 49.73 ±1.45 78.66 ±0.94 58.21 ±0.40 33.69 ±0.82 55.07 ±0.49 63.47 ±0.80 59.27 ±0.47 
+
+DualSFT (Ours) 51.38 ±1.44 79.03 ±0.95 59.61 ±0.38 35.45 ±0.71 56.37 ±0.48 66.58 ±0.79 61.47 ±0.46 
+
+F.4 Additional Results on MetaMathQA 
+
+Table 12 reports additional MetaMathQA results, which match the Magicoder trends. For Llama-3.2-3B and Gemma-3-4B-PT, DualSFT-Param/Data lead mean Overall within single-axis groups, while full DualSFT leads joint-budget alternatives. DualSFT scores 57.95 on Llama-3.2-3B, surpassing SPICE + NanoAdam by 1.63 points. On Gemma-3-4B-PT, it reaches 61.47, improving over the strongest sequential composition by 2.20 points. These results support the advantage of shared dual scoring over isolated or sequential selection under evaluated budgets. We omit Qwen results because its strong GSM8K prior makes downstream mathematical fine-tuning less informative. 27 Table 13: Runtime and memory profiling on Magicoder with Llama-3.2-3B. Sel. Comp. denotes selection-stage computational complexity. Peak FT Mem reports maximum single-GPU peak allo-cated memory with per-device micro-batch size 2.                                                                                                                                              
+
+> Method Sel. Comp. ↓Peak FT Mem (GB) ↓
+> Peak Sel. Mem (GB) ↓
+> Sel. Time (GPU-h) ↓
+> Total (GPU-h) ↓
+> Standard SFT –74.9 -–23.6 LoRA –11.5 -–15.2 S2FT 𝑂 (𝑀 )28.4 -–12.5 SMT 𝑂 (𝑇 𝑤 𝐶 fb +𝐵 log 𝐵 )25.8 -0.4 10.4 LIFT in-train 27.1 -in-train 13.6 NanoAdam in-train 22.6 -in-train 11.5 DualSFT-Param 𝑂 (𝑇 𝑤 𝐶 fb +𝐷 )19.3 -4.5 13.4 Random 𝑂 (𝑏 )--0.0 2.4 LESS 𝑂 ( | D warm |𝑁 𝑐 +𝑁 sc 𝑁 𝑐 +𝑁 sc | D val |𝑑 𝑝 )-26.8 6.6 9.0 FisherSFT greedy log-det -24.5 8.1 10.5 SPICE 𝑂 (𝑏𝑁 sc 𝑑 𝑝 )-29.8 4.1 6.5 DualSFT-Data 𝑂 (𝑇 𝑤 𝐶 fb +𝑁 sc )-28.5 6.5 8.9 LESS + S 2FT combined 28.4 26.8 6.6 8.1 SPICE + NanoAdam combined 22.6 29.8 4.1 5.3 DualSFT 𝑂 (𝑇 𝑤 𝐶 fb +𝑁 sc +𝐷 )19.3 28.5 6.5 7.4
+> Notation. 𝑇 𝑤 is the number of warmup steps, 𝐶 fb the cost of one forward–backward pass, 𝐷 the parameter dimension,
+> 𝑁 sc =| D pool |the scoring-pool size, 𝑏 the data budget, 𝐵 sparse parameter blocks, 𝑀 candidate modules or blocks, 𝑁 𝑐 the number of stored checkpoints for trajectory-based scoring, and 𝑑 𝑝 the projected feature dimension. Peak FT Mem is measured as maximum single-GPU peak allocated memory during fine-tuning with per-device micro-batch size 2.
+
+Table 14: Preservation-direction ablation on Llama-3.2-3B with Magicoder in joint DualSFT.                
+
+> Preservation direction Stability Plasticity Overall
+> No preservation 47.28 42.16 44.72 L2-to-𝜽 old 48.84 42.91 45.88 Diagonal Fisher anchoring 49.93 43.42 46.68 CWSD 50.54 43.67 47.10
+
+F.5 Detailed Runtime and Memory Profiling 
+
+Table 13 profiles runtime and memory for Fig. 2. Under split-view protocol, all methods report GPU-hours. Peak FT Mem reports maximum single-GPU peak allocated memory during fine-tuning with per-device micro-batch size 2. Parameter-sparse methods report Peak FT Mem; data-only and joint methods report selection time and Peak Sel. Mem. Sel. Comp. summarizes asymptotic selection-stage computation, with notation defined below Table 13. Sel. Time reports realized costs. 2 supports this frontier view. At 5% sparsity, DualSFT-Param achieves the highest Overall and lowest Peak FT Mem ( 19 .3 GB) among sparse parameter-selection baselines, outperforming NanoAdam (46 .08 , 22 .6 GB) and SMT ( 45 .50 , 25 .8 GB). In data selection, DualSFT-Data scores highest ( 47 .14 )against LESS ( 45 .74 ), SPICE ( 45 .45 ), and FisherSFT ( 44 .62 ) with comparable memory. Jointly, DualSFT reaches 47 .10 Overall in 7.4 GPU-hours, surpassing LESS + S 2FT ( 43 .88 , 8.1 GPU-hours) and SPICE + NanoAdam ( 44 .71 , 5.3 GPU-hours). The complexity view is consistent with gains from a unified pipeline rather than sequential disconnected selectors. 
+
+F.6 Preservation Direction and Anchor-size Ablations 
+
+The main ablation in Fig. 3 shows that removing CWSD substantially reduces stability. We fur-ther compare CWSD with simpler preservation-direction alternatives under the same DualSFT joint setting. All variants use the same data budget, parameter budget, warmup checkpoint, and final fine-tuning hyperparameters; only the construction of vprior is changed. Table 14 indicates that CWSD is more effective than parameter-space anchoring alternatives. L2-to-𝜽 old improves stability over removing preservation entirely but reduces plasticity, while diagonal Fisher anchoring gives a stronger stability signal but remains below CWSD. CWSD provides the best balance because it constructs a behavior-level preservation direction from high-confidence old-model predictions at the scoring checkpoint. 28 Table 15: Anchor-size sensitivity for CWSD on Llama-3.2-3B with Magicoder.                                        
+
+> | D anchor |256 512 1024 2048 4096 Cosine w.r.t. 4096-anchor vprior 0.82 0.89 0.94 0.98 1.00 Top-𝑏 data overlap 0.71 0.78 0.85 0.92 1.00 Top-𝑘 parameter overlap 0.74 0.81 0.87 0.94 1.00 Stability 49.42 49.86 50.21 50.54 50.57
+> Plasticity 43.21 43.42 43.55 43.67 43.69
+> Overall 46.31 46.64 46.88 47.10 47.13
+
+F.6.1 Anchor-size sensitivity 
+
+CWSD uses Danchor to estimate a preservation direction at the warmup checkpoint, rather than to provide additional fine-tuning examples. We therefore test whether increasing the anchor set changes the estimated direction and the induced selections. Using Llama-3.2-3B on Magicoder, we vary 
+
+|D anchor | ∈ { 256 , 512 , 1024 , 2048 , 4096 } and compare each setting with the 4096-anchor reference. We report the cosine similarity of vprior , Top-𝑏 data overlap, Top-𝑘 parameter overlap, and final performance after restricted fine-tuning. Anchor samples are never used in final restricted fine-tuning. Table 15 shows that both the CWSD direction and the induced selections stabilize as the anchor size increases. Moving from 2048 to 4096 anchors gives only marginal changes in direction similarity, selected data, selected parameters, and final performance. This supports using a moderate fixed anchor size as a scoring-only resource, rather than scaling the anchor set with the full corpus size. 
+
+F.7 Protocol for Same-Surrogate Local-Regret Diagnostic 
+
+We compute the local-regret diagnostic at the init and warmup checkpoints without additional train-ing. For the data side, we fix the DualSFT parameter mask m𝜃 and define the aware and unaware scores as 𝑠 aware  
+
+> D,𝑛
+
+= ⟨u ⊙ m𝜃 , g𝑛 ⟩ and 𝑠 unaware  
+
+> D,𝑛
+
+= ⟨u, g𝑛 ⟩. Let 𝑆 aware  
+
+> D
+
+and 𝑆 unaware  
+
+> D
+
+be their Top-𝑏 subsets. We evaluate both under the aware utility 𝑈 aware  
+
+> D
+
+(𝑆 ) = Õ𝑛 ∈𝑆 𝑠 aware  
+
+> D,𝑛
+
+. The data-side utility ratio and regret are 
+
+Ratio D = 𝑈 aware  
+
+> D
+
+(𝑆 unaware  
+
+> D
+
+)
+
+𝑈 aware  
+
+> D
+
+(𝑆 aware  
+
+> D
+
+) + 𝜖 , Regret D = 100 (1 − Ratio D ).
+
+For the parameter side, we fix the DualSFT data subset 𝑆 D and define 𝑠 aware  
+
+> 𝜃 ,𝑑
+
+= 𝑢 𝑑 𝐺 𝑆 D ,𝑑 and 𝑠 unaware  
+
+> 𝜃 ,𝑑
+
+=
+
+𝑢 𝑑 𝐺 𝑑 . Let 𝑚 aware  
+
+> 𝜃
+
+and 𝑚 unaware  
+
+> 𝜃
+
+be their Top-𝑘 masks. We use 𝑈 aware  
+
+> 𝜃
+
+(𝑚 ) = Õ𝑑 :𝑚 𝑑 =1 𝑠 aware  
+
+> 𝜃 ,𝑑
+
+and compute the same utility ratio and regret. Top-𝑞 Jaccard reports the overlap between aware and unaware selections at 𝑞 = 𝑏 for data and 𝑞 = 𝑘 for parameters. 
+
+F.8 Statistic Definitions and Reverse-selection Ablation 
+
+We define statistics used in Table 4, Fig. 5, and Table 17. For data, Random denotes a same-size random subset, Top-loss selects the same number of examples with the largest training losses at ¯𝜽 ,and Pool denotes the full candidate pool. For a selected subset Dsel , validation-gradient alignment is 
+
+Align (D sel ) = 1
+
+|D sel |
+
+Õ𝑛 ∈ D sel 
+
+⟨g𝑛 , vval ⟩∥g𝑛 ∥2 ∥vval ∥2
+
+, (79) where g𝑛 and vval are computed at checkpoint ¯𝜽 . The average training loss is the mean per-example loss over the corresponding subset. For diversity, let 𝜙 (𝑥 ) denote the mean-pooled sentence embed-ding of sample 𝑥 extracted from the pre-trained backbone. Following diversity-aware subset diagnos-tics in DPP, core-set, and submodular selection methods [115–117], we compute 
+
+Div (D sel ) = 1
+
+(| D sel |
+
+> 2
+
+) Õ𝑖< 𝑗 
+
+(1 − cos (𝜙 (𝑥 𝑖 ), 𝜙 (𝑥 𝑗 ))) . (80) This score is used only as a redundancy diagnostic; DualSFT does not optimize it directly. For parameter statistics, all shares are computed within the trainable candidate pool. Let 𝑆 𝜃 denote the selected parameter mask and P the trainable parameter pool. For a layer or module group G, we define enrichment as a foreground-to-background share ratio: 
+
+Enrichment (G) = |G ∩ 𝑆 𝜃 |/| 𝑆 𝜃 ||G ∩ P |/|P | . (81) 29 Figure 7: Additional layer-wise parameter selection patterns across models and datasets. Cells show mean absolute module-layer block scores. Color scales are set separately. Enrichment above 1 indicates over-selection relative to the pool. Top-5 layers have the largest selected-parameter shares. The early-layer group (L0–L9) is predefined only for reporting and re-mains in the trainable candidate pool. The down_proj statistic compares its share among selected FFN parameters with its FFN-pool share. For the layer-wise heatmap in Fig. 5, let Bℓ,𝑚 denote the trainable parameter coordinates in layer ℓ
+
+and module 𝑚 . We compute the block-level mean absolute score as 
+
+𝐻 ℓ,𝑚 = 1
+
+|B ℓ,𝑚 |
+
+Õ𝑑 ∈ B ℓ,𝑚 |𝑠 𝜃 ,𝑑 |, (82) where 𝑠 𝜃 ,𝑑 is the DualSFT parameter score in Eq. (11). For visualization, 𝐻 ℓ,𝑚 is normalized by the maximum across plotted module-layer blocks. This heatmap visualizes the spatial distribution of parameter scores, while aggregate shares in Table 17 provide exact numerical summaries. 
+
+Additional layer-wise patterns. Fig. 7 extends visualizations to additional model-data settings. The trend persists across models and datasets: early layers are weaker, middle-to-late layers contain high-score blocks, and FFN-side modules, particularly down_proj , are emphasized. Peak layers and magnitudes vary by setting, necessitating separate color scales. 
+
+Reverse-selection ablation. To test whether low-scored candidates are unfavorable, we select bottom-scoring samples and parameters under identical budgets. We include matched-budget ran-dom controls replacing one side while keeping the other DualSFT-selected. Reverse Data + Dual Param uses bottom-scored data with the DualSFT mask; Dual Data + Reverse Param uses DualSFT data with bottom-scored parameters; Reverse Both reverses both sides. 8 shows that replacing either random side with its DualSFT-selected counterpart improves Overall, with larger plasticity gains from data-side selection. Conversely, every reverse variant underper-forms its matched random control, and reversing both sides yields the lowest Overall. These results support learned score directionality: low-scored samples and coordinates are not merely unselected alternatives, but worsen adaptation-retention trade-offs under equal budgets. 
+
+F.9 Fixed-side Re-selection Details 
+
+We provide definitions and diagnostics for the fixed-side re-selection variants in Table 3. Let 
+
+(𝑆 (0)D , 𝑆 (0) 
+
+> 𝜃
+
+) denote the one-shot DualSFT selection at checkpoint ¯𝜽 . Data → Param fixes 𝑆 (0)D and re-selects a parameter mask 𝑆 (1) 
+
+> 𝜃
+
+using scores recomputed on the selected subset. Param → Data fixes 
+
+𝑆 (0) 
+
+> 𝜃
+
+and re-selects a data subset 𝑆 (1)D under the fixed mask. Checkpoint, budgets, and final fine-tuning hyperparameters remain unchanged. The larger cost of Param → Data comes from its per-candidate scoring pass, whereas Data → Param only recomputes an aggregate gradient on the selected subset. 30 Figure 8: Reverse-selection ablation on Llama-3.2-3B (Magicoder). D/P denote data/parameter choices; all settings use matched budgets. 
+
+Figure 9: Fixed-side re-selection diagnostics. (a) Multi-round re-selection saturates after the first pass. (b,c) One-shot and fixed-side score consistency on the re-selected side. Scatter plots show 1,000 score pairs; Spearman and Jaccard are computed on the full candidate space. 
+
+Multi-round re-selection. We run multi-round re-selection to test whether alternating between data and parameter selection yields cumulative gains beyond the first fixed-side pass. Specifically, each round re-selects one side conditioned on the latest selection of the other side, with 𝑇 ∈ { 0, 1, 2, 3, 5},while keeping the same checkpoint and budgets. 9(a) shows that most gains appear in the first pass. Later rounds change Overall by at most 0.05 points relative to 𝑇 =1 and are not consistently monotonic, suggesting rapid saturation rather than cumulative improvement. This indicates that additional passes mainly refine boundary cases rather than uncover new global selection structure. 
+
+Selection stability. We measure stability between one-shot and fixed-side re-selection on the side actually re-selected. For Data → Param, we compare 𝑆 (0) 
+
+> 𝜃
+
+with 𝑆 (1) 
+
+> 𝜃
+
+; for Param → Data, we compare 
+
+𝑆 (0)D with 𝑆 (1)D . The fixed side is unchanged by construction. 9(b,c) reports Jaccard overlap between selected sets and Spearman correlation between score rankings over the corresponding candidate space. The scatter plots visualize randomly sampled score pairs, while reported metrics use the full candidate space. High overlap and rank correlation show that fixed-side re-scoring largely preserves the global ordering, with changes concentrated near the selection boundary. 
+
+Cost breakdown. Table 16 reports GPU-hour costs. Selection total includes warmup, first-round scoring, and fixed-side re-scoring; end-to-end total includes restricted fine-tuning under selected data and parameter budgets. Results show that small fixed-side re-selection gains incur non-negligible cost, especially for Param → Data, where data-side re-scoring dominates added overhead. 
+
+F.10 Score Fidelity Protocol and Extended Horizons F.10.1 Local Surrogate Drift and Horizon Decay 
+
+DualSFT computes one-shot scores at the warmup checkpoint ¯𝜽 , whereas realized validation gains are measured after restricted optimization. This mismatch creates a natural horizon dependence: as the optimization trajectory moves away from ¯𝜽 , the gradients defining the local surrogate may drift. 31 Table 16: Cost breakdown of fixed-side re-selection on Llama-3.2-3B (Magicoder).                     
+
+> Stage DualSFT Data →Param Param →Data
+> Shared one-shot scoring 6.5 h 6.5 h 6.5 h Fixed-side re-scoring –0.4 h 2.9 h Restricted fine-tuning 0.9 h 0.9 h 1.0 h Selection total 6.5 h 6.9 h (1.06 ×)9.4 h (1.45 ×)End-to-end total 7.4 h 7.8 h (1.05 ×)10.4 h (1.41 ×)
+
+Table 17: Selected parameter statistics on Llama-3.2-3B (Magicoder). 
+
+Param statistic Sel. Pool Enrich. 
+
+Top-5 selected layers 42.4% 17.9% 2.38 ×
+
+Early layers (L0–L9) 8.2% 35.7% 0.23 ×
+
+Attention share 22.6% 25.0% 0.91 ×
+
+FFN share 77.4% 75.0% 1.03 ×
+
+down_proj within FFN 47.9% 33.3% 1.44 ×
+
+Table 18: Extended-horizon score fidelity on Llama-3.2-3B with Magicoder.                                                                                        
+
+> Variant 𝐾 Data 𝜌 Param 𝜌 Data Pair Param Pair
+> Init + First-Order 10 0.40 0.33 65.3 62.0 50 0.34 0.27 61.8 58.9 200 0.28 0.21 58.4 56.1 500 0.23 0.16 55.7 53.8 1000 0.17 0.12 53.6 52.0 Init + Diag-Second-Order 10 0.48 0.41 70.4 66.2 50 0.43 0.36 67.4 63.6 200 0.37 0.30 64.0 60.6 500 0.31 0.25 60.8 58.0 1000 0.25 0.20 57.6 55.3 Warmup + First-Order 10 0.68 0.61 80.1 76.0 50 0.62 0.55 76.8 72.4 200 0.56 0.49 73.0 69.0 500 0.49 0.42 69.5 65.8 1000 0.40 0.35 65.5 62.2 Warmup + Diag-Second-Order 10 0.90 0.87 85.1 81.8
+> 50 0.87 0.84 82.8 79.5
+> 200 0.83 0.80 79.8 75.2
+> 500 0.76 0.72 76.8 71.3
+> 1000 0.66 0.61 70.2 65.9
+
+To make this dependence explicit, consider the first-order data score at a generic checkpoint 𝜽 :
+
+𝑠 D,𝑛 (𝜽 ) = 𝜂 ⟨∇L val (𝜽 ), ∇ℓ𝑛 (𝜽 )⟩ . (83) Assume that, along the restricted optimization trajectory, ∥∇L val (𝜽 )∥ ≤ 𝐵 𝑣 , ∥∇ ℓ𝑛 (𝜽 )∥ ≤ 𝐵 𝑔 , and the two gradients are Lipschitz with constants 𝐿 𝑣 and 𝐿 𝑔 . Then 
+
+𝑠 D,𝑛 (𝜽 𝑡 ) − 𝑠 D,𝑛 ( ¯𝜽 ) ≤ 𝜂 (𝐵 𝑣 𝐿 𝑔 + 𝐵 𝑔 𝐿 𝑣 
+
+) 𝜽 𝑡 − ¯𝜽 . (84) One-shot ranking remains stable when Eq. (84) is small relative to score margins, but fidelity decays as the trajectory moves farther from ¯𝜽 . The same argument applies to parameter scores by replac-ing per-sample gradients with coordinate-wise training-gradient terms, motivating extended-horizon diagnostics and leaving dynamic score updates for longer adaptation horizons. 
+
+F.10.2 Protocol 
+
+We provide extended diagnostics for Table 5. The main table averages over 𝐾 ∈ { 50 , 200 , 500 }
+
+restricted AdamW steps, while this section reports 𝐾 ∈ {10 , 50 , 200 , 500 , 1000 } and the full Init/Warmup × First/Diag grid. For data selection, we sample 64 diagnostic subsets with 256 exam-ples, scoring them by ˆ𝑈 D (𝑆 ) = Õ𝑛 ∈𝑆 𝑠 D,𝑛 . For parameter selection, we sample 64 budget-matched masks using block-stratified layer-module sampling, scoring them by ˆ𝑈 𝜃 (𝑆 ) = Õ𝑑 ∈𝑆 𝑠 𝜃 ,𝑑 . From the corresponding checkpoint, we run 𝐾 restricted AdamW steps and compare predicted rankings with realized validation gains Δ𝐾 (𝑆 ) = Lval ( ¯𝜽 ) − L val (𝜃 𝐾 (𝑆 )) using Spearman correlation and pairwise agreement. 𝐾 = 1000 serves as a stress test for the local surrogate. 
+
+Per-𝐾 results. Table 18 shows the expected horizon decay: fidelity decreases as optimization moves away from ¯𝜽 . Warmup improves over initialization, diagonal second-order scoring improves over first-order scoring, and Warmup + Diag-Second-Order remains the most predictive variant. 
+
+Additional domain. Table 19 repeats the short-horizon analysis on MetaMathQA. The same order-ing holds, with Warmup + Diag-Second-Order giving the strongest agreement with realized gains. 32 Table 19: Short-horizon score fidelity on Llama-3.2-3B with MetaMathQA, averaged over 𝐾 ∈{10 , 50 , 200 }.                      
+
+> Variant Data 𝜌 Param 𝜌 Data Pair Param Pair
+> Init + First-Order 0.33 0.26 61.0 58.2 Init + Diag-Second-Order 0.43 0.35 66.5 62.7 Warmup + First-Order 0.62 0.54 75.0 70.2
+> Warmup + Diag-Second-Order 0.80 0.76 80.6 76.0
+
+Table 20: Representative diagonal-vs-full Hessian rank agreement on Llama-3.2-3B with Magicoder. Results are averaged over coordinate slices. Pair: pairwise agreement (%). Top-5%: top-5% overlap.                                                                                          
+
+> Checkpoint Region / Module Data Param Data Param
+> 𝜌 Pair Top-5% 𝜌 Pair Top-5% 𝜌 Pair Top-5% 𝜌 Pair Top-5%
+> o_proj down_proj
+> Init Early 0.70 79.4 72.8 0.77 83.6 79.1 0.73 81.2 75.4 0.80 85.1 81.3 Middle 0.76 83.2 78.6 0.82 86.8 83.5 0.79 85.1 80.8 0.85 88.5 86.2 Late 0.74 82.0 76.3 0.80 85.7 81.9 0.78 84.6 79.4 0.84 88.3 85.9 Warmup Early 0.82 87.1 82.4 0.86 90.1 86.1 0.84 88.4 84.0 0.88 91.3 87.6 Middle 0.87 90.4 87.1 0.91 93.0 90.0 0.90 92.1 89.2 0.93 94.6 92.1 Late 0.85 89.0 85.2 0.89 91.9 88.0 0.88 90.9 87.5 0.92 94.2 91.0
+
+Overall, these diagnostics support two points: warmup improves localized scoring, and diagonal second-order refinement improves ranking fidelity. The extended-horizon results also confirm the expected horizon decay of local scores. A full dynamic re-scoring policy would require additional design choices, including when to re-score and whether to continue or restart restricted fine-tuning. We therefore leave dynamic scheduling to future work and focus on the one-shot setting, which is cost-effective under the studied budgets. 
+
+F.11 Diagonal-vs-Full Hessian Rank Protocol and Extended Results 
+
+We provide extended diagnostics for Table 6. Since exact full-model Hessians are prohibitive, we compare the optimizer-aware diagonal proxy with exact slice-level full-Hessian rankings on repre-sentative module-layer slices; DualSFT itself requires no full-Hessian computation. Using Llama-3.2-3B with Magicoder, we evaluate layers {3, 8, 10 , 14 , 16 , 21 , 24 , 27 }, covering sup-pressed, high-selection, and tail regions. For each layer, we test o_proj and down_proj . Each block uses a fixed-size coordinate slice sampled by score-quantile stratification over low-, middle-, and high-scored coordinates, with layers, modules, and coordinates fixed before comparison. At checkpoint 𝜃 0 ∈ { 𝜃 old , ¯𝜽 }, let 𝐵 be the sampled slice. We compute H𝐵 = ∇2 
+
+> 𝜃 𝐵
+
+Lval (𝜃 0), G𝐵 , and 
+
+v𝐵 = ∇𝜃 𝐵 Lnew (𝜃 0) + 𝜆 ∇𝜃 𝐵 Lprior (𝜃 0), then compare 
+
+ufull  
+
+> 𝐵
+
+= 𝜂 sc v𝐵 − ( 𝜂 2sc /2)H𝐵 G𝐵 , udiag  
+
+> 𝐵
+
+= 𝜂 sc v𝐵 − ( 𝜂 2sc /2) ˆc𝐵 ⊙ G𝐵 .
+
+For data, we compare 𝑠 full  
+
+> D,𝑛
+
+= ⟨ufull  
+
+> 𝐵
+
+, g𝑛,𝐵 ⟩ and 𝑠 diag  
+
+> D,𝑛
+
+= ⟨udiag  
+
+> 𝐵
+
+, g𝑛,𝐵 ⟩; for parameters, we compare 
+
+𝑠 full  
+
+> 𝜃 ,𝑑
+
+= 𝑢 full  
+
+> 𝐵,𝑑
+
+𝐺 𝐵,𝑑 and 𝑠 diag  
+
+> 𝜃 ,𝑑
+
+= 𝑢 diag  
+
+> 𝐵,𝑑
+
+𝐺 𝐵,𝑑 . We report Spearman correlation ( 𝜌 ), pairwise agreement, and Top-5% overlap. 
+
+Representative multi-layer results. Table 20 reports results by depth region and module. Warmup improves agreement over initialization, and the diagonal proxy remains strongly aligned with exact slice-level full-Hessian rankings. Together with Appendix F.10, these slice-level diagnostics support the diagonal proxy as a scalable local ranking approximation for one-shot scoring. 
+
+F.12 Comparison with Forgetting-Specific Baselines 
+
+We compare DualSFT with forgetting-specific baselines, including DavIR [101], FLOW [17], STM [40], NanoAdam [28], FAPM [45], and TALR [44]. These methods provide strong retention-oriented references, whereas DualSFT performs restricted fine-tuning under selected data and pa-rameter budgets. All methods are evaluated on Magicoder with the same benchmark suite as the 33 Table 21: Comparison with forgetting-specific methods on Magicoder (%). Pre-trained, Standard SFT, and LoRA are excluded from ranking. Best , second-best , and third-best are highlighted. 
+
+Model Method Stability ↑ Plasticity ↑ Overall ↑
+
+ARC-C PIQA MMLU GSM8K Avg HE Score Llama-3.2-3B 
+
+Pre-trained 43.00 ±1.45 76.61 ±0.99 56.52 ±0.40 27.45 ±0.73 50.90 ±0.49 28.66 ±0.54 39.78 ±0.36 
+
+Standard SFT 39.99 ±1.46 72.09 ±0.98 48.18 ±0.39 20.69 ±0.85 45.24 ±0.50 44.68 ±0.56 44.96 ±0.37 
+
+LoRA ICLR’22 42.61 ±1.45 74.43 ±0.99 51.87 ±0.41 23.29 ±0.83 48.05 ±0.50 41.46 ±0.56 44.76 ±0.37 
+
+DavIR ACL’25 42.71 ±1.45 74.92 ±0.99 53.09 ±0.40 24.65 ±0.75 48.84 ±0.49 43.28 ±0.75 46.06 ±0.45 
+
+FLOW ICML’25 42.94 ±1.44 76.23 ±0.98 56.91 ±0.40 27.28 ±0.72 50.84 ±0.48 42.28 ±0.80 46.56 ±0.47 
+
+STM NIPS’25 42.38 ±1.46 76.12 ±0.99 56.04 ±0.41 27.08 ±0.78 50.41 ±0.49 42.65 ±0.65 46.53 ±0.41 
+
+NanoAdam NeurIPS’25 42.66 ±1.44 74.68 ±0.98 52.71 ±0.40 24.39 ±0.73 48.61 ±0.48 43.54 ±0.87 46.08 ±0.50 
+
+FAPM EMNLP’25 42.55 ±1.45 76.01 ±0.98 53.86 ±0.40 26.01 ±0.74 49.61 ±0.49 40.99 ±0.90 45.30 ±0.51 
+
+TALR ICLR’26 42.49 ±1.45 76.34 ±0.99 56.41 ±0.40 27.54 ±0.76 50.70 ±0.49 44.18 ±0.78 47.44 ±0.46 
+
+DualSFT-Param (Ours) 42.54 ±1.46 76.19 ±0.99 54.01 ±0.41 26.27 ±0.75 49.75 ±0.49 44.52 ±0.72 47.14 ±0.44 
+
+DualSFT-Data (Ours) 42.66 ±1.44 76.44 ±0.99 55.28 ±0.40 26.54 ±0.73 50.23 ±0.48 44.05 ±0.74 47.14 ±0.44 
+
+DualSFT (Ours) 42.94 ±1.45 76.23 ±0.98 56.09 ±0.40 26.88 ±0.70 50.54 ±0.48 43.67 ±0.71 47.10 ±0.43 
+
+> Gemma-3-4B-PT
+
+Pre-trained 51.45 ±1.46 79.16 ±0.95 59.61 ±0.39 37.00 ±0.83 56.81 ±0.49 35.37 ±0.74 46.09 ±0.44 
+
+Standard SFT 47.17 ±1.46 76.39 ±0.99 53.87 ±0.40 24.03 ±0.81 50.37 ±0.50 58.10 ±0.89 54.23 ±0.51 
+
+LoRA ICLR’22 49.15 ±1.46 75.57 ±1.00 56.71 ±0.39 31.63 ±0.82 53.27 ±0.50 54.66 ±0.91 53.96 ±0.52 
+
+DavIR ACL’25 50.25 ±1.45 78.04 ±0.96 58.01 ±0.40 33.70 ±0.75 55.00 ±0.48 56.24 ±0.80 55.62 ±0.47 
+
+FLOW ICML’25 50.92 ±1.44 78.82 ±0.94 58.92 ±0.39 36.82 ±0.72 56.37 ±0.48 55.70 ±0.82 56.04 ±0.47 
+
+STM NIPS’25 50.62 ±1.46 78.48 ±0.98 58.58 ±0.41 36.10 ±0.78 55.95 ±0.49 55.92 ±0.75 55.94 ±0.45 
+
+NanoAdam NIPS’25 50.78 ±1.45 78.20 ±0.94 58.33 ±0.39 33.12 ±0.84 55.11 ±0.49 56.38 ±0.90 55.74 ±0.51 
+
+FAPM EMNLP’25 50.60 ±1.44 78.50 ±0.95 58.60 ±0.40 35.90 ±0.75 55.90 ±0.48 52.20 ±0.95 54.05 ±0.53 
+
+TALR ICLR’26 50.96 ±1.45 78.84 ±0.97 58.94 ±0.38 36.70 ±0.76 56.36 ±0.49 57.44 ±0.84 56.90 ±0.49 
+
+DualSFT-Param (Ours) 51.13 ±1.45 78.54 ±0.98 58.14 ±0.39 36.34 ±0.83 56.04 ±0.49 57.52 ±0.81 56.78 ±0.47 
+
+DualSFT-Data (Ours) 51.01 ±1.45 78.52 ±0.98 58.33 ±0.40 36.55 ±0.79 56.10 ±0.49 56.94 ±0.68 56.52 ±0.42 
+
+DualSFT (Ours) 51.14 ±1.44 79.01 ±0.95 59.16 ±0.38 35.62 ±0.64 56.23 ±0.47 56.76 ±0.71 56.50 ±0.43 
+
+> Qwen-3.5-9B-Base
+
+Pre-trained 54.27 ±1.46 80.09 ±0.93 72.62 ±0.37 86.20 ±0.83 73.30 ±0.49 60.98 ±0.81 67.14 ±0.47 
+
+Standard SFT 49.22 ±1.46 74.31 ±0.98 66.14 ±0.40 78.64 ±0.75 67.08 ±0.49 75.56 ±0.85 71.32 ±0.49 
+
+LoRA ICLR’22 51.51 ±1.46 76.62 ±0.95 69.47 ±0.39 81.94 ±0.73 69.89 ±0.48 70.29 ±0.87 70.09 ±0.50 
+
+DavIR ACL’25 52.40 ±1.45 78.42 ±0.95 70.02 ±0.39 83.60 ±0.72 71.11 ±0.48 73.40 ±0.80 72.26 ±0.47 
+
+FLOW ICML’25 53.20 ±1.44 79.56 ±0.94 70.62 ±0.38 85.28 ±0.70 72.17 ±0.47 73.10 ±0.82 72.64 ±0.47 
+
+STM NIPS’25 52.80 ±1.46 79.18 ±0.96 70.38 ±0.40 84.55 ±0.74 71.73 ±0.48 73.12 ±0.78 72.43 ±0.46 
+
+NanoAdam NIPS’25 52.87 ±1.45 79.03 ±0.95 70.22 ±0.39 84.22 ±0.80 71.59 ±0.49 73.28 ±0.77 72.43 ±0.46 
+
+FAPM EMNLP’25 52.86 ±1.44 79.48 ±0.94 70.18 ±0.39 83.88 ±0.71 71.60 ±0.48 70.85 ±0.91 71.23 ±0.51 
+
+TALR ICLR’26 53.45 ±1.45 79.70 ±0.95 70.72 ±0.38 85.73 ±0.72 72.40 ±0.48 75.36 ±0.83 73.88 ±0.48 
+
+DualSFT-Param (Ours) 53.52 ±1.44 78.72 ±0.95 70.26 ±0.39 84.22 ±0.70 71.68 ±0.48 75.13 ±0.71 73.41 ±0.43 
+
+DualSFT-Data (Ours) 53.66 ±1.45 80.03 ±0.95 70.75 ±0.39 85.04 ±0.70 72.37 ±0.48 74.21 ±0.65 73.29 ±0.40 
+
+DualSFT (Ours) 54.01 ±1.43 79.64 ±0.94 70.33 ±0.38 84.61 ±0.68 72.15 ±0.47 73.75 ±0.65 72.95 ±0.40 
+
+Table 22: Efficiency-aware forgetting comparison on Magicoder using Llama-3.2-3B. Data % and Param % report resources used during final adaptation. 
+
+Method Data % Param % Stability Plasticity Overall E2E time 
+
+FLOW 100 100 50.84 42.28 46.56 24.1h TALR 100 100 50.70 44.18 47.44 25.6h NanoAdam 100 5 48.61 43.54 46.08 11.5h FAPM 100 100 49.61 40.99 45.30 22.8h DualSFT-Param 100 5 49.75 44.52 47.14 13.4h DualSFT-Data 10 100 50.23 44.05 47.14 8.9h DualSFT 10 5 50.54 43.67 47.10 7.4h 
+
+main experiments. Stability averages ARC-C, PIQA, MMLU, and GSM8K; plasticity is measured by HUMANEVAL; Overall is their arithmetic mean. Table 21 shows the stability–plasticity tension: Standard SFT improves HUMANEVAL but reduces Stability Avg. by 5.66 , 6.44 , and 6.22 points on Llama/Gemma/Qwen. Forgetting-specific baselines mitigate this trade-off, with FLOW strong on stability and TALR best on Overall. Under restricted resources, the best DualSFT variant remains close to TALR, trailing by only 0.30 , 0.12 , and 0.47 
+
+Overall points. DualSFT-Param better preserves plasticity, while DualSFT-Data and full DualSFT more often improve stability. Given overlapping standard deviations among top methods, these re-sults indicate competitive frontier quality rather than decisive dominance. 
+
+F.13 Efficiency-aware Forgetting Comparison 
+
+Table 21 focuses on raw forgetting-aware stability, plasticity, and Overall. Since several forgetting-specific baselines operate with full data or parameter updates, Table 22 additionally reports an efficiency-aware view. Data % and Param % denote fractions of the fine-tuning corpus used for final adaptation and trainable parameters updated, respectively. This comparison separates raw per-formance from its underlying resource regime. 34 Table 22 shows that TALR remains the strongest raw-Overall baseline under full-resource adaptation, while DualSFT targets a different operating point: it maintains competitive Overall while substan-tially reducing the resources used for adaptation. This supports the interpretation of DualSFT as an efficiency-aware stability–plasticity method rather than a full-resource forgetting-only optimizer. 
+
+## Limitations 
+
+DualSFT relies on a local validation-improvement surrogate for tractable data–parameter selection. Its diagonal second-order score uses an optimizer-aware curvature proxy instead of the full Hessian, and score fidelity may weaken as optimization moves far from the warmup checkpoint. The resulting one-shot mask is cost-effective for the studied budgets, but may become limiting for tasks requiring extensive multi-epoch adaptation; dynamic re-scoring is a natural extension. Our experiments cover 3B–9B LLMs and two supervised fine-tuning domains; extensions to larger models, longer adap-tive horizons, and preference-based post-training remain important future directions. For very large models, parameter-side scoring may also require block-wise or sharded implementations because it maintains linear full-vector state. 
+
+## Broader Impacts 
+
+DualSFT reduces the resource cost of LLM fine-tuning by selecting both data and parameter sub-sets, which can lower compute requirements and make model adaptation more accessible. At the same time, more efficient fine-tuning may also lower the barrier to harmful, unsafe, or low-quality downstream adaptation. Our experiments use public datasets and standard benchmarks, and do not collect user data or involve human-subject studies. Deployments in sensitive domains should include task-specific safety evaluation, data-quality review, and misuse-risk assessment. 
+
+## Reproducibility 
+
+We will release anonymized code, configuration files, prompt templates, and scripts for reproduc-ing the main experiments. All datasets and base models used in this work are publicly available; our repository documents data preprocessing, split construction, training commands, and evaluation commands. 
+
+## Licenses and assets 
+
+We use publicly available datasets, benchmarks, and base models, following their respective licenses and terms of use. The proposed method does not introduce a new dataset. We do not release new model checkpoints; the released assets consist of code, configurations, and scripts. 35
