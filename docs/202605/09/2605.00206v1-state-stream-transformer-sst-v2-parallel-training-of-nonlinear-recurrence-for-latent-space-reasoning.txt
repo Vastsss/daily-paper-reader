@@ -1,0 +1,1198 @@
+Title: State Stream Transformer (SST) V2: Parallel Training of Nonlinear Recurrence for Latent Space Reasoning
+
+URL Source: https://arxiv.org/pdf/2605.00206v1
+
+Published Time: Mon, 04 May 2026 00:18:18 GMT
+
+Number of Pages: 48
+
+Markdown Content:
+# State Stream Transformer (SST) V2: Parallel Training of Nonlinear Recurrence for Latent Space Reasoning 
+
+Thea Aviss 
+
+Fifth Dimension 
+
+thea@fifthdimensionai.com 
+
+## Abstract 
+
+Current transformers discard their rich latent residual stream between positions, reconstructing latent reasoning context at each new position and leaving potential reasoning capacity untapped. The State Stream Transformer (SST) V2 enables parameter-efficient reasoning in continuous latent space through an FFN-driven nonlinear recurrence at each decoder layer, where latent states are streamed horizontally across the full sequence via a learned blend. This same mechanism supports continuous latent deliberation per position at inference time, dedicating additional FLOPs to exploring abstract reasoning before committing to a token. A two-pass parallel training procedure resolves the sequential dependency of the recurrence to allow compute-efficient training. Hidden state analysis shows the state stream facilitates reasoning through exploration of distinct semantic basins in continuous latent space, where transitions at content-dependent positions move the model into a substantially different Bayesian posterior, directly influencing the latent space at future positions. We also find, via a learned probe, that at the first generated token position, the latent state already predicts whether the eventual answer will survive or break under additional latent computation for every subsequent position. Co-trained into an existing 27B backbone using only a small dataset of GSM8K examples, the SST delivers a +15 .15 point gain over a fine-tuning-matched baseline on out-of-distribution GPQA-Diamond and cuts that same baseline’s remaining GSM8K errors by 46% , together showing that the reasoning improvement is attributable to the architectural mechanism rather than scale or training data. On GPQA-Diamond, the resulting 27B SST also achieves higher accuracy than several larger open-weight and proprietary systems, including open-weight models up to 25 × larger. 
+
+## 1 The Axes of Latent Space Reasoning 
+
+When a person writes, both the written record and an evolving thought contribute to the next word. In the brain, these correspond to functionally dissociated systems: the language network handles linguistic comprehension and production but remains largely inactive during reasoning tasks, which instead engage a separate multiple demand network responsible for executive function, mathematics, and novel problem-solving [ 1]. Transformers already mirror this dissociation architecturally, with the decoder layers computing rich latent representations through the residual stream [ 2] at every position (the reasoning substrate) while the language model head maps these to token probabilities (the linguistic output). This supports the premise of latent reasoning: the computation that matters for reasoning is already happening in the residual stream, not in token space. But transformers lack the temporal continuity the biological system maintains between outputs. Recent neuroimaging of language production reveals that the brain’s higher-level representations persist across word boundaries, evolving continuously rather than resetting at each word, while lower-level representations cycle rapidly, producing a hierarchy of temporal dynamics in which multiple representational levels overlap simultaneously [3]. These findings suggest two axes along which latent reasoning can operate [ 4 ], both potentially important for reasoning capacity. The vertical axis provides depth of computation at each position, giving the model the ability to deliberate in continuous latent space before committing to a token. The horizontal axis provides temporal continuity across positions, so that computation at one position shapes computation at the next through the evolving latent state, not only through the tokens it produced. The vertical axis determines how deeply the model can reason at each step; the horizontal axis 
+
+> Preprint.
+> arXiv:2605.00206v1 [cs.LG] 30 Apr 2026
+
+determines whether that reasoning carries forward through the latent state or must be reconstructed at each new position. The architectures discussed below each pursue one axis. Transformers perform rich latent computation through the residual stream at every position, but the residual stream flows only vertically through the layer stack, with no horizontal continuation between positions. At each new position, the model rebuilds its latent representations from the KV cache via the attention mechanism, constructing a new residual stream by querying into frozen projections of previous positions. This reconstruction via attention, without continuous latent computation between positions, may leave reasoning capacity untapped, as the neurological parallel above suggests. Preserving the latent computation across positions offers a new axis of compute within the transformer, orthogonal to both scaling and token-space reasoning, that could potentially compound with either. The dominant approaches to improving reasoning in language models have focused on scaling model capacity and scaling inference-time computation. Scaling model parameters [ 5], whether through dense models or mixture-of-experts architectures [ 6], increases per-pass capacity at the cost of larger models requiring more memory and compute. Scaling the reasoning process itself through extended chain-of-thought sequences [ 7– 9] improves reasoning through token space at the cost of substantially more compute per query as chains grow with problem difficulty. Inference-time compute scaling [10] also allocates additional compute budget at test time through strategies such as best-of-n sampling. Recent work on latent reasoning within transformers has pursued different axes separately. Geiping et al. [ 11 ]iterate a shared recurrent block within a single position to deepen per-token computation before emission; Universal Transformers [ 12 ] and looped transformers [ 13 ] similarly add depth by repeating layers within a token. Coconut [ 14 ]takes a different direction, inserting a dedicated deliberation phase between the question and the answer: within this phase, the final-layer hidden state at each position is fed forward as the input embedding for the next position, propagating latent state horizontally. Once token generation begins, however, the latent state is discarded between positions as in a standard transformer. Outside the language domain, HRM [ 15 ] supports the premise that latent recurrence and temporal continuity are powerful reasoning mechanisms, achieving complex task performance through hierarchical multi-timescale computation in small models trained from scratch. Its coupled modules exhibit both computational depth and temporal state continuity, but since neither operates via autoregressive generation, neither maps directly onto the per-position or cross-position axes defined here. These approaches all identify latent space as the site of reasoning, but none combines vertical compute at each position with horizontal latent continuity during token generation itself. State space models such as Mamba [ 16 ] pursue horizontal continuity by replacing attention with selective state spaces whose input-dependent linear dynamics carry context across positions. Mamba’s success demonstrates horizontal state persistence as a viable architectural approach. The SST differs in two respects: its horizontal recurrence evolves through each layer’s feedforward network, making it nonlinear, and it augments a transformer rather than replacing attention, preserving both mechanisms. Prior work [ 17 ] introduced the state stream by modifying a frozen Llama 3.1 8B backbone and demonstrated both axes simultaneously, with reasoning improvements over the prompted base model. Without co-training, however, the model required multiple iterations per token for coherent output, meaning vertical iteration was needed for stability rather than being available purely for deliberation. The present work makes this co-training feasible through an improved architecture and a two-pass parallel training method for the nonlinear cross-position recurrence, together with a mechanistic analysis that traces how latent computation through the state stream causally shapes reasoning (improvements over the prior version detailed in Appendix A.4). 22 Architecture of the SST 
+
+Our State Stream Transformer (SST) V2 is a latent space reasoning architecture that operates on both axes from a single mechanism (Figure 1). The SST adds a state stream to each decoder layer of a standard transformer: a persistently evolving latent representation, produced by the layer’s own feedforward network and streamed between forward passes alongside the KV cache, meaning the state stream flows between every forward pass. At a single pass per token, this carries the evolving latent state forward through the sequence, and at additional passes on the same position it dedicates additional FLOPs to deliberation, exploring abstract reasoning in latent space before committing to a token. The blend coefficients that govern this horizontal evolution are learned per-dimension during training, adding 
+
+L × d = 333 ,312 blend parameters plus an equal number of state-normalisation parameters to the base model while the reasoning computation itself is performed entirely by the existing pretrained feedforward weights. The recurrence is nonlinear, passing through each layer’s FFN at every step, so the state stream carries transformed reasoning rather than a compressed summary. This is what enables the SST to be co-trained into an existing pretrained transformer backbone rather than requiring pretraining from scratch: rather than scaling parameters to increase per-pass capacity, the SST extends the existing pretrained feedforward computation into reasoning by giving the network a horizontal state stream. The language modelling head sits outside the recurrence, connected only at the final emission point, keeping the cost of each iteration limited to the forward pass through the layer stack with no vocabulary projection or softmax at each step. At 27 billion parameters, this makes 1–4 iterations per position feasible without prohibitive overhead. At inference, the state stream stores a single d-dimensional vector per layer, 651 KB in bf16, a fixed cost that does not grow with sequence length.       
+
+> (a) State stream at layer l
+> position t−1position t
+> from attention
+> (+ residual)
+> Blend ( αl)
+> FFN
+> (+ residual)
+> to layer l+1
+> Cl
+> from attention
+> (+ residual)
+> Blend ( αl)
+> FFN
+> (+ residual)
+> to layer l+1
+
+· · · 
+
+· · ·           
+
+> (b) Full model cascade
+> token embedding
+> Blend →FFN l=0 C0
+> Blend →FFN l=1 . . . 60 C1... 60
+> Blend →FFN l=61 C61
+> state stream
+> ×i
+> lm_head
+> output token
+
+Figure 1: The state stream mechanism. Green arrows denote the state stream : the per-layer latent states ( Cl) that persist across positions and iterations. (a) At each layer, the LSC stores the post-feedforward output. At the next position, this state is blended into the hidden representation with learned per-dimension strength αl before the feedforward network. The feedforward output updates the LSC for the next position. (b) The mechanism operates at every layer with unique parameters. Each layer’s output feeds into the next, creating a vertical cascade of L coupled recurrences. The state stream flows horizontally at every layer simultaneously. At inference, the full model is run i times per token without advancing the position index; previous positions’ KV entries are unchanged, while the current position’s entries are updated as the state stream evolves. The state stream carries information between iterations. The language modelling head produces a token only after the final iteration. 
+
+2.1 State stream recurrence 
+
+We describe the mechanism for a single decoder layer l ∈ { 0, . . . , L −1} at sequence position t. Let xl,t ∈ Rd denote the input to layer l (the output of layer l−1, or the token embedding for l = 0 ), hl,t ∈ Rd the post-attention hidden state, Cl,t ∈ Rd the latent state cache (LSC) at layer l and position t, and αl ∈ Rd the learned per-dimension blend strength for layer l.
+
+Post-attention residual. The attention output is added to the residual in the standard way: 
+
+hl,t = xl,t + Attn l
+
+ RMSNorm( xl,t ). (1) 3Latent state blend. The LSC linearly interpolates (or blends ) between the post-attention hidden state and the previous position’s latent state, element-wise: 
+
+˜hl,t =  1 − αl
+
+ ⊙ hl,t + αl ⊙ RMSNorm  Cl,t −1
+
+, (2) where Cl,t −1 ∈ Rd is the latent state from position t−1 at layer l, and αl ∈ Rd is a per-dimension learned blend vector (Section 2.1). The blend is applied post-attention, pre-feedforward : the feedforward network processes the blended representation ˜hl,t , not the raw attention output. 
+
+Feedforward network and state update. The feedforward network operates on the blended hidden state: 
+
+ol,t = ˜hl,t + FFN l
+
+ RMSNorm( ˜hl,t ). (3) The latent state is then updated with the full post-feedforward output: 
+
+Cl,t = ol,t . (4) The state update stores only the most recent position’s post-feedforward output. There is no explicit retention of earlier states, but the influence of earlier positions persists through transformation. Position t−2’s state was blended into position t−1’s hidden representation and processed by t−1’s feedforward network. The result of that computation is what position t receives as its state. The influence of position t−k on position t has passed through k successive blend-feedforward cycles, each transforming it through the nonlinearity of a different position’s computation. The effect is a sliding window of weighted decay across positions [ 17 ], but unlike a fixed exponential decay, the rate and character of the attenuation is content-dependent; determined by what the feedforward network computed at each intervening position. 
+
+Vertical cascade. The output ol,t serves as the input xl+1 ,t to the next layer. Because each layer blends its own state before its own feedforward network, the perturbation introduced at layer l propagates through all subsequent layers’ attention and feedforward computations. A blend at layer 0 affects the input to layers 1 through L−1. This vertical cascade is what couples the L independent horizontal recurrences into a single coherent computation. 
+
+Per-dimension learned blend strength. Each layer l has a learned blend vector αl ∈ Rd, parameterised as: 
+
+αl = αmin +  αmax − αmin 
+
+ · σ θl
+
+, (5) where θl ∈ Rd is a learned logit vector and σ is the sigmoid function, constraining αl ∈ [αmin , α max ]. We set 
+
+αmin = 0 .015 and αmax = 0 .10 . The logits are initialised at θ(0)  
+
+> l
+
+= −1.8, corresponding to σ(−1.8) ≈ 0.142 and an initial blend strength of approximately 0.027 per dimension. This initialisation was identified through untrained qualitative ablation on two different base models and is validated by a trained ablation (Appendix A.5); optimising the bias value is not within the scope of this work, and other values may yield different performance. The blend is non-bypassable: every dimension always blends at least αmin . Across L = 62 layers, the architecture introduces L × d = 333 ,312 learned blend parameters, plus L × d RMSNorm parameters for state normalisation. 
+
+2.2 Iterative refinement at inference 
+
+Due to the recurrence of the state stream every forward pass, the architecture supports iterative refinement : multiple forward passes through the full L-layer stack per token, without advancing the position index. Previous positions’ KV cache entries remain unchanged and the current position’s entries are updated on each iteration as the evolving latent states produce different hidden representations at each layer. As each iteration repeats the blend–feedforward–update cycle at every layer, using the states produced by the previous iteration, this continues computation and dedicates more FLOPs per position. This subsequently compounds across positions via the state stream. Without access to the output distribution during iterative refinement, the model has no native mechanism to signal completion in its d-dimensional latent space, unlike approaches that detect convergence through token-space metrics such as KL divergence on the output distribution [ 11 ]; there is no analogue of a </think> token. The number of iterations is therefore controlled externally. We address this limitation through a staged compute evaluation methodology that measures the model’s full capacity across iteration depths (Section 5), and through a learned halting probe that demonstrates the feasibility of autonomous iteration depth selection from the position 0 latent state alone, without requiring token-space evaluation (Section 6). 43 Training 
+
+As the state stream recurrence (Section 2.1) introduces a nonlinear full-sequence cross-position dependency at every layer, training cannot be simply parallelised across positions. Training as-is would therefore have to unroll the full sequence end-to-end via BPTT which would be prohibitively expensive (Appendix B.1 analyses the problem and alternative approaches in more detail). This is the same sequential bottleneck that motivated the move from recurrent architectures to parallelisable transformers [18]. However, an exact solution to the parallelisation problem may not be necessary. Supervised fine-tuning already accepts an approximation of the autoregressive recurrence: teacher forcing substitutes ground-truth tokens for the model’s own predictions, breaking the sequential dependency across positions and allowing all positions to be computed in parallel. The resulting train-inference mismatch (exposure bias [19]) is well understood and widely tolerated. The state stream’s cross-position recurrence is a second sequential dependency in the same model. If the token-level recurrence can be approximated by substituting ground truth, the state-level recurrence can be approximated in the same spirit. But if approximate states are available at every position, the blend becomes a linear interpolation between the hidden state and a known quantity, and the cross-position propagation of these approximate states reduces to a linear recurrence. Linear recurrences can be parallelised efficiently via the associative scan that underlies S4 [ 20 ], S5 [ 21 ], and Mamba [ 16 ]. Section 3.1 repurposes a basic form of this into a concrete two-pass training method and analyses the approximation error. The model is fine-tuned on a synthetic CodeACT [ 22 ] reformulation of GSM8K [ 23 ] (6,579 training examples) on a single NVIDIA RTX PRO 6000, trained via QLoRA [ 24 ] with the LSC parameters at full precision. Dataset details, training setup, and full hyperparameters are given in Appendix A. 
+
+3.1 Two-pass parallel training 
+
+The two-pass method replaces the sequential state recurrence with a parallelisable approximation. The first pass runs the model without the blend, producing post-feedforward outputs at every layer and position simultaneously. These are propagated across positions via a per-layer associative scan. The second pass re-runs the model with the blend enabled, using the propagated states, completing the approximation. Loss is computed on the second pass only, but gradients are collected for both passes. 
+
+Pass 1: approximate states. The first forward pass disables the blend step (Eq. 2), eliminating the cross-position state dependency. Every position at every layer computes the standard post-attention residual and feedforward operations (Eqs. 1, 3) without a latent state. Each layer l stores its post-feedforward output o(1)  
+
+> l,t
+
+for all T positions. 
+
+State propagation. The stored outputs are propagated across positions at each layer l via a linear recurrence: 
+
+Sl,t = Al ⊙ Sl,t −1 + Bl,t , Sl, 0 = 0, (6) parallelised with an associative scan in O(log T ) steps. The L per-layer scans are independent and can be executed in parallel. We set Al = 0 and Bl,t = o(1)  
+
+> l,t
+
+, and shift the result right by one position: position t receives position t−1’s pass 1 output as its state, and position 0 receives a zero vector. This delivers each position’s pass-1 output to the next position, mirroring the state update of the sequential recurrence (Eq. 4). The scan provides the approximate states that enable pass 2 to execute the recurrence in parallel. 
+
+Pass 2: forward with blend. The second forward pass completes the recurrence approximation by re-running the full model with the blend enabled, using the propagated state Sl,t −1 as the recurrent input in Eq. 2: 
+
+˜h(2)  
+
+> l,t
+
+=  1 − αl
+
+ ⊙ h(2)  
+
+> l,t
+
++ αl ⊙ RMSNorm  Sl,t −1
+
+. (7) Because the scan states are pre-computed and available at every position, all positions can again be processed in parallel. The vertical cascade (Section 2.1) is preserved: layer l’s blended output is the input to layer l+1 ’s attention, so the effect of blending compounds through the full depth of the model. Loss is computed on pass 2’s output through the language modelling head. 
+
+Approximation error. In the sequential recurrence, position t’s state Cl,t depends on the full recursive history: 
+
+Cl,t −1 was itself computed with a blend from Cl,t −2. The two-pass method substitutes pass 1 outputs o(1)  
+
+> l,t
+
+, which were computed without the blend. Omitting the blend perturbs the FFN input by O(α). The FFN with residual connection 5is a composition of linear maps (finite weight matrices) and a Lipschitz activation (GELU [ 25 ], tanh approximation; 
+
+L < 1.13 ), giving it a finite Lipschitz constant Ll, so the post-FFN output perturbation is also O(α):
+
+o(1)  
+
+> l,t
+
+= Cl,t + O(α). (8) When pass 2 blends this O(α) approximation with weight αl, the error is αl ⊙ O(α) = O(α2). With learned 
+
+α ∈ [0 .024 , 0.035] , α2 ∈ [5 .8 × 10 −4, 1.2 × 10 −3]. The two-pass blend matches the true sequential computation to first order in α. The full derivation is given in Appendix B.3. 
+
+Co-adaptation. The O(α2) bound assumes fixed weights. In practice, the LoRA [ 26 ] adapters, blend parameters, and state normalisation weights are all trained jointly across both passes. Gradients flow from pass 2’s loss through the blend, through the scan, and into pass 1’s feedforward outputs. The model learns pass 1 outputs that are maximally useful when propagated and blended into pass 2. The two passes co-adapt rather than one approximating the other, tightening the effective approximation beyond the fixed-weight bound. This allows any suitable pretrained transformer with a gated-FFN backbone to be turned into an SST via fine-tuning. 
+
+Cost. Training requires two full forward passes per training step. The per-layer scans add negligible overhead (the recurrence operates on pre-computed outputs with no additional model computation). Pass 1’s per-layer outputs ( L
+
+tensors of shape [B, T, d ]) are retained through the scan and freed after pass 2. The total training cost is approximately 
+
+2× a standard forward pass, with both passes benefiting from gradient checkpointing. Appendix B.2 discusses why additional passes would be counterproductive. 
+
+3.2 Matched fine-tuned baseline 
+
+To attribute downstream evaluation results to the LSC mechanism rather than the fine-tuning data, we train a matched baseline that applies QLoRA adapters to the unmodified Gemma 3 backbone (no LSC parameters, no two-pass forward). The baseline matches the SST on every training factor we hold constant: dataset, optimiser, learning-rate schedules, deterministic example ordering, and attention implementation (eager attention throughout training; scaled dot-product attention is used only at inference). Architecture is the only varied factor, so the SST–baseline delta on downstream evaluations (Section 5) isolates the contribution of the state stream mechanism. Both models converge to comparable validation loss (Appendix Figure 8). 
+
+3.3 Learned blend coefficients 
+
+To verify that training exploited the per-dimension, per-layer freedom of the LSC parameterisation, we examine the learned αl relative to their initialisation. Because every coefficient begins at αinit (Section 2.1), any deviation 
+
+αl,d − αinit is by construction a move from the no-learning state; we use this fixed reference (not the data-derived per-layer or across-layer mean) for all subsequent measurements of adaptation. Training preserved the magnitude prior set by initialisation but exploited the per-dimension freedom on top of it: per-layer means stay near αinit at every depth while the within-layer distributions widen non-monotonically (Figure 2a). The architecture’s L × d degrees of freedom were not used to rescale blend strength globally; they were used to develop a per-dimension pattern at every layer. The adaptation is layer-specific, not a single shared per-dimension bias replicated across layers. Inspecting the raw αl vectors at representative depths reveals distinct per-dimension textures at each layer, with the magnitude of adaptation varying systematically and non-monotonically with depth (Appendix Figures 13, 14, 15). Projected onto the top three principal components of their deviation matrix Dl,d = αl,d − αinit , the 62 per-layer adaptation patterns form a smooth depth-ordered trajectory (Figure 2b), with adjacent layers neighbouring each other in parameter space. This is consistent with stack-wide coherence through gradient coupling across the forward cascade. Together, these observations establish that the per-dimension, per-layer freedom of the LSC parameterisation was used by training as designed. Each of the 62 layers learned a distinct adaptation pattern (Appendix A.7), the magnitude of those adaptations varies systematically with depth, and the resulting patterns are organised into a coherent stack-wide structure. 60 20 40 60 Layer 0.025 0.026 0.027 0.028 0.029 
+
+> α
+
+(a) Per-layer α distributions −0.05  
+
+> −0.04
+> −0.03
+> −0.02
+> −0.01 0.00 0.01 0.02 0.03
+> PC1 (14.7% var)
+> −0.04
+> −0.02 0.00 0.02
+> PC2 (9.8% var)
+> −0.03
+> −0.02
+> −0.01 0.00 0.01 0.02
+> PC3 (7.5% var) L0 L15 L30 L45 L61
+> 010 20 30 40 50 60
+> Layer
+
+(b) Depth-ordered trajectory in PC space 
+
+Figure 2: Learned blend coefficient structure. (a) Within-layer percentile bands (p5–p95 outer, p25–p75 inner, median line) of the 5,376 per-dimension blend coefficients αl,d at each of the 62 layers. At initialisation, every value was 
+
+αinit ≈ 0.027 ; the visible spread is the consequence of training. (b) Each layer’s deviation vector αl − αinit projected onto the top three principal components (PC1, PC2, PC3 explain 14.7%, 9.8%, 7.5% of layer-to-layer variance). Points are coloured by layer index and connected by line segments; the smooth depth-ordered trajectory indicates stack-wide coherence rather than independent optimisation. 
+
+## 4 Latent computation dynamics 
+
+The per-layer state stream substantially alters the model’s behaviour, with the SST producing fundamentally different output from the unmodified backbone and different iteration depths yielding substantively different responses. Through 
+
+L coupled nonlinear recurrences, the latent space actively shapes computation at every position, playing a more direct role than in a standard transformer where no per-layer information persists between positions. As the model performs computational work in continuous d-dimensional space before ever projecting into discrete tokens, characterising the mechanics of this latent computation is essential to understanding whether and how the state stream performs structured reasoning. This section traces the causal chain from the state stream’s effect on hidden state representations through to changes in the output distribution, and what those dynamics reveal about the nature of latent space reasoning. 
+
+4.1 Punctuated equilibrium in latent space 
+
+Examining hidden state representations across iteration depths reveals an immediate qualitative observation (Figure 3): at most positions in a sequence, the hidden states are remarkably stable across iterations, with increasing the iteration depth from 1 to 4 producing barely perceptible changes in the representation. At specific positions, however, the representation reorganises dramatically across the full layer stack, appearing as dark vertical streaks cascading through the depth of the model. 70 100 200 300 400 500 Output Position 010 20 30 40 50 60 Layer 
+
+> Top-1024 overlap: iter=1 vs iter=4 hidden states (representative question, 512 generated tokens)
+> 0.60 0.80 0.90 0.95 0.976 1.00
+> Top-1024 Overlap
+
+Figure 3: Top-1024 overlap between iter=1 and iter=4 hidden states across the layer stack and generated sequence ,for a representative GPQA-Diamond question. Bright cells = stable; dark cells = low-overlap reorganisation. Low-overlap positions appear as vertical streaks cascading through the depth of the model; stable positions remain near 1.0 at every layer. Threshold 0.976 (GMM crossover) is marked on the colour bar. A zoom of the first 10 positions for a separate question is given in Appendix Figure 18. 
+
+Methodology. Isolating the state stream’s contribution to these dynamics is not straightforward. The state stream and the attention mechanism are deeply entangled: at each layer, the blend alters the hidden state before the feedforward network, and the resulting output becomes the input to the next layer’s attention. Attention at layer l+1 processes a representation that was shaped by the blend at layer l, and the post-attention hidden state that the blend receives at layer 
+
+l was itself produced by attention over the full token history. This coupling operates vertically through the layer cascade and horizontally through autoregressive generation, where each position’s latent state and token output jointly shape the computation at all subsequent positions. There is no way to attribute any particular aspect of the model’s output to the state stream versus the attention mechanism; the two are inseparable within normal generation. Comparing to the unmodified backbone would introduce a different confound: the SST and the baseline have different LoRA weights and different fine-tuning, so any difference could be attributed to the adapted parameters rather than the state stream mechanism itself. Comparing the same model across iteration depths provides a window into the state stream’s effect on the latent dynamics. The model, weights, and prompt are identical across runs at different depths. The only controlled variable is the number of blend-feedforward-update cycles per position: the state stream has processed each prior position through more iterations, producing different latent states that propagate forward through the blend. Comparing across iteration depths introduces its own constraint. Once any run at any iteration depth produces a different argmax token, all subsequent positions attend to different token histories through the KV cache. After divergence, changes in the output distribution reflect both the state stream and attention over different tokens, and the two contributions cannot be separated. The analysis below therefore uses different scope choices depending on the measurement. The overlap analysis of this subsection characterises the representational structure across all positions. Aggregate basin-shift measurements, including the layer profile, restrict to pre-divergence positions (those before the first argmax disagreement between any pair of iteration-depth runs), where the token history is identical across depths and any output change is causally attributable to the state stream alone. This matches the population used by the causal analysis of Section 4.2. For measurements requiring causal attribution beyond the divergence point, the analysis compares between iterations within individual runs, where the token history is shared across iterations by construction (Appendix C.3). Even at pre-divergence positions, cross-run comparisons do not distinguish between the two axes along which the state stream operates. The vertical axis is the local blend-feedforward-update cycle at a given position; the horizontal axis is the propagation of iterated states from prior positions through the blend. At any position beyond position 0, these two axes contribute simultaneously: the iter = 2 run’s prior positions have each undergone an additional iteration cycle, and the resulting states have propagated forward through the blend, so the output distribution already differs from the iter = 1 run before any local iteration difference at the current position. To attribute changes specifically to local iteration when characterising the gap distributions (3) and posterior reorganisation (5) of the two overlap regimes (Section 4.2), the analysis uses within-run comparisons where horizontal propagation is shared across all iterations. Position 0 serves as a natural control: with no prior positions, horizontal propagation is zero. We measure the top-1024 overlap between hidden state representations at iteration 1 and iteration i at each layer and position (formal definition in Appendix C.1). The metric captures which dimensions are most active in each 8representation, providing a content-sensitive measure of representational similarity. We conduct this analysis on all 198 GPQA-Diamond questions (Section 5), an out-of-distribution benchmark where larger headroom for improvement and wider effect ranges across iteration depths make the dynamics more visible. The punctuated equilibrium structure is present across the full generation (Figure 3 shows a representative 512-position trace); we record hidden states at the first 10 generated positions per question across all four iteration depths and all 62 layers, as most questions diverge in argmax within this window. 
+
+Bimodal overlap distribution. The overlap quantifies the qualitative observation of Figure 3: stable positions show overlap above 0.99, while low-overlap positions drop sharply, to as low as 0.60 for this particular example. Across all 198 questions, the representational change concentrates at positions where the hidden state undergoes a sharp reorganisation, while surrounding positions remain stable. A Gaussian mixture model fitted to the overlap distribution ( N = 122 ,760 
+
+position-layer pairs; methodology in Appendix C.2) identifies two components: a stable component (86.2%, mean overlap 0.990 ± 0.004 ) and a low-overlap component (13.8%, mean overlap 0.869 ± 0.092 ), separated at a crossover threshold of 0.976. The order-of-magnitude difference in standard deviation reflects the two qualitatively different regimes: stable positions cluster tightly, while low-overlap positions span a wide range of divergence magnitudes, with overlap as low as 0.30. 
+
+Content-dependent distribution. The distribution of low-overlap positions within this 10-position window is content-dependent. Across the 198 questions, the number of low-overlap positions per question ranges from 1 to 7 (median 3), and the per-position rates vary from 4% (position 3) to 42% (position 1). If low-overlap were a property of position alone, every question would have the same positions flagged and the count would be fixed; it is not. If low-overlap were independent of position, whether arising from a uniform random process or a fixed per-position probability, the per-position rates would be similar; they differ by an order of magnitude. The distribution is neither purely positional nor position-independent: which positions are low-overlap depends on the interaction of position and question content. The gaps between consecutive low-overlap positions range from 1 to 9 with a coefficient of variation of 0.84, ruling out periodicity. This heterogeneity across questions means that basin shifts cannot be reduced to identifiable surface-level cues or token categories; they are triggered by the interaction of content and position within the latent representation itself. 
+
+Floating-point precision rules out artefact. A possible concern is whether the between-iteration deltas could arise from deterministic floating point error propagation rather than from the FFN computing on different inputs. The blend modifies each dimension of the FFN input by αl,d × ∆d (Eq. 2), where ∆d is the state-hidden difference. For this perturbation to be indistinguishable from bf16 rounding error ( |hd| × ϵ, where ϵ = 2 −7), the blend coefficient would need to fall below ϵ. The learned coefficients range from 0.024 to 0.035 across all 333 ,312 dimensions, placing every value above 3ϵ. At basin shift positions (Section 4.1), which drive the largest representational changes and the most consequential downstream effects on the output distribution, the realised per-dimension deltas grow through the vertical cascade as each layer’s FFN amplifies the perturbation from the layer below: the median delta-to-precision ratio rises from 2.9× at layer 0 to 28 .9× at layer 61 , with 91 .3% of per-dimension measurements exceeding the precision floor across all 62 layers ( p < 10 −300 ; Appendix C.5). The representational changes observed throughout this section are therefore the product of 62 layers of feedforward computation on genuinely different inputs, compounded through the vertical cascade. 
+
+Layer profile structure. The median layer profile across 356 pre-divergent low-overlap positions is non-monotonic, showing structured variation across the model depth rather than a uniform accumulation of divergence (Figure 4). The feedforward networks are not uniformly active: gate activity peaks in layers 22–30 (where 30–40% of neurons are active), and gate flip rates between iterations are highest in layers 15–35. In the median trend, overlap begins near 1.0 at the early layers (median 0.995 , IQR 0.994 –0.997 at layer 0) and descends through layers 5–25, reaching a local minimum at layer 25 (median 0.816 , IQR 0.794 –0.984 ) within this peak activity band. The median then increases through layers 25–30 (median 0.853 , IQR 0.834 –0.982 at layer 30) before a second descent in the deep layers (50–61), reaching a global minimum at layer 61 (median 0.689 , IQR 0.637 –0.978 ). However, the per-position spread is substantial: individual positions range from below 0.60 to above 0.95 at layer 61, and the median increase from layer 25 to 30 ( +0 .036 ) is small relative to the IQR at those layers. The non-monotonic shape characterises the typical behaviour across low-overlap positions, not a universal per-position trajectory. At stable positions, overlap remains flat (median above 0.988 at all layers). Extended layer profile data, separately for each of the first 10 generated positions, are given in Appendix Figure 19. 90 20 40 60 Layer 0.50.60.70.80.91.0Top-1024 Overlap (iter 1 vs iter 4)  
+
+> Layer 25 (local trough)
+> (a) Position 0
+> Position 0 ( N=198)
+
+0 20 40 60 Layer 0.90 0.92 0.94 0.96 0.98 1.00 Top-1024 Overlap    
+
+> Trough region
+> (b) Positions 7, 8, 9 (representative)
+> Position 7 ( N=27) Position 8 ( N=28) Position 9 ( N=24)
+
+Figure 4: Layer profile of top-1024 overlap (iter=1 vs iter=4) at low-overlap positions. (a) Position 0 ( N = 198 ): universal basin shift, with the local trough at the layer 25 feedforward activity band. (b) Positions 7, 8, 9 (representative): divergence onset at ∼layer 25, trough in the middle-to-late layers ( ∼layer 50), rising overlap at deep layers. Solid line = median; shaded bands = IQR, p10–p90, and p5–p95. 
+
+Universal basin shift at position 0. The low-overlap effect at position 0 is universal. Position 0 is the first generated token. At iter=1, position 0 performs a single forward pass through the model, producing the first latent state to be stored in the LSC. This single-pass computation is no different from a standard transformer forward pass. At iter=2 and beyond, position 0 undergoes additional blend-feedforward-update cycles, each refining the representation using the state produced by the previous iteration. Position 0 is therefore the cleanest point of comparison between iteration depths: it is the first generated token, and the only difference between runs is the number of state stream iterations. All 198 questions show low top-1024 overlap at position 0 between iter=1 and iter=2 (mean 0.635 , std 
+
+= 0 .042 ), regardless of content or difficulty: the basin shift is present at the minimum additional iteration depth, not just cumulatively. (Elsewhere we compare iter=1 to iter=4 for the full accumulated effect.) Even at the very first generated token, additional iterations substantially reshape the hidden state representation. The punctuated equilibrium in the hidden states raises a direct question: do these sharp representational changes actually affect what the model outputs? If the low-overlap positions change the hidden states but leave the output distribution unchanged, they would be computationally inert. The following analysis restricts to pre-divergence positions as defined above, where output changes are causally attributable to the state stream alone. 
+
+4.2 Logit dynamics 
+
+The following analyses characterise how these latent dynamics shape the output distribution, establish the causal mechanics underlying them, and rule out null hypotheses that would attribute the patterns to artefact. All measurements operate on the same first-10-position-per-question window as Section 4.1’s overlap analysis. 
+
+(1) Argmax changes concentrate at low-overlap positions. At pre-divergence positions, low-overlap positions have 
+
+3.8× higher odds of changing the argmax than stable positions ( 12 .0% vs 3.5% ; OR = 3 .82 , p < 0.001 ; Table 11). The hidden state reorganisations of Section 4.1 produce a measurably different effect on the output distribution than stable positions do. 
+
+(2) The argmax changes are not decision boundary exploitation. Only 11 .6% of argmax changes occur at exact ties (gap = 0 ; the smallest non-zero gap observed in the data is 0.121 nats, so the boundary between exact ties and non-ties is unambiguous); the remaining 88 .4% override a token with strictly higher probability. The logprob shift at argmax-changing positions (median 0.87 nats; e0.87 = 2 .39 × probability multiplier) represents a substantial restructuring of the output distribution, compared to the marginal variation at non-changing positions (median 0.05 
+
+nats; e0.05 = 1 .05 ×). The latent computation produces large, content-specific shifts that override real preferences, not small perturbations catching coincidental ties (Table 12). 
+
+(3) Low-overlap positions override larger preferences. At stable positions, argmax changes occur almost exclusively at exact ties or the minimum representable gap ( 54 .3% exact ties, range 0.00 –0.125 nats). At low-overlap positions, 10 however, the distribution shifts toward larger gaps ( 5.0% exact ties, range 0.00 –6.375 nats; Mann-Whitney p < 0.001 ), and low-overlap positions are simultaneously far less likely to be exact ties (Fisher’s exact OR = 0 .044 , p < 0.001 ). The positions that concentrate argmax changes are the positions where ties are least likely to explain them (Table 22). 
+
+(4) The hidden state change is causally prior. Across all 198 questions, low top-1024 overlap either precedes or coincides with the first argmax divergence between iteration depths, and never occurs in the reverse order. Of the 57 questions where divergence falls outside the 10-position observation window, full trace comparison confirms all 57 produce different text at different iteration depths; the divergence occurs later, not never. The latent state change is the cause, and the output change is the consequence (Table 21). 
+
+(5) Two distinct regimes of posterior reorganisation. The state stream reshapes the Bayesian posterior in two qualitatively distinct ways. At low-overlap positions where the argmax differs between iterations within the same run (N = 439 ), the posterior reorganises comprehensively; roughly half the top-100 tokens are replaced (median 54), the original winner is always suppressed, and the new winner can come from as deep as rank 50 in the original distribution. At stable positions where the argmax differs ( N = 81 ), the posterior is functionally preserved; the local iteration replaces median 1 token (max 3), suppresses the original winner by median 0.0625 nats, and the new winner is always rank 2. A cross-run comparison using the same iter =1 vs iter =2 , 3, 4 structure measures the total state stream effect across both axes. At stable positions, the cross-run posterior differs by median 20 tokens (IQR 16–26) at all pre-divergence positions, yet the within-run local iteration replaces median 1 (IQR 1–2). This difference is present whether or not the argmax changes (cross-run mean 22.0 at all positions, 23.0 at argmax changes). Because the within-run comparison controls for horizontal propagation and shows stable positions replace only median 1 token locally, the median 20-token difference in the cross-run measurement is attributable to low-overlap positions at upstream positions propagating their reorganisation through the state stream. The stable positions remain in the posterior that the upstream reorganisation pushed them into, with only minor local perturbation, until the next low-overlap position. The within-run sample includes post-divergence positions excluded from the cross-run, yet the distributions are indistinguishable, confirming that the pre-divergence measurement window is representative of the behaviour across the full generation, consistent with the punctuated equilibrium observed across 512 positions in Section 4.1. The two regimes of posterior reorganisation are qualitatively distinct, not the same process operating at different magnitudes. At low-overlap positions, the model transitions to a different region of the Bayesian posterior entirely. The combination of a qualitative shift at specific positions followed by stability at subsequent positions constitutes a semantic basin shift: the model moves to a new attractor region and remains there as the state stream carries the representation forward. This is what produces the punctuated equilibrium observed in the hidden states (Section 4.1): the basin structure itself, with shifts at specific content-dependent positions and stability between them. This punctuated equilibrium is an emergent property of the state stream architecture, not an explicitly trained behaviour. The same mechanism operates at iter =1 with identical horizontal propagation; iteration depth is the instrument that makes the basin dynamics measurable, not the mechanism that creates them. Full statistical detail for both regimes is given in Tables 17–20. 
+
+(6) Later iterations do real computational work. Later iterations continue to reshape the output distribution in structured, regime-dependent ways. Within the iter = 4 run, basin shifts take three forms: sustained across all three consecutive iteration pairings, present only at 1 → 2, and genuinely new basin shifts that emerge at later pairings from positions that were stable at 1 → 2. Within the iter =4 run, later iterations produce 37 additional argmax changes (19 at 2 → 3, 18 at 3 → 4), vs 88 at 1 → 2; token history is shared within the run by construction and the state stream is therefore the sole source of variation. The character of this continued computation differs between regimes. At basin shift positions, later iterations amplify into the new basin: logit trajectories continue in the same direction, and positions that changed argmax at 1 → 2 reinforce the new basin, but can still change again at later transitions. At stable positions, the dynamics are heterogeneous, with logits splitting across reversal, retention, and continuation in roughly equal proportions (ratio 0.878 vs 1.081 at basin shift; p < 10 −56 ). The heterogeneous per-logit dynamics can tip the relative ordering among the immediate frontrunners (rank 1–3, as established above). 61 .4% of tracked logits reverse direction between transitions, but the cumulative ratio of 0.95 rules out a period-2 orbit. These dynamics propagate forward through the state stream’s horizontal evolution: each subsequent position’s blend– FFN–update cycle operates on the propagated latent state. Across all questions, 18 .7% of those that changed argmax at 1 → 2 show further argmax changes at later transitions, cascading through the KV cache into completely different generated output sequences (Tables 15–16). 11 (7) Position 0 encodes whether iteration-depth divergence happens here or later. All 198 questions show a semantic basin shift at position 0 and from this same mechanism, three distinct outcomes across pairwise iteration-depth comparisons: 75 questions ( 37 .9% ) diverge at position 0 itself, 66 ( 33 .3% ) diverge at positions 1–9, and 57 ( 28 .8% )diverge beyond the 10-position observation window. Full trace comparison confirms all 57 late-divergence questions produce different text at different iteration depths, meaning that the divergence occurs later. The same basin shift at the same position produces three qualitatively different patterns of downstream divergence across the four iteration depths. As established above, argmax changes at basin shift positions are not determined by the top-1/top-2 gap alone: the new winner can come from as deep as rank 50 in the original output distribution, and the entire top-100 restructures with a median of 54 logits replaced (IQR 47–60). Whether the basin shift at position 0 crosses the argmax boundary immediately, propagates through subsequent positions before crossing, or produces a different generation sequence without crossing within the observation window depends on the full structure of the latent state at that position, which propagates forward through the state stream and shapes the computation at every subsequent position. The latent state at position 0 therefore potentially carries information about the downstream generation trajectory in its full 5,376 -dimensional representational structure, propagated forward through the state stream’s horizontal evolution (Table 14). 
+
+(8) Convergent reasoning across computational paths. Interestingly, we observe that a substantial number of questions arrive at the same correct answer at every iteration depth. Is this convergence a coincidence on a 4-option multiple choice benchmark? To test this, we restrict the analysis to questions where all four iteration depths produced pairwise distinct text traces, so the observed convergence reflects different semantic paths rather than deterministic repetition where basin shifts failed to cross the argmax threshold. The chance null is (1 /4) 4: four independent random answers on a 4-option MCQ. 1 Each iteration depth produces a qualitatively different Bayesian posterior (Section 4.2), not a resample from the same output distribution. The rate at which all four depths arrive at the correct answer is compared against this chance baseline in Table 13. Of the 198 questions, 54 ( 27 .27% ) produced completely distinct text traces across all four depths while universally arriving at the correct answer. This observed rate of convergent reasoning exceeds the 0.39% chance baseline by nearly 70 × (p = 8 .02 × 10 −82 ). The latent computation of the state stream is therefore functional rather than mechanical, producing exploration across independent deliberation depths that resolve to correct answers at rates that cannot arise by chance (Table 13). The latent computation isolated in this section is structured, content-dependent, causally prior to the output, and convergent across different computational paths. This is incompatible with the null hypothesis that the variation between iteration depths is equivalent to stochastic sampling from a fixed distribution. The state stream architecture enables structured computation in continuous horizontal latent space across an entire generation sequence, with each iteration depth producing a different computation through this space. 
+
+## 5 Quantitative evaluation 
+
+Table 1: Headline architectural comparison across benchmarks. Each architecture is evaluated at its own compute budget: one forward pass per token for the matched fine-tuned baseline (Section 3.2), up to imax = 4 iterations per token for the SST at its latent compute capacity via staged compute (Section 5.1). Error correction is the fraction of the baseline’s errors recovered by the SST: (SST − baseline )/(1 − baseline ).                        
+
+> Benchmark NBaseline SST (staged compute, imax =4 )∆
+> Error correction GSM8K 1,319 94.77% 97.19% +2 .43 pp +46 .38%
+> MATH-500 500 83.40% 89.80% +6 .40 pp +38 .55%
+> GPQA-Diamond 198 45.96% 61.11% +15 .15 pp +28 .04%
+> HumanEval 164 87.2% 89.0% +1 .8pp +14 .3%
+
+The evaluation compares the SST against its matched fine-tuned baseline (Section 3.2) under greedy argmax decoding at iteration depths 1 through 4. All generation is fully deterministic; the evaluation methodology and rationale are given in Appendix D. Table 1 summarises the headline comparison across all four benchmarks. The remainder of this section develops the methodology behind these numbers (Section 5.1), compares the SST’s accuracy against published results for other          
+
+> 1A null based on the product of empirical per-depth accuracies would test mutual independence of correctness events across depths, not chance coincidence; however, the events are not empirically independent, as the observed all-four-correct rate is 60 /198 = 0 .303 versus
+> 0.51 ×0.47 ×0.47 ×0.43 = 0 .048 under independence, and a χ2test against this independence prediction rejects at χ2= 275 .47 ,p= 7 .3×10 −62 .
+
+12 models (Section 5.2), characterises overthinking regression under uniform iteration depth (Section 5.3), and reports output stability (Section 5.4). 
+
+5.1 Latent compute capacity via staged compute 
+
+The SST’s iteration mechanism requires a new evaluation methodology. For a standard autoregressive model under greedy deterministic decoding, a single run directly measures the architecture’s full deployable capacity on a benchmark, because iter = 1 is the only depth the architecture offers within this regime. The SST extends the architecture with an additional latent compute axis, and a single-depth evaluation captures only a slice of that axis. Measuring across iteration depths therefore characterises the architectural feature rather than introducing a confound. Section 4.2 established that different iteration depths actively reconstruct the Bayesian posterior, suppressing the original argmax, promoting tokens from deeper in the distribution, and replacing much of the top-100 candidate set at basin shift positions. A single-depth evaluation measures the model’s capability at that depth alone, not the capacity of the architecture across the compute axis it provides. This is consistent with the broader finding that performance saturation in recurrent-depth architectures is task-dependent, with different tasks and problems saturating at different recurrence depths [ 11 ]; evaluating such architectures at a single fixed depth systematically understates their capacity. We therefore evaluate the SST with a staged compute methodology at imax = 4 , measuring the architecture’s capability across the qualitatively distinct computations its iteration depths provide. The architecture is evaluated sequentially in an escalatory pattern from iter = 1 through iter = 4 , with each stage testing whether deeper computation reveals capability the shallower depth did not. Many questions that the architecture solves at one depth are also solved at deeper depths through convergent reasoning across qualitatively distinct computations (Section 4.2); staged compute resolves these at the shallowest sufficient depth. The capacity at each stage is the fraction of questions the architecture solves through that depth. Table 2: Staged compute capacity at each depth. Each question is evaluated sequentially from iter = 1 through iter = 4 . Each column is the fraction of questions the architecture solves through that stage. These are staged capacities, not flat per-question iteration depths; behaviour under flat iteration is reported separately (Section 5.3).                                  
+
+> Benchmark Stage i=1 Stage i=2 Stage i=3 Stage i=4 Capacity GSM8K ( N= 1 ,319 )95.75% 97.12% 97.19% 97.19% 97.19%
+> MATH-500 ( N= 500 )83.80% 87.60% 89.00% 89.80% 89.80%
+> GPQA-Diamond ( N= 198 )51.01% 56.57% 57.58% 61.11% 61.11%
+> HumanEval ( N= 164 )86.0% 89.0% 89.0% 89.0% 89.0%
+
+Staged compute might be confused with pass@ k because both involve evaluating the architecture across multiple runs, but the structures differ. Pass@ k draws k samples from a single output distribution at a fixed compute budget, relying on sampling variance for diversity while the underlying computation remains fixed. Staged compute varies the computation itself by increasing iteration depth, with each stage producing a qualitatively different posterior through additional deliberation (Section 4.2). The iter = 4 output is not another sample from the iter = 1 distribution but the result of deeper latent computation. The two methodologies therefore vary along different axes and answer different questions. Behaviour under uniform iteration depth is characterised separately (Section 5.3). This evaluation selects iteration depth at the question level. Per-position depth selection is a separate design, since it would require deciding whether to halt at each generated token rather than once per question; we discuss this limitation in Section 7. 
+
+5.2 External comparison 
+
+The architectural ablation (Section 5.1) isolates the contribution of the state stream mechanism. To place the resulting accuracy in the context of published results, we compare the SST’s staged compute capacity with reported numbers for other models on GSM8K (Table 3), MATH-500, and GPQA-Diamond (Table 4). All SST numbers are produced under zero-shot prompting with greedy argmax decoding and no chain-of-thought exemplars. External comparisons are inherently uncontrolled, with reported protocols varying in shot count, chain-of-thought use, sampling temperature, and sample-size choices, often without full disclosure. The SST’s regime is generally the stricter of the protocols where direct comparison is possible. 13 Table 3: External comparison on GSM8K. The SST at imax = 4 exceeds all four reported comparisons, including Llama 3.1 405B at 15 × its parameter count, under stricter prompting conditions.                    
+
+> Model Parameters GSM8K Conditions Llama 3.1 70B Instruct 70B 95.1% 8-shot CoT [27] Qwen 2.5 72B Instruct 72B 95.8% Self-reported [28] Gemma 3 27B-IT 27B 95.9% 8-shot CoT [29] Llama 3.1 405B Instruct 405B 96.8% 8-shot CoT [30]
+> SST (staged compute imax =4 )27B 97.19% 0-shot, greedy
+
+Table 4: External comparison on GPQA-Diamond. Reported accuracies and prompting conditions. The SST at 
+
+imax = 4 answers more questions correctly than DeepSeek V3 at 671B, Gemini 2.0 Flash, and several 70B+ open-weight models, while using zero-shot greedy decoding at 27B parameters; DeepSeek V3 has roughly 25 × the parameter count.                                   
+
+> Model Parameters GPQA-Diamond Conditions Gemma 3 27B-IT 27B 42.4% 5-shot CoT [29] Qwen 2.5 72B Instruct 72B 49.0% Self-reported [28] Llama 3.3 70B Instruct 70B 50.5% 0-shot CoT [31] GPT-4o Proprietary 56.1% pass@1 [32] DeepSeek V3 671B 59.1% pass@1 [33] Gemini 2.0 Flash Proprietary 60.1% pass@1 [34]
+> SST (staged compute imax =4 )27B 61.11% 0-shot, greedy
+> Gemini 2.0 Pro Proprietary 64.7% pass@1 [35] PhD domain experts —69.7% [36] Gemini 2.5 Pro Proprietary 84.0% pass@1 [37]
+
+On MATH-500 [ 38 , 39 ], the matched baseline regresses from the unmodified Gemma 3 27B-IT’s reported 89 .0% [ 29 ]to 83 .40% , likely because the CodeACT fine-tuning specialises the model toward Python-based problem solving at the cost of competition-level mathematical capability. The SST at iter = 1 shows a similar regression ( 83 .80% ), confirming this is a fine-tuning effect rather than a checkpoint artefact. With staged compute, the SST recovers to 
+
+89 .80% (+6 .40 pp over the matched baseline), achieving slightly higher accuracy than the unmodified backbone. On HumanEval [ 40 ], the SST’s 89 .0% exceeds the reported Gemma 3 27B-IT result of 87 .8% under 0-shot pass@1 [ 29 ]. HumanEval is near-saturated for models at this scale and has a small test set ( N = 164 ); we include it here for completeness rather than as a central comparison. Together, these comparisons place the SST’s accuracy in the published model landscape, where reported results necessarily differ in prompting, decoding, evaluation harness, and reporting conventions. The SST is evaluated under the deterministic zero-shot argmax protocol justified in Appendix D; within that landscape, staged compute yields accuracy competitive with much larger and proprietary models at 27B parameters. 
+
+5.3 Overthinking regression 
+
+The SST checkpoint evaluated in this paper has no native halting mechanism: iteration occurs only at inference, not during training (Section 3), so no halting criterion can be learned end-to-end. Iteration depth must therefore be chosen externally at inference. Staged compute (Section 5.1) measures what the architecture can achieve given per-question depth allocation, but it does not characterise what happens when every question is evaluated at the same uniform depth. Because additional deliberation can move the model to a different basin (Section 4.2), questions that pass at one depth may regress at another. We measure this directly on GPQA-Diamond by evaluating the SST at uniform iter = 2 ,iter = 3 , and iter = 4 , with results reported in Table 5. 14 Table 5: Overthinking regression on GPQA-Diamond ( N = 198 ). Applying the same iteration depth to every question produces accuracy below iter = 1 at every flat depth tested, despite staged compute at imax = 4 reaching 
+
+61 .11% . The gains from additional iterations on questions that need them are consumed by regressions on questions that do not. 
+
+Condition Accuracy ∆ vs iter = 1 
+
+SST staged compute ( imax =4 ) 61.11% +10 .10 pp SST iter = 1 51.01% —SST flat iter = 3 47.47% −3.54 pp SST flat iter = 2 46.97% −4.04 pp SST flat iter = 4 42.93% −8.08 pp Matched baseline (reference) 45.96% iter= 1  
+
+> 101 /198 = 51 .01%
+
+flat iter= 2 
+
+> 93 /198 = 46 .97%
+
+flat iter= 3  
+
+> 94 /198 = 47 .47%
+
+flat iter= 4                
+
+> 85 /198 = 42 .93%
+> 101 97 93 105 94 104 85 113
+> reg. 27, rec. 19, net −8reg. 11, rec. 12, net +1 reg. 23, rec. 14, net −9pass →pass pass →fail (regression) fail →pass (recovery) fail →fail
+
+Figure 5: Per-question pass/fail trajectories across iteration depths on GPQA-Diamond ( N = 198 ). Flow of the 198 questions between pass (green) and fail (red) columns at iter = 1 , flat iter = 2 , flat iter = 3 , and flat iter = 4 . Each transition decomposes into four ribbons: pass →pass (stable correct), pass →fail (regression), fail →pass (recovery), fail →fail (stable wrong). Accuracy above each column shows the aggregate; regression and recovery counts below each transition show the per-question flips. Every transition involves flips in both directions, and the pass column shrinks from 101 at iter = 1 to 85 at flat iter = 4 through the accumulation of more regressions than recoveries. Every flat iteration depth produces accuracy below iter = 1 (Figure 5). At flat iter = 4 , of the 101 questions that pass at iter = 1 , 30 regress to failure ( 29 .7% regression rate), while only 14 of the 97 iter = 1 failures are recovered (McNemar 
+
+p = 0 .024 ). At flat iter = 4 the SST answers fewer questions correctly ( 42 .93% ) than the matched baseline ( 45 .96% ): the iteration gains over the baseline at iter = 1 (+5 .05 pp) are entirely consumed by overthinking regressions, and the SST loses a further 3.03 pp on top. Compared against staged compute capacity ( 61 .11% ), flat iter = 4 loses 18 .18 pp (McNemar χ2 = 27 .0, p < 0.001 , with 42 questions correctly answered under staged compute that flat iter = 4 misses versus 6 in the reverse direction). This phenomenon has direct counterparts in the token-space test-time compute scaling literature. Zhou et al. [ 41 ]study overthinking under extended chain-of-thought on GPQA-Diamond and other benchmarks and report the same qualitative pattern: beyond a problem-dependent compute budget, additional reasoning causes previously correct answers to become incorrect, which they term negative flips . They find that optimal thinking length varies across 15 problem difficulty and conclude that uniform compute allocation is suboptimal. Our 30 /101 regression rate at flat iter = 4 is the latent-space analogue of this effect, and the 18 .18 pp staged-minus-flat gap is the same “uniform allocation is suboptimal” finding expressed along our architecture’s compute depth axis rather than along token budget. Hägele et al. [ 42 ] observe that failures at longer reasoning become dominated by incoherence rather than systematic error. Hakim [ 43 ] documents the same overreasoning pattern along a different axis of scale, where large models underperform smaller ones by an average of 28 .4pp on 7.7% of benchmark problems and brevity constraints recover 26 .3pp of accuracy. Across token-space reasoning, model scale, and the SST’s latent compute depth, the same pattern recurs: additional compute helps some questions and hurts others, and the model has no explicitly designed signal for deciding when to stop. Other latent reasoning architectures provide converging evidence. Universal Transformers [ 12 ] compared per-position adaptive halting against fixed-depth computation and found that halting improved accuracy on several structured algo-rithmic and linguistic inference tasks while marginally degrading results on machine translation. The improvement on structured tasks is direct evidence that uniform depth allocation is suboptimal for variable-depth reasoning architectures. Coconut [ 14 ] trains with a multi-stage curriculum that matches continuous-thought count to each problem type (up to k = 6 on ProsQA, where 6 is the maximum reasoning depth of the benchmark) and reports monotonic accuracy improvement up to the trained depth; their experiments do not push past this regime and therefore do not probe the overthinking behaviour that manifests in our flat iteration tests. Geiping et al. [ 11 ] observe that their recurrent-depth model’s latent state does not always converge monotonically, exhibiting orbits and drifts in PCA space, and that running at r = 32 underperforms their KL-divergence-based early-exit criterion on GSM8K ( 44 .8% vs 46% ), though they frame test-time compute as sigmoidal in the number of additions and characterise the effect as diminishing returns rather than performance regression. These architectures operate on the vertical axis alone (Geiping et al., Universal Transformers) or on horizontal state propagation within a bounded deliberation phase (Coconut), differing structurally from the SST’s combination of vertical compute with horizontal state continuity during token generation. The consistency of the pattern across these differing latent reasoning architectures supports overthinking regression as a property of variable-depth compute scaling rather than of any single architectural choice. The practical consequence is that realising the staged compute capacity in deployment requires a mechanism for selecting per-question iteration depth autonomously. Section 6 develops such a mechanism. 
+
+5.4 Output stability 
+
+SST V1 applied the state stream to frozen pretrained weights without training, requiring multiple iterations per token to produce coherent output [ 17 ]. The two-pass training procedure (Section 3.1) resolves this by making the nonlinear recurrence trainable for the first time. The backbone adapts to the state stream, producing stable single-pass generation and freeing iterations from a stability requirement into a deliberation choice. To verify this, we measure sentence-level repetition across all three evaluation benchmarks. Each benchmark example is a multi-turn CodeACT interaction in which the model produces several text turns interleaved with tool outputs. For each model turn, we compute the fraction of sentences (minimum 20 characters) that appear more than once within that turn, then average across turns within the example. Measuring within individual turns rather than across the concatenated conversation avoids false positives from formulaic phrases that naturally recur across turns in structured agent interactions. The 20-character minimum filters short structural sentences; below this length, manual inspection confirmed that repeated sentences are predominantly formatting rather than degenerate. Both the SST and the matched baseline (Section 3.2) are evaluated on identical question sets under identical generation conditions: greedy decoding, with no repetition penalty. The cross-benchmark comparison uses staged compute for the SST and iter = 1 for the baseline; on GPQA-Diamond, we additionally evaluate the same SST checkpoint at flat iter = 1 and flat iter = 4 to separate the state stream from unnecessary iteration depth. 16 Table 6: Sentence-level repetition by benchmark and inference configuration. Repetition is measured within each model turn and averaged across turns. The GPQA-Diamond rows include flat iter = 1 and flat iter = 4 runs on the same SST checkpoint, isolating single-pass state-stream behaviour from unnecessary iteration depth.                                          
+
+> Benchmark Configuration NSent. rep. Loops GSM8K SST staged 1,319 0.35% 2/1,319 GSM8K Baseline iter = 1 1,319 0.07% 0/1,319 HumanEval SST staged 164 1.35% 0/164 HumanEval Baseline iter = 1 164 1.72% 0/164 GPQA-Diamond Baseline iter = 1 198 11.13% 8/198 GPQA-Diamond SST flat iter = 1 198 11.21% 6/198 GPQA-Diamond SST staged 198 11.63% 13/198 GPQA-Diamond SST flat iter = 4 198 17.03% 26/198
+
+Because the question is whether the state stream introduces a meaningful amount of repetition, we report the magnitude of the difference, with a confirmatory significance test included for transparency. The matched staged-vs-baseline comparison shows no evidence of a meaningful repetition increase: rates are near zero on GSM8K and HumanEval, and on GPQA-Diamond the staged SST rate remains close to the matched baseline. The direct single-iteration GPQA-Diamond comparison isolates the architecture itself: SST flat iter = 1 has 11 .21% sentence repetition versus 11 .13% 
+
+for the matched baseline (Mann–Whitney p = 0 .942 ), with fewer detected loops (6 vs 8). Repetition increases only when the same SST checkpoint is forced to continue to flat iter = 4 for every question ( 17 .03% , 26 loops), which also drops accuracy from 61 .1% under staged compute to 42 .9% . This indicates that with the trained SST V2, iterations function as a per-question deliberation budget rather than a blanket requirement for coherence, resolving the instability found in V1. 
+
+## 6 Adaptive halting probe 
+
+Section 5.3 documented an 18 .18 pp gap between flat iter = 4 and the staged compute capacity on GPQA-Diamond, driven entirely by regressions on questions that did not need additional iteration. Staged compute (Section 5.1) already offers a viable deployment strategy by allowing external depth selection based on output quality, analogous to the selectable reasoning effort in chain-of-thought reasoning models [ 8]. However, autonomous depth selection from the model’s own latent state would be a desirable further step, removing the need for external evaluation altogether. Section 4.1 established that every generation begins with a universal basin shift into a content-dependent region of the latent space at position 0, and Section 4.2 that this basin-shifted representation carries information about the trajectory the generation will take. This section asks a sharper question of the same representation: does the position-0 latent state at iteration depth d predict whether the Bayesian posterior it encodes will still lead to the correct answer if every subsequent position of the generation is iterated to depth d+1 ?The experiment is scoped to feasibility. A deployed halting head would be calibrated post-training on labels generated at scale from the training data itself, which is a separate engineering effort not within scope of this paper. Answering the question posed above requires more than training a probe to high accuracy. The section therefore presents two complementary analyses: a mechanistic analysis of the probe’s weights (Section 6.4), identifying the specific hidden-state dimensions the probe reads; and a held-out generalisation test (Section 6.5), asking whether that feature transfers to questions the probe was never trained on. Memorisation of question-identity patterns is the null hypothesis both analyses rule out in the course of answering these questions. 
+
+6.1 Halt signal as overthinking-regression detection 
+
+Prior work on adaptive halting in iterative transformers learns the stopping criterion end-to-end with the task loss (Adaptive Computation Time; Graves [44] , applied in the Universal Transformer; Dehghani et al. [12] ). End-to-end halting is not available to the SST during SFT, as training with iteration under teacher forcing could incentivise the model to defer reasoning to later iterations, producing a model that requires multiple passes for baseline competence rather than one that benefits from them (Section 3.1). The two-pass method therefore trains at iter = 1 equivalent by design, and the halting mechanism must be a post-hoc probe trained on separate labels. The choice of training target becomes a design decision. The natural target is convergence monitoring: has the computation settled? Whether phrased as “am I done?”, “should I continue?”, “must I halt?”, or “have I converged?”, these are semantically different expressions of the same underlying measurement. All prior approaches to adaptive halting, including ACT, fall in this family. 17 (a) Per-token L2 delta between successive iterations for 1,536 positions across 8 iterations, grouped by correct iteration depth (iter = 1 green, iter = 2 orange, iter = 4 red). Top: all three difficulty groups collapse to the same near-zero profile by iter = 2 ,with L2 unable to distinguish questions needing one iteration from those needing four. Bottom (zoomed): outlier traces continue exploring at later iterations.    
+
+> (b) Predictive power of current L2 delta over the next iteration’s outcome. Left: current delta (x-axis) vs next delta (y-axis), coloured by whether the next step improves (green), degrades (red), or has no change (grey). The vertical axis encodes the outcome; the horizontal axis is the signal available at decision time. Right: P(next outcome )given current delta, showing both outcomes are completely interleaved at every current-delta value.
+
+Figure 6: L2 convergence monitoring fails for the SST. The nonlinear recurrence does not converge to a fixed point: all difficulty groups show the same L2 profile (a), and current L2 delta has no predictive power over whether the next iteration will help or hurt (b). The natural first step is to look for convergence in the iterative recurrence, and L2 delta between successive iterations is the most direct way to measure it. Figure 6a plots this for 1,536 positions across 8 iterations, grouped by correct iteration depth. All three difficulty groups (questions correct at iter = 1 , iter = 2 , and iter = 4 ) collapse to the same near-zero profile by iter = 2 ; L2 cannot distinguish a question that needs one iteration from one that needs four. On the surface this resembles fixed-point convergence, but the zoomed view (bottom row) reveals outlier traces whose L2 delta rises and falls across later iterations, superficially resembling period-2 oscillations. L2 measures only the magnitude of change, not its content, so these traces are indistinguishable from an unstable system bouncing between two attractors, a reading that would conventionally suggest stopping at iter = 2 . The mechanistic analysis of Section 4.2 shows these are not oscillations but transitions between distinct Bayesian posteriors at each iteration, invisible to L2. Figure 6b 18 confirms that current L2 delta has no predictive power over whether the next iteration will help or hurt, with the two outcomes completely interleaved at every delta value. A full-dimensional probe reading all 5,376 hidden state dimensions does have access to the granular posterior infor-mation that L2 lacks; we trained such a probe and confirmed that computational unresolvedness is a real generalising feature of the position-0 latent state. But a posterior can be unsettled and safe (the convergent-reasoning questions of Table 13, which arrive at the correct answer at every iteration depth despite ongoing latent computation), or unsettled and vulnerable (correct at the current depth but breaking at the next). Unresolvedness is present in both cases, and the probe cannot separate them. The second case contains the fragile-correctness questions where further iteration regresses the posterior. The only way for the probe to prevent overthinking regression is to predict it. This requires something qualitatively different from convergence monitoring: the position-0 latent state must encode not whether computation has settled but whether additional iteration would break the answer. Specifically, would the answer survive if every subsequent position of the generation were iterated to depth d+1 ? At position 0, this means the first generated token’s latent state must encode predictive information about computation that has not yet occurred across the entire downstream sequence, a substantially stronger property than computational completeness. We find that it does. A probe reading position 0
+
+at layer 15 prevents every overthinking regression in our evaluation, and the mechanistic and statistical analyses of Sections 6.4 and 6.5 confirm it reads a genuine generalising feature, not a memorised lookup. At iteration depth d, the probe’s target is MUST HALT if the question passes at staged compute depth ≤d and fails at flat iter = d + 1 ; otherwise 
+
+> SAFE
+
+.
+
+6.2 Method 
+
+Due to the availability of flat iteration eval runs, we use GPQA-Diamond for this experiment. MUST HALT labels at depth d require knowing whether the question passes at staged compute depth ≤d and whether it fails at flat iter = d + 1 ,which requires running the full benchmark at each flat iteration depth independently. The overthinking regression measurement of Section 5.3 already runs flat iter = 2 , 3, 4 on GPQA-Diamond as its primary output, and the halt labels are constructed from that data. A deployed halting head would be trained on labels generated at scale from training data across domains; the present experiment is designed to establish whether the halt signal exists as a readable feature at position 0, and GPQA-Diamond provides the data to answer that question because the flat-iteration evaluations required for label construction were already computed as part of the overthinking regression analysis. The resulting training set contains 357 position-0 hidden states from the 121 recoverable GPQA-Diamond questions across iteration depths and model turns, split between 68 MUST HALT timesteps (drawn from 48 of the 121 questions) and 289 SAFE timesteps. We first trained a 64 -neuron two-layer MLP on this data, Linear(5376 , 64) → SiLU → Linear(64 , 1) , 344 ,193 
+
+parameters. Mechanistic analysis of the 64 -neuron probe’s learned weights (Section 6.4) shows it operates as a cooperative ensemble effectively using ten neurons, reading a 107 -dimensional feature in the hidden state identi-fied by inference-only input-dimension ablation (Appendix F). We then retrained a 10 -neuron probe from scratch, 
+
+Linear(5376 , 10) → SiLU → Linear(10 , 1) , 53 ,781 parameters, which reproduces the same 117 /198 result while making the Cover’s theorem bound of Section 6.5 directly informative on the output layer. The 10 -neuron probe is the probe we report; the 64 -neuron variant is referenced throughout as the subject of the weight analysis that motivated the reduction. The probe reads the position-0 hidden state at layer 15 and outputs a scalar logit; iteration halts when the logit exceeds the threshold log(0 .3/0.7) . Layer 15 was selected from a sweep over layers {3, 5, 7, 10 , 15 , 20 , 25 , 29 } as the shallowest layer that achieves zero overthinks and passes the LOOCV generalisation test at p < 0.05 (full sweep in Appendix F). We apply the probe under the same evaluation setup as Section 5 on GPQA-Diamond. At each iteration the probe inspects the position-0 hidden state; if the output is above threshold, iteration halts at that depth, and that depth is used for the rest of the question. 
+
+6.3 Result 
+
+Table 7: Halt signal probe on GPQA-Diamond ( N = 198 ). The probe at layer 15 closes 16 /20 = 80% of the gap between the iter = 1 baseline and the staged compute capacity, while breaking zero correct answers.                    
+
+> Method Accuracy ∆vs iter = 1 Overthinks Missed SST iter = 1 51.01% ———Halt signal probe (layer 15) 59.09% +8 .08 pp 04
+> Staged compute capacity ( imax =4 )61.11% +10 .10 pp ——
+
+19 The probe reaches 117 /198 = 59 .09% on GPQA-Diamond, a +8 .08 pp improvement over the iter = 1 baseline (McNemar exact one-sided p = 1 .5 × 10 −5). Of the 20 recoverable questions between the iter = 1 baseline and the staged compute capacity, the probe reroutes 16 to a higher iteration depth at which they pass. Zero correct answers are broken: every discordant pair goes baseline-wrong → probe-correct, with no baseline-correct → probe-overthink. Per-iteration MUST HALT detection is 100% at every training depth ( 60 /60 at iter = 1 , 4/4 at iter = 2 , 4/4 at iter = 3 ). The error mode is uniformly conservative: all 4 failures are continue questions on which the probe halted at iter = 1 on an already-wrong answer that would only have been corrected at a deeper iteration, leaving the model at its current (wrong) answer rather than disrupting a correct one. 
+
+6.4 Mechanistic structure of the learned probe 
+
+The mechanistic analysis described here was performed on the 64 -neuron probe trained first, whose larger hidden layer makes per-neuron structure readable. The 64 -neuron probe reaches the same 117 /198 accuracy as the 10 -neuron probe we report, with identical timestep detection ( 68 /68 MUST HALT , 257 /289 SAFE ). The structure identified in this section is what motivated the retraining at minimum capacity. 
+
+Effective probe dimensionality. The 64 -neuron probe’s hidden layer is effectively a 10 -neuron network. Per-hidden-neuron logit contribution (mean |post _silu · W2| across all evaluation timesteps) concentrates in the first ten of the probe’s 64 hidden neurons: the top four account for 53% of total logit mass, the top eight for 83% , the top ten for 93% .The remaining 54 hidden neurons contribute 7% and have no effect on question-level outcomes: zeroing them leaves the 117 /198 accuracy and the 68 /68 MUST HALT detection unchanged, with SAFE detection shifting only marginally from 257 /289 to 250 /289 (Appendix F). These 10 probe neurons all read from the same set of hidden-state dimensions, differing in sign patterns rather than encoding ten independent features. This motivated retraining at 10 neurons, which reproduces the same result and makes Cover’s theorem directly applicable (Section 6.5). 
+
+Neither half works alone. Single-neuron ablation of the highest-contribution probe neuron (neuron 44, which by itself carries 20 .4% of the total logit mass) collapses the probe to 102 /198 = 51 .52% , near the iter = 1 baseline. The other nine top probe neurons continue to detect all 68 /68 MUST HALT timesteps after the ablation, but SAFE 
+
+discrimination collapses from 257 /289 to 10 /289 : they classify essentially everything as halt, equivalent to halting at iter = 1 on every question. The reverse ablation, keeping neuron 44 and the 54 minor neurons while zeroing the other nine top probe neurons, collapses in the opposite direction: 90 /198 = 45 .45% , below the iter = 1 baseline, with perfect SAFE (289 /289 ) but zero MUST HALT detection ( 0/68 ) and 31 overthinks from never halting. Neither subset reproduces the probe’s accuracy on its own. The probe’s decision emerges from the balance between the top-nine halt-detection signal and neuron 44’s counterbalancing offset, with the threshold separating HALT from SAFE only when both contributions are present. The effective linear direction of the probe is almost unchanged by removing neuron 44 (r = 0 .9954 between original and ablated directions); what changes is the logit-magnitude balance needed to maintain threshold separation. 
+
+Near-linear operation. The probe’s effective linear direction W ⊤ 
+
+> 2
+
+W1 correlates at r = 0 .905 with gradient importance on MUST HALT inputs. The SiLU nonlinearity is present but the probe is operating near the linear regime, which directly constrains how much residual nonlinear capacity is available for memorisation beyond the ten-dimensional bottleneck exploited by Section 6.5. 
+
+6.5 Generalisation versus memorisation 
+
+With 53 ,781 parameters and only 48 distinct MUST HALT questions in the 357 -timestep training set, the probe has capacity to memorise question-identity patterns and reproduce training accuracy without reading any real feature. The following tests establish that it does not. 
+
+Leave-one-out cross-validation. The probe generalises in 29 /48 = 60% of LOOCV folds over the MUST HALT 
+
+questions. Under the memorisation null, the probe has no information about the held-out question and classifies it at its base prediction rate: 133 /357 = 37 .3% of all timesteps, including false positives on SAFE timesteps (full methodology in Appendix F.6). A binomial test of 29 /48 at null probability 0.373 yields p = 9 .4 × 10 −4, with 95% CI 
+
+[48 .6% , 100 .0%] on held-out accuracy. The 64 -neuron variant reproduces the same held-out accuracy ( 29 /48 = 60% ), confirming that the reduction to ten probe neurons is not an artefact. 
+
+Cover’s theorem capacity bound. The 10 -neuron probe’s output layer is a linear classifier in ten dimensions. By Cover’s theorem [ 45 ] it can shatter at most 11 points in general position, while the minority class contains 48 MUST 
+
+20 HALT questions ( 4.4× the shattering capacity). The bound applies strictly to the output layer; W1 plus the SiLU activation can in principle add nonlinear capacity beyond the ten-dimensional bottleneck. The near-linear operation of the probe ( r = 0 .905 , Section 6.4) constrains how much nonlinear separation the W1 layer can exploit, and Section 6.6 resolves the concern directly by showing that a linear classifier on the essential feature dimensions reads the feature more accurately than the nonlinear probe. LOOCV covers what the capacity bound does not, as an assumption-free empirical test of held-out generalisation on the full network. 
+
+6.6 The 107-dimension feature 0
+
+> 1000
+> 2000
+> 3000
+> 4000
+> 5000
+> Hidden state dimension
+> 107 essential feature dimensions in the layer-15 hidden state (2.0%)
+> 0.050
+> 0.075
+> 0.100
+> 0.125
+> 0.150
+> 0.175
+> 0.200
+> 0.225
+> Effective importance
+
+Figure 7: The 107 essential hidden-state dimensions at layer 15. Each cell represents one of the 5,376 hidden-state dimensions ( 84 × 64 grid, dim 0 at bottom-left). Coloured cells are the 107 dimensions the probe requires; colour intensity indicates effective weight importance. The remaining 5,269 dimensions (grey) can be zeroed with no effect on the probe’s evaluation accuracy. Having established that the probe reads a genuine feature, we characterise it through inference-only input-dimension ablation on the frozen trained probe (Appendix F.7). All 5,376 hidden-state dimensions are ranked by effective weight importance. Keeping only the top K dimensions (zeroing the rest at inference, no retraining), the minimum 
+
+K that reproduces the exact baseline ( 117 /198 , zero overthinks, 4 missed) is K = 761 . Greedy pruning within this 
+
+761 -dimension set (testing each dimension individually, least important first, keeping it zeroed if the baseline holds) reduces the essential set to 107 dimensions ( 2.0% of the hidden state). The 107 essential dimensions are scattered across the full index range of the layer-15 hidden state (dim 9 to dim 5,364 ), with no clustering (Figure 7). Zeroing any one of these 107 dimensions degrades the probe’s evaluation accuracy; zeroing the remaining 5,269 dimensions has no effect. The feature is too constrained for a lookup table mapping question identities to halt decisions: 107 dimensions encoding a binary signal for 48 questions across 357 timesteps is a pattern, not a hash. The 10 probe neurons project this 107 -dimensional pattern into a scalar halt logit through cooperative sign-varying weights. A linear probe trained directly on these 107 dimensions ( Linear(107 , 1) , 108 parameters) achieves 39 /48 = 81% 
+
+LOOCV accuracy ( p = 4 .2×10 −5), exceeding the 29 /48 achieved by the nonlinear probe on the full 5,376 -dimensional hidden state. Since the feature is fully readable without nonlinearity, the SiLU activation in the 10 -neuron probe cannot be exploiting capacity beyond what Cover’s theorem bounds on its output layer, resolving the caveat raised in Section 6.5. Replacing SiLU with GELU or ReLU in the bottleneck architecture produces identical eval accuracy and LOOCV within one fold, confirming that the activation function choice is irrelevant to feature extraction. On the same trained bottleneck probe, zeroing the 5,269 non-essential input dimensions at inference raises accuracy from the unablated 
+
+117 /198 to 118 /198 (zero overthinks, 4 missed continues), consistent with the probe’s training on the full hidden state having absorbed small noise contributions that vanish under ablation. By comparison, a linear probe trained directly on the 107 dimensions achieves 115 /198 (zero overthinks, 6 missed continues), three questions below the input-ablated bottleneck probes, identifying threshold calibration as what the nonlinearity provides. 21 6.7 Position 0 predicts the downstream trajectory 
+
+The probe separates convergent from fragile-correctness posteriors with zero overthinks, reading from the basin-shifted representation at position 0 (Section 4.1) where the model commits to a content-dependent Bayesian posterior. The feature it reads is not a convergence signal; it is a prediction about the future. At the first generated token position, before any of the downstream sequence has been produced, 107 hidden-state dimensions at layer 15 already encode whether the eventual answer will survive or break under additional latent computation for every subsequent position. The SST computes this prediction through its own architecture; the probe is a measurement instrument that makes the prediction visible. Whether the specific dimensions carrying this signal for GPQA-Diamond would carry it for other tasks is a question about the universality of the feature, not its existence. 
+
+## 7 Limitations 
+
+The two-pass training method trains at iter = 1 equivalent by design (Section 3.1), and no halting criterion can be learned end-to-end during supervised fine-tuning. Adaptive iteration depth selection requires a separate mechanism added post-hoc, or more naturally co-trained during reinforcement learning where the halting criterion can be learned alongside the task reward without separate label generation. Without adaptive depth selection, applying a uniform iteration depth to all questions produces overthinking regression (Section 5.3). Section 6 establishes that a learned probe can read the halt signal from the position-0 latent state with statistically significant generalisation to held-out questions ( p < 0.001 , LOOCV), but the experiment is scoped to feasibility on a single benchmark (GPQA-Diamond) with a small MUST HALT minority ( 68 timesteps from 48 distinct questions in a 
+
+357 -timestep training set). Validating the approach at scale on training data with a large held-out set, or co-training a halting head during RL, is future work. While the architecture supports deeper iteration, each additional depth incurs a full forward pass through the 27B-parameter model, becoming prohibitively slow for realistic deployment, so evaluation focuses on depths up to imax = 4 
+
+and whether accuracy continues to improve beyond this is not established. Iteration depth at earlier positions propagates through the state stream and shapes downstream computation (Section 4.2), making per-position depth selection an architecturally meaningful option. However, this would require either a halting mechanism at every generated token or detection of basin shift positions for selective depth allocation. These are different experimental designs that could build on the feasibility established in Section 6. While demonstrated on Gemma 3 27B, the two-pass training method is mathematically designed to apply to any pretrained transformer with a Lipschitz-bounded gated FFN (Appendix B.3); however, the paper does not claim universal compatibility empirically or that the accuracy increase will transfer with similar effect to other model families or scales, since unforeseen practical considerations may differ across backbones. The SST uses zero-shot greedy decoding, arguably stricter than the varying protocols under which external comparators were evaluated; however, this protocol heterogeneity is a universal property of cross-paper comparison, not specific to this evaluation. These comparisons provide context for the absolute accuracy on the evaluated benchmarks, not a claim of generalised performance parity with these models across tasks; the controlled architectural comparison is the matched baseline (Section 3.2). This paper’s evaluation focuses on reasoning benchmarks, with the state stream’s contribution to non-reasoning tasks such as writing or knowledge retrieval remaining future work. 
+
+## 8 Conclusion 
+
+The State Stream Transformer contributes two things that together turn latent space reasoning into a practical intervention on pretrained models rather than a pretraining commitment. The architecture preserves per-layer latent computation across positions through a nonlinear recurrence on the existing feedforward weights, giving a single mechanism both horizontal persistence across positions and vertical deliberation through iteration. The two-pass parallel training method resolves the cross-position sequential dependency that a nonlinear per-layer recurrence otherwise imposes, replacing it with an associative scan whose approximation is exact to first order in the blend coefficient and whose pass-1 outputs co-adapt with the blend during training. Any suitable pretrained transformer with a gated feedforward network could potentially be turned into an SST by fine-tuning. When co-trained to use this mechanism, the model organises its latent space into content-dependent semantic basins with sharp transitions at specific positions and stability between them, and the state stream carries each reorganisation forward through the stable regions until the next transition. Every basin shift is a commitment in continuous latent 22 space that reshapes the computational landscape for everything downstream until the next basin shift. When given additional iteration, the model explores genuinely different trajectories through that landscape and resolves them to the same correct conclusion at rates far above chance. At the very first generation position, before any of the downstream sequence has been produced, a small subset of the latent state already encodes a prediction for whether the eventual answer will survive or break under additional iteration depth across the entire generation. The content-dependent basin dynamics, the trajectory encoding at position 0, the convergent exploration across iteration depths, and the predictive signal about future computation are all emergent from co-training with no explicit supervision of planning, halting, or deliberation behaviour. They describe what structured reasoning in continuous latent space actually looks like when the architecture makes it possible and co-training lets the model learn to use it. The state stream offers a new axis of continuous computation for reasoning in language models, orthogonal to parameter scaling and token-space chain-of-thought and operating on the latent computation those approaches leave untouched. Whether and how this axis compounds with scale, with reinforcement learning, and with deeper iteration on larger models is the natural next question, and one the practicality of the two-pass method makes available to investigate without pretraining from scratch. The mechanistic characterisation presented here also provides a concrete handle for interpretability research on what a transformer is capable of doing when it is given the architectural means to reason in continuous latent space via a state stream. 
+
+## References 
+
+[1] Evelina Fedorenko, Steven T. Piantadosi, and Edward A. F. Gibson. Language is primarily a tool for communication rather than thought. Nature , 630(8017):575–586, 2024. doi: 10.1038/s41586-024-07522-w. URL https: //www.nature.com/articles/s41586-024-07522-w .[2] Nelson Elhage, Neel Nanda, Catherine Olsson, Tom Henighan, Nicholas Joseph, Ben Mann, Amanda Askell, Yuntao Bai, Anna Chen, Tom Conerly, Nova DasSarma, Dawn Drain, Deep Ganguli, Zac Hatfield-Dodds, Danny Hernandez, Andy Jones, Jackson Kernion, Liane Lovitt, Kamal Ndousse, Dario Amodei, Tom Brown, Jack Clark, Jared Kaplan, Sam McCandlish, and Chris Olah. A mathematical framework for transformer circuits, 2021. Transformer Circuits Thread, https://transformer-circuits.pub/2021/framework/index.html .[3] Mingfang Zhang, Jarod Lévy, Stéphane d’Ascoli, Jérémy Rapin, F.-Xavier Alario, Pierre Bourdillon, Svetlana Pinet, and Jean-Rémi King. From thought to action: How a hierarchy of neural dynamics supports language production, 2025. URL https://arxiv.org/abs/2502.07429 .[4] Rui-Jie Zhu, Tianhao Peng, Tianhao Cheng, Xingwei Qu, Jinfa Huang, Dawei Zhu, Hao Wang, Kaiwen Xue, Xuanliang Zhang, Yong Shan, Tianle Cai, Taylor Kergan, Assel Kembay, Andrew Smith, Chenghua Lin, Binh Nguyen, Yuqi Pan, Yuhong Chou, Zefan Cai, Zhenhe Wu, Yongchi Zhao, Tianyu Liu, Jian Yang, Wangchunshu Zhou, Chujie Zheng, Chongxuan Li, Yuyin Zhou, Zhoujun Li, Zhaoxiang Zhang, Jiaheng Liu, Ge Zhang, Wenhao Huang, and Jason Eshraghian. A survey on latent reasoning, 2025. URL https://arxiv.org/abs/2507. 06203 .[5] Jared Kaplan, Sam McCandlish, Tom Henighan, Tom B. Brown, Benjamin Chess, Rewon Child, Scott Gray, Alec Radford, Jeffrey Wu, and Dario Amodei. Scaling laws for neural language models, 2020. URL https: //arxiv.org/abs/2001.08361 .[6] Noam Shazeer, Azalia Mirhoseini, Krzysztof Maziarz, Andy Davis, Quoc Le, Geoffrey Hinton, and Jeff Dean. Outrageously large neural networks: The sparsely-gated mixture-of-experts layer. In International Conference on Learning Representations (ICLR 2017) , 2017. URL https://arxiv.org/abs/1701.06538 .[7] Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Brian Ichter, Fei Xia, Ed Chi, Quoc Le, and Denny Zhou. Chain-of-thought prompting elicits reasoning in large language models. In Advances in Neural Information Processing Systems (NeurIPS 2022) , 2022. URL https://arxiv.org/abs/2201.11903 .[8] OpenAI. Learning to reason with llms, 2024. https://openai.com/index/ learning-to-reason-with-llms/ .[9] DeepSeek-AI. DeepSeek-R1 incentivizes reasoning in LLMs through reinforcement learning. Nature ,645:633–638, 2025. doi: 10.1038/s41586-025-09422-z. URL https://www.nature.com/articles/ s41586-025-09422-z .[10] Charlie Snell, Jaehoon Lee, Kelvin Xu, and Aviral Kumar. Scaling LLM test-time compute optimally can be more effective than scaling model parameters. In International Conference on Learning Representations (ICLR 2025) ,2024. URL https://arxiv.org/abs/2408.03314 . Oral. 23 [11] Jonas Geiping, Sean McLeish, Neel Jain, John Kirchenbauer, Siddharth Singh, Brian R. Bartoldson, Bhavya Kailkhura, Abhinav Bhatele, and Tom Goldstein. Scaling up test-time compute with latent reasoning: A recurrent depth approach. In Advances in Neural Information Processing Systems , 2025. [12] Mostafa Dehghani, Stephan Gouws, Oriol Vinyals, Jakob Uszkoreit, and Łukasz Kaiser. Universal transformers. In International Conference on Learning Representations (ICLR 2019) , 2018. URL https://arxiv.org/abs/ 1807.03819 .[13] Angeliki Giannou, Shashank Rajput, Jy-yong Sohn, Kangwook Lee, Jason D. Lee, and Dimitris Papailiopoulos. Looped transformers as programmable computers. In International Conference on Machine Learning (ICML 2023) , 2023. URL https://arxiv.org/abs/2301.13196 .[14] Shibo Hao, Sainbayar Sukhbaatar, DiJia Su, Xian Li, Zhiting Hu, Jason Weston, and Yuandong Tian. Training large language models to reason in a continuous latent space, 2024. URL https://arxiv.org/abs/2412.06769 .[15] Guan Wang, Jin Li, Yuhao Sun, Xing Chen, Changling Liu, Yue Wu, Meng Lu, Sen Song, and Yasin Abbasi Yad-kori. Hierarchical reasoning model, 2025. URL https://arxiv.org/abs/2506.21734 .[16] Albert Gu and Tri Dao. Mamba: Linear-time sequence modeling with selective state spaces. In Conference on Language Modeling (COLM) , 2024. URL https://arxiv.org/abs/2312.00752 .[17] Thea Aviss. The state stream transformer: Emergent metacognitive behaviours through latent state persistence, 2025. URL https://arxiv.org/abs/2501.18356 .[18] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N. Gomez, Łukasz Kaiser, and Illia Polosukhin. Attention is all you need. In Advances in Neural Information Processing Systems (NeurIPS 2017) , 2017. URL https://arxiv.org/abs/1706.03762 .[19] Marc’Aurelio Ranzato, Sumit Chopra, Michael Auli, and Wojciech Zaremba. Sequence level training with recurrent neural networks. In International Conference on Learning Representations (ICLR 2016) , 2015. URL 
+
+https://arxiv.org/abs/1511.06732 .[20] Albert Gu, Karan Goel, and Christopher Ré. Efficiently modeling long sequences with structured state spaces. In 
+
+International Conference on Learning Representations (ICLR 2022) , 2021. URL https://arxiv.org/abs/ 2111.00396 .[21] Jimmy T.H. Smith, Andrew Warrington, and Scott W. Linderman. Simplified state space layers for sequence modeling. In International Conference on Learning Representations (ICLR 2023) , 2022. URL https://arxiv. org/abs/2208.04933 .[22] Xingyao Wang, Yangyi Chen, Lifan Yuan, Yizhe Zhang, Yunzhu Li, Hao Peng, and Heng Ji. Executable code actions elicit better LLM agents. In International Conference on Machine Learning (ICML 2024) , 2024. URL 
+
+https://arxiv.org/abs/2402.01030 .[23] Karl Cobbe, Vineet Kosaraju, Mohammad Bavarian, Mark Chen, Heewoo Jun, Lukasz Kaiser, Matthias Plappert, Jerry Tworek, Jacob Hilton, Reiichiro Nakano, Christopher Hesse, and John Schulman. Training verifiers to solve math word problems, 2021. URL https://arxiv.org/abs/2110.14168 .[24] Tim Dettmers, Artidoro Pagnoni, Ari Holtzman, and Luke Zettlemoyer. QLoRA: Efficient finetuning of quantized LLMs. In Advances in Neural Information Processing Systems (NeurIPS 2023) , 2023. URL https://arxiv. org/abs/2305.14314 .[25] Dan Hendrycks and Kevin Gimpel. Gaussian error linear units (GELUs), 2016. URL https://arxiv.org/ abs/1606.08415 .[26] Edward J. Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean Wang, Lu Wang, and Weizhu Chen. LoRA: Low-rank adaptation of large language models. In International Conference on Learning Represen-tations (ICLR 2022) , 2021. URL https://arxiv.org/abs/2106.09685 .[27] Meta. Llama 3.1 70b instruct model card, 2024. Hugging Face, https://huggingface.co/meta-llama/ Llama-3.1-70B-Instruct .[28] Qwen Team. Qwen2.5: A party of foundation models, 2024. Qwen Blog, https://qwen.ai/blog?id=qwen2. 5.24 [29] Gemma Team. Gemma 3 technical report. Technical report, Google, 2025. URL https://arxiv.org/abs/ 2503.19786 .[30] Meta. Llama 3.1 405b instruct model card, 2024. Hugging Face, https://huggingface.co/meta-llama/ Llama-3.1-405B-Instruct .[31] Meta. Llama 3.3 70b instruct model card, 2024. Hugging Face, https://huggingface.co/meta-llama/ Llama-3.3-70B-Instruct .[32] OpenAI. Gpt-4o system card, 2024. https://openai.com/index/gpt-4o-system-card/ .[33] DeepSeek-AI. Deepseek-v3 technical report, 2024. URL https://arxiv.org/abs/2412.19437 .[34] Google DeepMind. Gemini 2.0 flash model card. https://storage.googleapis.com/deepmind-media/ Model-Cards/Gemini-2-0-Flash-Model-Card.pdf , 2025. URL https://storage.googleapis.com/ deepmind-media/Model-Cards/Gemini-2-0-Flash-Model-Card.pdf .[35] Google for Developers. The Gemini 2.0 family expands. https://developers.googleblog. com/en/gemini-2-family-expands/ , 2025. URL https://developers.googleblog.com/en/ gemini-2-family-expands/ .[36] David Rein, Betty Li Hou, Asa Cooper Stickland, Jackson Petty, Richard Yuanzhe Pang, Julien Dirani, Julian Michael, and Samuel R. Bowman. GPQA: A graduate-level google-proof Q&A benchmark. In Conference on Language Modeling (COLM 2024) , 2023. URL https://arxiv.org/abs/2311.12022 .[37] Google DeepMind. Gemini 2.5 pro model card, 2025. https://deepmind.google/technologies/gemini/ pro/ .[38] Dan Hendrycks, Collin Burns, Saurav Kadavath, Akul Arora, Steven Basart, Eric Tang, Dawn Song, and Jacob Steinhardt. Measuring mathematical problem solving with the MATH dataset. In Advances in Neural Information Processing Systems Track on Datasets and Benchmarks (NeurIPS 2021) , 2021. URL https: //arxiv.org/abs/2103.03874 .[39] Hunter Lightman, Vineet Kosaraju, Yura Burda, Harri Edwards, Bowen Baker, Teddy Lee, Jan Leike, John Schulman, Ilya Sutskever, and Karl Cobbe. Let’s verify step by step. In International Conference on Learning Representations (ICLR 2024) , 2023. URL https://arxiv.org/abs/2305.20050 .[40] Mark Chen, Jerry Tworek, Heewoo Jun, Qiming Yuan, Henrique Ponde de Oliveira Pinto, Jared Kaplan, Harri Edwards, Yuri Burda, Nicholas Joseph, Greg Brockman, et al. Evaluating large language models trained on code, 2021. URL https://arxiv.org/abs/2107.03374 .[41] Shu Zhou, Rui Ling, Junan Chen, Xin Wang, Tao Fan, and Hao Wang. When more thinking hurts: Overthinking in LLM test-time compute scaling, 2026. URL https://arxiv.org/abs/2604.10739 .[42] Alexander Hägele, Aryo Pradipta Gema, Henry Sleight, Ethan Perez, and Jascha Sohl-Dickstein. The hot mess of AI: How does misalignment scale with model intelligence and task complexity?, 2026. URL https: //arxiv.org/abs/2601.23045 .[43] MD Azizul Hakim. Brevity constraints reverse performance hierarchies in language models, 2026. URL 
+
+https://arxiv.org/abs/2604.00025 .[44] Alex Graves. Adaptive computation time for recurrent neural networks, 2016. URL https://arxiv.org/abs/ 1603.08983 .[45] Thomas M. Cover. Geometrical and statistical properties of systems of linear inequalities with applications in pattern recognition. IEEE Transactions on Electronic Computers , EC-14(3):326–334, 1965. [46] Ilya Loshchilov and Frank Hutter. Decoupled weight decay regularization. In International Conference on Learning Representations (ICLR 2019) , 2017. URL https://arxiv.org/abs/1711.05101 .[47] Shaojie Bai, J. Zico Kolter, and Vladlen Koltun. Deep equilibrium models. In Advances in Neural Information Processing Systems (NeurIPS 2019) , 2019. URL https://arxiv.org/abs/1909.01377 . Spotlight Oral. 25 [48] Yi Heng Lim, Qi Zhu, Joshua Selfridge, and Muhammad Firmansyah Kasim. Parallelizing non-linear sequential models over the sequence length. In International Conference on Learning Representations (ICLR 2024) , 2023. URL https://arxiv.org/abs/2309.12252 .[49] Federico Danieli, Pau Rodriguez, Miguel Sarabia, Xavier Suau, and Luca Zappella. ParaRNN: Unlocking parallel training of nonlinear RNNs for large language models. In International Conference on Learning Representations (ICLR 2026) , 2025. URL https://arxiv.org/abs/2510.21450 . Oral. [50] Patrick L. Combettes and Jean-Christophe Pesquet. Lipschitz certificates for layered network structures driven by averaged activation operators, 2019. URL https://arxiv.org/abs/1903.01014 .[51] Biao Zhang and Rico Sennrich. Root mean square layer normalization. In Advances in Neural Information Processing Systems (NeurIPS 2019) , 2019. URL https://arxiv.org/abs/1910.07467 .[52] Henry Gouk, Eibe Frank, Bernhard Pfahringer, and Michael J. Cree. Regularisation of neural networks by enforcing Lipschitz continuity. Machine Learning , 110:393–416, 2021. 
+
+## A Training 
+
+A.1 Dataset and task formulation 
+
+The model is fine-tuned on GSM8K grade-school math problems formulated as CodeACT tasks. In the CodeACT paradigm, the model calls tools by emitting executable Python code as its actions rather than producing JSON. Each training example is a multi-turn interaction: the user poses a mathematical question, the model writes Python code delimited by custom <execute> /</execute> tokens, a sandboxed runtime executes the code and returns the output, and the model interprets the result, iterating with further code if needed, before producing a final answer. The 
+
+<execute> and </execute> tokens are new to the model, mapped to unused vocabulary IDs (262140 and 262141 respectively). Because the embedding layer and language modelling head share weights, LoRA adaptation of the lm_head trains both the output distribution over these tokens and their input representations simultaneously. This formulation decouples reasoning from arithmetic capability. The Python runtime handles computation; what the model must learn is problem decomposition, planning, and interpretation of results. Improvements from the state stream therefore reflect gains in reasoning, not in arithmetic accuracy. The multi-turn structure also provides a natural testbed for the state stream: the model must carry context across turns where tool outputs introduce new information that was not present in the original question. Training traces were synthetically generated and filtered for quality through automated and manual review. The resulting dataset contains 6,579 training and 731 validation examples. Loss is computed only on model-generated tokens; user turns and tool outputs are masked. 
+
+A.2 Training setup 
+
+The Gemma 3 27B backbone is frozen and trained via QLoRA. LoRA adapters are applied to every attention and MLP projection and to the language modelling head; the LSC parameters (per-layer blend logits and state normalisation weights, 666,624 in total) are trained at full precision alongside. AdamW [ 46 ] is applied with two parameter groups at separate learning rates: 10 −2 for the LSC parameters and 10 −4 for the LoRA adapters. The higher LSC rate reflects its small parameter count and the need for the per-dimension blend coefficients to move meaningfully from their initialisation; the LoRA group instead uses a 10-step linear warmup followed by cosine decay. Training runs on a single NVIDIA RTX PRO 6000 (96 GB VRAM); the two-pass forward (Section 3.1) doubles the compute per step, and three memory optimisations make this feasible on a single card: chunked cross-entropy loss, offloaded gradient checkpointing, and tiled MLP forward passes. Full hyperparameters are listed in Table 8. 26 Table 8: Full training hyperparameters for the SST. Both the SST and matched fine-tuned baseline (Section 3.2) see the same training examples in the same deterministic order (no shuffle) so that the only varied factor between them is the architecture. 
+
+Group Hyperparameter Value 
+
+Backbone Base model Gemma 3 27B Instruction-Tuned Adaptation QLoRA (NF4, frozen base) LoRA adapters Rank r 64 Scaling α 64 Dropout 0.05 Target modules attention QKV+O, MLP {gate, up, down}, lm_head LSC parameters †
+
+Total parameter count 666,624 Precision full (bf16) Per-layer α logit init θinit = −1.8 (αinit ≈ 0.027 )Update mode direct (Eq. 4) Optimisation Optimiser AdamW LR (LoRA group) 1×10 −4, 10-step linear warmup + cosine decay LR (LSC group) † 1×10 −2, constant Weight decay 0Gradient clip (norm) 1.0 Adam β1, β2, ϵ 0.9, 0.999, 1×10 −8
+
+Batching Micro-batch size 1Gradient accumulation 16 Effective batch size 16 Max sequence length 8,192 Stopping Max steps 2,000 Early stopping patience 4 (on validation loss) Best checkpoint step 410 (SST); 280 (baseline) Data Training examples 6,579 Validation examples 731 Example ordering deterministic (no shuffle), identical across runs Compute Hardware 1× NVIDIA RTX PRO 6000 (96 GB) Forward passes per step † 2 (SST); 1 (baseline) Memory optimisations † chunked cross-entropy loss, offloaded gradient checkpointing, tiled MLP forward passes Active runtime to best ckpt ∼6.2 h (SST); ∼1.9 h (baseline)  
+
+> †SST only; not applicable to the matched fine-tuned baseline.
+
+A.3 Dataset format 
+
+Each training example is a single JSON object containing the full multi-turn interaction as a pre-formatted Gemma 3 chat template string. The format uses Gemma 3’s native turn delimiters ( <start_of_turn> , <end_of_turn> ) and two custom tokens, <execute> (vocabulary ID 262140) and </execute> (vocabulary ID 262141), mapped to unused positions in the Gemma 3 vocabulary. A typical two-turn example follows (6,445 of the 6,579 training examples have this structure). 
+
+<bos><start_of_turn>user Joy can read 8 pages of a book in 20 minutes. How many hours will it take her to read 120 pages?<end_of_turn> <start_of_turn>model <execute> pages_per_minute = 8 / 20 time_hours = (120 / pages_per_minute) / 60 print(f"Time in hours: {time_hours}") </execute><end_of_turn> <start_of_turn>user <tool_response> 
+
+27 Time in hours: 5.0 </tool_response><end_of_turn> <start_of_turn>model <execute> finish_session("The answer is 5 hours.") </execute><end_of_turn> 
+
+Loss is computed only on model-turn content; all tokens between <start_of_turn>model and the corresponding 
+
+<end_of_turn> (inclusive) receive labels, and all other tokens (user turns, tool responses, <bos> , turn delimiters outside model turns) are masked with −100 . Of the 6,579 training examples, 6,445 contain two model turns (one code execution, one finish_session call), 118 contain three model turns (an intermediate code revision), and 16 contain four or five. Median token count is 302 (mean 330, range 113–6,025). 
+
+A.4 Relationship to SST V1 
+
+An earlier version of the SST demonstrated the state stream as a parameter-free intervention on frozen pretrained weights [ 17 ], but used a fixed scalar blend coefficient across all dimensions, required multiple iterations per token just to produce stable output, and stored an array of prior states in the LSC of which only the most recent was ever used for blending, leaving earlier entries unused in memory. The present work addresses all three limitations: per-dimension learned blend coefficients replace the fixed scalar, the unnecessary array accumulation in the LSC is removed, and a parallel training procedure for the nonlinear recurrence (Section 3) makes the SST fully trainable for the first time. Training produces stable single-pass generation, freeing iterations from a stability requirement into a deliberation choice. 
+
+A.5 Architectural ablations 
+
+Two architectural ablations isolate specific design choices. Both ablations use the same training pipeline, dataset, and hyperparameters as the main SST (Table 8); the only varied factor in each case is the architectural change described. 
+
+Alpha initialisation. The SST initialises the per-dimension blend logits at θinit = −1.8, corresponding to αinit ≈
+
+0.027 (Section 2.1). This value was identified through untrained ablation on two different base models and is validated by training an ablation checkpoint with the logit bias removed (uniform initialisation at σ(0) = 0 .5, midpoint of the 
+
+[αmin , α max ] range). Table 9: Alpha initialisation ablation on GPQA-Diamond (staged compute, imax = 4 ). The unbiased initialisation underperforms the biased initialisation at every iteration stage. At iter = 1 , the unbiased SST falls below the matched fine-tuned baseline ( 44 .4% vs 45 .96% ), meaning the state stream without a biased initialisation hurts single-pass performance.                      
+
+> iter = 1 iter = 2 iter = 3 Staged imax =4
+> SST ( θinit =−1.8)51 .01% 56 .57% 57 .58% 61 .11 %
+> SST (no bias) 44 .4% 50 .5% 54 .0% 56 .6% ∆−6.6pp −6.1pp −3.6pp −4.5pp
+
+The unbiased checkpoint also trained to higher loss ( 0.162 vs 0.152 ) and higher validation loss ( 0.151 vs 0.147 ), and produces qualitatively degraded output (repetition loops, attention attractors, degenerate token sequences). A biased initialisation is necessary for stable operation of the state stream, though other bias values may yield better performance. 
+
+Linked blend with EMA state propagation. In the SST, each position’s post-feedforward output fully replaces the previous state (Eq. 4), and the blend coefficient αl controls only how much of the stored state is read into the current computation. The blend coefficients are independent per-layer vectors, so each of the 62 layers learns its own per-dimension blend pattern. An alternative variant changes both decisions. First, the state update becomes an exponential moving average: 
+
+Cl,t = αl ⊙ Cl,t −1 + (1 − αl) ⊙ ol,t , retaining a fraction of the previous state rather than replacing it. Second, the same αl is used for both the update retention and the read blend, linking the two operations through a single parameter. This variant was trained with the same pipeline and dataset. 28 Table 10: Linked blend EMA variant on GPQA-Diamond (staged compute, imax = 4 ). The EMA variant drops below the matched baseline at iter = 1 (40 .4% vs 45 .96% ) but recovers at iter = 2 (51 .0% ). Same training method, different architecture; the instability at iter = 1 isolates the architectural contribution of the direct-update, per-layer-independent design. 
+
+iter = 1 iter = 2 Staged imax =4 
+
+SST (direct update, per-layer α) 51 .01% 56 .57% 61 .11 %
+
+Linked blend EMA variant 40 .4% 51 .0% 51 .0% 
+
+Matched fine-tuned baseline 45 .96% — —
+
+A.6 Training curves 100 200 300 400 Training Step 0.00.51.01.52.02.53.0Loss 
+
+> SST Baseline FT
+
+(a) Training loss 100 200 300 400 Training Step 0.20.40.60.8Validation Loss  
+
+> SST Baseline FT
+
+(b) Validation loss 
+
+Figure 8: SST vs matched fine-tuned baseline. Training loss as raw values (light) and exponential moving average (solid); validation loss as evaluated. The baseline converges at a comparable validation loss, confirming it is a fair comparator; the ablation result itself is the SST–baseline delta on downstream evaluations (Section 5). 100 200 300 400 Training Step 0246810 Loss    
+
+> SST ( θinit =−1.8) No bias ( θinit = 0)
+
+(a) Training loss 100 200 300 400 Training Step 0.25 0.50 0.75 1.00 1.25 1.50 Validation Loss     
+
+> SST ( θinit =−1.8) No bias ( θinit = 0)
+
+(b) Validation loss 
+
+Figure 9: SST vs no-bias ablation variant. The unbiased checkpoint trains to higher loss and underperforms on downstream evaluations (Table 9), confirming that a biased initialisation is necessary for stable state stream operation. 29 100 200 300 400 Training Step 0.00.51.01.52.02.53.0Loss (a) Training loss 100 200 300 400 Training Step 0.20.40.60.8Validation Loss (b) Validation loss 
+
+Figure 10: SST training and validation loss (standalone). 100 200 300 Training Step 0.00.51.01.52.02.5Loss 
+
+> (a) Training loss
+
+50 100 150 200 250 300 Training Step 0.20.30.40.50.60.7Validation Loss (b) Validation loss 
+
+Figure 11: Matched fine-tuned baseline training and validation loss (standalone). 
+
+30 A.7 Per-layer alpha analysis 100 200 300 400 Training Step 0.024 0.026 0.028 0.030 0.032 0.034   
+
+> α Min–Max Mean ±1 std Mean
+
+Figure 12: Global alpha statistics over training. Evolution of per-dimension blend coefficient statistics across training steps, showing that the alpha values adapt throughout training rather than remaining at their initialisation. The following figures provide the detailed per-layer analysis of the learned blend coefficients summarised in Section 3.3. Figures 13 and 14 show four representative layers; Figures 16 and 17 extend these to all 62 layers. Figure 15 shows the magnitude of adaptation as a function of depth. Layer 0 Layer 30 Layer 40 Layer 61 
+
+> 0.026 0.027 0.028 0.029
+> α
+
+Figure 13: Learned αl at four representative depths. Each panel shows one layer’s 5,376-dimensional blend coefficient vector reshaped into a 64 × 84 grid with the same hidden-dim index mapped to the same grid position in every panel. Colour encodes raw α on a shared scale (p1–p99 of the full 62-layer matrix). The full 62-layer version is given in Figure 16. Layer 0 Layer 30 Layer 40 Layer 61 
+
+> −0.002
+> −0.001 0.000 0.001 0.002
+> α − αinit
+
+Figure 14: Per-layer adaptation patterns at four representative depths. Each panel shows one layer’s deviation from initialisation, αl − αinit , on the same 64 × 84 hidden-dim reshape and for the same four layers as Figure 13. Red cells are dimensions the layer pushed above αinit ; blue, below; gray, near init. The full 62-layer version is given in Figure 17. 31 0 10 20 30 40 50 60 Layer 0.000 0.001 0.002 0.003 0.004 0.005 0.006 0.007   
+
+> |αl,d  − αinit |
+> 0–max |∆α|
+> 0–p99 0–p95 0–p90 0–p75 median |∆α|
+
+Figure 15: Per-layer specialisation profile across depth. Within-layer percentile bands of |αl,d − αinit | over the 5,376 hidden dimensions at each layer. The median (solid red) tracks aggregate adaptation per layer; the upper-percentile bands track the magnitude of the most-adapted dimensions. The four selected layers in Figures 13 and 14 (0, 30, 40, 61) are drawn from distinct phases of this profile. L0 L1 L2 L3 L4 L5 L6 L7                                                
+
+> L8 L9 L10 L11 L12 L13 L14 L15
+> L16 L17 L18 L19 L20 L21 L22 L23
+> L24 L25 L26 L27 L28 L29 L30 L31
+> L32 L33 L34 L35 L36 L37 L38 L39
+> L40 L41 L42 L43 L44 L45 L46 L47
+> L48 L49 L50 L51 L52 L53 L54 L55
+> L56 L57 L58 L59 L60 L61
+> 0.0255 0.0260 0.0265 0.0270 0.0275 0.0280 0.0285 0.0290
+> α
+
+Figure 16: Learned alpha values, all 62 layers. Full version of Figure 13. Each panel shows one layer’s 5,376-dimensional alpha vector reshaped into a 64 × 84 grid, same hidden-dim mapping and shared colour scale (raw α values, p1–p99 range of the full matrix). Per-layer means remain close to αinit ≈ 0.027 at every layer; per-layer variation lives in the per-dimension texture rather than overall magnitude. The deviation-from-init view (Figure 17) removes the shared magnitude and makes this variation directly visible. 32 L0 L1 L2 L3 L4 L5 L6 L7                                                
+
+> L8 L9 L10 L11 L12 L13 L14 L15
+> L16 L17 L18 L19 L20 L21 L22 L23
+> L24 L25 L26 L27 L28 L29 L30 L31
+> L32 L33 L34 L35 L36 L37 L38 L39
+> L40 L41 L42 L43 L44 L45 L46 L47
+> L48 L49 L50 L51 L52 L53 L54 L55
+> L56 L57 L58 L59 L60 L61
+> −0.002
+> −0.001 0.000 0.001 0.002
+> α − αinit
+
+Figure 17: Per-layer adaptation patterns, all 62 layers. Full version of Figure 14. Each panel shows one layer’s deviation αl − αinit on the same 64 × 84 hidden-dim reshape with a shared diverging colour scale matching the main-text selected-layer figure. The shallow plateau (approximately L0–L15), rising regime (L15–L30), mid-stack peak (L30–L35), partial quiescence (L36–L42), slow climb (L42–L57), and sharp end-stack acceleration (L57–L61) are all visible across the full layer stack. 
+
+## B Two-pass parallel training 
+
+B.1 Parallelisation of the state stream recurrence 
+
+During inference, the cross-position state dependency is not a problem. Autoregressive generation processes one token at a time; each position’s state is computed and stored before the next position begins. During training, the model must process all positions in a sequence simultaneously to make efficient use of GPU parallelism. The sequential state dependency prevents this: a naive implementation would require T serial forward passes through every layer, one per position, reducing training to the speed of sequential inference. This kind of sequential dependency is not unique to the state stream; standard autoregressive language modelling faces the same structural problem over the token sequence itself. For token prediction, the dependency is resolved at training time by substituting ground-truth tokens. No such ground truth exists for the state stream; the states must be computed by the model. The obstacle is specifically the feedforward network in the recurrence loop. The state at position t is not a linear function of the state at position t−1; it is the output of a nonlinear transformation with unique parameters at every layer (Eqs. 2–4). The vertical cascade couples these into L nonlinear recurrences, each dependent on the layer below. 33 Backpropagation through time. The standard approach to training recurrent systems is to unroll the recurrence and backpropagate through time. In architectures with depth-wise recurrence, such as Universal Transformers, Geiping et al., and Coconut, the recurrence is a loop at each position: a weight-shared block iterates in depth, and the resulting state is discarded after a token is emitted. The next position starts fresh. The recurrence creates no cross-position dependencies, so teacher forcing handles positions and truncated BPTT handles the bounded iteration depth. The SST’s recurrence is fundamentally different: the latent state at each layer persists across positions indefinitely within a generation sequence, creating a dependency chain that spans the full sequence length. Because each layer’s recurrent state feeds into the next layer’s attention, these L horizontal chains are coupled through the vertical cascade and must be unrolled together across the entire sequence. BPTT through this recurrence requires unrolling all L coupled per-layer recurrences across the entire training sequence, not just a bounded number of iterations per position. This is not impossible, but it is prohibitively expensive and slow. Truncated BPTT limits the unroll window but does not change the fundamental structure of the problem: the computation remains serial within each window. 
+
+Implicit fixed-point methods. Methods such as DEQ [ 47 ] avoid unrolling entirely by differentiating through an equilibrium using the implicit function theorem. This requires the architecture to be designed so that the recurrence converges to a fixed point. HRM [ 15 ], for example, achieves this by having a small weight-shared module iterate within a controlled cycle until convergence, then applying the IFT at the equilibrium to obtain gradients without backpropagating through the iteration history. The SST’s recurrence is across positions, not repeated application of the same function; each position receives a different post-attention input, and the per-layer feedforward networks are unconstrained pretrained nonlinearities with no contraction guarantee. There is no equilibrium to differentiate through. 
+
+Newton-based parallel solvers. DEER [ 48 ] and ParaRNN [ 49 ] cast nonlinear recurrences as systems of equations and solve them via Newton’s method with parallel reductions. These methods require the Jacobian of the recurrence to have exploitable structure (diagonal or block-diagonal) for the Newton step to remain efficient. DEER has been extended with quasi-Newton approximations and Levenberg-Marquardt stabilisation, and ParaRNN scales the approach to 7B-parameter models by exploiting the sparsified Jacobians of custom GRU and LSTM variants. The SST’s feedforward networks use dense d × 4d gated projections, producing a full d × d Jacobian that is neither diagonal nor block-diagonal. 
+
+Associative scan. For linear recurrences of the form st = Atst−1 + Btxt, the sequential dependency can be eliminated entirely through an associative scan, reducing T serial steps to O(log T ) parallel operations. This is the mechanism underlying S4 [ 20 ], S5 [ 21 ], and Mamba [ 16 ]. The SST’s recurrence is not linear; the feedforward nonlinearity breaks the associative structure required by the scan. 
+
+B.2 Why two passes, not more 
+
+The two-pass method approximates iter = 1 : the scan shifts each position’s pass-1 output to the next position, so the model is trained to produce correct output from a single blend-feedforward-update cycle. A natural question is whether additional passes could approximate higher iteration depths, exposing the model to iteration during training and enabling end-to-end learning of a halting criterion. However, under teacher forcing the model sees ground-truth tokens at every position regardless of iteration depth. Training with n passes could teach the model to produce correct output at the nth iteration given ground-truth context, incentivising it to defer reasoning to later iterations rather than resolving it in the first pass. The result could be a model that requires n iterations to perform well, destroying single-pass efficiency. By training at iter = 1 equivalent, the two-pass method forces the model to be maximally capable on a single forward pass. Iteration at inference is then additional compute with the potential to improve an already-capable base, rather than a requirement for baseline competence. The consequence is that no halting criterion can be learned end-to-end during supervised fine-tuning; adaptive depth selection must be added separately, either post-hoc (Section 6) or through reinforcement learning. 
+
+B.3 Two-pass approximation error bound 
+
+The two-pass training method (Section 3.1) substitutes pass-1 outputs for the true sequential states. This subsection derives the O(α2) error bound on the resulting approximation. 
+
+Setup. At layer l, position t, the true sequential recurrence computes: 
+
+˜hl,t = ( 1 − αl) ⊙ hl,t + αl ⊙ RMSNorm( Cl,t −1) (9) 
+
+Cl,t = ˜hl,t + FFN l(RMSNorm( ˜hl,t )) (10) 34 where Cl,t −1 depends on the full recursive history. The two-pass method substitutes the pass-1 output o(1) 
+
+> l,t −1
+
+, computed without the blend, for Cl,t −1.
+
+Step 1: the blend perturbation is O(α). Pass 1 computes o(1)  
+
+> l,t
+
+with the blend disabled, so the FFN input is hl,t . The true sequential computation blends before the FFN: 
+
+˜hl,t = hl,t + αl ⊙  RMSNorm( Cl,t −1) − hl,t 
+
+
+
+The difference between the blended and unblended FFN inputs is αl ⊙ (RMSNorm( Cl,t −1) − hl,t ). Since αl ∈
+
+[0 .024 , 0.035] (learned range from the trained checkpoint; architectural constraint [αmin , α max ] = [0 .015 , 0.10] ) and the state-hidden difference is bounded by the activation scale, this perturbation is O(α).
+
+Step 2: the FFN + residual preserves the O(α) bound. The post-FFN computation is f (˜h) = ˜h +FFN l(RMSNorm( ˜h)) . The FFN in Gemma 3 is a gated projection: 
+
+FFN( x) =  GELU tanh (xWg ) ⊙ xWu
+
+Wd
+
+where Wg , W u ∈ Rd×4d and Wd ∈ R4d×d. We establish that FFN l has a finite Lipschitz constant Ll by verifying each component operation: • Linear maps x 7 → xW are Lipschitz with constant equal to the spectral norm σ1(W ), the largest singular value [ 50 ]. This is finite for any matrix with finite entries. • GELU (tanh approximation) has Lipschitz constant ≈ 1.129 , attained at x = √2 where the derivative Φ( x) + xϕ (x)
+
+reaches its maximum. The tanh approximation preserves this bound. • RMSNorm [ 51 ] maps x 7 → γ ⊙ x/RMS( x), projecting onto a hypersphere of radius √d (pre-gamma) for any nonzero input. This constrains the output to a bounded domain regardless of input magnitude, and the radial projection is Lipschitz on {x : ∥x∥ ≥ r} for any r > 0 (satisfied by non-degenerate hidden states in trained transformers). • Element-wise gating product a ⊙ b: the product of two Lipschitz functions is Lipschitz on a bounded domain with constant Mf Lg + Mg Lf , where Mf , M g are function bounds and Lf , L g are Lipschitz constants. The bounded domain is enforced by the preceding RMSNorm. (This is false on unbounded domains; e.g. f (x) = x is Lipschitz but 
+
+f (x)2 is not.) • Composition: the composition of finitely many Lipschitz functions is Lipschitz with constant equal to the product of the individual constants. • Residual connection: f (x) = x + g(x) has Lipschitz constant 1 + Lg by the triangle inequality [52]. Since all component constants are finite, the full post-FFN computation f has finite Lipschitz constant 1 + Ll:
+
+∥f (˜hl,t ) − f (hl,t )∥ ≤ (1 + Ll) ∥˜hl,t − hl,t ∥
+
+Since ∥˜hl,t − hl,t ∥ = O(α) from Step 1, the post-FFN output difference is O(α):
+
+o(1)  
+
+> l,t
+
+= Cl,t + O(α)
+
+The argument holds for any Lipschitz activation function. SiLU has Lipschitz constant ≈1.100 and ReLU has L = 1 ,so the bound applies to any pretrained backbone the SST could be applied to. 
+
+Step 3: blending the approximation gives O(α2) error. Pass 2 blends the pass-1 output (the O(α) approximation) with weight αl:
+
+αl ⊙ RMSNorm  o(1) 
+
+> l,t −1
+
+ = αl ⊙ RMSNorm  Cl,t −1 + O(α)
+
+RMSNorm is Lipschitz, so RMSNorm( C + O(α)) = RMSNorm( C) + O(α). Multiplying by αl = O(α):
+
+αl ⊙ O(α) = O(α2)
+
+The error in the pass-2 blended hidden state relative to the true sequential computation is O(α2). With learned 
+
+α ∈ [0 .024 , 0.035] , α2 ∈ [5 .8 × 10 −4, 1.2 × 10 −3].35 Scope of the bound. This analysis assumes fixed weights. In practice, the LoRA adapters, blend parameters, and state normalisation weights are trained jointly across both passes, with gradients flowing from pass 2 through the scan into pass 1 (Section 3.1). The two passes co-adapt, tightening the effective approximation beyond the fixed-weight bound. 
+
+## C Extended mechanism analysis 
+
+C.1 Top-k overlap metric 
+
+Given two hidden state vectors u, v ∈ Rd, the top-k overlap is the fraction of the k largest-magnitude dimensions shared between them: 
+
+overlap k(u, v) = |topk( u) ∩ topk( v)|
+
+k ,
+
+where topk( x) returns the set of indices of the k dimensions with the largest |xi|. This measures which dimensions are most active in each representation, ignoring the sign and magnitude of the activations themselves. Overlap of 1.0 means the two vectors have the same k most-active dimensions; overlap of 0.0 means the active sets are disjoint. We use k = 1024 throughout, approximately 19% of the d = 5 ,376 hidden dimensions. This choice is large enough that stable positions consistently produce overlap above 0.99 (the metric is not saturated), while sensitive enough that basin shift positions drop sharply to as low as 0.30 . Alternative values of k produce the same qualitative separation between stable and low-overlap positions; k = 1024 provides the widest dynamic range in the separation. 
+
+C.2 Basin shift classification via GMM 
+
+The threshold separating stable from basin-shift positions in Sections 4.1–4.2 is derived from a two-component Gaussian mixture model fitted to the full top-1024 overlap distribution. The two-component choice reflects the bimodal structure visible in the raw overlap data of Figure 3: stable positions with overlap near 1.0 across every layer, and low-overlap positions appearing as vertical streaks of dark cells cascading through the layer stack. For all 198 questions, 10 
+
+generated positions, and 62 layers, the iter = 1 vs iter = 4 overlap is computed, yielding N = 122 ,760 values. A two-component GMM is fitted via expectation-maximisation (scikit-learn GaussianMixture , seed 42 , 500 maximum iterations):          
+
+> Component Mean Std Weight Stable 0.990 0.004 86 .2%
+> Low-overlap 0.869 0.092 13 .8%
+
+The crossover threshold ( 0.976 ) is the overlap value at which the two components have equal posterior probability. The order-of-magnitude difference in standard deviation ( 0.004 vs 0.092 ) reflects the two qualitatively different regimes: stable positions cluster tightly near 1.0, while low-overlap positions span a wide range of divergence magnitudes. 
+
+Robustness to component count. As a sanity check on the two-component fit, GMMs were also fitted at 3–5
+
+components. The additional components subdivide the low-overlap tail into sub-populations of different magnitudes, consistent with the content-dependent variation described in Section 4.1 (per-question low-overlap counts ranging from 
+
+1 to 7, per-position rates varying from 4% to 42% , overlap values spanning 0.30 –0.97 ). The crossover threshold varies by less than 0.003 across the 2–5 component fits, so the partition between stable and basin-shift positions is robust to component count. 36 0 1 2 3 4 5 6 7 8 9
+
+Output Position 
+
+> 010 20 30 40 50 60
+> Layer
+
+Top-1024 overlap: iter=1 vs iter=4 hidden states (representative question, 10 positions) 
+
+> 0.60 0.80 0.90 0.95 0.976 1.00
+> Top-1024 Overlap
+
+Figure 18: Top-1024 overlap heatmap, zoomed to the first 10 generated positions (companion to Figure 3). Same metric and threshold; a separate question chosen to display the basin-shift cascade structure at the per-position scale. Position-0 universal basin shift, content-dependent shifts at later positions, stable positions in between. 0.50.60.70.80.91.0                         
+
+> Top-1024 Overlap
+> Pos. 0 ( N=198)
+> 0.50.60.70.80.91.0
+> Pos. 1 ( N=35)
+> 0.50.60.70.80.91.0
+> Pos. 2 ( N=22)
+> 0.50.60.70.80.91.0
+> Pos. 3 ( N=2)
+> 0.50.60.70.80.91.0
+> Pos. 4 ( N=2)
+> 020 40 60
+> Layer
+> 0.50.60.70.80.91.0
+> Top-1024 Overlap
+> Pos. 5 ( N=8)
+> 020 40 60
+> Layer
+> 0.50.60.70.80.91.0
+> Pos. 6 ( N=10)
+> 020 40 60
+> Layer
+> 0.50.60.70.80.91.0
+> Pos. 7 ( N=27)
+> 020 40 60
+> Layer
+> 0.50.60.70.80.91.0
+> Pos. 8 ( N=28)
+> 020 40 60
+> Layer
+> 0.50.60.70.80.91.0
+> Pos. 9 ( N=24)
+
+Figure 19: Layer profile at basin shift positions, all sequence positions. Same metric as Figure 4, shown separately for each of the first 10 generated positions. For N ≥ 5: median, IQR, p10–p90, and p5–p95 bands. For N < 5: individual traces. Position 0 is universal and qualitatively different from all others, with the representational reorganisation spanning the full layer stack. Positions 3–4 are near-immune to basin shifts; their rare occurrences barely cross the threshold. Position 2 is bimodal: most occurrences are shallow, but a content-dependent subset shows reorganisation as deep as position 0 (p5–p95 band reaching below 0.4). Positions 5–9 share a common structure: near-flat early layers, onset at the layer 25 feedforward activity band, and a trough in the middle-to-late layers. The character and depth of the reorganisation varies by question content within each position, as reflected in the width of the percentile bands. 37 0.60.70.80.91.0                          
+
+> Top-1024 Overlap
+> Pos 1–9 ( N=3) Pos 10–49 ( N=9) Pos 50–99 ( N=16)
+> 010 20 30 40 50 60
+> Layer
+> 0.60.70.80.91.0
+> Top-1024 Overlap
+> Pos 100–199 ( N=21)
+> 010 20 30 40 50 60
+> Layer
+> Pos 200–399 ( N=47)
+> 010 20 30 40 50 60
+> Layer
+> Pos 400–511 ( N=22)
+> Layer profile at basin shift positions across 512 generated tokens (single question, iter 1 vs 4)
+
+Figure 20: Layer profile over 512 generated positions. Same metric as Figure 4, extended to 512 positions of generated output. The punctuated equilibrium structure persists well beyond the 10-position window analysed in Section 4.1, with basin shift positions continuing to appear at content-dependent intervals throughout the generation. 
+
+C.3 Logit dynamics methodology 
+
+The logit dynamics analysis of Section 4.2 uses two complementary comparison methods, determined by whether the token history is shared across the measurements being compared. 
+
+Cross-run comparisons (pre-divergence). At pre-divergence positions (defined in Section 4.1), the token history is identical across independent runs at different iteration depths, so any difference in the output distribution is causally attributable to the state stream. The analysis compares the final-iteration output of each independent run across all six pairwise comparisons ( 1v2, 1v3, 1v4, 2v3, 2v4, 3v4). Each comparison yields a set of clean position records; a position can be pre-divergence for one pair but not another, so each pair is tracked independently with its own clean range. The top-1 to top-2 logprob gap is measured in the lower-iteration run’s output distribution. Overlap regime (low-overlap or stable) is assigned per position using the top-1024 overlap from the higher-iteration run’s layer states, thresholded at 0.976 (Appendix C.2). Cross-run comparisons measure the total state stream effect: the combined consequence of additional vertical passes at the current position and the horizontal propagation of differently-iterated states from all prior positions. These two axes cannot be separated in the cross-run measurement (Section 4.1). The general characterisation of the phenomenon (1–2) uses all six pairs; the cross-run side of the posterior reorganisation comparison (5) restricts to the three 1→X pairs ( 1v2, 1v3, 1v4) to match the within-run structure where iter = 1 is always the baseline. 
+
+Within-run comparisons (all positions). Comparing between iterations within a single run isolates the local vertical iteration effect. Each run at iteration depth d stores the output distribution at every iteration from 1 to d; comparing iteration i to iteration j within the same run shares both the token history and the horizontally-propagated states from prior positions, since these are identical across all iterations within the run. Any difference is therefore attributable to the additional vertical passes at the current position alone. The within-run analysis uses all six structurally-matched comparisons: iter = 1 vs iter = 2 from the iter = 2 , 3, and 4 runs; iter = 1 vs iter = 3 from the iter = 3 and 4 runs; and iter = 1 vs iter = 4 from the iter = 4 run. Because all iterations within the same run share the same generated token sequence, within-run comparisons are not restricted to pre-divergence positions; all positions are valid. This produces a larger sample than the comparable cross-run analysis (which uses three 1→X pairs for structural equivalence) because each within-run 1vN comparison exists in every run that contains both iterations (giving six comparisons per question), and because cross-run must discard positions after the first argmax divergence where different runs have generated 38 different tokens. This method is used for the gap distributions (3) and posterior reorganisation (5) of Section 4.2, where the claim is about what each overlap regime does locally. 
+
+Within-run consecutive transitions. The later-iteration dynamics (6) of Section 4.2 use a separate within-run analysis: consecutive iteration pairings ( 1 → 2, 2 → 3, 3 → 4) within the iter = 4 run. This measures whether later vertical passes continue, reverse, or reinforce the changes made by earlier passes at the same position. The same token-history-sharing property applies. The per-token direction-consistency and residual-drift statistics in paragraph (6) additionally use a cross-run analysis restricted to the 950 positions that are pre-divergence for all three consecutive cross-run pairs simultaneously, where token history is shared across the four runs and the state stream therefore remains the sole source of variation. 
+
+C.4 Logit dynamics tables 
+
+Table 11: Argmax change rates by overlap regime (cross-run, all six pairs). Low-overlap positions are 3.8× more likely to change the argmax than stable positions.                    
+
+> Nrecords Argmax changes Rate [ 95% CI] Low-overlap 2,090 251 12 .0% [10 .7% ,13 .5% ]Stable 6,489 224 3.5% [3.0% ,3.9% ]Total 8,579 475 OR = 3 .82 ,p < 0.001
+
+Table 12: Exact tie rates and logprob shifts at argmax changes (cross-run, all six pairs). Only 11 .6% of argmax changes are exact ties; the remainder override a token with strictly higher probability.                          
+
+> Count Rate [ 95% CI] Exact ties (gap = 0 )55/475 11 .6% [8.8% ,14 .8% ]Non-ties (gap >0)420/475 88 .4% [85 .2% ,91 .2% ]
+> Logprob shift of top-1 token between iteration depths
+> At argmax changes median 0.87 nats ( e0.87 = 2 .39 ×), mean 0.92 nats At non-changes median 0.05 nats ( e0.05 = 1 .05 ×), mean 0.12 nats
+
+Table 13: Convergent reasoning on GPQA-Diamond. Among the 60 questions correct at all four iteration depths, breakdown by the number of unique text traces across the four depths. A question demonstrates convergent reasoning only if all four depth outputs are (a) the correct answer and (b) pairwise distinct text traces. The observed rate is compared against the chance baseline of independent random 4-option guessing across the four depths.                     
+
+> Count Questions correct at all four depths 60 with 4 pairwise distinct text traces (convergent reasoning) 54
+> with 3 unique text traces (one depth pair identical) 6with 2 or fewer unique text traces (deterministic repetition) 0Observed convergent-reasoning rate 54 /198 = 27 .27%
+> Bootstrap 95% CI on observed rate ( 10 ,000 resamples) [21 .21% ,33 .35%]
+> Chance baseline: P(all 4 correct ) = (1 /4) 4= 1 /256 0.39%
+> Null expected count out of 198 0.77
+> Observed / chance ratio 69 .82 ×
+> Binomial exact test (one-sided greater) p= 8 .02 ×10 −82
+
+39 Table 14: Position 0 divergence patterns. All 198 questions show a basin shift at position 0, producing three distinct downstream outcomes. 
+
+Outcome N %
+
+All 198 questions show basin shift at position 0
+
+Diverge at position 0 75 37 .9% 
+
+Diverge at positions 1–9 66 33 .3% 
+
+Diverge beyond 10-position window 57 28 .8% 
+
+All 57 late-divergence confirmed different text at different depths 
+
+Table 15: Basin shift activity across consecutive iteration pairings. Within the iter =4 run ( N = 1 ,980 ), basin shifts can be sustained, one-shot, or late-onset. 
+
+Basin shift activity (iter =4 run, N = 1 ,980 )
+
+Sustained (all 3 pairings) [ 95% CI] 186 (9.4% [8.1% , 10 .8% ]) At 1→2 only 226 (11 .4% [10 .1% , 12 .9% ]) New at 2→3 (stable at 1→2) 15 (0.8% [0.4% , 1.3% ]) New at 3→4 (stable at 1→2) 14 (0.7% [0.4% , 1.2% ]) 
+
+Table 16: Later-iteration computation by regime. Cumulative logprob shift trajectories, argmax reinforcement at basin shift positions, and question-level stabilisation. 
+
+Basin shift Stable 
+
+Cumulative logprob shift direction across iterations 2 → 3 → 4†
+
+N (logit trajectories) 15,647 31,257 Cumulative ratio ( 2→4 / 2→3) [ 95% CI] 1.081 [1.062 , 1.101 ] 0.878 [0.867 , 0.888 ]Logits continuing same direction ( > 1.0) 27 .3% 19 .2% 
+
+Logits reversing > 50% of shift — 31 .9% 
+
+Logits retaining within 10% — 33 .5% 
+
+Logits losing 10% –50% — 15 .4% 
+
+Direction reversal rate — 61 .4% (N = 46 ,904 )Cumulative 2→4 / 2→3 (all positions) 0.95 
+
+Regime difference p < 10 −56 , CIs do not overlap 
+
+Basin shift argmax reinforcement ( N = 81 positions changed at 1→2)‡
+
+Re-changed at 2→3 [95% CI] 4/81 (4.9% [1.4% , 12 .2% ]) Re-changed at 3→4 [95% CI] 5/81 (6.2% [2.0% , 13 .8% ]) Later-transition argmax changes (within iter =4 run) 37 (19 at 2→3, 18 at 3→4; vs 88 at 1→2)
+
+Argmax stabilisation after 1 → 2 change (cross-run, N = 139 questions) 
+
+Changed at 1→2, then stabilised 113 /139 (81 .3% )Changed at 1→2, further changes 26 /139 (18 .7% )   
+
+> †Cross-run, restricted to positions pre-divergence across all three consecutive run pairs ( N= 950 ). ‡Within iter =4 run.
+
+40 Table 17: Posterior reorganisation at low-overlap argmax changes. Within-run isolates local iteration; cross-run measures total state stream effect. 
+
+Low-overlap argmax changes Within ( N = 439 ) Cross ( N = 237 )
+
+Top-100 token replacement 
+
+Mean [ 95% CI] 53 .8 [52 .9, 54 .7] 53 .3 [52 .1, 54 .5]p25 / med / p75 47 / 54 / 60 47 / 54 / 59 Range 1–76 13–76 
+
+Top-5 tokens that remain in top-100 
+
+Rank shift (med / p95 / max) 1.0 / 6.0 / 36 1.0 / 6.0 / 36 
+
+Logprob shift range (nats) [−3.78 , +6 .82] [−3.78 , +6 .82] 
+
+Argmax suppression (nats) 
+
+Mean [ 95% CI] −1.21 [−1.25 , −1.17 ] −1.16 [−1.22 , −1.10 ]Median −1.11 −1.07 
+
+IQR [−1.55 , −0.88] [−1.53 , −0.82] 
+
+Range [−2.68 , −0.06] [−2.68 , −0.13] 
+
+Every instance negative Yes Yes 
+
+New argmax winner 
+
+Rank in original dist 1–50 (med 4) 1–50 (med 4) In original top-100 439/439 237/237 Tokens replaced Mann-Whitney p < 0.001 , suppression p < 0.001 .
+
+Table 18: Posterior reorganisation at stable argmax changes. The within-run/cross-run divergence (median 1 vs 20 tokens replaced) isolates horizontal propagation from upstream basin shifts. 
+
+Stable argmax changes Within ( N = 81 ) Cross ( N = 180 )
+
+Top-100 token replacement 
+
+Mean [ 95% CI] 1.0 [0.8, 1.2] 23 .0 [21 .5, 24 .5]p25 / med / p75 0 / 1 / 2 15 / 20 / 28 Range 0–3 10–56 
+
+Top-5 tokens that remain in top-100 
+
+Rank shift (med / p95 / max) 0.0 / 1.0 / 2 1.0 / 3.0 / 76 
+
+Logprob shift range (nats) [−0.17 , +0 .16] [−3.41 , +7 .46] 
+
+Argmax suppression (nats) 
+
+Mean [ 95% CI] −0.068 [−0.073 , −0.062 ] −0.623 [−0.701 , −0.545 ]Median −0.0625 −0.44 
+
+IQR [−0.078 , −0.055] [−0.80 , −0.30] 
+
+Range [−0.16 , −0.02] [−3.41 , +0 .07] 
+
+Every instance negative Yes No 
+
+New argmax winner 
+
+Rank in original dist 2 (always) 1–4 (med 2) In original top-100 81/81 180/180 Tokens replaced Mann-Whitney p < 0.001 , suppression p < 0.001 .
+
+Table 19: Low-overlap positions, all (including non-flip). Token replacement and argmax change rates across the full population. 
+
+Low-overlap all positions Within ( N = 2 ,101 ) Cross ( N = 1 ,046 )
+
+Top-100 token replacement 
+
+Mean [ 95% CI] 32 .7 [31 .6, 33 .8] 48 .2 [47 .4, 49 .0]p25 / med / p75 3 / 46 / 57 41 / 50 / 57 Range 0–76 11–80 Argmax change rate [ 95% CI] 20 .9% [19 .2, 22 .7] 22 .7% [20 .2, 25 .3]
+
+41 Table 20: Stable positions, all (including non-flip). The within-run/cross-run gap (median 1 vs 20) confirms horizontal propagation dominates stable-position reorganisation.                       
+
+> Stable all positions Within ( N= 9 ,779 )Cross ( N= 1 ,885 )
+> Top-100 token replacement
+> Mean [ 95% CI] 1.3[1.3,1.3]22 .0[21 .6,22 .5]p25 / med / p75 1 / 1 / 2 16 / 20 / 26 Range 0–18 7–63 Argmax change rate [ 95% CI] 0.8% [0.7,1.0]9.5% [8.3,11 .0]
+
+Table 21: Causal ordering of hidden state change and argmax divergence. Low overlap always precedes or coincides with the first argmax disagreement; no exceptions in 198 questions.          
+
+> Group NPattern Simultaneous (low overlap + argmax flip at pos 0) 75 37 .9%
+> Low overlap precedes argmax flip (1–9 pos earlier) 66 33 .3%
+> Low overlap at pos 0, divergence beyond window 57 28 .8%
+> Exceptions (argmax flip before low overlap): 0/198
+
+Table 22: Gap distributions at argmax-changing positions by regime (within-run). Low-overlap positions override large gaps; stable positions change only at exact ties or the minimum representable gap.                                                                
+
+> Within-run (iter =1 vs iter =2 ,3,4)Low-overlap ( N= 439 )Stable ( N= 81 )Exact ties (gap = 0 ) [ 95% CI] 5.0% [3.2% ,7.5% ]54 .3% [42 .9% ,65 .4% ]Gap <0.25 nats [ 95% CI] 15 .3% [12 .0% ,19 .0% ]100% [95 .5% ,100% ]Gap <1.0nat [ 95% CI] 39 .0% [34 .4% ,43 .7% ]100% [95 .5% ,100% ]Gap >1.0nat [ 95% CI] 58 .3% [53 .5% ,63 .0% ]0% [0% ,4.5% ]Mean gap (nats) [ 95% CI] 1.61 [1.49 ,1.74 ]0.057 [0.044 ,0.071 ]Std 1.34 0.062
+> Range [0 .00 ,6.375] [0 .00 ,0.125]
+> Gap: Mann-Whitney p < 0.001 . Exact tie rate: Fisher’s exact OR = 0 .044 ,p < 0.001 .
+
+C.5 Blend perturbation exceeds bf16 precision Null hypothesis. The between-iteration hidden state differences are deterministic floating point error propagation through the forward pass, not real FFN computation on different inputs. 
+
+bf16 machine epsilon. The gap between 1.0 and the next representable bf16 value, computed via 
+
+torch.nextafter(1.0, 2.0) in bf16, is exactly 2−7 = 1 /128 = 0 .0078125 . Adding 2−7 to 1.0 in bf16 pro-duces 1.0078125 ; adding 2−8 produces 1.0 (the increment vanishes). Machine epsilon is therefore ϵ = 2 −7, and the maximum relative rounding error on a value x is |x| × ϵ.
+
+Analytical bound from the learned weights. The blend (Eq. 2) modifies the FFN input at layer l, dimension d by 
+
+αl,d × (RMSNorm( Cl,t −1) − hl,t )d. For this perturbation to be indistinguishable from bf16 rounding error on hl,t,d :
+
+αl,d × | ∆d| ≤ ϵ × | hl,t,d |
+
+In the most favourable case for the null ( |∆d| = |hl,t,d |), the activation magnitude cancels and the condition reduces to αl,d ≤ ϵ. The 333 ,312 learned blend coefficients were extracted from the trained checkpoint by computing 
+
+αl,d = αmin + ( αmax − αmin ) · σ(θl,d ) from the stored logit vectors θl,d at each of the 62 layers. They range from 0.024 
+
+to 0.035 (p1–p99: 0.025 –0.029 ). The minimum value is 3.08 ϵ. Zero of the 333 ,312 values fall below 3ϵ. The blend coefficient alone exceeds bf16 precision at every dimension of every layer, establishing that whenever the state-hidden difference ∆d is non-trivial, the perturbation to the FFN input is above the precision floor. 42 Empirical measurement at basin shift positions. The analytical bound establishes that the blend coefficient is above precision. The empirical measurement confirms that the realised perturbation (blend coefficient times state-hidden difference, propagated through the FFN and vertical cascade) exceeds precision by a wide margin at the positions that drive the largest representational changes and the most consequential downstream effects on the output distribution. The measurement is restricted to basin shift positions (top-1024 overlap < 0.976 ; Section 4.1). This restriction requires justification because it could be mistaken for selecting positions where deltas are large then measuring that deltas are large. The two metrics are structurally independent: the basin shift classification measures set membership (which dimensions appear in the top-1024 by magnitude, Appendix C.1), while the precision test measures magnitude ratio (the absolute delta at each dimension divided by the bf16 rounding error at that dimension’s activation scale). A position can have low overlap (many dimensions swap in and out of the top-1024 ) while having small absolute deltas (the swapping dimensions have similar magnitudes), and vice versa. Basin shift positions are where the causal claim of Section 4.1 applies; these are the positions where the state stream reorganises the representation, so they are where the precision question is relevant. Relatively stable positions also contribute computational work (Section 4.2), but the basin shift positions drive the most consequential downstream changes and provide the strongest test of the null. For all 198 GPQA-Diamond questions, all 10 generated positions, the iter = 4 evaluation run stores per-iteration hidden states at all 62 layers. Basin shift positions are identified from the top-1024 overlap between iter = 1 and iter = 4 
+
+across layers 20 –35 (the peak FFN activity band), yielding 353 basin shift positions out of 1,980 total ( 17 .8% ). At each basin shift position, layer, and dimension, the ratio |δd|/(ϵ × | h(iter=1)  
+
+> l,d
+
+|) is computed, where δd is the between-iteration delta. This produces 117 ,588 ,532 per-dimension measurements across the iter 1 → 2 transition. 
+
+Null threshold. Under the rounding null, bf16 round-to-nearest produces rounding error bounded by 12 ϵ|x| per operation. The delta between two iterations involves two forward passes through the same FFN on slightly different inputs; the rounding errors are deterministic and correlated (same weights, same operations, same rounding mode). In the worst case of maximally anticorrelated rounding (one pass rounds up, the other rounds down on the same operation), the delta from rounding alone is at most ϵ|x| per dimension, so the ratio should be ≤1. Testing at a null proportion of 
+
+0.5 (at most half of dimensions exceed 1×) is therefore generous to the null. Table 23: Per-dimension delta-to-precision ratio at basin shift positions, iter 1 → 2. Ratio |δd|/(ϵ × | hd|) sum-marised across 353 basin shift positions × 5,376 dimensions at each layer. Under the rounding null, this ratio should be 
+
+≤1.                                           
+
+> Layer Median p25 p75 p95 Frac >1×p
+> 02.9×0.9×4.2×14 ×71 .9% <10 −300
+> 15 11 .1×3.2×31 .7×163 ×90 .4% <10 −300
+> 30 17 .7×4.6×49 .3×248 ×92 .6% <10 −300
+> 45 25 .2×5.7×56 .4×239 ×93 .3% <10 −300
+> 61 28 .9×4.8×83 .0×397 ×92 .0% <10 −300
+> All 62 layers 15 .4×91 .3% <10 −300
+
+Across all 62 layers combined, 91 .3% of per-dimension measurements exceed the bf16 precision floor (one-sided binomial test against null proportion 0.5, p < 10 −300 ; 95% CI on fraction above 1×: [0 .913 , 1.0] ). All 62 layers individually reach significance at p < 0.001 . The median ratio grows from 2.9× at layer 0 to 28 .9× at layer 61 ,confirming that the vertical cascade amplifies the perturbation through successive layers of FFN computation. Later iteration transitions ( 2 → 3, 3 → 4) show smaller margins at the early layers, consistent with the first iteration performing the bulk of the representational reorganisation, but remain significant ( p < 10 −300 , 62 .5% and 61 .4% above 
+
+1× globally) with all layers from 12 + reaching individual significance. 
+
+## D Evaluation methodology 
+
+The evaluation is built on a controlled architectural comparison between the SST and the matched fine-tuned baseline (Section 3.2). The two models share every aspect of training except the architecture itself. The data pipeline applies no shuffle; example ordering is a deterministic function of the training step, so both models process identical examples in identical order throughout training. This is stronger than seed-matched reproducibility, where a shared random seed produces the same shuffled sequence. Here there is no stochastic element in the data pipeline to control for. The resulting training dynamics confirm the design: both models follow the same loss trajectory at different magnitudes 43 (Figure 8), and the baseline converges at a comparable validation loss, establishing that the two models had equivalent training experiences and that any difference in downstream performance reflects the architectural change alone. All evaluation uses greedy argmax decoding, making generation fully deterministic. There are three reasons for this choice. First, it makes the matched comparison exact. Each model produces a single output per question, and each paired outcome is a direct observation of model capability. If the SST answers a question correctly and the baseline does not, that is a real discordant pair. Under stochastic evaluation, each model’s accuracy on a question becomes a probability estimated from finite samples, and the paired comparison must distinguish the true capability difference from estimation variance in both rates simultaneously. Greedy decoding eliminates this estimation layer; the comparison operates on actual outputs, not on estimates of output distributions. Second, the mechanistic analysis of Section 4 compares the model’s behaviour across iteration depths, and any stochastic element in generation would introduce variation indistinguishable from the state stream’s effect. Greedy decoding ensures that differences between iteration depths are causally attributable to the state stream alone. Third, greedy decoding is the strategy coherent with the SST’s reasoning mechanism. The state stream deliberates in latent space before committing to a token, reshaping the output distribution through the blend-feedforward-update cycle at every layer (Section 4.2). The argmax of the resulting distribution is the product of that deliberation. Stochastic sampling from the post-deliberation distribution would partially undo this by sometimes selecting tokens that the latent computation specifically moved away from. The remaining sources of non-determinism in argmax are tie-breaking among near-equal logits and batch-size-dependent numerical variation in scaled dot-product attention. We control for both by running all evaluations on the same physical GPU with a fixed batch size of 10. Empirical validation confirms identical outputs across repeated runs (Appendix E). The SST is evaluated at iteration depths 1 through 4. The architecture’s latent compute ceiling may be higher at deeper iteration counts, but each additional iteration is a full forward pass through a 27B-parameter model. Beyond 4 iterations, the compute cost per token exceeds what is practical for production inference. The evaluation focuses on the iteration range that is actually deployable, because reasoning improvements that require impractical compute budgets are not meaningful for a feasible architecture. Correctness adjudication for GSM8K, MATH-500, and GPQA-Diamond uses an LLM judge (Claude Opus 4.6) provided with the model’s full trace and the benchmark’s ground-truth answer; the judge emits a discrete correctness flag. We prefer this over regex-based answer extraction, which is brittle in the presence of natural-language reasoning chains and tends to produce false negatives whenever the model’s surface form deviates from the expected pattern. To control for judge stochasticity, every benchmark evaluation was scored twice and inspected for any answer-flip between the two runs; no answers flipped. Cases the judge did not flag as fully certain were then human-verified; across the four-benchmark evaluation this changed two questions, both instances where the judge had incorrectly marked a correct answer as wrong because the model’s solution disagreed with the benchmark’s labelled ground truth. HumanEval is scored by unit-test execution and does not use the judge. 
+
+## E Determinism validation 
+
+All evaluation uses greedy argmax decoding on the same physical GPU (NVIDIA RTX PRO 6000) with a fixed batch size of 10 (Section 5). The fixed batch size ensures that scaled dot-product attention follows the same kernel path on every run, eliminating batch-size-dependent numerical variation. To verify that the forward pass is also deterministic across runs at this configuration, we run two tests. First, a single GPQA-Diamond question is answered 5 times at iter = 4 with 1,024 tokens per run at batch size 1: all 5 runs produce identical token sequences. Second, 10 questions are generated as a batch of 10, 5 times at iter = 4 with 512 tokens per question: all 5 runs produce identical outputs across all 5,087 tokens per run. 
+
+## F Halting probe details 
+
+This appendix contains full tables and supporting data for the halting probe analysis of Section 6. 
+
+F.1 Probe training 
+
+Both the 10 -neuron reported probe and the 64 -neuron variant used for the mechanistic analysis are trained with the identical pipeline. Architecture: Linear(5376 , d ) → SiLU → Linear( d, 1) with d ∈ { 10 , 64 }. Optimiser: Adam at learning rate 10 −3, batch size 32 , 60 epochs, binary cross-entropy loss. Class balance: the minority class ( MUST HALT ) is duplicated to match majority count, then a weighted random sampler draws equal expected counts of each class. Random seed 42 . No regularisation beyond the bottleneck. Inference halts when the output logit exceeds 
+
+log((1 − 0.7) /0.7) .44 Training data comes from the 121 recoverable GPQA-Diamond questions (those with a correct iteration depth within 
+
+imax = 4 , identified from the staged compute results of Section 5.1). Each model turn contributes one training timestep per iteration depth at which a hidden state exists up to that question’s correct depth. Labels are MUST HALT at depth d
+
+if the question passes at staged depth ≤d and fails at flat depth d + 1 ; SAFE otherwise. This produces 68 MUST HALT 
+
+and 289 SAFE timesteps across 357 total. 
+
+F.2 Layer comparison 
+
+Table 24: Halt signal probe layer sweep ( 64 -neuron probe). Evaluation and LOOCV results for each tested layer. Layer 15 selected for zero overthinks and statistically significant LOOCV; layers 20 and 29 hit higher accuracy but LOOCV does not rule out memorisation at those depths. LOOCV p-value: one-sided binomial test at null probability equal to the probe’s base prediction rate (see Appendix F.6). The 10 -neuron probe achieves the same 29 /48 LOOCV with a stronger p = 9 .4 × 10 −4 due to a lower base prediction rate ( 37 .3% vs 42 .1% ).                                                                    
+
+> Layer Correct Accuracy ∆vs iter =1 OT Miss LOOCV LOOCV p
+> 3111 /198 56 .06% +5 .05 pp 55——
+> 5114 /198 57 .58% +6 .57 pp 25——
+> 7113 /198 57 .07% +6 .06 pp 2633 /45 = 73% 0.114 10 116 /198 58 .59% +7 .58 pp 14——
+> 15 117 /198 59 .09 %+8.08 pp 0429 /48 =60 %0.008
+> 20 119 /198 60 .10% +9 .09 pp 1121 /48 = 44% 0.331 25 115 /198 58 .08% +7 .07 pp 06——
+> 29 119 /198 60 .10% +9 .09 pp 0222 /48 = 46% 0.233
+
+Head-to-head layer 15 versus layer 7 (McNemar paired test): p = 0 .19 , 95% CI on net advantage [−2.2, +4 .9] 
+
+questions, 5 discordant pairs. The two layers are not statistically distinguishable on accuracy; layer 15 is preferred for zero overthinks and significant LOOCV at the conventional 0.05 threshold. Layer 7’s LOOCV is at p = 0 .114 on a smaller test set ( N = 45 rather than 48 because its two overthinks shift which questions count as MUST HALT ), which falls just short of significance. 
+
+F.3 Per-iteration detection and depth breakdown 
+
+Table 25: Per-iteration MUST HALT detection and SAFE correctness at layer 15 (64 -neuron probe). Both the 
+
+64 -neuron and 10 -neuron probes detect all 68 /68 MUST HALT timesteps. The 10 -neuron probe has slightly lower overall SAFE correct-left-alone ( 224 /289 vs 257 /289 ), reflecting additional harmless false halts that do not convert any correct answer to an overthink.                                          
+
+> Depth MUST HALT total MUST HALT detected SAFE total SAFE left alone iter = 1 60 60 (100% )212 185 (87% )iter = 2 44(100% )43 38 (88% )iter = 3 44(100% )17 17 (100% )iter = 4 0—17 17 (100% )Total 68 68 (100% )289 257 (89% )
+
+Iteration-depth breakdown of probe decisions across the 117 correctly-answered questions at layer 15 : 27 at iter = 1 ,
+
+74 at iter = 2 , 9 at iter = 3 , 7 at iter = 4 . Most correctness concentrates at iter = 2 , consistent with the overthinking-regression profile of Section 5.3: iter = 2 recovers the largest set of questions that iter = 1 misses without yet incurring the deeper-iteration regressions. 45 40 30 20 10 0
+
+0.00 
+
+0.05 
+
+0.10 
+
+0.15 
+
+0.20 
+
+0.25 
+
+0.30 
+
+> Density
+
+SAFE MUST HALT 
+
+Halt Signal MLP (all-iters) Layer 15: per-TIMESTEP logits 
+
+SAFE timesteps (289) 
+
+MUST HALT timesteps (68) 
+
+Threshold (-0.85) 
+
+40 30 20 10 0
+
+Continue 
+
+(needs more iters) 
+
+Safe halt 
+
+(continuing harmless) 
+
+MUST HALT 
+
+(next iter breaks) 
+
+Per-question mean logit (1 dot = 1 question) 
+
+> Safe halt (60)
+> Continue (13)
+> Has MUST HALT signal (48)
+
+40 30 20 10 0
+
+MLP logit output (high = must halt)    
+
+> iter=1
+> (halt skip iter=2)
+> iter=2
+> (halt skip iter=3)
+> iter=3
+> (halt skip iter=4)
+> iter=4
+> (max depth)
+
+Every real timestep at its actual iter depth (1 dot = 1 question × 1 iter, averaged across turns)     
+
+> MUST HALT correctly prevented overthink
+> OVERTHINK probe failed to halt (0 in this probe)
+> Missed continue halted too early (4)
+> Harmless false halt (passes anyway)
+> SAFE correctly left alone
+
+Figure 21: Layer 15 halt signal probe output across all evaluation timesteps. Top: per-timestep histogram. MUST HALT timesteps (mean +3 .66 , std 1.16 ) separate from SAFE timesteps (mean −3.72 , std 3.52 ) with a gap of 7.38 
+
+between class means. Middle: per-question strip plot. No SAFE or continue-question timestep lies above threshold, corresponding to zero overthinks. Bottom: every evaluation timestep at its actual iteration depth, with markers for correctly detected halts (red), harmless false halts (purple), and missed continues (black). 46 F.4 Ablation sweep 
+
+Table 26: Ablation sweep on the 64 -neuron probe. Keep top-N neurons by contribution, zero the rest. Top 10 
+
+reproduce the full result exactly. Beyond 10 , additional neurons improve only marginal SAFE detection with no effect on question-level outcomes. The two single-component ablations below show that neither half of the top-10 ensemble works alone.                                                                         
+
+> Configuration Correct Accuracy OT Miss HALT det. SAFE det. Top 10 neurons 117 /198 59 .09% 0468 /68 250 /289
+> Top 15 neurons 117 /198 59 .09% 0468 /68 255 /289
+> Top 20 neurons 117 /198 59 .09% 0468 /68 257 /289
+> Top 30 neurons 117 /198 59 .09% 0468 /68 257 /289
+> Full probe (all 64 )117 /198 59 .09% 0468 /68 257 /289
+> Remove neuron 44 (top-9only) 102 /198 51 .52% 019 68 /68 10 /289
+> Keep only 44 + minor (zero other top-9)90 /198 45 .45% 31 00/68 289 /289
+> iter = 1 baseline 101 /198 51 .01% ————
+
+F.5 Probe evaluation procedure 
+
+The probe is evaluated on the full 198 -question GPQA-Diamond benchmark under the same evaluation setup as Section 5. For each question, the SST generates a multi-turn agentic response. At each model turn, the probe inspects the position-0 hidden state at layer 15 after each iteration of the recurrence. If the probe’s output logit exceeds the threshold log(0 .3/0.7) (halt when P (halt ) > 0.3), iteration halts at that depth, and that depth is used for the remainder of the question. If the probe does not halt within imax = 4 iterations, the model uses iter = imax . This procedure is identical for the baseline evaluation, the LOOCV folds, and the input-dimension ablation conditions; the only variable is the probe’s weights (for LOOCV) or the hidden-state dimensions available to the probe (for ablation). 
+
+F.6 LOOCV methodology 
+
+Each of the 48 MUST HALT questions is held out in turn. For each fold: 1. Remove all timesteps belonging to the held-out question from the training set. 2. Train a fresh probe from scratch on the remaining timesteps (identical pipeline to Appendix F.1: same architecture, seed, epochs, class balancing). 3. Run the full GPQA-Diamond evaluation with the freshly trained probe (procedure in Appendix F.5). Record whether the held-out question is correctly classified. Result: 29 of 48 held-out MUST HALT questions are correctly classified ( 60% ). 
+
+Null hypothesis and statistical test. The null hypothesis is memorisation: the probe stores the training MUST HALT 
+
+patterns as a lookup table and reads no genuine feature of the hidden state. Under this null, the probe has no information about the held-out question (it was excluded from training). On an input it has not memorised, the probe classifies it as  
+
+> MUST HALT
+
+at its base prediction rate. This base rate is measured empirically: when the full probe (trained on all 357 timesteps) is run on the complete evaluation, it classifies 133 of 357 timesteps as MUST HALT . Of these 133 , 68 are true MUST HALT timesteps (correctly detected) and 65 are SAFE timesteps incorrectly classified as MUST HALT (false positives). The base prediction rate is therefore 133 /357 = 37 .3% .Under the memorisation null, each LOOCV fold is an independent trial with success probability 0.373 . A one-sided binomial test of 29 successes in 48 trials at p = 0 .373 :
+
+P (X ≥ 29 | X ∼ Binomial(48 , 0.373)) = 9 .4 × 10 −4
+
+The memorisation null is rejected at p < 0.001 . The probe generalises to held-out questions at a rate significantly above its base prediction rate, confirming it reads a genuine feature of the position-0 latent state. 47 F.7 Input-dimension ablation: isolating the feature 
+
+The probe-neuron ablation of Section 6.4 establishes that 10 of the 64 probe neurons carry the halt signal. A separate question is which of the 5,376 hidden-state dimensions these 10 neurons read from. All ablation below is inference-only on the frozen trained probe : the probe is trained once on unmasked data and never retrained. For each ablation condition, the specified dimensions are zeroed in the position-0 hidden states before they are fed to the frozen probe during evaluation (per-question, per-turn, per-iteration, identical to Section 6.3). The results measure what the trained probe actually relies on, not what a retrained probe can learn to compensate for. 
+
+Step 1: constrain the range. All 5,376 dimensions are ranked by effective weight importance ( P 
+
+> j
+
+|W2,j | · | W1,j,i |). For each K, only the top-K dimensions are kept and all others are zeroed at inference. K is swept to find the minimum that reproduces the baseline. Table 27: Top-K input-dimension sweep (inference-only, frozen probe). Keeping the top-K dimensions by weight importance and zeroing the rest. K = 761 is the minimum that reproduces the exact baseline.                                         
+
+> KCorrect Accuracy OT Miss Baseline match
+> 500 115 /198 58 .08% 24no
+> 750 115 /198 58 .08% 24no
+> 761 117 /198 59 .09 %04yes
+> 775 117 /198 59 .09% 04yes
+> 1000 117 /198 59 .09% 13no
+> 1500 99 /198 50 .00% 22 0no
+> 5376 117 /198 59 .09% 04yes
+
+The collapse at K = 1500 reflects probe weight calibration: dimensions ranked 1000 –1500 contribute signal that shifts the probe’s threshold when included without the compensating dimensions ranked 1500 +. The boundary K = 761 was found by binary search between K = 750 and K = 775 .
+
+Step 2: greedy pruning to find the essential minimum. Starting from the 761 -dimension set, each dimension is tested individually (least important first). For each: zero it at inference (keeping everything already pruned zeroed). If baseline holds ( 117 /198 , OT = 0 , Miss = 4 ), keep it zeroed (redundant). If baseline breaks, mark it as essential and restore it. Table 28: Greedy pruning result. Of 761 candidate dimensions, 654 are redundant and 107 are essential. The 107 
+
+span the full index range (dim 9 to dim 5,364 ), with 43 in the top 100 by weight importance and 21 in ranks 500 –761 .       
+
+> Count Starting set (top-761 by weight importance) 761
+> Pruned (redundant) 654
+> Essential (cannot remove) 107
+> Final verification 117 /198 , OT = 0 , Miss = 4
+
+The 107 essential dimensions constitute 2.0% of the 5,376 -dimensional hidden state. They are scattered across the full range (not clustered), with median weight-importance rank 166 . No individual dimension dominates: the greedy pruning removes each dimension only when the cumulative loss from prior removals makes that specific dimension’s contribution critical for maintaining the threshold. 
+
+F.8 The four missed questions 
+
+All four errors at layer 15 are continue questions halted by the probe at iter = 1 . All four were failed by the iter = 1 
+
+baseline already, so the probe’s halt at iter = 1 leaves each at its (wrong) iter = 1 answer rather than routing to a deeper iteration where the question would have passed. None are broken correct answers. The conservative failure mode is mechanistically attributable to the cooperative-ensemble structure of Section 6.4: by default the probe produces a halt logit sufficiently below threshold to route to continuation, and MUST HALT requires the balanced contribution of the top-nine halt-detection neurons and neuron 44 ’s counterbalancing offset to cross threshold, which these four continue questions do on false-positive halt evidence at iter = 1 , halting before reaching the depth they needed. 48
