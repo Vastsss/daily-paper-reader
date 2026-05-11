@@ -1,0 +1,1229 @@
+Title: PipeMax: Enhancing Offline LLM Inference on Commodity GPU Servers
+
+URL Source: https://arxiv.org/pdf/2605.02189v1
+
+Published Time: Tue, 05 May 2026 01:34:23 GMT
+
+Number of Pages: 17
+
+Markdown Content:
+# PipeMax: Enhancing Offline LLM Inference on Commodity GPU Servers 
+
+Hongbin Zhang 1 Taosheng Wei 1 Jiazhi Jiang 1 Hui Yan 1 Jiangsu Du 1 Zhiguang Chen 1
+
+## Abstract 
+
+Offline LLM inference seeks to maximize request processing under fixed budgets, making commod-ity GPU servers a promising choice. However, prior work typically considers offloading and par-allelism in isolation, resulting in suboptimal per-formance. In this paper, we propose PipeMax, a high-throughput LLM inference system that in-tegrates pipeline parallelism with offloading to overcome interconnect and memory constraints on GPU servers. Particularly, pipeline parallelism naturally incurs low communication overhead and keeps only one batch active on each GPU at a time, which enables offloading the KV cache of inactive batches. By coordinating computation with offloading data movement, PipeMax effec-tively expands GPU memory capacity and sus-tains large-batch execution. Experiments show that PipeMax achieves up to 2.51× higher through-put than vLLM, and up to 1.42× and 1.38× higher throughput than state-of-the-art high-throughput LLM systems, respectively, on an 8-GPU node. 
+
+## 1. Introduction 
+
+Large language models (LLMs) have been widely adopted across many domains (GitHub, 2023; Nazi & Peng, 2024; Rane et al., 2023). Due to their massive parameter scales, LLM inference requires numerous high-cost GPUs, mak-ing it extremely expensive to deploy. Beyond interactive applications such as chatbots, LLMs are increasingly used in offline workloads, including database processing (Liu et al., 2025) and information extraction (Xu et al., 2024). Unlike online LLM serving (Zhong et al., 2024; Agrawal et al., 2024; Du et al., 2025), which prioritizes latency SLOs, offline scenarios primarily target high-throughput execution. Providing high-throughput LLM inference on commodity GPU servers without high-bandwidth interconnects is in-creasingly important. First, commodity GPU servers such 
+
+> 1School of Computer Science and Engineering, Sun Yat-sen University.
+
+as RTX 5090 are approximately 3× more cost-effective un-der the same computational capability (Feng et al., 2023) and constitute a large fraction of the deployed GPU infras-tructure (Du et al., 2025). Second, high-end GPUs with high-bandwidth interconnects (e.g., NVLink), such as H100 and B200, are in practice preferentially reserved for latency-critical LLM serving. However, efficiently exploiting com-modity GPU servers for high-throughput LLM inference remains challenging. LLM inference imposes heavy GPU memory demands due to large model weights and extensive KV cache, which often exceeds the footprint of the weights. Existing sys-tems (Sheng et al., 2023; Zhang et al., 2025) attempt to expand memory capacity via either offloading or paralleliza-tion. Purely offloading-based approaches are fundamentally constrained by limited CPU–GPU bandwidth that transfer-ring model weights and KV cache dominates execution time, leaving GPUs largely underutilized. Parallelism-based ap-proaches include tensor parallelism and pipeline parallelism. Among them, tensor parallelism is communication-bound due to frequent all-reduce operations, rendering it imprac-tical on bandwidth-limited nodes. Consequently, pipeline parallelism emerges as the most promising option for com-modity GPU servers. However, standalone pipeline parallelism falls short of real-izing its full memory efficiency. During the decode stage un-der pipeline parallelism, only the KV cache of a single batch is active for each GPU at any given time, leaving most GPU memory occupied by inactive batches and limiting effective memory expansion. To address this limitation, we propose PipeMax, a high-throughput LLM inference system tailored for commodity GPU servers. PipeMax enhances pipeline parallelism with offloading by storing inactive batches in CPU memory, allowing pipeline parallelism to fully exploit its memory efficiency. In summary, we make the following contributions: • We identify a decode-phase inefficiency in pipeline parallelism: KV cache remains idle across inactive batches, limiting effective GPU memory utilization. • We propose PipeMax, a high-throughput LLM infer-ence system that strategically integrates pipeline paral-lelism with offloading to expand effective GPU mem-ory by evicting inactive KV cache. 1
+
+> arXiv:2605.02189v1 [cs.DC] 4 May 2026
+
+PipeMax: Enhancing Offline LLM Inference on Commodity GPU Servers 
+
+• We evaluate PipeMax and demonstrate it has substan-tial throughput improvements over state-of-the-art sys-tems across a range of model sizes and workloads. 
+
+## 2. Background 
+
+2.1. LLM Processing Phases 
+
+Recent large language models (LLMs) adopt an autoregres-sive generation paradigm. As shown in Fig. 1, the model iteratively predicts tokens until the end-of-sequence (EoS), storing intermediate states as a KV cache to avoid redun-dant computation. Accordingly, LLM inference consists of two phases: prefill for processing the input sequence, and decode for sequential token generation using the KV cache. Prior work (Du et al., 2025; Jiang et al., 2025) shows that prefill is compute-intensive and efficient even with small batches, whereas decode is memory-bound and requires large batches for peak utilization. However, achieving large decode batches requires substantial GPU memory for KV cache. For instance, a batch size of 512 with a sequence length of 1024 in Qwen3-32B requires about 133 GB of KV cache, far beyond a single GPU’s capacity. Thus, decode throughput is fundamentally limited by GPU memory. 
+
+2.2. Existing High-Throughput LLM Inference 
+
+To address above GPU memory issue, existing sys-tems (Zhang et al., 2025; Kwon et al., 2023; Su et al., 2025; Sheng et al., 2023) commonly use offloading or model par-allelism to expand GPU memory. 2.2.1. O FFLOADING APPROACH 
+
+Systems such as FlexGen (Sheng et al., 2023) and TightLLM (Hu et al., 2025) enable single-GPU high-throughput LLM inference by offloading model weights and/or KV cache to CPU memory. As illustrated in Fig. 2, they rely on two core techniques: layer-wise offloading, which keeps only a subset of layers on the GPU, and multi-batch inference, which partitions requests into multiple batches to reduce the KV cache footprint. Both techniques use prefetching to overlap computation and data transfer. However, offloading-only approaches remain bandwidth-bound on commodity GPUs: limited PCIe bandwidth causes weight transfers to dominate execution, and on multi-GPU nodes, repeatedly transferring weights to each GPU leads to redundant communication and wasted bandwidth. 2.2.2. M ODEL PARALLELISM APPROACH 
+
+The two mainstream model parallelism techniques are ten-sor parallelism and pipeline parallelism, both of which dis-tribute model parameters across multiple GPUs to expand total memory capacity. As shown in Fig. 3, tensor paral-lelism partitions computation within each layer and requires all-reduce synchronization at every layer, whereas pipeline LLM is all you need . <eos >    
+
+> prompt
+> need .<eos >
+> Transformer Model KV Cache
+> prefill decode
+
+Figure 1. Autoregressive generation in LLM inference. Computation                          
+
+> CPU to GPU
+> GPU to CPU
+> Time
+> 𝑳 𝒊 𝑩 𝟏 𝑩 𝟐 𝑩 𝟑 𝑩 𝟒 𝑳 𝒊 &𝟏 𝑩 𝟏 𝑩 𝟐 𝑩 𝟑 𝑩 𝟒
+> 𝑩 𝟏 𝑩 𝟐 𝑩 𝟑 𝑩 𝟒 𝑩 𝟏 𝑩 𝟐 𝑩 𝟑 𝑩 𝟒
+> 𝑩 𝟏 𝑩 𝟐 𝑩 𝟑 𝑩 𝟒 𝑩 𝟏 𝑩 𝟐 𝑩 𝟑 𝑩 𝟒
+> Multi -batch
+> Layer -wise
+> Load Weight Load KV Offload KV Computation
+
+Figure 2. Existing offload-based LLM inference method. 
+
+parallelism assigns different layer groups to different GPUs and transfers intermediate activations between stages. Prior work (Zhang et al., 2025; Su et al., 2025) shows that tensor parallelism incurs high communication over-head on GPU servers without high-speed interconnects due to frequent all-reduce operations, thereby making pipeline parallelism a natural alternative. Motivated by this, TD-Pipe (Zhang et al., 2025) adopts temporally disaggregated pipeline parallelism with inter-batch work stealing to miti-gate pipeline bubbles and improve decode-phase arithmetic intensity. Meanwhile, Seesaw (Su et al., 2025) re-shards the model across prefill and decode, using pipeline parallelism for prefill and tensor parallelism for decode. However, both approaches have limitations. TD-Pipe retains multiple de-code batches in GPU memory, leaving much KV cache inactive (Section 2.3.2), while Seesaw assumes negligible decode-phase communication overhead, which is often non-negligible on bandwidth-constrained commodity servers, and becomes increasingly restrictive as the system scales to more GPUs. 
+
+2.3. Analysis of Pipeline Parallel for LLM Inference 
+
+2.3.1. P REFILL PHASE 
+
+Fig. 4 shows that under continuous pipeline-parallel execu-tion, prefill latency is dominated by the first pipeline stage for large request counts. The total execution time equals the first-stage time plus (n − 1) times the per-stage prefill time of the longest request, where n is the number of GPUs (Appendix A.1). As prefill is compute-intensive and free of inter-request dependencies, pipeline parallelism achieves high GPU utilization with minimal overhead. 2.3.2. D ECODE PHASE 
+
+In contrast, decode exhibits fundamentally different behav-ior under pipeline parallelism. Prior work (Zhang et al., All Reduce    
+
+> All Reduce GPU0
+> GPU1
+> GPU2
+> Send/ Recv
+> Send/ Recv
+> GPU0 GPU1 GPU2
+> (a) Tensor Parallel (b) Pipeline Parallel
+> All Reduce
+> All Reduce
+> All Reduce
+
+Figure 3. Tensor parallelism and pipeline parallelism. 
+
+2PipeMax: Enhancing Offline LLM Inference on Commodity GPU Servers Time                     
+
+> 𝒕 𝟏 𝒕 𝟐 𝒕 𝟑 𝒕 𝟒 𝑛 −1×max
+> %{𝑡 %}
+> !𝑡 !
+> !
+> +𝑛 −1×max
+> !{𝑡 !}Total Time =
+> Stage 1
+> Stage 2
+> Stage 3
+> Stage 4
+> 𝑛 =4
+> 𝒕 &
+> Incoming prefill batches
+
+Figure 4. Prefill phase under pipeline parallelism. The total execu-tion time equals the first stage plus (n − 1) times the longest stage, where n is the number of GPUs. 
+
+2025; Zhong et al., 2024) partitions GPU-resident requests into multiple autoregressive batches to fill the pipeline, but inter-step dependencies cause execution-time variations to amplify into inter-batch imbalance, leading to pipeline stalls (Fig. 5(a)). TD-Pipe (Zhang et al., 2025) mitigates this issue via inter-batch work stealing (Fig. 5(b)). Despite such balancing, decode throughput under pipeline parallelism remains constrained by the memory footprint of the active batch. At any time, each GPU executes only one active decode batch, leaving the KV cache of other batches idle and resulting in low effective GPU memory utilization. The average token budget per batch can be expressed as 
+
+M − W/n T , (1) where M denotes the per-GPU memory capacity, W the total model size, n the pipeline degree, and T the KV cache size per token; a detailed derivation is provided in Appendix A.2. As a result, although pipeline parallelism increases the aggregate KV cache capacity across devices, the KV cache available to the active batch remains funda-mentally constrained. Importantly, multi-batch execution exhibits natural anti-locality : a batch’s KV cache remains unused until all other batches finish their decode iterations. 2.3.3. P REFILL -D ECODE IMBALANCE 
+
+Frequent transitions between prefill and decode introduce pipeline bubbles due to execution-time mismatch, as illus-trated in Fig. 6. TD-Pipe (Zhang et al., 2025) mitigates this overhead through temporal separation, which PipeMax adopts as its baseline execution model. 
+
+2.4. Opportunities and Challenges 
+
+The anti-locality in Section 2.3.2, together with pipeline parallelism’s multi-batch structure, naturally motivates of-floading inactive KV cache to CPU memory and prefetching it on demand, thereby expanding the effective GPU memory for the active batch. Fig. 7 illustrates this mechanism. How-ever, realizing this opportunity introduces three challenges: Time Time     
+
+> Stage 1
+> Stage 2
+> Stage 3
+> Stage 4
+> (a) Inter -Batch Imbalance (b) With Inter -batch Work Stealing
+> Inter -decode -step Data Dependency Decode Batch
+> Stage 1
+> Stage 2
+> Stage 3
+> Stage 4
+
+Figure 5. Decode phase under pipeline parallelism. Time   
+
+> Stage 1
+> Stage 2
+> Stage 3
+> Stage 4
+> Inter -decode -step Data Dependency
+> Decode Batch Prefill Bubble
+
+Figure 6. Prefill-decode imbalance. 
+
+C1: Uncertain Compute–Prefetch Overlap. Achiev-ing effective KV cache prefetching requires overlapping prefetch with decode computation, so that GPU memory only needs to hold the KV cache of the current and up-coming batches. However, this ideal overlap is not always attainable in practice. Limited CPU–GPU bandwidth may prevent fully prefetching a batch’s KV cache within a sin-gle decode iteration, delaying subsequent iterations and causing GPU idle time. Moreover, decode execution time varies across iterations due to irregular request completion and dynamic batch composition, further complicating com-pute–communication overlap. 
+
+C2: Prefetch-Aware Decode Batch Balancing. As dis-cussed in Section 2.3.2, efficient decode execution requires balanced execution times across batches. TD-Pipe achieves this via inter-batch work stealing under the assumption of a closed set of GPU-resident requests. With prefetching, however, decode batches are formed from a broader pool of CPU-resident requests, invalidating this assumption. Con-sequently, batch balancing must jointly consider execution time and prefetch feasibility, making it significantly harder to maintain stable execution across iterations. 
+
+C3: KV Cache Transfer Inefficiency under PagedAt-tention. Modern LLM inference frameworks adopt Page-dAttention (Kwon et al., 2023) to improve GPU memory utilization, yet mainstream implementations are not transfer-friendly. In systems such as vLLM (Kwon et al., 2023) and sglang (Zheng et al., 2024a), KV cache is organized in page-sized blocks and further separated along the layer dimension, fragmenting each request’s KV cache along two dimensions and leading to inefficient CPU–GPU transfers. 
+
+## 3. The Design of PipeMax 
+
+In this section, we propose PipeMax, a high-throughput LLM inference system that leverages pipeline parallelism with offloading. Specifically, PipeMax leverages pipeline parallelism to partition model weights across GPUs, while offloading only KV cache to CPU memory. 
+
+3.1. PipeMax Workflow 
+
+As illustrated in Fig. 8, PipeMax temporally decouples pre-fill and decode, establishing a producer–consumer pipeline between the two stages. 3.1.1. P REFILL STAGE 
+
+As discussed in Section 2.3, PipeMax continuously performs prefill to maximize pipeline utilization. The generated KV 3PipeMax: Enhancing Offline LLM Inference on Commodity GPU Servers Time    
+
+> Stage 1
+> Stage 2
+> Stage 3
+> Stage 4
+> ……
+> Prefetch Data Dependency Decode Execution
+
+Figure 7. Decode phase with KV cache prefetching. 
+
+cache is asynchronously offloaded to CPU memory, allow-ing GPU memory to be reused by overwriting completed requests without blocking. This decouples prefill from GPU memory constraints and accumulates decode requests. 3.1.2. D ECODE STAGE 
+
+Once sufficient requests are buffered, PipeMax enters the decode stage and addresses the challenges identified above. 
+
+C1. PipeMax adopts a best-effort KV cache prefetching strategy. Before each iteration, it estimates decode execution time to determine the prefetch budget and incrementally prefetches KV cache by overwriting inactive batches. When bandwidth is insufficient, prefetching is amortized across iterations, resulting in a hybrid GPU-resident and prefetched KV cache per batch (Fig. 9). 
+
+C2. PipeMax employs a prefetch-aware scheduler that jointly considers execution time and prefetch feasibility, aligning batch execution times to mitigate inter-batch imbal-ance. 
+
+C3. PipeMax further introduces a transfer-efficient KV cache engine that maximizes CPU–GPU bandwidth utiliza-tion while remaining compatible with PagedAttention. 3.1.3. P REFILL –D ECODE SWITCHING POLICY 
+
+Unlike TD-Pipe, which frequently switches between pre-fill and decode to sustain compute intensity under GPU memory constraints, PipeMax buffers a large pool of decode-ready requests in CPU memory and adopts a memory-driven switching policy. Prefill proceeds until CPU-resident KV cache approaches capacity, reserving headroom for decode, and resumes only when available KV cache falls below GPU capacity. As a result, prefill–decode switching is infrequent, and the imbalance in Fig. 6 can be safely ignored. 
+
+3.2. System Overview 
+
+As shown in Fig. 10, PipeMax adopts a hierarchical con-troller architecture that separates control from execution. Prefill Stage     
+
+> Continuously Executed
+> Pipeline Parallelism
+> CPU -Resident KV Cache Replicas
+> Decode Stage
+> Pipeline Parallelism
+> With Prefetch
+> Offloading Prefetching
+> Stage
+> Transition
+> Producer Consumer
+> Timeline
+
+Figure 8. The workflow of PipeMax. Batch 0 Batch 1 Batch 2 Batch 3  
+
+> GPU -Resident
+> Prefetched
+> KV Cache Composition Autoregressive
+
+Figure 9. KV cache composition per batch in PipeMax under bandwidth constraints. 
+
+A centralized engine serves as the control plane, while a distributed runtime constitutes the execution plane, jointly supporting the execution workflow described above. We next describe the key mechanisms of both components. 
+
+3.3. Centralized Engine 
+
+The centralized engine integrates a decode execution-time estimator and a prefetch-aware scheduler to coordinate de-code execution and KV cache prefetching. 3.3.1. D ECODE EXECUTION TIME ESTIMATOR 
+
+To overlap decode computation with KV cache prefetching, PipeMax estimates decode execution time for each batch. A decode iteration consists of two components: (1) linear op-erations (e.g., QKV projection and feed-forward networks) with cost O(b × h2) for batch size b and hidden size h;and (2) attention over the prefix KV cache with cost O(L),where L = Pbi=1 Li denotes the total prefix length of the batch, and Li is the prefix length of request i.Accordingly, PipeMax models the decode execution time of a batch as: 
+
+α · b + β · L + δ, (2) where α, β, and δ are parameters obtained via offline profil-ing, capturing the per-request linear cost, per-token attention cost, and constant overheads, respectively. 3.3.2. P REFETCH -AWARE DECODE SCHEDULER 
+
+To address C2 in Section 2.4, PipeMax introduces a prefetch-aware scheduler for the decode stage that dynamically de-termines how many requests to prefetch and which ones to select. The scheduler aims to fully overlap computation with KV cache prefetching, while expanding effective memory capacity and maintaining balance across batches. As discussed in Section 3.1.2, limited CPU–GPU bandwidth may leave portions of KV cache from multiple batches res-ident in GPU memory. To efficiently utilize GPU mem-Prefetching Offloading Metadata Activation Transfer                
+
+> Centralized Engine (§3.3)
+> Prefetch -aware
+> Scheduler ( §3.3.2)
+> Decode Time
+> Estimator ( §3.3.1)
+> req. 0 req. 1 …
+> request queue
+> Distributed Runtime ( §3.4)
+> B!B"B#B$
+> GPU 0
+> B!B"B#B$
+> GPU 1
+> B!B"B#B$
+> GPU 2
+> B!B"B#B$
+> GPU 3
+> KV Cache Engine ( §3.4.3)
+> CPU Memory Demand -Priority
+> Transfer
+> Stream
+
+Figure 10. Overview of PipeMax system. 
+
+4PipeMax: Enhancing Offline LLM Inference on Commodity GPU Servers 
+
+ory while preserving autoregressive semantics, PipeMax partitions decode requests into n batches, where n is the pipeline depth, and formulates decode scheduling as a state-ful, prefetch-aware iterative batch update problem. PipeMax maintains a set of decode batches 
+
+D = {D0, D 1, . . . , D n−1}, (3) which are executed autoregressively in a cyclic order. At it-eration t, the executing, prefetched, and overwritten batches are indexed as 
+
+it = t mod n, jt = ( it + 1) mod n, kt = ( it − 1) mod n. 
+
+(4) During iteration t, PipeMax executes batch Dit while con-currently prefetching KV cache from CPU memory to up-date Djt for execution in iteration t + 1 , overlapping com-putation with data movement. 
+
+Initial Decode Batches. Let R denote the set of re-quests with KV cache resident in GPU memory after prefill. PipeMax constructs an initial partition D such that 
+
+> n−1
+
+[
+
+> k=0
+
+Dk = R, Dk ∩ Dk′ = ∅ ∀ k̸ = k′. (5) Each subset Dk forms an initial decode batch. The initial partition divides requests into batches of equal size, while attempting to balance total KV cache length across batches to approximate similar decode execution times, thereby re-ducing inter-batch imbalance across pipeline stages. 
+
+Iterative Prefetch-Aware Scheduling. After initializa-tion, decode execution proceeds iteratively in an autoregres-sive manner. At each iteration t, PipeMax updates the next decode batch Djt using a prefetch-aware scheduling policy. First, PipeMax retains requests whose KV cache remains resident in GPU memory: 
+
+Dres  
+
+> jt
+
+= Djt ∩ R t, (6) where Rt denotes the set of requests whose KV cache re-sides in GPU memory at the beginning of iteration t.Second, PipeMax determines additional requests to prefetch from CPU memory. It predicts the execution time ˆTt of the currently executing batch Di t using the estimator in Section 3.3.1, and derives a prefetch budget 
+
+Bt = B · ˆTt, (7) where B denotes the effective CPU–GPU bandwidth, pro-filed using KV cache transfers in the PagedAttention format. Given Bt, PipeMax selects CPU-resident requests Pt whose total prefix length approaches Bt, maximizing bandwidth utilization and effective GPU memory expansion. While the above formulation specifies Pt per iteration, the scheduling policy evolves across iterations, and the decode execution is divided into warm-up and steady phases. 
+
+In warm-up phase , PipeMax enlarges the prefetch budget across iterations by extending decode iterations, thereby expanding effective GPU memory. According to Eq. 2, when the total KV cache length of the current batch L is close to len( Dres  
+
+> jt
+
+) + Bt, execution time is dominated by the batch size b. PipeMax therefore prioritizes short requests to pack more requests into each batch, maximizing the batch size b under a fixed KV cache budget. This increases the prefetch budget in subsequent iterations via the time-based update, forming a positive feedback loop. However, as longer requests are admitted, KV cache growth under fixed GPU memory and CPU–GPU bandwidth imposes hard lim-its, causing execution time to fluctuate. In practice, after such temporary fluctuations, execution time converges to a bounded range, after which the system enters the steady phase. 
+
+In steady phase , the primary objective shifts to maintaining execution-time balance across decode batches to mitigate inter-batch imbalance. To this end, PipeMax selects Pt
+
+such that the predicted execution time of the updated batch remains close to ˆTt. Based on the execution-time model in Section 3.3.1, the retained set Dres  
+
+> jt
+
+contributes a deter-ministic execution time ˆT res  
+
+> t
+
+, computed using Eq. (2). The remaining execution-time gap is 
+
+∆ ˆTt = ˆTt − ˆT res  
+
+> t
+
+. (8) Selecting Pt is formulated as a subset selection problem, over CPU-resident requests, where each request r con-tributes α+βL r according to Eq. (2). The cumulative prefix length is constrained to nearly saturate the prefetch budget 
+
+Bt, so as to fully utilize the available CPU–GPU bandwidth and maximally extend the effective GPU memory capacity. The objective is to make the execution-time contribution of CPU-resident requests as close as possible to ∆ ˆTt. PipeMax provides a greedy algorithm to efficiently solve this prob-lem; the complete scheduling procedure and the detailed algorithm for selecting Pt are presented in Appendix A.3. During prefetching for Djt , PipeMax reuses GPU memory by overwriting KV cache blocks associated with the inactive batch Dkt . The updated decode batch is 
+
+Djt = Dres  
+
+> jt
+
+∪ Pt. (9) 
+
+3.4. PipeMax Runtime 
+
+The PipeMax runtime consists of two components to support model execution, as follows. 3.4.1. S CHEDULER -COORDINATED MODEL EXECUTOR 
+
+The PipeMax runtime includes a scheduler-coordinated model executor that receives execution metadata from the 5PipeMax: Enhancing Offline LLM Inference on Commodity GPU Servers Block 1 Block 2 Block 3 Layer 1                  
+
+> Block 1 Block 2 Block 3 Layer 2
+> Block 1 Block 2 Block 3 Layer 3
+> Block 1 Block 2 Block 3 Layer 4
+> Prefetch
+> Block 1 Layer 1 Layer 2 Layer 3 Layer 4 Block 1
+> Block 1 Layer 1 Layer 2 Layer 3 Layer 4 Block 2
+> Block 1 Layer 1 Layer 2 Layer 3 Layer 4 Block 3
+> Prefetch
+> (a) Layer -first Layout (b) Block -first Layout
+> Continuous Memory
+
+Figure 11. Layer-first vs block-first KV cache layouts for prefetch-ing. The block-first layout enables contiguous block-level prefetch-ing, while the layer-first layout incurs fragmented transfers. 
+
+centralized engine and executes scheduled model computa-tion, asynchronously transferring intermediate activations across pipeline stages via peer-to-peer communication. 3.4.2. T RANSFER -E FFICIENT KV CACHE ENGINE 
+
+PipeMax designs a transfer-efficient KV cache engine to efficiently utilize available CPU–GPU bandwidth. Similar to existing systems such as vLLM (Kwon et al., 2023) and sglang (Zheng et al., 2024a), PipeMax stores KV cache on both GPU and CPU memory using the PagedAttention format, and further enhances KV cache transfers as follows: 
+
+Block-First Layout for Prefetching C3 in Section 2.4 identifies that existing PagedAttention-based designs adopt layer-first KV cache layouts and further partition them into blocks, causing KV cache prefetching to be sliced along both the layer and block dimensions. As illustrated in Fig. 11(a), when prefetching a block of a target request, the corresponding KV cache is not stored contiguously in memory, leading to inefficient CPU–GPU data transfers. PipeMax instead adopts a block-first KV cache layout to accelerate prefetching. Fig. 11(b) shows that this layout colocates the KV cache of all layers within the same block into contiguous memory regions. Thus, KV cache prefetch-ing is sliced only along the block dimension, enabling effi-cient transfers. Notably, this layout change only affects KV cache storage and transfer, and remains fully compatible with PagedAttention without any implementation changes. 
+
+Asynchronous CPU-Assisted KV Cache Offloading 
+
+Both prefill and decode stages continuously generate KV cache that must be preserved in CPU-resident replicas, and ideally transferred in a way that can be overlapped with computation. While the block-first layout improves prefetch efficiency, KV cache is generated on a per-layer basis, mak-ing block-wise offloading infeasible at generation time. Fortunately, right after QKV projection, each layer produces contiguous KV cache tensors before they are partitioned into PagedAttention blocks. PipeMax exploits this observation Layer N Layer i ……Layer 1    
+
+> QKV Projection Attention FFN
+> Offload
+> Layouting
+> GPU
+> GPU ->CPU
+> CPU
+> Timeline
+
+Figure 12. Execution timeline of per-layer KV cache generation, offloading, and CPU-side layouting. GPU     
+
+> compute
+> stream
+> transfer
+> stream
+> Timeline
+> High -Priority
+> Low -Priority submit Prefetching Offloading
+> Activation Computation
+
+Figure 13. Priority-based transfer orchestration in PipeMax. 
+
+by asynchronously offloading per-layer KV cache to CPU memory immediately after QKV computation, overlapping data transfer with subsequent computation. In Fig. 12, the offloaded KV cache is then reorganized on the CPU side into a block-first layout for later prefetching, incurring negligible overhead. Since PipeMax adopts a consistent block-first KV cache layout in both CPU and GPU memory, prefetched KV cache blocks can be directly transferred from CPU to GPU without any further reorganization. 
+
+Demand-Priority Transfer Orchestration The PipeMax runtime involves three types of data movement: inter-stage activation transfers, KV cache prefetching, and KV cache offloading. On commodity GPU servers, all transfers are carried out over PCIe, a full-duplex CPU–GPU intercon-nect, where prefetching and offloading proceed in opposite directions without interfering with each other. Activation transfers occupy both PCIe directions and lie on the critical path of the next pipeline stage, whereas prefetching and offloading use only the CPU-to-GPU and GPU-to-CPU di-rections, respectively. Although activation transfers involve much smaller data volumes and incur negligible impact on prefetching and offloading, they are latency-critical for pipeline execution and highly sensitive to interference from concurrent prefetching and offloading. Inspired by priority-aware load management in Apt-MoE (Wei et al., 2024), PipeMax employs priority-based transfer orchestration with multiple priority queues, pri-oritizing activation transfers without degrading KV cache throughput. Fig. 13 shows that PipeMax maintains priority queues for issuing data transfer requests. PipeMax enforces priorities by controlling the submission order of PCIe trans-fer requests: activation transfers are issued promptly, while KV cache prefetching and offloading are scheduled oppor-tunistically. 
+
+## 4. Evaluation 
+
+We implement PipeMax based on vLLM v0.7.3. To demon-strate its effectiveness, we evaluate PipeMax across diverse hardware configurations and workloads, and compare it with state-of-the-art approaches. In addition, we conduct ablation studies to quantify the impact of individual components. 
+
+4.1. Experimental Setup 
+
+4.1.1. N ODE TESTBED .We conduct experiments on three nodes: two commodity GPU servers with 8×RTX 5090 and 8×L20 GPUs (both without NVLink), and one data-center server with 8×H100 6PipeMax: Enhancing Offline LLM Inference on Commodity GPU Servers 
+
+Table 1. GPU platforms and deployed models.           
+
+> Node Workload (Models)
+> 8×RTX 5090 LLaMA 2 70B ( 70B ), Mixtral-8 ×7B( 8×7B )8×L20 LLaMA 2 70B ( 70B ), Mixtral-8 ×7B( 8×7B )8×H100 Qwen3 235B-A22B ( 235B-A22B )
+
+GPUs interconnected via NVLink 1. All GPUs connect to independent PCIe root complexes: RTX 5090 and H100 use PCIe 5.0 (64 GB/s), while L20 uses PCIe 4.0 (32 GB/s). 4.1.2. M ODEL AND DATASET SETUP .Table 1 summarizes the deployed dense and MoE models, each scaled to the limits of its GPU platform. We select two representative datasets with distinct sequence-length characteristics. ShareGPT features balanced input and output lengths, while LongBench targets long-form in-puts. Table 2 reports their input and output length statistics. 4.1.3. B ASELINE SETUP .We compare PipeMax with the following baselines. Offloading-based systems such as FlexGen and TightLLM primarily target single-GPU inference and are not designed for multi-GPU execution, and thus are not included. 
+
+vLLM (Kwon et al., 2023) is a widely adopted LLM infer-ence engine supporting multiple parallelism strategies. 
+
+TD-Pipe (Zhang et al., 2025) extends vLLM by address-ing fundamental inefficiencies in pipeline parallelism, tem-porally decoupling prefill and decode to mitigate pre-fill–decode imbalance (Fig. 6) and employing inter-batch work stealing to alleviate inter-batch imbalance (Fig. 5). 
+
+Seesaw (Su et al., 2025) builds upon vLLM by adopting pipeline parallelism during the prefill stage and prioritizing tensor parallelism during the decode stage. We evaluate vLLM under both tensor parallelism(TP) and pipeline parallelism(PP). TD-Pipe uses PP, while Seesaw follows its design, using PP for prefill and TP for decode. All baselines are implemented on top of vLLM v0.7.3 to ensure a fair comparison. Since the designs of Seesaw, TD-Pipe, and PipeMax are orthogonal to vLLM’s ongoing evolution, the relative performance trends reported in this paper are expected to remain valid on newer vLLM versions. 
+
+> 1
+
+H100 is included solely as a high-end reference platform, while our primary focus is on commodity GPU servers. 70B 8×7B        
+
+> 0
+> 1
+> 2
+> ShareGPT  (a) RTX 5090
+> 70B 8×7B
+> 0
+> 1
+> 2
+> (b) L20
+> 235B-A22B
+> 0
+> 1
+> (c) H100
+> 70B 8×7B
+> 0
+> 1
+> 2
+> Longbench
+> 70B 8×7B
+> 0
+> 1
+> 2
+> 235B-A22B
+> 0
+> 1
+> 2
+> vLLM(TP) vLLM(PP) TD-Pipe Seesaw PipeMax
+
+Figure 14. Normalized overall throughput (tokens/s) across work-loads and GPU servers, where vLLM (TP) is normalized to 1. 
+
+Table 2. Length statistics of the evaluation datasets.             
+
+> Dataset In Avg In Med Out Avg Out Med
+> ShareGPT (ShareGPT, 2025) 343.76 148.00 237.20 152.00 LongBench (Bai et al., 2024) 2686.89 2736.50 101.78 19.00
+
+4.2. Overall Throughput 
+
+We compare PipeMax with all baselines in throughput, mea-sured in tokens per second, across diverse hardware con-figurations and workloads (Section 4.1.2). Fig. 14 reports the normalized overall throughput results. PipeMax outper-forms vLLM(TP), vLLM(PP), TD-Pipe, and Seesaw by up to 2.45×, 2.51×, 1.42×, and 1.38×, respectively. PipeMax leverages pipeline parallelism to reduce inter-GPU communication overhead compared to vLLM(TP), while eliminating the decode-phase anti-locality in prior pipeline-based designs such as TD-Pipe. Although vLLM (PP) also adopts pipeline parallelism, its decode phase suffers from pronounced inter-batch imbalance(Fig. 5) due to lack of load balancing, which limits overall performance. Seesaw shows lower-than-expected performance in our setting, as its decode phase relies on all-reduce communication, con-strained by bandwidth in large-scale GPU configurations. Moreover, even on NVLink-equipped H100 servers, the ex-treme compute capability of H100 GPUs makes inter-GPU communication under tensor parallelism non-trivial. Con-sequently, PipeMax has the potential to deliver benefits on data-center GPU servers as well. 
+
+4.3. Ablation Study 
+
+This section studies the impact of design strategies in PipeMax via ablation experiments on RTX 5090 and L20 GPU servers with the 70B model and ShareGPT dataset. 4.3.1. C ENTRALIZED ENGINE 
+
+Decode Execution-Time Estimator To evaluate the ac-curacy of the decode execution-time estimator, we sample 100 consecutive decode steps during runtime and measure the ratio between the actual batch execution time and the predicted execution time at each step. Figure 15 reports these ratios for two representative workloads. Across both workloads, predictions closely match actual execution times, with over 90% of samples within 5% error and worst-case deviation below 8%. This confirms the estimator’s accuracy and suitability for prefetch-aware scheduling. 
+
+Prefetch-aware Decode Scheduler To evaluate the effec-tiveness of the prefetch-aware decode scheduler, we com-pare it against static prefetching baselines. These baselines 0 25 50 75 100      
+
+> Step
+> 0.90
+> 0.95
+> 1.00
+> 1.05
+> 1.10
+> Actual / Predicted  (a) 5090 + 70B
+> 025 50 75 100
+> Step
+> 0.90
+> 0.95
+> 1.00
+> 1.05
+> 1.10
+> (b) L20 + 70B
+> ±5% band ±10% band
+
+Figure 15. Ratio of actual to predicted decode execution time over 100 consecutive steps. 
+
+7PipeMax: Enhancing Offline LLM Inference on Commodity GPU Servers 5 10 15 20 25 PipeMax      
+
+> Prefetch Ratio (%)
+> 0.0
+> 0.5
+> 1.0
+> Normalized Throughput
+> (a) RTX 5090 + 70B
+> 510 15 20 25 PipeMax
+> Prefetch Ratio (%)
+> 0.0
+> 0.5
+> 1.0
+> (b) L20 + 70B
+
+Figure 16. Normalized throughput of PipeMax vs. static prefetch-ing with fixed prefetch ratios. 
+
+are implemented by replacing the original decode scheduler with static prefetching policies that prefetch a fixed fraction of available GPU memory, ranging from 5% to 25%, while keeping all other system components unchanged. As shown in Fig. 16, PipeMax consistently outperforms the static prefetching baselines. This result indicates that PipeMax can dynamically overlap KV cache prefetching with model execution, whereas static prefetching fails to fully utilize available overlap opportunities due to mis-matches between prefetching decisions and actual execution progress, resulting in either insufficient prefetching or overly long prefetch operations that interrupt model execution. 4.3.2. P IPE MAX RUNTIME 
+
+Block-First Layout We replace PipeMax’s block-first KV cache layout with a layer-first layout to evaluate the effec-tiveness of the block-first design. As shown in Fig. 17(a), the block-first layout consistently outperforms the layer-first layout, as it enables contiguous memory allocation that improves prefetch efficiency and allows larger KV cache prefetching, leading to greater effective memory capacity. We further measure the PCIe bandwidth utilization of both layouts. The results show that under the block-first layout, with the block size set to the vLLM default of 16, KV cache prefetching can saturate nearly 90% of the available PCIe bandwidth. In contrast, the layer-first layout achieves only about 30% bandwidth utilization. 
+
+Asynchronous Offloading To validate that asynchronous offloading in Section 3.4.2 can be hidden by computation, we measure the execution-time breakdown of computation and KV cache offloading. Fig. 17(b) reports two representative prefill cases with input lengths of 1 and 256 tokens on RTX 5090 with the 70B model. In both cases, KV cache offloading and CPU-side processing are fully overlapped with attention and FFN com-putation; intermediate input lengths show similar behavior but are omitted for brevity. During decode, different batch sizes (reflecting decode lengths) exhibit the same trend, with larger attention cost further masking offloading latency. 0.0       
+
+> 0.5
+> 1.0
+> Normalized Throughput
+> 5090 + 70B L20 + 70B
+> (a) Layer-First vs PipeMax
+> Layer-First PipeMax
+> 0.0
+> 0.5
+> 1.0
+> Normalized
+> Execution Time
+> Length = 1 Length = 256
+> (b) Asynchronous Offload Overlap
+> Attn FFN Offload CPU
+
+Figure 17. Runtime ablation of PipeMax: KV cache layout and offloading. 0 2500 5000 7500 10000       
+
+> Step
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> Execution Time
+> (Normalized)
+> Steady Phase
+> (a) Decode Execution Time Trend
+> 01000 2000 3000 4000 5000
+> Step
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> 2.0
+> KV Cache Usage
+> (Normalized)
+> GPU-Resident
+> Prefetched KV Cache
+> (b) KV Cache Usage
+> GPU Capacity Total KV Cache
+
+Figure 18. Decode runtime dynamics of PipeMax. 
+
+4.4. Runtime Dynamics during Decode 
+
+In this section, we show the runtime behavior of PipeMax on RTX 5090 with the 70B model using the ShareGPT dataset. Fig. 18(a) shows that decode execution time increases rapidly after the prefill-to-decode transition due to short-request prefetching, then converges as GPU memory and PCIe bandwidth become limiting factors (Section 3.3.2). In the steady phase, PipeMax balances batch workloads to pre-vent inter-batch imbalance. Fig. 18(b) shows the KV cache footprint per batch in this phase. With total GPU memory normalized to 1.0, prefetched KV cache occupies a substan-tial fraction of GPU memory, indicating PipeMax effectively expands usable KV cache capacity via prefetching. 
+
+## 5. Related Work 
+
+LLM Inference. LLM inference has attracted growing at-tention, motivating extensive system-level optimizations. Orca (Yu et al., 2022) introduces continuous batching, while vLLM (Kwon et al., 2023) proposes PagedAttention for ef-ficient KV cache management. Subsequent work optimizes LLM inference for both online and offline scenarios. For online serving, systems such as DistServe (Zhong et al., 2024), Sarathi-Serve (Agrawal et al., 2023), EcoServe (Du et al., 2025), and Bullet (Lin et al., 2025) mitigate prefill– decode interference to improve service quality. For offline inference, beyond the parallelism and offloading techniques studied here, BatchLLM (Zheng et al., 2024b) and Blend-Serve (Zhao et al., 2024) improve throughput via prefix sharing. Prefix sharing is orthogonal to PipeMax and can be seamlessly combined with our approach. 
+
+Pipeline Parallelism Enhanced by Offloading. Pipeline parallelism and offloading both improve resource utilization via concurrent batch execution, making their integration natural. Prior work explored this combination for training, including Mobius (Feng et al., 2023), APT-MoE (Wei et al., 2024), and PipeOffload (Wan et al., 2025), which overlap pipeline execution with data transfers via stage, expert, or activation offloading. 
+
+## 6. Conclusion 
+
+This paper presents PipeMax, a high-throughput LLM infer-ence system for commodity GPU servers. PipeMax boosts pipeline-parallel inference by offloading inactive KV cache and dynamically scheduling computation and KV cache movement to maximize compute–data overlap. Experiments show that PipeMax outperforms state-of-the-art LLM sys-tems by up to 2.51×, 1.42×, and 1.38× on 8 GPUs. 8PipeMax: Enhancing Offline LLM Inference on Commodity GPU Servers 
+
+## Impact Statement 
+
+This paper presents work whose goal is to advance the field of Large Language Model Inference Systems. There are many potential societal consequences of our work, none of which we feel must be specifically highlighted here. 
+
+## References 
+
+Agrawal, A., Panwar, A., Mohan, J., Kwatra, N., Gulavani, B. S., and Ramjee, R. Sarathi: Efficient llm inference by piggybacking decodes with chunked prefills. arXiv preprint arXiv:2308.16369 , 2023. Agrawal, A., Kedia, N., Panwar, A., Mohan, J., Kwatra, N., Gulavani, B., Tumanov, A., and Ramjee, R. Taming 
+
+{Throughput-Latency } tradeoff in {LLM } inference with 
+
+{Sarathi-Serve }. In 18th USENIX Symposium on Operat-ing Systems Design and Implementation (OSDI 24) , pp. 117–134, 2024. Bai, Y., Lv, X., Zhang, J., Lyu, H., Tang, J., Huang, Z., Du, Z., Liu, X., Zeng, A., Hou, L., et al. Longbench: A bilingual, multitask benchmark for long context under-standing. In Proceedings of the 62nd annual meeting of the association for computational linguistics (volume 1: Long papers) , pp. 3119–3137, 2024. Du, J., Zhang, H., Wei, T., Zheng, Z., Wu, K., Chen, Z., and Lu, Y. Ecoserve: Enabling cost-effective llm serving with proactive intra-and inter-instance orchestration. arXiv preprint arXiv:2504.18154 , 2025. Feng, Y., Xie, M., Tian, Z., Wang, S., Lu, Y., and Shu, J. Mo-bius: Fine tuning large-scale models on commodity gpu servers. In Proceedings of the 28th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 2 , pp. 489– 501, 2023. GitHub. Github copilot: Your ai pair programmer. https: //github.com/features/copilot , 2023. Hu, Y., Liu, X., Yang, G., Li, L., Zeng, K., Zhao, Z., Chen, S., Zhao, L., Li, W., and Li, K. Tightllm: Maximiz-ing throughput for llm inference via adaptive offloading policy. IEEE Transactions on Computers , 2025. Jiang, J., Chen, Y., Zhang, Z., He, B., Luo, P., Lu, M., Chen, Y., Zhang, H., Du, J., Huang, D., et al. Efficient kv cache spillover management on memory-constrained gpu for llm inference. IEEE Transactions on Parallel and Distributed Systems , 37(1):90–105, 2025. Kwon, W., Li, Z., Zhuang, S., Sheng, Y., Zheng, L., Yu, C. H., Gonzalez, J., Zhang, H., and Stoica, I. Efficient memory management for large language model serving with pagedattention. In Proceedings of the 29th sym-posium on operating systems principles , pp. 611–626, 2023. Lin, Z., Xu, H., Chen, G., Zhang, X., and Lu, Y. Bul-let: Boosting gpu utilization for llm serving via dy-namic spatial-temporal orchestration. arXiv preprint arXiv:2504.19516 , 2025. Liu, S., Biswal, A., Kamsetty, A., Cheng, A., Schroeder, L. G., Patel, L., Cao, S., Mo, X., Stoica, I., Gonzalez, J. E., et al. Optimizing llm queries in relational data analytics workloads. Proceedings of Machine Learning and Systems , 7, 2025. Nazi, Z. A. and Peng, W. Large language models in healthcare and medical domain: A review, 2024. URL 
+
+https://arxiv.org/abs/2401.06775 .Rane, N. L., Tawde, A., Choudhary, S. P., and Rane, J. Contribution and performance of chatgpt and other large language models (llm) for scientific and research advance-ments: a double-edged sword. International Research Journal of Modernization in Engineering Technology and Science , 5(10):875–899, 2023. ShareGPT. ShareGPT Datasets. https: //huggingface.co/datasets/ anon8231489123/ShareGPT_Vicuna_ unfiltered , 2025. Sheng, Y., Zheng, L., Yuan, B., Li, Z., Ryabinin, M., Chen, B., Liang, P., R ´e, C., Stoica, I., and Zhang, C. Flexgen: High-throughput generative inference of large language models with a single gpu. In International Conference on Machine Learning , pp. 31094–31116. PMLR, 2023. Su, Q., Zhao, W., Li, X., Andoorveedu, M., Jiang, C., Zhu, Z., Song, K., Giannoula, C., and Pekhimenko, G. Seesaw: High-throughput llm inference via model re-sharding. 
+
+arXiv preprint arXiv:2503.06433 , 2025. Wan, X., Qi, P., Huang, G., Lin, M., and Li, J. Pipeof-fload: Improving scalability of pipeline parallelism with memory optimization. arXiv preprint arXiv:2503.01328 ,2025. Wei, Y., Du, J., Jiang, J., Shi, X., Zhang, X., Huang, D., Xiao, N., and Lu, Y. Aptmoe: Affinity-aware pipeline tun-ing for moe models on bandwidth-constrained gpu nodes. In SC24: International Conference for High Performance Computing, Networking, Storage and Analysis , pp. 1–14. IEEE, 2024. Xu, D., Chen, W., Peng, W., Zhang, C., Xu, T., Zhao, X., Wu, X., Zheng, Y., Wang, Y., and Chen, E. Large lan-guage models for generative information extraction: A survey. Frontiers of Computer Science , 18(6):186357, 2024. 9PipeMax: Enhancing Offline LLM Inference on Commodity GPU Servers 
+
+Yu, G.-I., Jeong, J. S., Kim, G.-W., Kim, S., and Chun, B.-G. Orca: A distributed serving system for Transformer-Based generative models. In 16th USENIX Sympo-sium on Operating Systems Design and Implementa-tion (OSDI 22) , pp. 521–538, Carlsbad, CA, July 2022. USENIX Association. ISBN 978-1-939133-28-1. URL https://www.usenix.org/conference/ osdi22/presentation/yu .Zhang, H., Wei, T., Zheng, Z., Du, J., Chen, Z., and Lu, Y. Td-pipe: Temporally-disaggregated pipeline parallelism architecture for high-throughput llm inference. In Pro-ceedings of the 54th International Conference on Parallel Processing , pp. 689–698, 2025. Zhao, Y., Yang, S., Zhu, K., Zheng, L., Kasikci, B., Zhou, Y., Xing, J., and Stoica, I. Blendserve: Optimizing offline inference for auto-regressive large models with resource-aware batching. arXiv preprint arXiv:2411.16102 , 2024. Zheng, L., Yin, L., Xie, Z., Sun, C. L., Huang, J., Yu, C. H., Cao, S., Kozyrakis, C., Stoica, I., Gonzalez, J. E., et al. Sglang: Efficient execution of structured language model programs. Advances in neural information processing systems , 37:62557–62583, 2024a. Zheng, Z., Ji, X., Fang, T., Zhou, F., Liu, C., and Peng, G. Batchllm: Optimizing large batched llm inference with global prefix sharing and throughput-oriented token batching. arXiv preprint arXiv:2412.03594 , 2024b. Zhong, Y., Liu, S., Chen, J., Hu, J., Zhu, Y., Liu, X., Jin, X., and Zhang, H. {DistServe }: Disaggregating prefill and decoding for goodput-optimized large language model serving. In 18th USENIX Symposium on Operating Sys-tems Design and Implementation (OSDI 24) , pp. 193–210, 2024. 10 PipeMax: Enhancing Offline LLM Inference on Commodity GPU Servers 
+
+## A. Appendix 
+
+A.1. Pipeline Parallelism for the Prefill Stage 
+
+In this section, we present a proof for the total execution-time formula of the pure prefill pipeline shown in Fig. 4 (also Stated in Section 2.3.1). 
+
+Setup. Consider m independent prefill requests executed on an n-stage pipeline (i.e., n workers/GPUs). Let ti denote the per-stage execution time of request i during prefill, assuming a homogeneous pipeline where all stages have identical execution time for a given request . 2 Let T (m, n ) denote the total makespan to process all m requests on the n-stage pipeline. 
+
+Assumption (No bubble at Stage 1). We assume the first stage is fully utilized (i.e., no idle bubble at Stage 1). This can be Ensured by continuously dispatching ready requests whose dependencies (if any) have been resolved. 
+
+Theorem A.1 (Prefill pipeline execution time) . Under the above assumption, the total execution time satisfies 
+
+T (m, n ) = 
+
+> m
+
+X
+
+> i=1
+
+ti + ( n − 1) · max  
+
+> 1≤i≤m
+
+ti. (10) 
+
+Proof. Define 
+
+f (m, n ) ≜
+
+> m
+
+X
+
+> i=1
+
+ti + ( n − 1) · max  
+
+> 1≤i≤m
+
+ti. (11) Our goal is to show that the total execution time satisfies 
+
+T (m, n ) = f (m, n ), (12) for all m > 0 and n > 0.We prove the theorem by induction. 
+
+Base cases. When n = 1 , the pipeline degenerates to sequential execution: 
+
+T (m, 1) = 
+
+> m
+
+X
+
+> i=1
+
+ti = f (m, 1) . (13) When m = 1 , the single request traverses all n stages: 
+
+T (1 , n ) = n · t1 = f (1 , n ). (14) 
+
+Inductive step. Given the base cases, we assume that the equality 
+
+T (i, j ) = f (i, j ), ∀ 1 ≤ i ≤ m, 1 ≤ j ≤ n. (15) It suffices to show that the equality is preserved when extending the pipeline by one stage or one request, i.e., 
+
+T (m, n + 1) = f (m, n + 1) and T (m + 1 , n ) = f (m + 1 , n ). (16) 
+
+We first prove that T (m, n + 1) = f (m, n + 1) .
+
+Fix the number of pipeline stages to (n + 1) and consider increasing the number of requests. The equality holds for a single request, since 
+
+T (1 , n + 1) = ( n + 1) · t1 = f (1 , n + 1) . (17) 
+
+> 2Prefill has no cross-request data dependency; thus, the first stage can be kept continuously busy by scheduling ready requests.
+
+11 PipeMax: Enhancing Offline LLM Inference on Commodity GPU Servers 
+
+It therefore suffices to show that, for any k ∈ [1 , m − 1] ,
+
+T (k, n + 1) = f (k, n + 1) = ⇒ T (k + 1 , n + 1) = f (k + 1 , n + 1) . (18) Once this implication is established, T (m, n + 1) = f (m, n + 1) follows directly. Consider the pipeline dependency for processing the (k + 1) -th request on an (n + 1) -stage pipeline. Let T (k, n + 1) denote the time when the k-th request finishes stage (n + 1) , and T (k + 1 , n ) denote the time when request (k + 1) finishes stage 
+
+n. Due to pipeline precedence constraints, the execution of request (k+1) at stage (n+1) is governed by two dependencies, as illustrated in Fig. 19(a) and (b). 𝒌 + 𝟏       
+
+> 𝒌 +𝟏
+> 𝒌 +𝟏
+> 𝒌 +𝟏
+
+…… 
+
+…… 
+
+…… 
+
+…… 
+
+……     
+
+> Stage 𝒏 +𝟏
+> Stage 𝒏
+
+……          
+
+> 𝑻 (𝒌 ,𝒏 +𝟏 )
+> Time
+> 𝑻 𝒌 ,𝒏 +𝟏 +𝒕 𝒌 "𝟏
+
+(a) Case 1: request-order dependency. 𝒌 + 𝟏 …… 
+
+…… 
+
+…… 
+
+…… 
+
+……     
+
+> Time Stage 𝒏 +𝟏
+> Stage 𝒏
+
+…… 𝒌 + 𝟏               
+
+> 𝒌 +𝟏
+> 𝒌 +𝟏
+> 𝑻 (𝒌 +𝟏 ,𝒏 )𝑻 (𝒌 +𝟏 ,𝒏 )+𝒕 𝒌 "𝟏
+
+(b) Case 2: stage-order dependency. 
+
+Figure 19. Precedence constraints when extending the pipeline by one additional request, which determine the start time of request (k + 1) 
+
+at stage (n + 1) .
+
+Combining the above two cases, the completion time of request (k+1) at stage (n+1) is determined by the later of the two dependencies, and thus satisfies 
+
+T (k+1 , n +1) = max T (k, n +1) , T (k+1 , n ) + tk+1 . (19) Define Mk ≜ max 1≤i≤k ti.
+
+Case 1: tk+1 ≤ Mk.
+
+In this case, Mk+1 = Mk. Using the induction hypothesis, 
+
+T (k, n + 1) = 
+
+> k
+
+X
+
+> i=1
+
+ti + n · Mk, (20) 
+
+T (k + 1 , n ) = 
+
+> k+1
+
+X
+
+> i=1
+
+ti + ( n − 1) · Mk+1 =
+
+> k+1
+
+X
+
+> i=1
+
+ti + ( n − 1) · Mk. (21) Thus, 
+
+T (k, n + 1) − T (k + 1 , n ) = nM k −  tk+1 + ( n − 1) Mk
+
+
+
+= Mk − tk+1 
+
+≥ 0.
+
+(22) so max {T (k, n + 1) , T (k + 1 , n )} = T (k, n + 1) .Plugging into (19), 
+
+T (k + 1 , n + 1) = T (k, n + 1) + tk+1 
+
+=
+
+> k+1
+
+X
+
+> i=1
+
+ti + n · Mk+1 
+
+= f (k + 1 , n + 1) . (23) 
+
+Case 2: tk+1 > M k.
+
+12 PipeMax: Enhancing Offline LLM Inference on Commodity GPU Servers 
+
+In this case, Mk+1 = tk+1 . Using the induction hypothesis, 
+
+T (k, n + 1) = 
+
+> k
+
+X
+
+> i=1
+
+ti + n · Mk, (24) 
+
+T (k + 1 , n ) = 
+
+> k+1
+
+X
+
+> i=1
+
+ti + ( n − 1) · Mk+1 =
+
+> k+1
+
+X
+
+> i=1
+
+ti + ( n − 1) · tk+1 . (25) Thus, 
+
+T (k + 1 , n ) − T (k, n + 1) = 
+
+k+1 X
+
+> i=1
+
+ti + ( n − 1) tk+1 
+
+
+
+−
+
+ kX
+
+> i=1
+
+ti + nM k
+
+
+
+= nt k+1 − nM k
+
+= n(tk+1 − Mk)
+
+> 0.
+
+(26) Therefore, max {T (k, n + 1) , T (k + 1 , n )} = T (k + 1 , n ). Plugging into (19), 
+
+T (k + 1 , n + 1) = T (k + 1 , n ) + tk+1 
+
+=
+
+> k+1
+
+X
+
+> i=1
+
+ti + n · tk+1 
+
+=
+
+> k+1
+
+X
+
+> i=1
+
+ti + n · Mk+1 
+
+= f (k + 1 , n + 1) . (27) In both cases, the implication in (18) holds, and therefore T (m, n + 1) = f (m, n + 1) follows. 
+
+We next prove that T (m + 1 , n ) = f (m + 1 , n ).
+
+Similar to the previous case, we fix the number of requests to (m + 1) and consider increasing the number of pipeline stages. The equality holds for a single stage, since 
+
+T (m + 1 , 1) = 
+
+> m+1
+
+X
+
+> i=1
+
+ti = f (m + 1 , 1) . (28) It therefore suffices to show that, for any k ∈ [1 , n − 1] ,
+
+T (m + 1 , k ) = f (m + 1 , k ) = ⇒ T (m + 1 , k + 1) = f (m + 1 , k + 1) . (29) Consider processing request (m + 1) on a (k + 1) -stage pipeline. Let T (m, k + 1) denote the time when request m finishes stage (k + 1) , and let T (m + 1 , k ) denote the time when request (m + 1) finishes stage k. By pipeline precedence constraints (illustrated in Fig. 20), request (m + 1) can start stage (k + 1) only after both dependencies are resolved. Therefore, its completion time satisfies 
+
+T (m + 1 , k + 1) = max T (m, k + 1) , T (m + 1 , k ) + tm+1 . (30) 𝒎 + 𝟏       
+
+> 𝒎 +𝟏
+> 𝒎 +𝟏
+> 𝒎 +𝟏
+
+…… 
+
+…… 
+
+…… 
+
+…… 
+
+……  
+
+> Stage k +𝟏
+> Stage 𝒌
+
+……          
+
+> 𝑻 (𝒎 ,𝒌 +𝟏 )
+> Time
+> 𝑻 𝒎 ,𝒌 +𝟏 +𝒕 𝒎 "𝟏
+
+(a) Case 1: request-order dependency. 𝒎 + 𝟏 …… 
+
+…… 
+
+…… 
+
+…… 
+
+……     
+
+> Time Stage 𝒌 +𝟏
+> Stage 𝒌
+
+…… 𝒎 + 𝟏               
+
+> 𝒎 +𝟏
+> 𝒎 +𝟏
+> 𝑻 (𝒎 +𝟏 ,𝒌 )𝑻 (𝒎 +𝟏 ,𝒌 )+𝒕 𝒎 "𝟏
+
+(b) Case 2: stage-order dependency. 
+
+Figure 20. Precedence constraints for request (m + 1) when extending the pipeline by one additional stage, which determine its start time at stage (k + 1) .
+
+13 PipeMax: Enhancing Offline LLM Inference on Commodity GPU Servers 
+
+The dependency constraints in (30) are structurally identical to those in (19), with the roles of requests and pipeline stages exchanged. Accordingly, the same case analysis applies here. By distinguishing whether tm+1 is no larger than or exceeds 
+
+max 1≤i≤m ti, we can show that 
+
+T (m + 1 , k + 1) = f (m + 1 , k + 1) . (31) This establishes the implication in (29), and therefore T (m + 1 , n ) = f (m + 1 , n ) holds. 
+
+Conclusion 
+
+Since the equality holds for the base cases and is preserved when extending either the number of requests or the number of pipeline stages, we conclude that T (m, n ) = f (m, n ) holds for all m > 0 and n > 0.
+
+Implication. The theorem implies that, once the first stage is kept bubble-free, the overall prefill makespan is dominated by (i) the cumulative work injected into Stage 1 and (ii) a fixed drain cost of (n − 1) max i ti. When m ≫ n, the drain term becomes amortized, and the total time is effectively governed by Stage 1 throughput. Therefore, optimizing prefill reduces to keeping Stage 1 continuously saturated, which naturally connects to our batch construction and KV-cache memory management design. 
+
+A.2. Pipeline Parallelism for the Decode Stage 
+
+In this section, we derive the average token budget per decode batch under pipeline parallelism. Let M denote the per-GPU memory capacity, W the total model weight size, n the pipeline degree, and T the KV Cache size per token. Since the model weights are evenly partitioned across pipeline stages, the per-GPU weight footprint is 
+
+Wgpu = Wn . (32) Accordingly, the memory available for KV Cache on each GPU is 
+
+Mkv = M − Wgpu . (33) Since the KV Cache of each token is sharded across all n GPUs, the per-token KV Cache footprint on each GPU is 
+
+Tgpu = Tn . (34) Maintaining full pipeline utilization during decode requires n concurrent batches to remain resident in GPU memory. Let 
+
+N max  
+
+> token
+
+denote the system-wide maximum number of storable tokens, which is given by 
+
+N max  
+
+> token
+
+= Mkv 
+
+Tgpu 
+
+= M − W/n T /n 
+
+= nM − WT .
+
+(35) Dividing this system-wide token capacity evenly across the n resident decode batches yields the average token budget per batch: 
+
+Navg = N max 
+
+> token
+
+n
+
+= M − W/n T .
+
+(36) 14 PipeMax: Enhancing Offline LLM Inference on Commodity GPU Servers 
+
+A.3. Scheduler Algorithm 
+
+Here we present the detailed scheduling procedure and the greedy algorithm for selecting Pt.A.3.1. S CHEDULING PROCEDURE 
+
+The scheduling procedure described in Section 3.3.2 is summarized in Algorithm 1. 
+
+Algorithm 1 Prefetch-Aware Decode Scheduler 
+
+Require: Decode request set R, pipeline depth n
+
+Ensure: Iterative decode batches D = {D0, . . . , D n−1} 
+
+> 1:
+
+Initialization:  
+
+> 2:
+
+Partition R into n initial decode batches D 
+
+> 3:
+
+Initialize iteration counter t ← 0 
+
+> 4:
+
+Initialize steady-phase flag steady ← false  
+
+> 5:
+
+Iterative Scheduling:  
+
+> 6:
+
+while decode not finished do  
+
+> 7:
+
+it ← t mod n 
+
+> 8:
+
+jt ← (it + 1) mod n 
+
+> 9:
+
+kt ← (it − 1) mod n 
+
+> 10:
+
+Predict the execution time ˆTt of batch Dit 
+
+> 11:
+
+Derive the prefetch budget Bt ← B · ˆTt 
+
+> 12:
+
+Update steady-phase flag steady by monitoring whether Bt has stabilized  
+
+> 13:
+
+Retain GPU-resident requests in the next batch:  
+
+> 14:
+
+Dres  
+
+> jt
+
+← Djt ∩ R t 
+
+> 15:
+
+if not steady then  
+
+> 16:
+
+// Ramp-up phase: prioritize short requests to fill the budget  
+
+> 17:
+
+Pt ← SHORT FIRST FILL (Rcpu  
+
+> t
+
+, Bt) 
+
+> 18:
+
+else  
+
+> 19:
+
+// Steady phase: match execution-time gap  
+
+> 20:
+
+Pt ← GREEDY SELECT (Rcpu  
+
+> t
+
+, Bt, ∆ ˆTt) 
+
+> 21:
+
+end if  
+
+> 22:
+
+Prefetch the KV cache of requests in Pt from CPU to GPU  
+
+> 23:
+
+Reclaim GPU memory by overwriting KV cache blocks of the inactive batch Dkt 
+
+> 24:
+
+Update the next decode batch:  
+
+> 25:
+
+Djt ← Dres  
+
+> jt
+
+∪ Pt 
+
+> 26:
+
+Submit batch Dit for execution and batch Djt for prefetching to the PipeMax runtime  
+
+> 27:
+
+t ← t + 1  
+
+> 28:
+
+end while 
+
+The scheduler operates in an iterative manner and adapts its behavior across iterations based on the evolution of the prefetch budget Bt.At each iteration, PipeMax first predicts the execution time of the currently executing batch and derives the corresponding prefetch budget. Requests whose KV cache already resides in GPU memory are retained in the next batch, while additional CPU-resident requests are selected for prefetching to fully utilize the available budget. PipeMax distinguishes the warm-up phase from the steady phase by tracking the stabilization of the prefetch budget. During the warm-up phase, the scheduler prioritizes short requests with smaller prefix lengths to best-effort utilize the limited prefetch budget and rapidly increase decode execution time. As longer requests are gradually admitted, execution time and the prefetch budget may exhibit temporary fluctuations due to GPU memory and CPU–GPU bandwidth constraints. Eventually, the system converges to a bounded execution regime, after which PipeMax enters the steady phase. Once the system reaches a steady phase, the scheduler switches to a prefetch-aware selection policy that matches the execution-time contribution of prefetched requests to the remaining time gap, thereby balancing decode batches and avoiding 15 PipeMax: Enhancing Offline LLM Inference on Commodity GPU Servers 
+
+inter-batch imbalance. In practice, PipeMax detects the onset of the steady phase by tracking the evolution of the prefetch budget Bt over a sliding window of recent iterations. At the beginning of decoding, Bt typically grows rapidly as execution time ramps up. As the system transitions into the steady phase, Bt stabilizes and fluctuates within a narrow range. Specifically, PipeMax maintains a sliding window of the most recent w iterations and considers the system to have entered the steady phase when the relative variation of Bt within the window falls below a predefined threshold. A.3.2. G REEDY ALGORITHM FOR SELECTING Pt
+
+After PipeMax reaches a steady phase, it strives to maintain stable execution times across iterations to reduce inter-batch imbalance. 
+
+Problem Formulation. At iteration t, PipeMax selects a set of CPU-resident requests Pt to augment the next decode batch Djt . Each request r is associated with a prefix length Lr and contributes an execution-time cost α + βL r according to Eq. (2). Given the prefetch budget Bt = B · ˆTt and the remaining execution-time gap ∆ ˆTt defined in Eq. (8), the goal is to select a subset Pt such that 
+
+X
+
+> r∈Pt
+
+Lr ≈ B t,
+
+i.e., the selected requests aim to nearly saturate the prefetch budget without exceeding it, while making the total execution-time contribution 
+
+X
+
+> r∈Pt
+
+(α + βL r )
+
+as close as possible to ∆ ˆTt.
+
+Greedy Algorithm To select the set of CPU-resident requests Pt, PipeMax adopts a two-stage heuristic that combines greedy selection with exchange-based local refinement. The greedy stage prioritizes length utilization by selecting requests in a length-first manner, rapidly saturating the prefetch budget to obtain a near-feasible initial solution. Under the execution-time model, this effectively drives the length-dependent term β P 
+
+> r∈Pt
+
+Lr toward its budget-limited maximum. Building on this initial solution, the refinement stage performs limited exchange operations that replace a small number of selected requests with unselected ones, adjusting the batch cardinality while preserving the budget constraint. Under the length budget, the cumulative length term β P 
+
+> r∈Pt
+
+Lr remains largely fixed after greedy initialization. As a result, the refinement primarily adjusts the constant per-request component α|Pt| of the execution-time model. These local exchanges are guided by the execution-time model and aim to minimize the mismatch between the modeled batch execution time 
+
+α|Pt| + β X
+
+> r∈Pt
+
+Lr
+
+and the remaining execution-time gap ∆ ˆTt.Concretely, when the modeled execution time falls short of the target, the refinement replaces longer requests with multiple shorter ones of comparable total length, increasing the α|Pt| term. Conversely, when the modeled execution time exceeds the target, multiple shorter requests are replaced by a longer one to reduce the α|Pt| contribution, while keeping the total prefix length approximately unchanged. This exchange process continues until the mismatch falls below a predefined threshold or a maximum number of refinement steps is reached. 16 PipeMax: Enhancing Offline LLM Inference on Commodity GPU Servers 
+
+Algorithm 2 Greedy Selection with Local Refinement 
+
+Require: CPU-resident requests Rcpu  
+
+> t
+
+with prefix length Lr
+
+Require: Prefetch budget Bt, target gap ∆ ˆTt
+
+Ensure: Selected subset Pt 
+
+> 1:
+
+Greedy Initialization:  
+
+> 2:
+
+Sort Rcpu  
+
+> t
+
+in descending order of Lr 
+
+> 3:
+
+Pt ← ∅ , S ← 0 ▷ S : cumulative prefix length  
+
+> 4:
+
+for each request r ∈ R cpu  
+
+> t
+
+do  
+
+> 5:
+
+if S + Lr ≤ B t then  
+
+> 6:
+
+Pt ← Pt ∪ { r} 
+
+> 7:
+
+S ← S + Lr 
+
+> 8:
+
+end if  
+
+> 9:
+
+end for  
+
+> 10:
+
+Local Refinement:  
+
+> 11:
+
+for a fixed number of refinement steps do  
+
+> 12:
+
+T ← α|Pt| + βS  
+
+> 13:
+
+if |T − ∆ ˆTt| is below a threshold then  
+
+> 14:
+
+break  
+
+> 15:
+
+end if  
+
+> 16:
+
+if T < ∆ ˆTt then  
+
+> 17:
+
+Replace one long selected request with multiple shorter unselected ones  
+
+> 18:
+
+to increase |Pt| while keeping S ≈ B t 
+
+> 19:
+
+else if T > ∆ ˆTt then  
+
+> 20:
+
+Replace multiple short selected requests with one longer unselected one  
+
+> 21:
+
+to decrease |Pt| while keeping S ≈ B t 
+
+> 22:
+
+end if  
+
+> 23:
+
+end for  
+
+> 24:
+
+return Pt
+
+17

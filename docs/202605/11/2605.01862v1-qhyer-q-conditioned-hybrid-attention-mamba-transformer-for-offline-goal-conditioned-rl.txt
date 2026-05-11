@@ -1,0 +1,2196 @@
+Title: QHyer: Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL
+
+URL Source: https://arxiv.org/pdf/2605.01862v1
+
+Published Time: Tue, 05 May 2026 01:23:37 GMT
+
+Number of Pages: 34
+
+Markdown Content:
+# QHyer: Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL 
+
+Xing Lei 1 Jincheng Wang 2 Xuetao Zhang 1 Donglin Wang 3
+
+## Abstract 
+
+Offline goal-conditioned RL (GCRL) learns goal-reaching policies from static datasets, but real-world datasets are often partially observable and history-dependent, exhibiting a mix of Markovian and non-Markovian that violate standard RL as-sumptions. History-aware sequence models such as Decision Transformer (DT) are a natural fit for long-term dependency modeling, yet pure at-tention is inefficient and brittle when handling local Markovian structure and long-range con-text simultaneously. Although recent hybrid ar-chitectures (e.g., LSDT) introduce local extrac-tors to improve local dependencies modeling, the fixed-window extraction cannot adapt its effec-tive memory to varying dependency lengths in temporally heterogeneous settings, often trun-cating long-range context rather than compress-ing its content adaptively. Moreover, sequen-tial offline GCRL faces a key bottleneck: under sparse rewards, return-to-go (RTG) becomes non-discriminative across sub-trajectories, providing little guidance signal for stitching goal-reaching behaviors from diverse demonstrations. To ad-dress these, we propose QHyer , which replaces RTG with a flow-parameterized, state-conditioned goal-reaching Q-estimator to support stitching across demonstrations, and introduces a gated Hy-brid Attention-Mamba backbone that performs content-adaptive history compression while pre-serving local dynamics. Extensive experiments demonstrate that QHyer achieves state-of-the-art performance on both non-Markovian and Marko-vian datasets, validating its effectiveness for di-verse scenarios. 
+
+> 1
+
+National Key Laboratory of Human-Machine Hybrid Aug-mented Intelligence and Institute of Artificial Intelligence and Robotics, Xi’an Jiaotong University 2Computer Science, Univer-sity College London 3School of Engineering, Westlake University. Correspondence to: Xuetao Zhang <xuetaozhang@xjtu.edu.cn>. 
+
+Proceedings of the 43 rd International Conference on Machine Learning , Seoul, South Korea. PMLR 306, 2026. Copyright 2026 by the author(s). 
+
+## 1. Introduction 
+
+Offline Goal-Conditioned Reinforcement Learning (Offline GCRL) aims to learn goal-reaching policies from static datasets, offering a promising paradigm for real-world applications where online interaction is costly or infeasi-ble (Levine et al., 2020; Liu et al., 2022). While most existing offline GCRL datasets are collected by Marko-vian behavior policies, an increasing number of practical datasets exhibit non-Markovian properties where actions de-pend on historical context rather than current observations alone (Park et al., 2025a). This properties poses fundamen-tal challenges for existing value-based methods (Kostrikov et al., 2022; Park et al., 2023; Zhou & Kao, 2025; Ahn et al., 2025; Giammarino et al., 2025; Giammarino & Qureshi, 2026) that rely on Bellman backup. In contrast, sequence modeling approaches like Decision Transformer (DT) (Chen et al., 2021) naturally solve non-Markovian problem by con-ditioning on return-to-go (RTG), states, and actions, leverag-ing self-attention to capture long-range dependencies from extended historical sequences. Although DT naturally handles non-Markovian patterns through history conditioning, it exhibits two fundamental limitations when applied to offline GCRL. On one hand, RTG is trajectory-dependent rather than state-dependent ,assigning values based on trajectory success rather than state quality, which provides no discriminative information 
+
+for distinguishing promising states within failed trajectories. This is a critical requirement for trajectory stitching under goal-conditioned sparse rewards. On the other hand, pure at-tention struggles to efficiently balance global goal-directed reasoning with fine-grained local dynamics modeling. Re-cent hybrid architectures like LSDT (Wang et al., 2025) and DMixer (Zheng et al., 2025a) incorporate convolution alongside attention to capture local patterns. However, non-Markovian offline GCRL data exhibits variable-length tem-poral dependencies that change dynamically across states and trajectory segments. Convolution with fixed receptive fields either wastes model capacity on irrelevant context when dependencies are short, or truncates critical informa-tion when dependencies are long, unable to adapt to this inherent variability. We propose QHyer (Q-conditioned Hy brid Attention-1
+
+> arXiv:2605.01862v1 [cs.LG] 3 May 2026 Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL
+
+Mamba Transform er ), the first sequence modeling frame-work to jointly resolve both limitations for offline GCRL. Our key observation is that these two limitations are cou-pled . Effective trajectory stitching under sparse rewards requires both a state-dependent value signal and an archi-tecture whose effective memory matches the temporal struc-ture of the underlying behavior policy. Addressing either alone is insufficient, because Q-conditioning layered on a fixed-window hybrid retains the convolutional pathology on non-Markovian play data, while a better temporal archi-tecture with RTG retains the trajectory-dependence bottle-neck. Concretely, we (i) replace trajectory-dependent RTG with state-dependent Q-values estimated via Normalizing Flows (Ghugare & Eysenbach, 2025), chosen specifically for their exact, properly normalized log-density, a prop-erty CVAEs, contrastive critics, and diffusion likelihoods cannot provide (Section 3.1), and (ii) design a gated Hy-brid Attention-Mamba (Gu & Dao, 2024) backbone where Mamba’s input-dependent selective state-space dynamics provide content-adaptive history compression, adjusting ef-fective memory per-token rather than through a hand-tuned receptive field. Unlike prior value-guided Decision Trans-formers (Yamagata et al., 2023; Wang et al., 2024; Hu et al., 2024; Zhuang et al., 2024; Zheng et al., 2025b) that retain 
+
+RTG and attach Q-values as auxiliary losses or regularizers, 
+
+QHyer eliminates RTG and uses Q-values directly as con-ditioning tokens. Under goal-conditioned sparse rewards, where RTG collapses to a near-binary signal, this distinction is decisive (Figures 2 and 5). Our evaluation on OGBench (Park et al., 2025a) and D4RL (Fu et al., 2020) demonstrates that QHyer achieves state-of-the-art performance across both non-Markovian datasets (OGBench play and D4RL Maze ) and Marko-vian datasets (OGBench noisy ), validating the effective-ness of NFs-based Q-value conditioning and the Hybrid Attention-Mamba architecture for offline GCRL. 
+
+## 2. Background 
+
+2.1. Offline GCRL 
+
+Offline GCRL is defined over a Markov Decision Process (MDP) (S, A, G, p, γ ), where S denotes the state space, 
+
+A the action space, G the goal space, p(s′|s, a ) the tran-sition dynamics, and γ ∈ [0 , 1) the discount factor. Fol-lowing prior work (Park et al., 2023; 2025a), we assume 
+
+G ≡ S . The agent has access only to a static dataset 
+
+D = {τi}Ni=1 collected by behavioral policies β, where each trajectory takes the form τ (i) = {(st, a t, s t+1 )}T (i)−1 
+
+> t=0
+
+.The objective is to learn a goal-conditioned policy π(a|s, g )
+
+that maximizes the expected cumulative return J(π) = 
+
+Eτ ∼pπ ,g ∼p(g)[PTt=0 γtr(st, g )] without interaction in the environment. To obtain goal-conditioned supervision, we employ hindsight experience replay (HER) (Andrychowicz et al., 2017), which samples goals from future achieved states along the same trajectory. In standard GCRL with sparse rewards, the reward function is defined as r(s, g ) = 1[s = g], where the agent receives 1
+
+only upon reaching the goal and 0 otherwise. Consequently, most state-action pairs yield no learning signal for states far from the goal. To address this, following prior work (Ey-senbach et al., 2020; 2022), a probabilistic reward can be defined as r(s, a, g ) ≜ (1 − γ) · p(g|s′), where s′ is the next state. Under this formulation, the goal-conditioned Q-function corresponds to the discounted state occupancy measure (Eysenbach et al., 2022; Bortkiewicz et al., 2025): 
+
+Qπ (s, a, g ) = pπ
+
+> +
+
+(s+ = g|s0 = s, a 0 = a)
+
+≜ (1 − γ)
+
+> ∞
+
+X
+
+> k=0
+
+γkpπ (sk+1 = g|s0 = s, a 0 = a),
+
+(1) where s+ ≜ sK for K ∼ Geom(1 − γ) denotes a future state sampled at a geometrically distributed time step. Un-like sparse rewards that are directly observed, this formula-tion requires learning a density model to estimate Q-values. 
+
+2.2. Normalizing Flows for Q-Value Estimation 
+
+Normalizing Flows (NFs) (Zhai et al., 2024) are invertible generative models that learn a bijective mapping fθ : Rd →
+
+Rd from a complex data distribution to a simple prior p0
+
+(typically standard Gaussian), with density computed ex-actly via the change of variables formula: 
+
+pθ (x) = p0(fθ (x)) det ∂f θ (x)
+
+∂x . (2) Following Ghugare & Eysenbach (2025), NFs can be con-structed using coupling layers (Dinh et al., 2017). For the 
+
+t-th block with input xt and condition y:
+
+xt
+
+> 1
+
+, x t 
+
+> 2
+
+= split( xt),
+
+˜xt 
+
+> 2
+
+=  xt 
+
+> 2
+
++ atθ (xt
+
+> 1
+
+, y ) × exp  −stθ (xt
+
+> 1
+
+, y ),
+
+˜xt = concat( xt
+
+> 1
+
+, ˜xt
+
+> 2
+
+), (3) where split( ·) partitions the input into two halves along the feature dimension, atθ and stθ are neural networks that output translation and scale parameters respectively. In Offline GCRL, NFs can directly estimate it by modeling 
+
+pθ (g|s, a ) (Ghugare & Eysenbach, 2025). The conditioning information (s, a ) is encoded by a state-action encoder, and the behavior Monte Carlo (MC) Q-value is obtained as: 
+
+Qβθ (s, a, g ) = log p0(fθ (g; z)) + log det ∂f θ (g; z)
+
+∂g , (4) 2Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL 
+
+where fθ (·; z) is the conditional NFs mapping goals to the latent space with z being the encoded state-action repre-sentation. Note that Qβθ (s, a, g ) = log pθ (g|s, a ) represents the log-probability, which serves as an unnormalized score for conditioning. During inference, we use exp( Qβθ ) when probability interpretation is needed. In practice, the NFs is trained via maximum likelihood on hindsight-relabeled transitions: 
+
+LNFs = −E(st,a t,g )∼D [log pθ (g|st, a t)] . (5) 
+
+2.3. Sequence Modeling for Decision Making 
+
+Decision Transformer (DT) (Chen et al., 2021) models decision-making from offline datasets as a sequence model-ing problem. Unlike traditional RL methods that estimate Q-functions or compute policy gradients, DT generates an action at at timestep t conditioned on the context of the previous K timesteps along with the current state and return-to-go (RTG). The input sequence is formulated as τ =( ˆRt−K+1 , s t−K+1 , a t−K+1 , . . . , ˆRt−1, s t−1, a t−1, ˆRt, s t),where RTG ˆRt = PTt′=t rt′ is defined as the sum of rewards from the current step to the end of the trajectory and K is the context length. For each timestep, three tokens (RTG, state, and action) are embedded and fed into the model. DT employs a causal Transformer that leverages self-attention layers to capture long-range dependencies. Decision Mamba (DMamba) (Ota, 2024) integrates the Mamba (Gu & Dao, 2024) architecture into the DT frame-work by replacing self-attention with the Mamba block. The DMamba block first applies a one-dimensional causal convolution to extract local features: 
+
+x′ = SiLU (Conv1d (x)) , (6) where Conv1d operates with a local kernel over adjacent positions. The transformed sequence is then processed by the discrete-time selective state space model (SSM): 
+
+ht = ¯Ah t−1 + ¯Bx ′
+
+> t
+
+, yt = Ch t, (7) where ht is the hidden state and yt is the output. The key innovation of Mamba is the input-dependent selective mech-anism: 
+
+B = Linear B (x′), C = Linear C (x′),
+
+∆ = softplus (Linear ∆(x′)) , (8) where ∆ controls the discretization step size. 
+
+## 3. QHyer: Unlocking Sequence Modeling for Offline GCRL 
+
+While sequence modeling naturally addresses the non-Markovian challenge, DT-based methods exhibits critical limitations when applied to GCRL. We propose QHyer ,which introduces NFs-based Q-value conditioning (Sec-tion 3.1) and a Hybrid Attention-Mamba architecture (Sec-tion 3.2) to overcome these limitations. The overall archi-tecture is illustrated in Figure 1. QHyer:Hybrid Attention-Mamba Block ( 𝐀 ×)⋯ ⋯
+
+> Offline Dataset
+
++ +                  
+
+> Iterative
+> Reinfoced Learing
+> ⋯⋯⋯
+> 𝐀 𝐀 −1𝐀 𝐀
+> 𝐀 𝐀 −1𝐀 𝐀 −1𝐀 𝐀 𝐀 𝐀 𝐀 𝐀 −1𝐀 𝐀
+> NFs NFs 𝐀 ~𝐀
+> 𝐀
+> 𝐀 𝐀 𝐀 𝐀 −1𝐀 𝐀 −1𝐀 𝐀 −1𝐀 𝐀 𝐀 𝐀 𝐀 𝐀
+> 𝐀 𝐀 −1𝐀 𝐀 −1𝐀 𝐀 𝐀 𝐀
+> 𝐀 𝐀 −1𝐀 𝐀 −1𝐀 𝐀 𝐀 𝐀
+> 𝐀 𝐀 𝐀 𝐀 𝐀 𝐀
+
+Figure 1. Overview of QHyer architecture. The framework consists of three main components: (1) a NFs Q-value estimator that replaces RTG conditioning, (2) a Hybrid Attention-Mamba Block, (3) concatenated state-goal tokenization for effective goal information propagation and (4) reinforced learning with expectile regression. 
+
+3.1. Limitation 1: RTG Fails Under Sparse Rewards 
+
+In standard DT-based methods, the return-to-go (RTG) serves as the conditioning signal that guides action gen-eration. However, RTG is fundamentally inadequate for Offline GCRL with sparse binary rewards. 
+
+The Root Cause: Trajectory-Dependence Prevents Stitching. The fundamental limitation of RTG lies in its 
+
+trajectory-dependence : RTG answers “did this trajectory succeed?” rather than “how valuable is this state for reach-ing the goal?” Consider a state s that appears on both a successful trajectory (RTG=1) and a failed one (RTG=0). RTG assigns contradictory values to the same state based solely on trajectory outcome, making cross-trajectory com-parison impossible. This directly prevents trajectory stitch-ing because composing segments from different trajectories requires a trajectory-agnostic value metric that RTG fun-damentally cannot provide. As shown in Figure 2 (a) (b), successful and failed trajectories receive uniformly different RTG values regardless of state quality, with only 25% of state-action pairs receiving discriminative signals. 
+
+Our Key Insight: From Trajectory-Dependence to State-Dependence. The Q-function Qβ (s, a, g ) = pβ
+
+> +
+
+(g|s, a ) rep-resents the probability of reaching goal g from state-action pair (s, a ), measured independently of which trajectory that pair came from. This state-dependence enables a fundamen-tally new capability: identifying high-value segments from 3Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL (a) Trajectories  
+
+> Success
+> Fail
+> RTG
+> Q25%
+> (b) RTG
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> RTG
+> Q92%
+> (c)Q
+> RTG
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Q(d) High-Q Segments
+> RTG
+> Q
+
+Figure 2. RTG vs. NFs-based Q-value conditioning in D4RL non-Markovian AntMaze-medium dataset. (a) Trajectories: successful (blue) and failed (purple). (b) RTG conditioning: successful trajectories show color gradient while failed trajectories are uniformly gray (no signal), yielding poor coverage. (c) NFs-based Qβ conditioning: all trajectories colored by Q-value, achieving significantly better coverage. (d) High-Q segments: trajectory portions where Qβ exceeds a threshold naturally form paths toward the goal, enabling trajectory stitching even from failed demonstrations. Coverage percentages indicate the fraction of state-action pairs with discriminative signals (variance > 0.01 across trajectory segments). 
+
+failed trajectories (they have high Qβ despite low RTG) and composing them toward goals. Figure 2 (c) confirms this prediction, showing that Q-value conditioning achieves 92% coverage compared to RTG’s 25%. Figure 2 (d) further illustrates that high-Q segments naturally form paths toward goals even when extracted from failed demonstrations. 
+
+Why MC Estimation Instead of TD Learning. Having established the need for Q-value conditioning, we must choose how to estimate Q-values. Many standard offline RL methods (Fujimoto & Gu, 2021; Kostrikov et al., 2022) are built upon temporal difference (TD) learning. While TD learning can learn optimal value functions and possesses stitching capabilities, its reliance on bootstrapping leads to compounding errors that hinder the acquisition of opti-mal policies, especially in long-horizon tasks (Myers et al., 2025; Park et al., 2026). In contrast, MC learning directly estimates the cumulative reward for reaching a goal. By integrating it with a maximum Q-expectile regression loss proposed in our later analysis, we theoretically demonstrate that our method can also converge to an optimal stitched pol-icy. In empirical evaluations, recent MC-based contrastive RL approaches (Eysenbach et al., 2022; Myers et al., 2025) have been shown to consistently and significantly outper-form TD-based methods on long-horizon GCRL tasks. 
+
+Why NFs for MC Q-Estimation. Given that MC estima-tion is preferable, we must choose how to model the Q-value density pβ
+
+> +
+
+(g | s, a ). Our framework places one structural requirement on this density model. It must produce an 
+
+exact, properly normalized log-density. The expectile tar-get in Equation (10) is defined on log pθ (g | s, a ) directly, and the transformer consumes Q-tokens that span multiple goals within one context window (Section 3.3), so goal-independent normalization is necessary for the learned Q-to-action pattern to transfer across goals. This requirement rules out the otherwise reasonable alternatives. Conditional VAEs (Sohn et al., 2015) produce only the ELBO, a structural lower bound that cannot be closed by increasing capacity, and which distorts the Q-landscape in a goal-dependent way. Contrastive RL (Eysenbach et al., 2022) trains a binary cross-entropy classifier whose Bayes-optimal output is the log density ratio log p(g|s,a ) 
+
+> p(g)
+
+. While the goal-dependent partition p(g) cancels when selecting ac-tions at a fixed goal, it introduces goal-dependent offsets in the Q-token sequence our transformer reads across multiple 
+
+goals, which degrades cross-goal conditioning. Diffusion models (Ho et al., 2020) and continuous flow-matching objectives (Lipman et al., 2023) can reach high sample quality, but their per-sample likelihood requires solving a probability-flow ODE with a Hutchinson trace estima-tor (Grathwohl et al., 2018), injecting variance into precisely the signal that expectile regression must fit. Coupling-based NFs (Dinh et al., 2017) uniquely meet the requirement. The triangular Jacobian makes log pθ (g | s, a )
+
+exactly and cheaply computable in closed form, and cou-pling architectures are universal diffeomorphism approxi-mators (Teshima et al., 2020), so no structural gap remains. Figure 17 (Section G.4) empirically confirms that NFs attain the lowest estimation error against the analytic future-state density among CVAE, CRL and MC C-learning. Because accurate, normalized Q-values are the bottleneck for trajec-tory stitching under sparse rewards (Figure 5), this is the property we optimize for. 
+
+Expectile Regression for In-Distribution Optimal Q-Value Prediction. Given accurate Qβ estimates from NFs, we still need to extract optimal behaviors from suboptimal data. The expectile regression loss (Kostrikov et al., 2022; Wu et al., 2023; Zhuang et al., 2024) asymmetrically weights prediction errors: 
+
+L2 
+
+> τ
+
+(u) = |τ − 1(u < 0) | · u2, (9) where τ ∈ (0 .5, 1) controls the asymmetry. When τ > 0.5,the loss penalizes underestimation more heavily, causing the learned value to concentrate on the upper portion of the empirical distribution. Applying this to Q-value prediction, we define: 
+
+LQ = E(st,a t,g )∼D 
+
+h
+
+L2
+
+> τ
+
+
+
+Qβθ (st, a t, g ) − ˆQϕ(st, g )
+
+i 
+
+,
+
+(10) 4Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL 
+
+where ˆQϕ(st, g ) is the Q-value predicted by the Hybrid Attention-Mamba transformer with parameters ϕ, and 
+
+Qβθ (st, a t, g ) is the target from the NFs-based critic (Equa-tion (4)). Our theoretical analysis (Section 3.5) demonstrates that this enables our sequential model, Qhyer , to predict Q-values that approach the in-distribution maximum. These predictions correspond to the high-Q segments shown in Figure 2 (d), which are essential for trajectory stitching. 
+
+3.2. Limitation 2: Temporal Modeling Requires Content-Adaptive History Compression 
+
+Beyond the conditioning signal, effective sequence model-ing for Offline GCRL demands architectures that can capture heterogeneous temporal dependencies inherent in Offline GCRL datasets. 
+
+Why Offline GCRL Data Exhibits Variable-Length His-torical Dependencies. Offline GCRL datasets exhibit dif-ferent temporal structures depending on behavior policy properties. As documented in OGBench (Park et al., 2025a), the manipulation suite provides two representative dataset types: play datasets collected by non-Markovian expert policies with temporally correlated noise where the behavior policy follows β(at|st, h <t ), and noisy datasets collected by Markovian expert policies with uncorrelated Gaussian noise where β(at|st) depends only on the current state. The 
+
+play data demands extended memory for action coherence, while noisy data requires only short-term local informa-tion. A principled solution must adapt to both properties without manual tuning. 
+
+Why Convolution Cannot Address Variable-Length Dependencies. To address the inherent tension of datasets exhibiting the two aforementioned properties, both LSDT (Wang et al., 2025) and DMixer (Zheng et al., 2025a) incorporate attention and convolution as parallel branches. Convolution-based local modeling computes fea-tures through causal convolution with fixed-size kernels: 
+
+yt = Conv1d (x)t =
+
+> k−1
+
+X
+
+> j=0
+
+wj · xt−j , (11) where k is the fixed kernel size and wj are input-independent weights. When convolution serves as the final output of a branch, this creates three fundamental limitations. First, convolution imposes a fixed receptive field set by the cho-sen kernel (and any dilation/stacking), making the effective context length a hand-tuned architectural prior that is sen-sitive to hyperparameters and often fails to transfer across datasets with different temporal dependencies. Second, in the first layer, convolution has a fixed receptive field and thus a fixed effective memory that cannot adapt to varying dependency lengths within or across datasets. Especially, on non-Markovian trajectories where relative cues lie beyond this window, the local branch becomes weakly informative and is often down-weighted by fusion. 
+
+Why Mamba Enables Content-Adaptive History Com-pression. We address the fixed-window bottleneck of a convolutional short-term branch by adopting a Mamba-style selective SSM (DMamba) module (Ota, 2024). A DMamba block combines (i) a lightweight causal convolution that mixes nearby tokens and produces local features x′ 
+
+> t
+
+(and gating signals), with (ii) a selective state-space update (Equa-tions (7) and (8)) that propagates a recurrent state across the entire prefix. Importantly, the effective memory is not determined by the convolutional kernel, but by the input-dependent SSM dynamics (via the selective discretization), which enables smooth, learned forgetting/retention over his-tory. As a result, compared to using convolution as the branch output, DMamba provides a content-adaptive mech-anism to compress long-range context into a compact state, reducing sensitivity to hand-tuned receptive fields and im-proving robustness on non-Markovian segments where dis-ambiguating cues may lie beyond any fixed local window. To make the adaptive history modeling explicit, we expand the SSM recurrence (Equation (7)) to express the output at timestep t:
+
+yt =
+
+> t
+
+X
+
+> i=0
+
+Ct
+
+
+
+> t
+
+Y
+
+> j=i+1
+
+¯Aj
+
+ ¯Bix′
+
+> i
+
+, (12) where x′ 
+
+> i
+
+is the convolution-extracted feature at step i. The influence of historical input x′ 
+
+> i
+
+on current output yt is governed by the cumulative decay Qtj=i+1 ¯Aj . Critically, through the selective mechanism (Equation (8)), the dis-cretization step ∆ is input-dependent: 
+
+¯At = exp(∆ t·A), where ∆t = softplus (Linear ∆(x′
+
+> t
+
+)) ,
+
+(13) and A < 0 is a negative real value following Gu & Dao (2024). This creates content-adaptive effective memory: when x′ 
+
+> t
+
+yields small ∆t, the decay ¯At = exp(∆ t · A) ≈ 1
+
+preserves long-range history suitable for play data; when 
+
+x′ 
+
+> t
+
+yields large ∆t, ¯At ≈ 0 retains only local context appro-priate for noisy data. In contrast, convolution imposes a fixed influence wj for j < k and zero beyond, resulting in hard, input-independent truncation. The key distinction is that Mamba provides smooth, learned decay while Dynam-icConv enforces hard, fixed truncation. 
+
+Hybrid Architecture with Attention-Mamba. As illus-trated in Figure 4, we design a Hybrid Attention-Mamba architecture with two parallel branches: attention for global goal-directed planning and Mamba for temporal dynamics modeling. The outputs are fused through a learnable gating mechanism that computes a scalar weight α = σ(wT x + b)
+
+to combine branch outputs: y = α · yattn + (1 − α) · ymamba .5Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL 0.0 0.5 1.0 1.5 2.0 2.5                 
+
+> t
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> 2.0
+> 2.5
+> 3.0
+> 3.5
+> Density
+> Ratio: 2.8 ×
+> (a) Mamba tDistribution
+> Play (non-Markovian, (at|st,h<t))
+> Noisy (Markovian, (at|st))
+> 0510 15 20 25 30
+> Sequence Position
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> 1.2
+> Mean  t
+> 2.8×
+> (b) tvs. Sequence Position
+> Play (non-Markovian)
+> Noisy (Markovian)
+> Play:
+> Attn
+> Play:
+> Mamba
+> Noisy:
+> Attn
+> Noisy:
+> Mamba
+> 0.3
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> 0.8
+> Gate Weight
+> Play Noisy
+> (c) Attention vs Mamba Gate Weights
+
+Figure 3. Content-adaptive ∆t on cube-single . Left: ∆t distribution. Center: mean ∆t across sequence positions. Right: learned attention/Mamba gate weights. Statistics over 50 batches of batch size 256. Input             
+
+> Attention
+> Block
+> Mamba
+> Block
+> Norm
+> Norm
+> Channel
+> MLP
+> Linear
+> Conv
+> SSM
+> ∙
+> 𝐀 𝐀
+> Linear Linear
+> Output
+> (𝐀 ,𝐀 ,𝐀 )
+> Dynamic Split
+> (𝐀 ,𝐀 ,(1−𝐀 )𝐀 )
+> (𝐀 ,𝐀 ,𝐀 𝐀 )
+> (𝐀 ,𝐀 ,𝐀 )
+
++
+
++
+
+> HFM
+> 𝐀
+
+Figure 4. Hybrid Attention-Mamba Block. 
+
+This enables complementary specialization across both 
+
+play and noisy datasets. Figure 3 visualizes this adaptation on cube-single .On play , smaller ∆t preserves an effective memory of about 12 steps and the gate favors attention. On 
+
+noisy , larger ∆t contracts memory to about 3 steps and the gate favors Mamba. The essential reason is that 
+
+∆t = softplus (Linear ∆(x′
+
+> t
+
+)) is input-dependent, so effec-tive memory tracks the local temporal correlation of the data, which convolution’s input-independent receptive field cannot do. 
+
+3.3. Concatenated State-Goal Tokenization Strategy 
+
+We represent each state-goal pair as a concatenated token 
+
+[st; g] rather than separate tokens. Combined with NFs-based Q-value conditioning, the input sequence becomes: 
+
+τ = (Q1, [s1; g], a 1, Q 2, [s2; g], a 2, . . . , Q T , [sT ; g], a T ),
+
+where Qt = log pθ (g|st, a t) is the NFs-estimated Q-value. This design ensures goal information is directly available at each decision point without increasing sequence length from 3T to 4T , avoiding quadratic computational overhead in attention. Detailed visual explanation of this tokenization strategy is provided in Section G.1. 
+
+3.4. Training and Inference Training. We train QHyer end-to-end with three losses: 
+
+LQHyer = λcritic LNFs + λBC LBC + λQLQ, (14) where LBC is the behavior cloning loss that predicts actions conditioned on Q-values instead of RTG: 
+
+LBC = −E(st,a t,g )∼D [log πθ (at|Qt, [st; g])] . (15) 
+
+Inference. QHyer performs two-stage autoregressive gen-eration: (1) predict maximum Q-value ˆQ(st, g ) from cur-rent context; (2) predict optimal action conditioned on the predicted maximum Q-value. The detailed algorithm is provided in Appendix D. 
+
+3.5. Theoretical Analysis 
+
+We establish convergence guarantees for QHyer : expectile regression yields near-optimal Q-values, and the learned pol-icy achieves bounded optimal stitched policy with explicit dependence on sample size, NFs accuracy, and coverage. 
+
+Setup. Let Qβ (τ, g, h ) denote the goal-reaching probability conditioned on history. The in-distribution optimal Q-value 
+
+Q⋆(s, a, g, h ) := max τ ∈T β :( sh,a h)=( s,a ) Qβ (τ, g, h ) repre-sents the maximum achievable within the behavior policy’s support. We assume: (i) Q-value coverage with constant 
+
+˜c ∈ (0 , 1] , measuring the minimum density ratio of op-timal actions in the dataset; (ii) bounded NFs error ϵNFs ;(iii) bounded function class with approximation error δapprox .Full definitions are in Appendix B. 
+
+Theorem 3.1 (Convergence of Expectile Regression to In--Distribution Optimal Q-Value) . Under Q-value coverage with constant ˜c ∈ (0 , 1] and sample size satisfying Equa-tion (37) in the Appendix, for τ ∈ (0 .5, 1) , the expectile estimator satisfies |Q⋆ − ˆQτ | ≤ ϵτ with high probability, where the bias term ϵτ := (1 −τ )( Q⋆−Qmin )   
+
+> τ·˜c/ 2+(1 −τ)(1 −˜c/ 2)
+
+decreases as τ increases, at the cost of requiring more samples for variance control. 
+
+Theorem 3.2 (Convergence to In-Distribution Optimal Stitched Policy) . Under assumptions (i) to (iii), the learned 
+
+6Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL 
+
+policy ˆπ⋆ 
+
+> D
+
+satisfies: 
+
+J(π⋆β )−J(ˆ π⋆ 
+
+> D
+
+) ≤ O (N −1/4)
+
+| {z }
+
+> policy
+
++ pδapprox 
+
+| {z }
+
+> MLE
+
++ O(√ϵNFs + ϵτ )
+
+| {z }
+
+> Q-value
+
+.
+
+(16) Complete proofs are in Appendix C. 
+
+## 4. Experiments 
+
+We extensively evaluate QHyer ’s effectiveness and conduct ablation studies on both non-Markovian and Markovian offline GCRL datasets. 
+
+Datasets. We consider two widely used benchmarks. For OGBench (Park et al., 2025a), we evaluate on manipulation tasks including cube , scene , and puzzle environments with both play (non-Markovian) and noisy (Markovian) datasets. For D4RL (Fu et al., 2020), we evaluate on Maze 
+
+(non-Markovian) tasks. A detailed introduction to these environments is presented in Appendix F. 
+
+Baselines. We compare QHyer against three categories of methods: (1) sequence modeling methods including DT (Chen et al., 2021), EDT (Wu et al., 2023), GDT (Hu et al., 2023), QDT (Yamagata et al., 2023), CGDT (Wang et al., 2024), Reinformer (Zhuang et al., 2024), DC (Kim et al., 2024b), DMamba (Ota, 2024), QT (Hu et al., 2024), LSDT (Wang et al., 2025), DMixer (Zheng et al., 2025a), and VDT (Zheng et al., 2025b); (2) TD-based methods in-cluding CQL (Kumar et al., 2020) and IQL (Kostrikov et al., 2022); (3) offline GCRL methods including GCBC (Ghosh et al., 2021), GCIVL, GCIQL (Kostrikov et al., 2022), QRL (Wang et al., 2023), CRL (Eysenbach et al., 2022), HIQL (Park et al., 2023), SAW (Zhou & Kao, 2025), OTA (Ahn et al., 2025), and Eik-HiQRL (Giammarino & Qureshi, 2026). For completeness, Section G.6 additionally reports comparisons against four recent offline RL methods (i.e., QCFQL (Li et al., 2025), SHARSA (Park et al., 2025b), Transitive RL (Park et al., 2026), DEAS (Kim et al., 2026), ) adapted to GCRL with HER, as well as GAS (Baek et al., 2025) on navigation manipulation. 
+
+4.1. OGBench Results 
+
+Table 1 validates our core claims about sequence model-ing for non-Markovian Offline GCRL. On play datasets collected by non-Markovian expert policies, QHyer signifi-cantly outperforms all baselines across manipulation tasks. Hierarchical methods (HIQL, SAW, OTA) underperform on state-based play datasets because their subgoal decompo-sition assumes Markovian transitions between subgoals, an assumption violated when behavior policies exhibit tempo-ral correlations. Eik-HiQRL further suffers from exponen-tial quasimetric approximation error in high-dimensional spaces (Giammarino & Qureshi, 2026), limiting its effec-tiveness across both state-based and visual manipulation tasks. TD-based hierarchical methods (HIQL, SAW, OTA) achieve competitive performance on visual tasks because hierarchical value functions provide representation learn-ing signals beneficial for pixel inputs. On noisy datasets, 
+
+QHyer maintains competitive performance through adap-tive gating between attention and Mamba branches. 
+
+4.2. D4RL Results 
+
+Table 2 confirms QHyer ’s advantages on long-horizon navi-gation tasks where trajectory stitching is essential. QHyer 
+
+consistently outperforms both TD-based methods and se-quence modeling baselines, with the most pronounced gains on large mazes requiring extensive stitching. Vanilla DT and its variants (EDT, DC) achieve near-zero performance on medium and large mazes, directly confirming our anal-ysis in Section 3.1. RTG under sparse goal-conditioned rewards reduces to binary signals that provide no discrim-inative information for stitching trajectories. On the other hand, it also demonstrates the effectiveness of our method in non-Markovian locomotion tasks. 
+
+4.3. Ablation Studies No Q-value CVAE CRL NFs 0 0.2 0.4 0.6 0.8 1.0   
+
+> Success Rate
+> Cube-single-play
+> Scene-play
+> Puzzle-3x3-play
+> Antmaze-medium-diverse
+> Ablation Study: Different Probability Estimators
+> Figure 5. Ablation Study on Various Q-value Estimators and the Impact of Not Estimating Q-value on Qhyer .
+
+Q: How does the Q-value estimator affect performance? A: Figure 5 reveals a consistent ordering: No Q < CVAE 
+
+< CRL < NFs, directly reflecting the relationship between density estimation accuracy and policy quality established in Section 3.1. Without Q-values, the model degenerates to behavior cloning that cannot distinguish states by their proximity to goals under sparse rewards. CVAE introduces systematic bias through the ELBO gap, distorting the goal-reaching probability landscape. CRL improves through contrastive objectives but inherits negative sampling bias that underestimates probabilities for distant goals. NFs achieve the best performance by computing exact likeli-hoods through invertible transformations (Equation (2)), enabling accurate identification of high-value state-action pairs via expectile regression. This mechanism is essential 7Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL 
+
+Table 1. Results on OGBench manipulation tasks. Average success rate ( %) across 5 test-time goals. Results averaged over 8 seeds (4 for pixel-based). Orange = best, underline = second best. 
+
+Hierarchical Policy Flat Policy Env Type Dataset HIQL SAW OTA Eik-HIQRL GCBC GCIVL GCIQL QRL CRL QHyer 
+
+cube play single 15 ±3 23 ±2 13 ±1 0 ±0 6 ±2 53 ±4 68 ±6 5 ±1 19 ±2 84 ±4
+
+double 6 ±2 26 ±3 2 ±1 0 ±0 1 ±1 36 ±3 40 ±5 1 ±0 10 ±2 56 ±2
+
+triple 3 ±1 19 ±4 1 ±0 0 ±0 1 ±1 1 ±0 3 ±1 0 ±0 4 ±1 10 ±5
+
+quadruple 0 ±0 0 ±0 0 ±0 0 ±0 0 ±0 0 ±0 0 ±0 0 ±0 2 ±1 2 ±1
+
+Total 24 68 16 0 8 90 111 6 35 152 
+
+noisy single 41 ±6 38 ±2 40 ±2 2 ±1 8 ±3 71 ±9 99 ±1 25 ±6 38 ±2 95 ±5
+
+double 2 ±1 12 ±1 5 ±2 0 ±0 1 ±1 14 ±3 23 ±3 3 ±1 2 ±1 30 ±4
+
+triple 2 ±1 13 ±1 1 ±0 0 ±0 1 ±1 9 ±1 2 ±1 1 ±0 3 ±1 14 ±1
+
+quadruple 0 ±0 1 ±0 0 ±0 0 ±0 0 ±0 0 ±0 0 ±0 0 ±0 0 ±0 6 ±4
+
+Total 45 64 46 2 10 94 124 29 43 145 
+
+scene play scene 38 ±3 58 ±3 19 ±4 11 ±3 5 ±1 42 ±4 51 ±4 5 ±1 19 ±2 53 ±2
+
+noisy scene 25 ±4 25 ±2 12 ±1 12 ±0 1 ±1 26 ±5 26 ±2 9 ±2 1 ±1 25 ±5
+
+puzzle play 3x3 12 ±2 6 ±1 21 ±5 9 ±0 2 ±0 6 ±1 95 ±1 1 ±0 3 ±1 92 ±2
+
+4x4 7 ±2 6 ±1 5 ±2 2 ±1 0 ±0 13 ±2 26 ±3 0 ±0 0 ±0 28 ±5
+
+4x5 4 ±1 2 ±1 2 ±1 0 ±0 0 ±0 7 ±1 14 ±1 0 ±0 1 ±0 31 ±1
+
+4x6 3 ±1 5 ±0 1 ±1 0 ±0 0 ±0 10 ±2 12 ±1 0 ±0 4 ±1 18 ±2
+
+Total 26 19 29 11 2 36 147 1 8 169 
+
+noisy 3x3 51 ±11 78 ±39 53 ±6 6 ±2 1 ±0 42 ±19 94 ±3 0 ±0 30 ±6 89 ±8
+
+4x4 16 ±4 0 ±0 0 ±0 3 ±1 0 ±0 20 ±3 29 ±7 0 ±0 0 ±0 33 ±6
+
+4x5 5 ±1 15 ±1 1 ±1 2 ±2 0 ±0 19 ±0 19 ±0 0 ±0 3 ±2 26 ±2
+
+4x6 2 ±1 11 ±2 0 ±0 0 ±0 0 ±0 17 ±2 18 ±2 0 ±0 6 ±3 24 ±3
+
+Total 74 104 54 11 1 98 160 0 39 172 
+
+visual-cube play single 89 ±0 88 ±3 40 ±4 / 5 ±1 60 ±5 30 ±5 41 ±15 31 ±15 42 ±2
+
+double 39 ±2 40 ±3 36 ±17 / 1 ±1 10 ±2 1 ±1 5 ±0 2 ±1 37 ±3
+
+triple 21 ±0 20 ±1 24 ±2 / 15 ±2 14 ±2 15 ±1 16 ±1 17 ±2 20 ±4
+
+Total 149 148 100 / 21 84 46 62 50 99 
+
+visual-scene play scene 49 ±4 47 ±6 62 ±3 / 12 ±2 25 ±3 12 ±2 10 ±1 11 ±2 96 ±1
+
+noisy scene 50 ±1 54 ±3 63 ±2 / 13 ±2 23 ±2 12 ±4 2 ±0 15 ±2 36 ±4
+
+for extracting optimal behaviors from suboptimal data. LSDT DMixer QHyer (w/o Q) antmaze-u-d 
+
+antmaze-m-d 
+
+maze2d-u 
+
+maze2d-m 
+
+0
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+1.2 
+
+> Success Rate
+
+Ablation Study: SSM Architecture 
+
+Figure 6. Ablation study on SSM variants for temporal modeling.’-u’,’-m’ and ’-d’ denote umaze, medium, and diverse, respectively. 
+
+Q: Does the architecture alone improve performance? A: Figure 6 isolates the architectural contribution by re-moving NFs-based Q-conditioning from all methods, using standard RTG instead. The results reveal a consistent order-ing: LSDT < DMixer < QHyer across both AntMaze and Maze2d environments. This validates that the performance gains stem from both innovations independently. LSDT’s Dynamic Convolution branch is limited by its fixed ker-nel size, which cannot adaptively capture dependencies of varying ranges. DMixer’s token-level selection mechanism improves upon LSDT but may disrupt continuous action pat-terns through discrete token dropping. In contrast, QHyer’s Mamba branch maintains compressed hidden states that enable content-adaptive dependency modeling. The selec-tive SSM parameters (B, C, ∆) dynamically determine how much historical context to retain based on input content, rather than relying on predefined kernel sizes or discrete selection thresholds. Combined with the results in Figure 5, this demonstrates that QHyer’s two innovations provide complementary and additive performance improvements. Cube-single-play-v0 
+
+Cube-single-noisy-v0 
+
+Scene-noisy-v0 
+
+Antmaze-umaze-diverse 0.5 0.7 0.9 0.95 0.99 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> Success Rate
+
+Ablation Study: Different Values 
+
+Figure 7. Ablation study on the expectile parameter τ for Q-value prediction. 
+
+Q: How should the expectile parameter τ be selected? A: Figure 7 shows monotonic improvement from τ = 0 .5 to 8Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL 
+
+Table 2. Results on D4RL. Normalized scores (5 seeds) from original papers except QHyer. Orange = best, underline = second best.                                                                                                                                                 
+
+> Antmaze-v2
+> RL Supervised Learning CQL IQL DT RvS EDT CGDT DC DMamba Reinformer QT LSDT QHyer
+> umaze 74.0 87.5 64.5 65.4 67.8 71.0 85.0 81.8 84.4 96.7 80.0 98.4 ±1.9
+> umaze-diverse 84.0 62.2 60.5 60.9 58.3 71.0 78.5 71.6 65.8 96.7 83.2 97.1 ±2.3
+> medium-play 61.2 71.2 0.8 58.1 0.0 /1.5 79.6 13.2 /85.5 92.2 ±3.5
+> medium-diverse 53.7 70.0 0.5 67.3 0.0 /0.0 83.2 10.6 59.3 75.8 94.0 ±2.7
+> large-play 15.8 39.6 0.0 32.4 0.0 /0.0 23.2 0.4 /0.0 44.2 ±1.9
+> large-diverse 14.9 47.5 0.0 32.9 0.0 /0.0 34.6 0.4 53.3 0.0 57.5 ±13 .5
+> Total 303.6 378.0 126.3 317.0 126.1 /165.0 374.0 174.8 /324.5 483.4
+> Maze2d CQL IQL DT QDT GDT VDT DC DMamba DMixer QT LSDT QHyer
+> umaze 94.7 74.0 31.0 57.3 50.4 60.3 20.1 83.4 86.9 105.4 72.3 118.5 ±1.9
+> medium 41.8 84.0 8.2 13.3 7.8 88.0 38.2 98.7 95.2 172.0 68.4 173.0 ±11 .9
+> Total 136.5 158.0 39.2 70.6 58.2 148.3 58.3 182.1 182.1 277.4 140.7 291.5
+
+τ = 0 .9, with optimal performance at τ ∈ [0 .9, 0.95] . This validates Theorem 3.1: higher τ reduces the bias term ϵτ by focusing on upper expectiles, enabling identification of high-Q segments for trajectory stitching that RTG’s trajectory-dependence fundamentally cannot provide. However, ex-treme τ causes degradation by over-concentrating on too few samples, increasing estimation variance. This aligns with our theoretical analysis where ϵτ depends on both τ
+
+and coverage ˜c. As τ approaches 1, sensitivity to cover-age limitations amplifies. We use τ =0 .9 for low-coverage (play ) and τ =0 .95 for high-coverage ( noisy ) data. 
+
+Q: Is the Hybrid architecture’s gain actually architec-tural, or is it confounded by Q-conditioning, and does Mamba truly adapt its memory to data type? A: We answer both jointly. Table 3 fixes NFs Q-conditioning and varies only the backbone. On the non-Markovian cube-single-play , Attention-only reaches 
+
+74 , Mamba-only 80 , Hybrid 84 . On the Markovian 
+
+cube-single-noisy the ordering is 60 , 91 , 95 . The Hybrid beats the best single branch by 4 to 5 points on both 
+
+regimes, which means the scalar gate captures genuinely complementary specialization rather than interpolating two near-identical branches. 
+
+Table 3. Backbone ablation with identical NFs Q-conditioning. 
+
+Mean success rate ( %) over 4 seeds. Orange = best, underline =second best.                  
+
+> Environment Attention-only Mamba-only Hybrid (QHyer)
+> cube-single-play (non-Markov.) 74 ±180 ±284 ±4
+> cube-single-noisy (Markov.) 60 ±391 ±395 ±5
+
+Table 4 then explains why , by extracting Mamba’s ∆t and the learned gate weight from the trained model (cf. Fig-ure 3). On play , mean ∆t=0 .38 and ¯At=0 .92 , the SSM retains about 12 steps of effective history, and the gate shifts 
+
+0.57 of capacity to attention for global goal-directed rea-soning. On noisy , ∆t=1 .05 and ¯At=0 .61 , memory col-lapses to about 3 steps, and the gate shifts 0.58 to Mamba. The essential reason is that Mamba’s selective mechanism makes ∆t a function of the input, so effective memory varies per-token with the local temporal correlation, which convolution-based hybrids (LSDT, DMixer) cannot produce because their receptive field is an architectural constant. 
+
+Table 4. ∆t and gate statistics on cube-single , extracted from trained QHyer (50 batches, batch 256). Effective memory length is the largest k with Qkj=1 ¯At−j+1 > 0.5.                        
+
+> Metric play (non-Markov.) noisy (Markov.)
+> Mean ∆t0.38 1.05
+> Std ∆t0.12 0.31
+> Mean ¯At= exp(∆ t·A)0.92 0.61
+> Effective memory (steps) ∼12 ∼3
+> Gate weight (Attention) 0.57 0.42
+> Gate weight (Mamba) 0.43 0.58
+
+Combined with Figure 5 (NFs vs. CVAE/CRL/No-Q), Fig-ure 6 (backbone with RTG), Table 3 (backbone with NFs), and Table 4 (mechanism), the ablations establish that each of QHyer ’s two innovations is necessary and the pair is genuinely complementary. 
+
+## 5. Conclusion 
+
+We presented QHyer , the first sequence modeling frame-work for non-Markovian offline GCRL that addresses two fundamental limitations: replacing trajectory-dependent 
+
+RTG with state-dependent Q-values estimated via Normaliz-ing Flows for effective trajectory stitching, and introducing a Hybrid Attention-Mamba architecture for content-adaptive temporal modeling. Experiments on OGBench and D4RL demonstrate state-of-the-art performance, particularly on non-Markovian datasets. 
+
+Limitations and future work. QHyer remains constrained on visual-noisy , where Markovian behavior neutral-izes the non-Markovian modeling advantage and pixel-level NFs density estimation becomes the dominant source of error. Promising future directions include robust visual den-sity estimation and extension of the deterministic-transition theory (Appendix B) to stochastic environments. 9Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL 
+
+## Impact Statement 
+
+This paper presents work whose goal is to advance the field of Machine Learning. There are many potential societal consequences of our work, none which we feel must be specifically highlighted here. 
+
+## References 
+
+Ahn, H., Choi, H., Han, J., and Moon, T. Option-aware temporally abstracted value for offline goal-conditioned reinforcement learning. arXiv preprint arXiv:2505.12737 ,2025. Akimov, D., Kurenkov, V., Nikulin, A., Tarasov, D., and Kolesnikov, S. Let offline RL flow: Training conservative agents in the latent space of normalizing flows. In 3rd Offline RL Workshop: Offline RL as a ”Launchpad” ,2022. Andrychowicz, M., Wolski, F., Ray, A., Schneider, J., Fong, R., Welinder, P., McGrew, B., Tobin, J., Pieter Abbeel, O., and Zaremba, W. Hindsight experience replay. Advances in neural information processing systems , 30, 2017. Baek, S., taegeon park, Park, J., Oh, S., and Kim, Y. Graph-assisted stitching for offline hierarchical reinforcement learning. In Forty-second International Conference on Machine Learning , 2025. Bortkiewicz, M., Pałucki, W., Myers, V., Dziarmaga, T., Arczewski, T., Kuci´ nski, Ł., and Eysenbach, B. Acceler-ating goal-conditioned reinforcement learning algorithms and research. In The Thirteenth International Conference on Learning Representations , 2025. Brahmanage, J., Ling, J., and Kumar, A. Flowpg: action-constrained policy gradient with normalizing flows. Ad-vances in Neural Information Processing Systems , 36: 20118–20132, 2023. Brandfonbrener, D., Bietti, A., Buckman, J., Laroche, R., and Bruna, J. When does return-conditioned supervised learning work for offline reinforcement learning? Ad-vances in Neural Information Processing Systems , 35: 1542–1553, 2022. Chao, C.-H., Feng, C., Sun, W.-F., Lee, C.-K., See, S., and Lee, C.-Y. Maximum entropy reinforcement learning via energy-based normalizing flow. Advances in Neural Information Processing Systems , 37:56136–56165, 2024. Cheikhi, D. and Russo, D. On the statistical benefits of temporal difference learning. In International Conference on Machine Learning , pp. 4269–4293. PMLR, 2023. Chen, L., Lu, K., Rajeswaran, A., Lee, K., Grover, A., Laskin, M., Abbeel, P., Srinivas, A., and Mordatch, I. De-cision transformer: Reinforcement learning via sequence modeling. Advances in neural information processing systems , 34:15084–15097, 2021. Dinh, L., Krueger, D., and Bengio, Y. Nice: Non-linear independent components estimation. arXiv preprint arXiv:1410.8516 , 2014. Dinh, L., Sohl-Dickstein, J., and Bengio, S. Density esti-mation using real NVP. In International Conference on Learning Representations , 2017. Espeholt, L., Soyer, H., Munos, R., Simonyan, K., Mnih, V., Ward, T., Doron, Y., Firoiu, V., Harley, T., Dunning, I., et al. Impala: Scalable distributed deep-rl with im-portance weighted actor-learner architectures. In Interna-tional conference on machine learning , pp. 1407–1416. PMLR, 2018. Eysenbach, B., Salakhutdinov, R., and Levine, S. C-learning: Learning to achieve goals via recursive clas-sification. arXiv preprint arXiv:2011.08909 , 2020. Eysenbach, B., Zhang, T., Levine, S., and Salakhutdinov, R. R. Contrastive learning as goal-conditioned reinforce-ment learning. Advances in Neural Information Process-ing Systems , 35:35603–35620, 2022. Eysenbach, B., Myers, V., Salakhutdinov, R., and Levine, S. Inference via interpolation: Contrastive representations provably enable planning and inference. Advances in Neu-ral Information Processing Systems , 37:58901–58928, 2024. Fu, J., Kumar, A., Nachum, O., Tucker, G., and Levine, S. D4rl: Datasets for deep data-driven reinforcement learning. arXiv preprint arXiv:2004.07219 , 2020. Fujimoto, S. and Gu, S. S. A minimalist approach to offline reinforcement learning. Advances in neural information processing systems , 34:20132–20145, 2021. Ghosh, D., Gupta, A., Reddy, A., Fu, J., Devin, C. M., Eysenbach, B., and Levine, S. Learning to reach goals via iterated supervised learning. In International Conference on Learning Representations , 2021. Ghugare, R. and Eysenbach, B. Normalizing flows are capable models for rl. arXiv preprint arXiv:2505.23527 ,2025. Ghugare, R., Geist, M., Berseth, G., and Eysenbach, B. Closing the gap between TD learning and supervised learning - a generalisation point of view. In The Twelfth International Conference on Learning Representations ,2024. 10 Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL 
+
+Giammarino, V. and Qureshi, A. H. Goal reaching with eikonal-constrained hierarchical quasimetric reinforce-ment learning. In The Fourteenth International Confer-ence on Learning Representations , 2026. Giammarino, V., Ni, R., and Qureshi, A. H. Physics-informed value learner for offline goal-conditioned re-inforcement learning. arXiv preprint arXiv:2509.06782 ,2025. Grathwohl, W., Chen, R. T., Bettencourt, J., Sutskever, I., and Duvenaud, D. Ffjord: Free-form continuous dy-namics for scalable reversible generative models. arXiv preprint arXiv:1810.01367 , 2018. Gu, A. and Dao, T. Mamba: Linear-time sequence model-ing with selective state spaces. In First Conference on Language Modeling , 2024. Ho, J., Jain, A., and Abbeel, P. Denoising diffusion proba-bilistic models. Advances in neural information process-ing systems , 33:6840–6851, 2020. Hong, M., Kang, M., and Oh, S. Diffused task-agnostic milestone planner. Advances in Neural Information Pro-cessing Systems , 36:387–405, 2023. Hu, S., Shen, L., Zhang, Y., and Tao, D. Graph decision transformer. arXiv preprint arXiv:2303.03747 , 2023. Hu, S., Fan, Z., Huang, C., Shen, L., Zhang, Y., Wang, Y., and Tao, D. Q-value regularized transformer for of-fline reinforcement learning. In Forty-first International Conference on Machine Learning , 2024. Jain, V. and Ravanbakhsh, S. Learning to reach goals via diffusion. In International Conference on Machine Learn-ing , pp. 21170–21195. PMLR, 2024. Jullien, S., Deffayet, R., Renders, J.-M., Groth, P., and de Rijke, M. Distributional reinforcement learning with dual expectile-quantile regression. arXiv preprint arXiv:2305.16877 , 2023. Kakade, S. M. A natural policy gradient. Advances in neural information processing systems , 14, 2001. Kim, C., Lee, H., Seo, Y., Lee, K., and Zhu, Y. DEAS: DE-tached value learning with action sequence for scalable offline RL. In The Fourteenth International Conference on Learning Representations , 2026. Kim, J., Lee, S., Kim, W., and Sung, Y. Adaptive q-aid for conditional supervised learning in offline reinforcement learning. Advances in Neural Information Processing Systems , 37:87104–87135, 2024a. Kim, J., Lee, S., Kim, W., and Sung, Y. Decision con-vformer: Local filtering in metaformer is sufficient for decision making. In The Twelfth International Conference on Learning Representations , 2024b. Kingma, D. P. and Dhariwal, P. Glow: Generative flow with invertible 1x1 convolutions. Advances in neural information processing systems , 31, 2018. Koenker, R. and Hallock, K. F. Quantile regression. Journal of economic perspectives , 15(4):143–156, 2001. Kostrikov, I., Nair, A., and Levine, S. Offline reinforce-ment learning with implicit q-learning. In International Conference on Learning Representations , 2022. Kumar, A., Zhou, A., Tucker, G., and Levine, S. Con-servative q-learning for offline reinforcement learning. 
+
+Advances in Neural Information Processing Systems , 33: 1179–1191, 2020. Lei, X., Yang, W., Ke, K., Yang, S., Zhang, X., Pajarinen, J., and Wang, D. Gchr: Goal-conditioned hindsight regular-ization for sample-efficient reinforcement learning. arXiv preprint arXiv:2508.06108 , 2025. Levine, S., Kumar, A., Tucker, G., and Fu, J. Offline rein-forcement learning: Tutorial, review, and perspectives on open problems. arXiv preprint arXiv:2005.01643 , 2020. Li, Q., Zhou, Z., and Levine, S. Reinforcement learning with action chunking. arXiv preprint arXiv:2507.07969 ,2025. Lipman, Y., Chen, R. T. Q., Ben-Hamu, H., Nickel, M., and Le, M. Flow matching for generative modeling. In The Eleventh International Conference on Learning Repre-sentations , 2023. Liu, M., Zhu, M., and Zhang, W. Goal-conditioned re-inforcement learning: Problems and solutions. arXiv preprint arXiv:2201.08299 , 2022. Liu, Z., Yang, Y., Wang, R., Xu, P., and Zhou, D. How to provably improve return conditioned supervised learning? 
+
+arXiv preprint arXiv:2506.08463 , 2025. Loshchilov, I. Decoupled weight decay regularization. arXiv preprint arXiv:1711.05101 , 2017. Lynch, C., Khansari, M., Xiao, T., Kumar, V., Tompson, J., Levine, S., and Sermanet, P. Learning latent plans from play. In Conference on robot learning , pp. 1113–1132. Pmlr, 2020. Ma, Y. J., Yan, J., Jayaraman, D., and Bastani, O. How far i’ll go: Offline goal-conditioned reinforcement learning via f -advantage regression. arXiv preprint arXiv:2206.03023 , 2022. 11 Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL 
+
+Myers, V., Zheng, C., Dragan, A., Levine, S., and Eysen-bach, B. Learning temporal distances: Contrastive succes-sor features can provide a metric structure for decision-making. arXiv preprint arXiv:2406.17098 , 2024. Myers, V., Zheng, B., Eysenbach, B., and Levine, S. Offline goal-conditioned reinforcement learning with quasimetric representations. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. Newey, W. K. and Powell, J. L. Asymmetric least squares estimation and testing. Econometrica: Journal of the Econometric Society , pp. 819–847, 1987. Opryshko, E., Quan, J., Voelcker, C., Du, Y., and Gilitschen-ski, I. Test-time graph search for goal-conditioned re-inforcement learning. arXiv preprint arXiv:2510.07257 ,2025. Ota, T. Decision mamba: Reinforcement learning via sequence modeling with selective state spaces. arXiv preprint arXiv:2403.19925 , 2024. Park, S., Ghosh, D., Eysenbach, B., and Levine, S. HIQL: Offline goal-conditioned RL with latent states as actions. In Thirty-seventh Conference on Neural Information Pro-cessing Systems , 2023. Park, S., Kreiman, T., and Levine, S. Foundation policies with hilbert representations. arXiv preprint arXiv:2402.15567 , 2024. Park, S., Frans, K., Eysenbach, B., and Levine, S. Ogbench: Benchmarking offline goal-conditioned rl. In Interna-tional Conference on Learning Representations (ICLR) ,2025a. Park, S., Frans, K., Mann, D., Eysenbach, B., Kumar, A., and Levine, S. Horizon reduction makes rl scalable. arXiv preprint arXiv:2506.04168 , 2025b. Park, S., Oberai, A., Atreya, P., and Levine, S. Transitive RL: Value learning via divide and conquer. In The Fourteenth International Conference on Learning Representations ,2026. Reuss, M., Li, M., Jia, X., and Lioutikov, R. Goal-conditioned imitation learning using score-based diffu-sion policies. arXiv preprint arXiv:2304.02532 , 2023. Schaul, T., Horgan, D., Gregor, K., and Silver, D. Universal value function approximators. In International conference on machine learning , pp. 1312–1320. PMLR, 2015. Sikchi, H., Chitnis, R., Touati, A., Geramifard, A., Zhang, A., and Niekum, S. Score models for offline goal-conditioned reinforcement learning. In The Twelfth Inter-national Conference on Learning Representations , 2024. Singh, A., Liu, H., Zhou, G., Yu, A., Rhinehart, N., and Levine, S. Parrot: Data-driven behavioral priors for re-inforcement learning. arXiv preprint arXiv:2011.10024 ,2020. Sohn, K., Lee, H., and Yan, X. Learning structured output representation using deep conditional generative models. 
+
+Advances in neural information processing systems , 28, 2015. Teshima, T., Ishikawa, I., Tojo, K., Oono, K., Ikeda, M., and Sugiyama, M. Coupling-based invertible neural networks are universal diffeomorphism approximators. Advances in Neural Information Processing Systems , 33:3362–3373, 2020. Wang, J., Karanasou, P., Wei, P., Gatti, E., Plasencia, D. M., and Kanoulas, D. Long-short decision transformer: Bridging global and local dependencies for generalized decision-making. In The Thirteenth International Confer-ence on Learning Representations , 2025. Wang, T., Torralba, A., Isola, P., and Zhang, A. Opti-mal goal-reaching reinforcement learning via quasimetric learning. In International Conference on Machine Learn-ing , pp. 36411–36430. PMLR, 2023. Wang, Y., Yang, C., Wen, Y., Liu, Y., and Qiao, Y. Critic-guided decision transformer for offline reinforcement learning. In Proceedings of the AAAI Conference on Arti-ficial Intelligence , volume 38, pp. 15706–15714, 2024. Ward, P. N., Smofsky, A., and Bose, A. J. Improving explo-ration in soft-actor-critic with normalizing flows policies. 
+
+arXiv preprint arXiv:1906.02771 , 2019. Wu, J., Wu, H., Qiu, Z., Wang, J., and Long, M. Supported policy optimization for offline reinforcement learning. 
+
+Advances in Neural Information Processing Systems , 35: 31278–31291, 2022. Wu, Y.-H., Wang, X., and Hamaya, M. Elastic decision transformer. arXiv preprint arXiv:2307.02484 , 2023. Yamagata, T., Khalil, A., and Santos-Rodriguez, R. Q-learning decision transformer: Leveraging dynamic pro-gramming for conditional sequence modelling in offline rl. In International Conference on Machine Learning , pp. 38989–39007. PMLR, 2023. Yarats, D., Fergus, R., Lazaric, A., and Pinto, L. Master-ing visual continuous control: Improved data-augmented reinforcement learning. In International Conference on Learning Representations , 2022. Yoon, Y., Lee, G., Ahn, S., and Ok, J. Breadth-first explo-ration on adaptive grid for reinforcement learning. In 
+
+Forty-first International Conference on Machine Learn-ing , 2024. 12 Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL 
+
+Zhai, S., Zhang, R., Nakkiran, P., Berthelot, D., Gu, J., Zheng, H., Chen, T., Bautista, M. A., Jaitly, N., and Susskind, J. Normalizing flows are capable generative models. arXiv preprint arXiv:2412.06329 , 2024. Zheng, H., Shen, L., Luo, Y., Ye, D., Du, B., Shen, J., and Tao, D. Decision mixer: Integrating long-term and local dependencies via dynamic token selection for decision-making. In Forty-second International Conference on Machine Learning , 2025a. Zheng, H., Shen, L., Luo, Y., Ye, D., Xu, S., Du, B., Shen, J., and Tao, D. Value-guided decision transformer: A unified reinforcement learning framework for online and offline settings. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025b. Zhou, J. L. and Kao, J. C. Flattening hierarchies with policy bootstrapping. arXiv preprint arXiv:2505.14975 , 2025. Zhuang, Z., Peng, D., Liu, J., Zhang, Z., and Wang, D. Reinformer: Max-return sequence modeling for offline RL. In Forty-first International Conference on Machine Learning , 2024. 13 Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL 
+
+## A. Related Work 
+
+Offline Goal-Conditioned RL (GCRL). Offline GCRL aims to learn goal-reaching policies from static datasets without environment interaction. Existing approaches can be categorized into several paradigms: goal-conditioned hindsight relabeling (Andrychowicz et al., 2017), hierarchical or subgoal-based learning (Park et al., 2023; Ahn et al., 2025; Giammarino & Qureshi, 2026; Zhou & Kao, 2025; Lei et al., 2025), graph-based planning (Yoon et al., 2024; Eysenbach et al., 2024), metric learning (Wang et al., 2023; Park et al., 2024; Myers et al., 2024; 2025), dual optimization (Ma et al., 2022; Sikchi et al., 2024), generative modeling (Hong et al., 2023; Reuss et al., 2023; Jain & Ravanbakhsh, 2024; Myers et al., 2025), and test-time adaption (Opryshko et al., 2025). However, these methods predominantly assume that the offline data follows Markovian properties—that the optimal action depends solely on the current state and goal. Existing methods struggle on such non-Markovian datasets because they cannot capture the temporal dependencies that govern the behavior policy’s decisions. In contrast, QHyer explicitly models these dependencies through sequence modeling framework. 
+
+Normalizing Flows in RL. Normalizing flows (NFs) are invertible generative models that enable exact likelihood compu-tation and efficient sampling (Dinh et al., 2014; 2017; Kingma & Dhariwal, 2018). Recent work has demonstrated their effectiveness in RL for policy modeling (Singh et al., 2020; Ward et al., 2019; Chao et al., 2024) and Q-function estimation. Chao et al. (2024) propose Energy-Based Normalizing Flows (EBFlow) that unify policy evaluation and improvement into a single objective for maximum entropy RL, enabling exact soft value function calculation without Monte Carlo approximation. Brahmanage et al. (2023) leverage NFs to learn invertible mappings between feasible action spaces and Gaussian latent spaces for action-constrained policy gradient methods. For offline settings, Akimov et al. (2022) use NFs-based action encoders to construct conservative action spaces, addressing distributional shift without explicit regularization. Notably, Ghugare & Eysenbach (2025) show that NFs can serve as Q-functions in GCRL by modeling the discounted state occupancy distribution, achieving strong performance on offline GCRL benchmarks with a simple feedforward architecture. However, their approach cannot capture temporal dependencies in non-Markovian datasets. Our work integrates NFs-based Q-estimation into a sequence modeling framework, enabling both accurate value estimation and temporal dependency modeling. 
+
+Sequence Modeling in Offline RL. Decision Transformer (DT) (Chen et al., 2021) reformulates offline RL as conditional sequence modeling, where actions are generated conditioned on desired returns and past states. This paradigm has spurred extensive research, which can be broadly categorized into two directions: value-enhanced methods and architectural innovations .
+
+Value-enhanced methods integrate reinforcement learning principles to address DT’s fundamental limitation in stitching sub-optimal trajectories (Brandfonbrener et al., 2022). For instance, Q-learning Decision Transformer (QDT) (Yamagata et al., 2023) employs dynamic programming for optimal path synthesis. Critic-Guided Decision Transformer (CGDT) (Wang et al., 2024) incorporates a value-based critic to align expected returns with target returns. Q-value Regularized Transformer (QT) (Hu et al., 2024) introduces explicit Q-value regularization to tackle long-horizon and sparse-reward tasks. Rein-former (Zhuang et al., 2024) utilizes expectile regression for maximizing returns, while Value-Guided Decision Transformer (VDT) (Zheng et al., 2025b) leverages value functions for advantage-weighted behavior regularization. These methods primarily employ TD-learning for Q-value estimation and use value functions as auxiliary losses or regularizers. In contrast, QHyer estimates Q-values via Normalizing Flows with Monte Carlo learning and directly uses them as conditioning tokens to replace RTG. 
+
+Architectural innovations aim to more effectively capture the heterogeneous temporal patterns present in offline datasets. Elastic Decision Transformer (EDT) (Wu et al., 2023) enables adaptive history length selection to facilitate stitching. Graph Decision Transformer (GDT) (Hu et al., 2023) structures input sequences as causal graphs with relation-enhanced attention mechanisms. Decision Convformer (DC) (Kim et al., 2024b) replaces attention with causal convolution filters to model local, Markovian associations efficiently. Decision Mamba (DMamba) (Ota, 2024) substitutes attention with selective state space models for linear-time sequence modeling. Long-Short Decision Transformer (LSDT) (Wang et al., 2025) combines attention with dynamic convolution using a fixed capacity ratio, and Decision Mixer (DMixer) (Zheng et al., 2025a) integrates long-term and local features via dynamic token selection. QHyer introduces a Hybrid Attention-Mamba architecture with learnable gating that dynamically allocates capacity, allowing attention to handle global goal-directed planning while Mamba captures local temporal patterns with content-adaptive memory. Our work deviates from both value-based and architectural innovations methods. To our knowledge, this is the first work to unlock the potential of sequence modeling for Offline GCRL. 14 Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL 
+
+## B. Notation and Assumptions 
+
+B.1. Notation 
+
+We consider goal-conditioned episodic MDPs with finite horizon H. Following Reinforced Return-conditioned Supervised Learning (R 2CSL) (Liu et al., 2025), we assume deterministic transitions , i.e., given state s and action a, the next state 
+
+s′ = P (s, a ) is uniquely determined. This ensures that the in-distribution optimal Q-value Q⋆(s, a, g, h ) is well-defined as a unique value. Extension to stochastic environments is an important direction for future work. 
+
+Symbol Definition 
+
+Spaces and Indices 
+
+S, A, G State space, action space, goal space 
+
+H Episode horizon (total number of stages per episode) 
+
+h ∈ [H] := {1, . . . , H } Stage index (timestep within an episode) 
+
+ϕ : S → G Goal mapping; in our experiments, G ⊆ S 
+
+Policies and Distributions 
+
+β Behavior policy that generated the offline dataset 
+
+π⋆β In-distribution optimal stitched policy (Eq. 19) 
+
+ˆπ⋆ 
+
+> D
+
+Learned policy from QHyer 
+
+dβh(s) State visitation probability at stage h under policy βdβ 
+
+> min
+
+Minimum positive state visitation: min h,s {dβh(s) | dβh(s) > 0}
+
+c⋆β Distribution mismatch coefficient (Assumption B.5) 
+
+Q-Values (Key Distinction) 
+
+Qβ (s, a, g ) True goal-reaching probability under β: pβ
+
+> +
+
+(g | s, a )
+
+Q⋆(s, a, g, h ) In-distribution optimal Q-value: max τ :( sh,a h)=( s,a ) Qβ (τ, g, h )ˆQβθ (s, a, g ) NFs estimate of Qβ , trained via Equation (5) 
+
+ˆQτ (s, a, g, h ) Expectile regression output on NFs-estimated Q-values 
+
+ˆQϕ(s, g, h ) Transformer-predicted Q-value for conditioning (Equation (10)) 
+
+Error Terms 
+
+ϵNFs NFs estimation MSE (Assumption B.7) 
+
+ϵτ Expectile regression bias (Theorem 3.1) 
+
+δapprox MLE approximation error (Assumption B.3) 
+
+˜c Q-value coverage constant (Assumption B.4) 
+
+Q-Value Definition. For a trajectory τ ∈ T β passing through (sh, a h) = ( s, a ) at stage h, the goal-reaching Q-value is: 
+
+Qβ (τ, g, h ) := pβ
+
+> +
+
+(g | sh, a h) = (1 − γ)
+
+> ∞
+
+X
+
+> t=0
+
+γt · 1[ϕ(sh+t+1 ) = g], (17) where in deterministic environments, this reduces to the discounted indicator of whether the trajectory reaches goal g.
+
+In-Distribution Optimal Q-Value: 
+
+Q⋆(s, a, g, h ) := max    
+
+> τ∈T β:( sh,a h)=( s,a )
+
+Qβ (τ, g, h ). (18) 
+
+Optimal Stitched Policy: 
+
+π⋆β (a | s, g, h ) := Pβ (a | s, g, h, Q ⋆(s, a, g, h )) . (19) 15 Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL 
+
+Performance Metric: 
+
+J(π) := Es1∼ρ,g ∼p(g)[V π 
+
+> 1
+
+(s1, g )] , (20) where V πh (s, g ) := Eπ [PHt=h r(st, a t, g ) | sh = s] and r(s, a, g ) = 1[ϕ(s′) = g].
+
+B.2. Assumptions Assumption B.1 (Deterministic Environment) . The transition dynamics P : S × A → S is deterministic, i.e., given 
+
+(s, a ), the next state s′ = P (s, a ) is unique. This is standard in goal-conditioned RL theory (Park et al., 2025a) and holds approximately in robotic manipulation tasks. Remark B.2 (Scope of Assumption B.1) . Assumption B.1 constrains the transition dynamics P (s′ | s, a ), not the behavior policy β. This is compatible with all our experimental settings. OGBench runs deterministic MuJoCo dynamics even for noisy datasets, where the "noise" is Gaussian perturbation of β rather than of P , and D4RL mazes likewise use deterministic P . Non-Markovian play data corresponds to a history-dependent β(at | st, h <t ) over a deterministic MDP. QHyer’s sequence modeling targets exactly this behavior-policy non-Markovianness, while Theorems 3.1 and 3.2 analyze stitching on the underlying MDP. The assumption matches R 2CSL (Liu et al., 2025) and is standard in the offline GCRL theory literature. Extension to stochastic P is a genuine open problem that we flag in the conclusion. 
+
+Assumption B.3 (Policy Class Regularity) . The policy class Π satisfies: 1. |Π| < ∞ (can be relaxed to finite covering number). 2. For all (a, s, g, h, Q ) ∈ A × S × G × [H] × [0 , 1] and π ∈ Π: | log π(a | s, g, h, Q )| ≤ c.3. min π∈Π L(π) ≤ δapprox , where L(π) := E(s,g,Q )∼Pβ [DKL (Pβ (· | s, g, h, Q )∥π(· | s, g, h, Q ))] .
+
+Assumption B.4 (Q-Value Coverage) . For each (s, a, g, h ) in the support of β, define: 
+
+TD (s, a, g, h ) := {k ∈ [N ] : ( skh, a kh) = ( s, a )}. (21) 
+
+For trajectory k, let Qkh(g) := Qβ (τ k, g, h ) be the empirical goal-reaching probability computed via hindsight relabeling. There exists ˜c ∈ (0 , 1] such that: 
+
+|{ k ∈ T D (s, a, g, h ) : Qkh(g) = Q⋆(s, a, g, h )}| |T D (s, a, g, h )| ≥ ˜c. (22) 
+
+Interpretation: At least ˜c-fraction of trajectories through (s, a ) achieve the optimal Q-value. Under Assumption B.1, Q⋆ is well-defined as the maximum over a finite set of deterministic outcomes. 
+
+Assumption B.5 (Distribution Mismatch) . There exists c⋆β > 0 such that d⋆,β h (s)/d βh(s) ≤ c⋆β for all (h, s ) ∈ [H] × S βh .
+
+Assumption B.6 (Bounded Q-Values) . Qβ (s, a, g ) ∈ [0 , 1] for all (s, a, g ), since it represents a probability. 
+
+Assumption B.7 (NFs Estimation Error) . The NFs estimator satisfies: 
+
+E(s,a,g )∼dβh
+
+h
+
+(Qβ (s, a, g ) − ˆQβθ (s, a, g )) 2i
+
+≤ ϵNFs , ∀h ∈ [H]. (23) 
+
+Assumption B.8 (Policy Lipschitz Continuity) . For any (s, g, h ), π ∈ Π, and Q1, Q 2 ∈ [0 , 1] :TV (π(· | s, g, h, Q 1)∥π(· | s, g, h, Q 2)) ≤ Lπ |Q1 − Q2|. (24) 
+
+Assumption B.9 (Expectile Lipschitz Stability) . Let Eτ ({Qk}) denote the τ -expectile of samples {Qk}. For any two sample sets {Qk} and { ˜Qk} with |Qk − ˜Qk| ≤ ϵ for all k:
+
+|E τ ({Qk}) − E τ ({ ˜Qk})| ≤ LQ · ϵ, (25) 
+
+where LQ ≤ 1 is a Lipschitz constant. This holds because the expectile is a weighted average of samples. 
+
+16 Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL 
+
+## C. Proofs of Theoretical Results 
+
+C.1. Proof of Theorem 3.1 
+
+Proof. We prove convergence of expectile regression to the in-distribution optimal Q-value, accounting for NFs estimation error. 
+
+Problem Setup. Fix (s, a, g, h ). Let {Q1, . . . , Q K } be the true Q-values across K := |T D (s, a, h )| trajectories. In practice, we observe NFs estimates { ˆQ1, . . . , ˆQK } where ˆQk = ˆQβθ (skh+1 , g ). The expectile loss is L2 
+
+> τ
+
+(u) := |τ − 1(u < 0) | · u2.We define: • ˆQτ, oracle := arg min ˜Q
+
+P 
+
+> k
+
+L2 
+
+> τ
+
+(Qk − ˜Q) — expectile on true Q-values • ˆQτ := arg min ˜Q
+
+P 
+
+> k
+
+L2 
+
+> τ
+
+( ˆQk − ˜Q) — expectile on NFs-estimated Q-values Our goal is to bound |Q⋆ − ˆQτ |.
+
+First, Decomposition via Triangle Inequality. 
+
+|Q⋆ − ˆQτ | ≤ |Q⋆ − ˆQτ, oracle |
+
+| {z }
+
+> (A) Expectile bias on true Q
+
++ | ˆQτ, oracle − ˆQτ |
+
+| {z }
+
+> (B) NFs error propagation
+
+. (26) 
+
+Second, Bounding Term (A) — Expectile Bias. From the first-order condition, the expectile satisfies: 
+
+ˆQτ, oracle = (1 − τ )n− ¯Q− + τ n + ¯Q+
+
+(1 − τ )n− + τ n +
+
+, (27) where n+ = |{ k : Qk ≥ ˆQτ, oracle }| , n− = K − n+, and ¯Q± are conditional means. 
+
+Case 1 : If ˆQτ, oracle = Q⋆, then |Q⋆ − ˆQτ, oracle | = 0 ≤ ϵτ trivially. 
+
+Case 2 : If ˆQτ, oracle < Q ⋆ (generic case). Since ˆQτ, oracle is a convex combination: 
+
+Qmin ≤ ˆQτ, oracle ≤ Q⋆. (28) By Assumption B.4, at least ˜c-fraction achieve Q⋆. Using Hoeffding’s inequality, with high probability, n⋆ := |{ k : Qk =
+
+Q⋆}| ≥ ˜cK/ 2. Since ˆQτ, oracle < Q ⋆, all Q⋆-samples are in the "above" group: n+ ≥ ˜cK/ 2.Worst-case analysis with ¯Q+ = Q⋆ and ¯Q− = Qmin :
+
+Q⋆ − ˆQτ, oracle = (1 − τ )n−(Q⋆ − Qmin )(1 − τ )n− + τ n +
+
+(29) 
+
+≤ (1 − τ )(1 − ˜c/ 2) K(Q⋆ − Qmin )(1 − τ )(1 − ˜c/ 2) K + τ (˜ c/ 2) K (30) 
+
+= (1 − τ )( Q⋆ − Qmin )
+
+τ · ˜c/ 2 + (1 − τ )(1 − ˜c/ 2) =: ϵτ . (31) 
+
+Third, Bounding Term (B) — NFs Error Propagation. By Assumption B.9, the expectile is Lipschitz in its inputs: 
+
+| ˆQτ, oracle − ˆQτ | = |E τ ({Qk}) − E τ ({ ˆQk})| ≤ LQ · max  
+
+> k
+
+|Qk − ˆQk|. (32) By Assumption B.7 and Markov’s inequality, with high probability: 
+
+max  
+
+> k
+
+|Qk − ˆQk| ≤ O(√ϵNFs ). (33) Therefore, we have: 
+
+| ˆQτ, oracle − ˆQτ | ≤ LQ
+
+√ϵNFs . (34) 17 Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL 
+
+Forth, Combining Terms. From Equation (26), we have: 
+
+|Q⋆ − ˆQτ | ≤ ϵτ + LQ
+
+√ϵNFs . (35) 
+
+Final, Sample Complexity. We need uniform convergence over all (s, a, g, h ) ∈ S × A × G × [H]. By union bound with 
+
+|G| goals, we have: 
+
+Condition 1 (sufficient visits): For each (s, a, h ), we need N s,a h ≥ N d β
+
+> min
+
+/2. By Hoeffding: 
+
+Pr( N s,a h < N d β
+
+> min
+
+/2) ≤ exp( −(dβ
+
+> min
+
+)2N/ 2) . (36) 
+
+Condition 2 (coverage concentration): Given K visits, need n⋆ ≥ ˜cK/ 2.Setting failure probability ≤ δ/ (2 |S||A||G| H) for each tuple: 
+
+N ≥ max 
+
+(
+
+2(dβ
+
+> min
+
+)2 log 2|S||A||G| Hδ , 4˜c2dβ
+
+> min
+
+log 2|S||A||G| Hδ
+
+)
+
+. (37) 
+
+C.2. Proof of Theorem 3.2 
+
+Proof. We prove convergence to the optimal stitched policy with careful treatment of distribution mismatch. 
+
+First, Performance Difference. Since rewards are bounded in [0 , 1] :
+
+J(π⋆β ) − J(ˆ π⋆ 
+
+> D
+
+) ≤ H · ∥ dπ⋆β − dˆπ⋆ 
+
+> D
+
+∥1. (38) 
+
+Second, Simulation Lemma. By the simulation lemma (Kakade, 2001), we have: 
+
+∥dπ⋆β − dˆπ⋆ 
+
+> D
+
+∥1 ≤ 2
+
+> H
+
+X
+
+> h=1
+
+Es∼dπ⋆βh
+
+TV (π⋆β (·| s)∥ˆπ⋆ 
+
+> D
+
+(·| s))  . (39) 
+
+Third, Policy Difference Decomposition. 
+
+TV (π⋆β (·| s, g, h )∥ˆπ⋆ 
+
+> D
+
+(·| s, g, h )) 
+
+≤ TV (Pβ (·| s, g, h, Q ⋆)∥ˆπ(·| s, g, h, Q ⋆)) 
+
+| {z }
+
+> (I) Policy learning error
+
++ TV (ˆ π(·| s, g, h, Q ⋆)∥ˆπ(·| s, g, h, ˆQτ )) 
+
+| {z }
+
+> (II) Q-value error
+
+. (40) 
+
+Bounding Term (I) of Equation (40) with Correct Derivation Order. We carefully apply the inequalities in the correct order: 
+
+a: Apply Jensen’s inequality to the expectation of TV, we have: 
+
+Es∼dπ⋆βh
+
+[TV (Pβ ∥ˆπ)] ≤
+
+r
+
+Es∼dπ⋆βh
+
+[TV (Pβ ∥ˆπ)2]. (41) 
+
+b: Apply Pinsker’s inequality (TV 2 ≤ 12 DKL ), we have: 
+
+r
+
+Es∼dπ⋆βh
+
+[TV 2] ≤
+
+s
+
+12 Es∼dπ⋆βh
+
+[DKL (Pβ ∥ˆπ)] . (42) 18 Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL 
+
+c: Apply distribution mismatch (Assumption B.5), we have: 
+
+Es∼dπ⋆βh
+
+[DKL ] = X
+
+> s
+
+dπ⋆β 
+
+> h
+
+(s) · DKL (Pβ (·| s)∥ˆπ(·| s)) (43) 
+
+= X
+
+> s
+
+dπ⋆β 
+
+> h
+
+(s)
+
+dβh(s) · dβh(s) · DKL (44) 
+
+≤ c⋆β · Es∼dβh
+
+[DKL ]. (45) Combining a-c, we have: 
+
+Es∼dπ⋆βh
+
+[TV (Pβ ∥ˆπ)] ≤
+
+r c⋆β
+
+2 Es∼dβh
+
+[DKL (Pβ ∥ˆπ)] = 
+
+r c⋆β
+
+2 L(ˆ π). (46) By MLE analysis (Liu et al., 2025), with probability ≥ 1 − δ:
+
+L(ˆ π) ≤ O 
+
+r
+
+c · log |Π|/δ N
+
+!
+
++ δapprox . (47) Summing over H stages: 
+
+> H
+
+X
+
+> h=1
+
+E[Term (I) ] ≤ H
+
+r c⋆β
+
+2 O
+
+ log |Π|/δ N
+
+1/4!
+
++ pδapprox 
+
+!
+
+. (48) 
+
+Forth, Bounding Term (II) of Equation (40). By Assumption B.8, we have: TV (ˆ π(·| Q⋆)∥ˆπ(·| ˆQτ )) ≤ Lπ |Q⋆ − ˆQτ |. (49) From Theorem 3.1, we have: 
+
+|Q⋆ − ˆQτ | ≤ ϵτ + LQ
+
+√ϵNFs . (50) Taking expectation under dπ⋆β 
+
+> h
+
+and applying distribution mismatch for the NFs error term, we have: 
+
+Es∼dπ⋆βh
+
+[|Q⋆ − ˆQτ |] ≤ ϵτ + LQ · Es∼dπ⋆βh
+
+[√ϵNFs ,s ] (51) 
+
+≤ ϵτ + LQ
+
+q
+
+c⋆β · ϵNFs . (52) Summing over stages, we have: 
+
+> H
+
+X
+
+> h=1
+
+E[Term (II) ] ≤ H · Lπ
+
+
+
+ϵτ + LQ
+
+q
+
+c⋆β · ϵNFs 
+
+
+
+. (53) 
+
+Final Bound. Combining, we have: 
+
+J(π⋆β ) − J(ˆ π⋆ 
+
+> D
+
+) ≤ 2H
+
+"X
+
+> h
+
+Term (I) + X
+
+> h
+
+Term (II) 
+
+#
+
+(54) 
+
+≤ O c⋆β H2
+
+˜c
+
+√c
+
+ log |Π|/δ N
+
+1/4!
+
++
+
+q
+
+c⋆β H2pδapprox (55) 
+
++ c⋆β H2Lπ
+
+q 
+
+c⋆β · ϵNFs + ϵτ
+
+
+
+. (56) Union bound over events from Theorems 3.1 and MLE analysis gives probability ≥ 1 − 2δ.19 Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL 
+
+C.3. Comparison with R 2CSL Aspect R2CSL QHyer 
+
+Conditioning signal RTG: f (s, h ) = PHt=h rt Q-value: Q(s, a, g ) = pβ
+
+> +
+
+(g|s, a )
+
+Signal property Trajectory-dependent State-dependent 
+
+Consistency constraint Required Not required 
+
+Stitching mechanism Explicit RTG relabeling Implicit via expectile Estimation method Quantile regression Expectile + NFs Additional error term None LQ
+
+pc⋆β ϵNFs 
+
+Sample complexity |S||A| H |S||A||G| H
+
+Convergence rate O(N −1/4) O(N −1/4)
+
+## D. QHyer Algorithm Details 
+
+This section describes the architecture, training, and inference procedures of QHyer . The overall structure is depicted in Figure 8, and the complete algorithm is summarized in Algorithm 1. 𝐀 0
+
+𝐀 1
+
+𝐀 2
+
+𝐀 3
+
+𝐀 0
+
+𝐀 1
+
+𝐀 2
+
+𝐀 3
+
+> NFs
+
+𝐀 0, 𝐀 0, 𝐀 0, 𝐀 0
+
+𝐀 1, 𝐀 1, 𝐀 1, 𝐀 1
+
+𝐀 2, 𝐀 2, 𝐀 2, 𝐀 2
+
+𝐀 3, 𝐀 3, 𝐀 3, 𝐀 3  
+
+> Offline Dataset Estimating Goal-reaching Probability
+> /Q-function
+
+𝐀 0
+
+𝐀 1
+
+𝐀 2
+
+𝐀 3  
+
+> 𝐀 Add to Sample
+> Estimating Maximum In-distribution
+> Q-value and Obtain Optimal Action
+> 𝐀
+> QHyer
+
+𝐀 𝐀 𝐀 𝐀 𝐀 𝐀             
+
+> QR (𝐀 𝐀 ,𝐀 )+ MSE( 𝐀 𝐀 ,𝐀 )ℒ=
+> Training Inference
+> 𝐀 ∗
+> 𝐀 𝐀 𝐀 𝐀
+> Env
+> 𝐀
+> (𝐀 𝐀 ,𝐀 𝐀 )
+> (𝐀 𝐀 ,𝐀 𝐀 ,𝐀 𝐀 𝐀 𝐀 )
+
+Figure 8. Overview of QHyer . Left: Offline dataset D with state-goal-action tuples. Middle: NFs-based critic estimates Qβθ (st, a t, g ) = log pθ (g|st, a t) via an SA-Encoder and RealNVP. Right: The Hybrid Attention-Mamba actor predicts ˆQ(st, g ) via expectile regression and outputs action ˆat conditioned on the predicted maximum Q-value. 
+
+Model Architecture. The input sequence follows the format ⟨ ˜Qt, sg t, a t⟩ where sg t = [ st; g] denotes state-goal concate-nation (Schaul et al., 2015), and ˜Qt is the normalized Q-value computed from the NFs-based critic (Equation (4)): 
+
+˜Qt = Qβθ (st, a t, g )/(|Qβ | + δ), (57) where Qβθ (st, a t, g ) = log pθ (g|st, a t) is the behavior Q-value estimated by NFs, |Qβ | denotes the mean absolute Q-value over the batch, and δ is a small constant for numerical stability. At timestep t, the model takes a context window of length 
+
+K:
+
+Input: ⟨ ˜Qt−K+1 , sg t−K+1 , a t−K+1 , . . . , ˜Qt, sg t, a t⟩
+
+Output: ⟨ ˆQt−K+1 , ˆat−K+1 , □, . . . , ˆQt, ˆat, □⟩
+
+The NF critic consists of an SA-Encoder that maps (st, a t) to a latent representation, followed by a RealNVP (Dinh et al., 2017) that computes Qβθ (st, a t, g ). The Hybrid Attention-Mamba backbone processes tokens through N transformer blocks with learnable attention-Mamba gating as described in Section 3.2. 
+
+Q-Conditioned Policy Learning. Unlike prior Q-enhanced supervised learning methods that incorporate Q-values into loss functions, we use Q-values as conditioning tokens input to the policy network. This design enables the policy to explicitly leverage Q-value signals for action selection during both training and inference. The total loss is defined in Equation (14), combining the NFs-based critic loss (Equation (5)), behavior cloning loss (Equation (15)), and expectile regression loss (Equation (10)). In practice, we apply a denoising trick to the NFs-based critic by adding Gaussian noise ϵ ∼ N (0 , σ 2I) to goals during training, which improves density estimation quality. The expectile loss L2 
+
+> τ
+
+(·) is defined in Equation (9), where τ ∈ (0 .5, 1) 
+
+20 Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL 
+
+Algorithm 1 QHyer Training and Inference 
+
+1: Input: Offline dataset D, context length K, expectile τ , noise std σ, stability constant δ
+
+2: Initialize: SA-Encoder ψ, NFs-based critic θ, Hybrid Attention-Mamba actor ϕ
+
+3: 4: // Joint Training (end-to-end) 
+
+5: for each training iteration do 
+
+6: Sample batch of trajectories {(st, a t, g )} from D
+
+7: // Step 1: Compute behavior Q-values via NF critic (Equation (4)) 
+
+8: repr t ← SA-Encoder ψ (st, a t)
+
+9: Qβθ (st, a t, g ) ← log pθ (g + ϵ | repr t) // ϵ ∼ N (0 , σ 2I), denoising 
+
+10: ˜Qt ← Qβθ (st, a t, g )/(|Qβ | + δ) // normalize (Equation (57)) 
+
+11: // Step 2: Forward through Q-conditioned policy 
+
+12: Construct input: x = ⟨ ˜Qt−K+1 , sg t−K+1 , a t−K+1 , . . . , stopgrad ( ˜Qt), sg t⟩
+
+13: ˆQ(st, g ), ˆat ← QHyer ϕ(x)
+
+14: // Step 3: Compute losses (Equations (5), (10) and (15)) 
+
+15: LNFs ← − E[log pθ (g|st, a t)] 
+
+16: LBC ← − E[log πϕ(at| ˜Qt, [st; g])] 
+
+17: LQ ← E[L2 
+
+> τ
+
+( ˆQ(st, g ) − Qβθ (st, a t, g ))] 
+
+18: Update (ψ, θ, ϕ ) by ∇(λcritic LNFs + λBC LBC + λQLQ)
+
+19: end for 
+
+20: 21: // Inference: Trajectory Stitching via Q-Conditioning 
+
+22: Initialize buffers: sg , a, Q ← 0
+
+23: s0, g ← Env.reset () 
+
+24: for t = 0 , 1, 2, . . . until done do 
+
+25: sg t ← [st; g] // concatenate state and goal 
+
+26: Retrieve context window: (sg , a, Q)t−K+1: t
+
+27: // Stage 1: Predict maximum in-distribution Q-value 
+
+28: ˆQ(st, g ) ← QHyer Qϕ (sg t−K+1: t, at−K+1: t−1, Qt−K+1: t−1)
+
+29: Update buffer: Qt ← ˆQ(st, g )
+
+30: // Stage 2: Predict action conditioned on maximum Q-value 
+
+31: ˆat ← QHyer aϕ(sg t−K+1: t, at−K+1: t−1, Qt−K+1: t)
+
+32: st+1 ← Env.step (clip (ˆ at, −1, 1)) 
+
+33: Update buffer: at ← ˆat
+
+34: end for 
+
+controls the asymmetry. When τ > 0.5, overestimation is penalized more heavily, driving the learned ˆQ(st, g ) toward the maximum of Qβθ (st, a t, g ) over all actions in the dataset. 
+
+Inference: Trajectory Stitching via Q-Conditioning. In classical Q-learning, the optimal value function Q∗ derives the optimal action given the current state. In our framework, we leverage the maximum Q-value ˆQ(st, g ) to help the policy select near-optimal actions. Note that ˆQ(st, g ) depends only on state and goal because action is marginalized by the expectile regression. The inference pipeline follows: 
+
+> Env
+
+7−→ (s0, g ) ˆQ
+
+−→ ˆQ(s0, g ) πϕ
+
+−−→ a0
+
+> Env
+
+−−→ (s1, g ) ˆQ
+
+−→ ˆQ(s1, g ) πϕ
+
+−−→ a1 → · · · (58) At each timestep t, QHyer performs two-stage autoregressive generation as shown in Algorithm 1: 1. Predict maximum Q-value: Given the historical context window, the model first predicts ˆQ(st, g ) which represents the maximum achievable goal-reaching probability from the current state. 2. Predict action: Conditioned on the predicted ˆQ(st, g ), the model then outputs the action ˆat that achieves this maximum Q-value. 21 Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL 
+
+When the initial state and goal correspond to different trajectories in the dataset, which is precisely the scenario requiring trajectory stitching, our model outputs effective actions by leveraging the Q-conditioned policy. 
+
+## E. Baseline Details 
+
+We compare our approach with a wide variety of baselines, including sequence modeling, TD-based RL methods and Offline GCRL methods. Particularly, we include the following methods: • For sequence modeling methods, we include Decision Transformer (DT) (Chen et al., 2021), Elastic Decision Transformer (EDT) (Wu et al., 2023), Graph Decision Transformer (GDT) (Hu et al., 2023), Q-learning Decision Transformer (QDT) (Yamagata et al., 2023), Critic-Guided Decision Transformer (CGDT) (Wang et al., 2024), Reinforced Transformer (Reinformer) (Zhuang et al., 2024), Decision ConvFormer (DC) (Kim et al., 2024b), Decision Mamba (DMamba) (Ota, 2024), Q-value Regularized Transformer (QT) (Hu et al., 2024), Long-Short Decision Transformer (LSDT) (Wang et al., 2025), Decision Mixer (DMixer) (Zheng et al., 2025a), Value-guided Decision Transformer (VDT) (Zheng et al., 2025b). DT is a classic sequence modeling method that utilizes a Transformer architecture to model and reproduce sequences from demonstrations, integrating a goal-conditioned policy to convert Offline RL into a supervised learning task. Despite its competitive performance in Offline RL tasks, the DT falls short in achieving trajectory stitching (Brandfonbrener et al., 2022). GDT extends DT by explicitly structuring the input sequence as a causal graph and incorporating relation-enhanced attention to better model the dependencies between states, actions, and rewards. EDT is a variant of DT that lies in its ability to determine the optimal history length to promote trajectory stitching. But it does not incorporate the RL objective that maximizes returns to enhance the model (Zhuang et al., 2024) and its stitching capabilities are limited (Kim et al., 2024a). QDT integrates Dynamic Programming with the DT framework to enhance the optimal path generation ability of DT. CGDT enhances DT by incorporating a value-based critic to align the expected returns of actions with target returns, effectively addressing the inconsistency issues of Return-Conditioned Supervised Learning in stochastic environments and suboptimal datasets. DC replaces attention blocks with convolution filters to more efficiently capture local associations. Reinformer is similar to our work; however, it exhibits limited stitching capabilities due to the absence of Q-value, resulting in a significant performance gap compared to TD-based RL methods. DMamba replaces the attention mechanism in DT with the Mamba selective state space model to achieve linear computational complexity while maintaining sequence modeling capabilities. QT introduces Q-value regularization to optimize action selection on top of DT and excels in handling long time horizons and sparse reward tasks. LSDT enhances the model structure of DT with a dual-branch architecture (long-term and local features) adept at extracting information within different ranges. DMixer integrates both long-term and local features, and additionally introduces a plug-and-play dynamic token selection mechanism to ensure that the model can adaptively allocate attention to different features based on the specific requirements of each task. VDT leverages value functions to perform advantage-weighting and behavior regularization on the DT, guiding the policy toward upper-bound optimal decisions during the offline training phase. • For TD-based RL methods, we include Conservative Q-Learning (CQL) (Kumar et al., 2020) and Implicit Q-Learning (IQL) (Kostrikov et al., 2022). CQL and IQL are classical offline RL methods that utilize dynamic programming. This trick endows them with stitching properties (Cheikhi & Russo, 2023; Ghugare et al., 2024). • For Offline GCRL methods, we include goal-conditioned behavioral cloning (GCBC) (Ghosh et al., 2021) , goal-conditioned implicit V-learning (GCIVL) and Q-learning (GCIQL) (Kostrikov et al., 2022), Quasimetric RL (QRL) (Wang et al., 2023), Contrastive RL (CRL) (Eysenbach et al., 2022), and Hierarchical implicit Q-learning (HIQL) (Park et al., 2023). For these baselines, we follow the implementation setup established by OGBench (Park et al., 2025a) throughout our experiments. Additionally, we select Subgoal Advantage-Weighted Policy Bootstrapping (SAW) (Zhou & Kao, 2025), Option-aware Temporally Abstracted (OTA) (Ahn et al., 2025) and Eikonal-Constrained Quasimetric RL (Eik-QRL) (Giammarino & Qureshi, 2026) as our state-of-the-art GCRL baselines. SAW trains a flat policy by directly sampling subgoals from offline datasets through advantage-weighted policy bootstrapping, thereby eliminating the need for complex subgoal generation models, and achieves superior performance on long-horizon, high-dimensional control tasks. OTA employs temporal abstraction to reduce the effective planning horizon, which substantially improves the scalability of high-level policies to long-horizon tasks. Eik-HiQRL overcomes QRL’s dependence on trajectory continuity for local constraints and its struggle to maintain a valid quasimetric structure in high-dimensional, long-horizon tasks by introducing a trajectory-free Eikonal PDE constraint at the high level and a hierarchical policy decomposition. 22 Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL 
+
+## F. Experiment Details 
+
+In this section we provide offline datasets details as well as implementation details used for all the algorithms in our experiments – Offline GCRL Datasets, Normalizing Flows, and QHyer .triple quadruple single double 
+
+cube 4x5 4x6 3x3 4x4 
+
+puzzle 1 2 3 4   
+
+> scene
+> unlock drawer open drawer put cube in drawer close drawer
+
+states pixels     
+
+> Figure 9. GCRL example non-Markovian datasets from Ogbench. Each Trajectory is limited to travel at most 4 blocks for dataset type stitch, while at inference, the distance between the start and goal can be up to 30 in the Giant maze.
+
+F.1. Offline GCRL non-Markovian Datasets 
+
+We adopt the manipulation suite from OGBench (Park et al., 2025a), which consists of three robotic manipulation environments based on a 6-DoF UR5e robot arm. These environments are designed to evaluate the agent’s capabilities in object manipulation, sequential generalization, and combinatorial generalization. • Cube : This task involves pick-and-place manipulation of cube blocks, where the goal is to arrange cubes into designated configurations. Four variants are provided with different numbers of cubes: single , double , triple ,and quadruple (1–4 cubes). At test time, the agent must perform moving, stacking, swapping, or permuting operations on the cube blocks. • Scene : This task is designed to challenge sequential, long-horizon reasoning capabilities. It involves manipulating diverse everyday objects including a cube block, a window, a drawer, and two button locks. The longest evaluation task requires completing up to eight atomic behaviors in sequence. • Puzzle : This task evaluates combinatorial generalization by requiring the agent to solve the “Lights Out” puzzle with a robot arm. Four difficulty levels are provided: 3x3 , 4x4 , 4x5 , and 4x6 , with state spaces containing up to 
+
+224 = 16 , 777 , 216 distinct configurations. Visualization examples of these tasks are shown in Figure 9. For each manipulation environment, OGBench provides two types of datasets with different collection policies: • Play datasets (play ): Collected by non-Markovian expert policies with temporally correlated noise, following the 23 Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL 
+
+“play data” paradigm (Lynch et al., 2020). This results in smoother, more realistic trajectories that pose additional challenges for standard RL algorithms. • Noisy datasets (noisy ): Collected by Markovian expert policies with uncorrelated Gaussian noise. These datasets serve as controlled baselines for ablation studies, allowing researchers to isolate the effects of non-Markovian data collection. In the experiments comparing with related sequence modeling approaches, we adopt the maze navigation tasks from 
+
+D4RL (Fu et al., 2020), which provide challenging benchmarks for evaluating offline RL algorithms on undirected, multitask data with sparse rewards. • Maze2D : This domain is a navigation task requiring a 2D point-mass agent to reach a fixed goal location. Three maze layouts are provided with increasing complexity: umaze , medium , and large . The tasks are designed to test the ability of offline RL algorithms to stitch together previously collected sub-trajectories to find the shortest path to the evaluation goal. • AntMaze-v2 : This domain replaces the simple 2D ball from Maze2D with a more complex 8-DoF quadrupedal “Ant” robot, introducing morphological complexity that mimics real-world robotic navigation tasks. The same three maze layouts ( umaze , medium , large ) are used, with a sparse 0-1 reward that is activated only upon reaching the goal. Three dataset variants are provided: standard goal-reaching from fixed start locations, “diverse” datasets with random start and goal locations, and “play” datasets with hand-picked navigation waypoints. Visualization examples are shown in Figure 10. A critical characteristic of both Maze2D and AntMaze-v2 datasets is that they are collected by non-Markovian policies. The data generation process employs a hierarchical controller: a high-level planner generates sequences of waypoints, which are then followed by a low-level PD controller (for Maze2D ) or a trained goal-reaching policy (for AntMaze-v2 ). Because these controllers maintain internal states to track visited waypoints and update their targets upon reaching intermediate goals, the resulting behavior policies are inherently non-Markovian. This property introduces additional challenges for offline RL algorithms, as the data cannot be accurately modeled by assuming a Markovian behavior policy, potentially causing bias in methods that rely on such assumptions (Fu et al., 2020). 
+
+Umaze Medium Large     
+
+> Figure 10. GCRL example non-Markovian datasets from D4RL (Fu et al., 2020): The AntMaze-v2 datasets involve controlling an 8-DoF quadruped to navigate towards a specified goal state. This benchmark requires value propagation to effectively stitch together sub-optimal trajectories from the collected data.
+
+F.2. Implementation Details 
+
+We ran all our experiments on NVIDIA RTX 3090 GPUs with 24GB of memory within an internal cluster. We use the default configurations in Park et al. (2025a), with some values modified. In pixel-based environments, following Park et al. (2025a), we employ n IMPALA-style encoder to transform images into state tokens. The architecture and training process of the Normalizing Flows are identical to those described in Ghugare & Eysenbach (2025). Our QHyer implementation draws inspiration from LSDT (Wang et al., 2025) and Decision Mamba (Ota, 2024). The state tokens, goal tokens, Q-function tokens and action tokens are first processed by different linear layers. Then these tokens are fed into the decoder layer to obtain the embedding. Here the decoder layer is a lightweight implementation from Reinformer (Zhuang et al., 2024). The context length for the decoder layer is denoted as K. We employed both the AdamW (Loshchilov, 2017) optimizers to optimize the total loss, in alignment with the methods outlined in their original papers. The hyperparameter of LQHyer loss is denoted as τ .24 Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL 
+
+Table 5. NF Q-value Estimation Time Analysis in QHyer . All timing values are in milliseconds (ms) per batch, averaged over 100 steps (batch size = 256). Experiments conducted on a single NVIDIA RTX 3090 GPU with dual Intel Xeon E5-2620 v4 CPUs @ 2.10GHz.                                                                                                     
+
+> Environment NF Train (ms) Actor (ms) Infer-Q (ms) Infer-A (ms) NF Ratio
+> cube-single-play-v0 2.42 3.07 0.007 0.015 28 .3%
+> cube-double-play-v0 2.43 2.99 0.008 0.019 26 .7%
+> cube-triple-play-v0 2.47 3.14 0.008 0.015 28 .8%
+> cube-quadruple-play-v0 2.54 3.12 0.011 0.019 27 .0%
+> cube-single-noisy-v0 2.44 3.06 0.009 0.015 29 .3%
+> cube-double-noisy-v0 2.49 3.07 0.011 0.019 26 .9%
+> cube-triple-noisy-v0 2.42 3.01 0.008 0.014 29 .2%
+> cube-quadruple-noisy-v0 2.55 3.14 0.012 0.018 27 .1%
+> scene-play-v0 2.43 3.04 0.009 0.015 28 .8%
+> scene-noisy-v0 2.43 3.02 0.008 0.020 26 .9%
+> puzzle-3x3-play-v0 2.39 3.01 0.008 0.015 28 .7%
+> puzzle-4x4-play-v0 2.52 3.08 0.010 0.019 27 .1%
+> puzzle-4x5-play-v0 2.48 3.12 0.008 0.015 28 .7%
+> puzzle-4x6-play-v0 2.54 3.10 0.009 0.020 26 .8%
+> puzzle-3x3-noisy-v0 2.45 3.10 0.009 0.015 29 .0%
+> puzzle-4x4-noisy-v0 2.49 3.09 0.009 0.019 26 .9%
+> puzzle-4x5-noisy-v0 2.51 2.95 0.009 0.015 30 .1%
+> puzzle-4x6-noisy-v0 2.44 2.98 0.008 0.021 27 .2%
+> Average 2.47 3.06 0.009 0.017 28 .0%
+
+F.3. Hyperparameter Settings 
+
+Table 6 summarizes the hyperparameters shared across all experiments. The Hybrid Attention-Mamba architecture uses learnable mixing weights between attention and Mamba branches, with a total hidden dimension of dmodel . The Normalizing Flow architecture follows Ghugare & Eysenbach (2025). The expectile regression parameter τ is set according to our theoretical guidance (Theorem 3.1). 
+
+Table 6. Common hyperparameters shared across all tasks.                                                       
+
+> Hyperparameter OGBench (State) OGBench (Pixel) D4RL
+> Training steps 1M 500K 100K Batch size 1024 512 256 Optimizer AdamW AdamW AdamW Weight decay 0.0 0.0 1e-4 Gradient clipping 1.0 1.0 0.25 NF noise std 0.05 0.05 –Encoder hidden dim 1024 1024 –NF representation size 64–128 64–128 –BC weight λBC 1.0 1.0 1.0 Q weight λQ1.0 1.0 1.0 Expectile τ0.95–0.99 0.95–0.99 0.90–0.99 State-goal concatenation True False True Image size –64 ×64 –Image encoder –IMPALA-small –Warmup steps ––10000 LR schedule ––Cosine
+
+Architecture notes. For both OGBench and D4RL experiments, the Hybrid Attention-Mamba backbone uses learnable mixing weights that are automatically optimized during training, eliminating the need for manual tuning of attention-to-Mamba ratios. The total hidden dimension dmodel (denoted as h_dim in OGBench and embed_dim in D4RL) represents the combined capacity of both branches, with the proportion learned end-to-end via gradient descent. Table 7 presents the task-specific hyperparameters for OGBench state-based manipulation environments. Following our theoretical analysis (Theorem 3.1), we set τ = 0 .99 for play datasets (medium Q-value coverage) and τ = 0 .95 for noisy datasets (higher coverage due to exploration noise). Table 8 presents the hyperparameters for pixel-based (visual) manipulation tasks. Compared to state-based tasks, pixel-based tasks use smaller batch size (512 vs 1024) due to memory constraints and shorter training (500K steps). Goals are represented 25 Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL 
+
+Table 7. Task-specific hyperparameters for OGBench state-based manipulation tasks (1M training steps). K: context length, dmodel :hidden dimension, L: number of Transformer blocks, H: number of attention heads.                                                                                                                                                                            
+
+> Environment Kdmodel LHLR Dropout τNF Blocks NF Channels
+> cube-single-play-v0 20 256 443e-4 0.1 0.99 6256
+> cube-single-noisy-v0 20 256 443e-4 0.1 0.95 6256
+> cube-double-play-v0 25 384 563e-4 0.1 0.99 8256
+> cube-double-noisy-v0 25 384 563e-4 0.1 0.95 8256
+> cube-triple-play-v0 30 512 682e-4 0.15 0.99 10 384
+> cube-triple-noisy-v0 30 512 682e-4 0.15 0.95 10 384
+> cube-quadruple-play-v0 35 640 681e-4 0.2 0.99 12 512
+> cube-quadruple-noisy-v0 35 640 681e-4 0.2 0.95 12 512
+> scene-play-v0 30 384 563e-4 0.1 0.99 8384
+> scene-noisy-v0 30 384 563e-4 0.1 0.95 8384
+> puzzle-3x3-play-v0 25 512 683e-4 0.1 0.99 8384
+> puzzle-3x3-noisy-v0 25 512 683e-4 0.1 0.95 8384
+> puzzle-4x4-play-v0 30 640 682e-4 0.15 0.99 10 384
+> puzzle-4x4-noisy-v0 30 640 682e-4 0.15 0.95 10 384
+> puzzle-4x5-play-v0 35 768 681e-4 0.2 0.99 10 512
+> puzzle-4x5-noisy-v0 35 768 681e-4 0.2 0.95 10 512
+> puzzle-4x6-play-v0 40 768 681e-4 0.2 0.99 10 512
+> puzzle-4x6-noisy-v0 40 768 681e-4 0.2 0.95 10 512
+
+as images rather than concatenated state vectors. 
+
+Table 8. Task-specific hyperparameters for OGBench pixel-based manipulation tasks (500K training steps). K: context length, dmodel :hidden dimension, L: number of Transformer blocks, H: number of attention heads. 
+
+Environment K dmodel L H LR Dropout τ NF Blocks NF Channels 
+
+visual-cube-single-play-v0 15 256 4 4 3e-4 0.1 0.99 6 256 
+
+visual-cube-double-play-v0 20 384 5 6 3e-4 0.1 0.99 8 256 
+
+visual-cube-triple-play-v0 25 512 6 8 2e-4 0.15 0.99 10 384 
+
+visual-scene-play-v0 25 384 5 6 3e-4 0.1 0.99 8 384 
+
+visual-scene-noisy-v0 25 384 5 6 3e-4 0.1 0.95 8 384 
+
+For pixel-based tasks, the NF uses a DrQ-v2 style CNN (Yarats et al., 2022) to encode images into 256-dim features, which are concatenated with actions and passed through a 4-layer MLP to produce the state-action representation. The NF models goal-reaching probability in the low-dimensional coordinate space (e.g., object positions), extracted from simulator state. The LSDM actor uses an IMPALA-style encoder (Espeholt et al., 2018) to encode both observation and goal images into 256-dim vectors. Table 9 presents the hyperparameters for D4RL maze tasks. We use a unified Transformer architecture with dmodel = 128 
+
+and 3 blocks. Unlike OGBench, D4RL experiments use a cosine learning rate schedule with 10K warmup steps. 
+
+Table 9. Task-specific hyperparameters for D4RL maze tasks (100K training steps, 50 iterations × 2000 updates). 
+
+Environment K LR τ dmodel L
+
+antmaze-umaze-v2 2 2e-4 0.90 128 3
+
+antmaze-umaze-diverse-v2 2 2e-4 0.90 128 3
+
+antmaze-medium-play-v2 3 2e-4 0.99 128 3
+
+antmaze-medium-diverse-v2 3 2e-4 0.99 128 3
+
+antmaze-large-play-v2 3 4e-4 0.90 128 3
+
+antmaze-large-diverse-v2 3 4e-4 0.90 128 3
+
+maze2d-umaze-v1 10 2e-4 0.90 128 3
+
+maze2d-medium-v1 10 2e-4 0.90 128 3
+
+D4RL-specific settings. For D4RL maze tasks, we concatenate the 2D goal position to the state ( -goalconcate ), increasing the state dimension by 2. The training uses a combined learning rate schedule: linear warmup for 10K steps followed by cosine decay. We use smaller batch size (256) and fewer training steps (100K) compared to OGBench, as D4RL maze tasks are less complex. The expectile parameter τ is set to 0.90 for umaze and large tasks, and 0.99 for medium tasks based on empirical tuning. For computational efficiency, we extract only task-relevant goal coordinates when training the NFs-based Q-value estimator in Equation (5). Given a full goal state gfull , we use g = gfull [istart : iend ] where the index range is environment-specific. 26 Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL 
+
+Table 10 summarizes the configurations: 
+
+Table 10. Goal dimension configurations for NF Q-value estimation.                                
+
+> Task Category Goal Dim Description
+> cube-single-* /visual-cube-single-* 3Object (x, y, z)
+> cube-double-* /visual-cube-double-* 6Two objects
+> cube-triple-* /visual-cube-triple-* 9Three objects
+> cube-quadruple-* 12 Four objects
+> scene-* /visual-scene-* 13 Scene objects
+> puzzle-3x3-* 93×3 tiles
+> puzzle-4x4-* 16 4×4 tiles
+> puzzle-4x5-* 20 4×5 tiles
+> puzzle-4x6-* 24 4×6 tiles
+> antmaze-* ,maze2d-* 2Agent (x, y)
+
+For goal sampling in OGBench, we use ptrajgoal = 1 .0, prandomgoal = 0 .0 for play datasets and ptrajgoal = 0 .8, prandomgoal = 0 .2
+
+for noisy datasets. 
+
+## G. Additional Results 
+
+This section presents supplementary experiments and analyses for QHyer , including: (1) detailed discussion of the state-goal tokenization strategy and its role in enabling trajectory stitching, (2) ablation studies on regression functions, (3) qualitative visualization of trajectory stitching capabilities, (4) validation of Normalizing Flows for goal-reaching probability estimation, and (5) empirical verification of expectile regression for capturing maximum Q-values. Due to space constraints, these additional results are not included in the main body of this paper. The details are provided below. 
+
+G.1. Detail Discussion of State-Goal Tokenization Strategy a     
+
+> aa
+> b
+> b
+> b
+> b
+> b
+> b
+> b
+> b
+> MSE Loss ℒ𝐀 𝐀 with Original Data
+> Reinforced Loss ℒ𝐀 𝐀 𝐀 𝐀 𝐀 with Goal Concated Data
+> Path and Goal-stitching Failure
+> Optimal Path and Goal-stitching
+> DT
+> QHyer
+> Offline Data
+> (Graph)
+
+Training Phase Inference Phase         
+
+> 00
+> 1
+> 00
+> 1
+> 0
+> 0
+> 0
+> 0
+> 1
+> 1
+> 00
+> 0
+> 0
+> 1
+> 00
+> 0
+> 0
+> 1
+> 0
+> 0
+> 0
+> 0
+> 1
+> 1
+> 0
+> 0
+> 1
+> 00
+> 1
+> s
+> g
+> s
+> s
+> g
+> g
+> s
+> g
+> goal a
+> goal b
+> ACB
+
+Figure 11. State-goal tokenization strategy. (A) Offline data represented as a graph, where nodes denote states and edges represent transitions. Different trajectories (colored in orange/yellow) may share common states but target different goals. (B) State-goal concatenation: each state s is concatenated with goal g to form a unified token [s; g], enabling the model to directly attend to goal-relevant state features. (C) Goal stitching illustration (see Section 3.3): by conditioning on concatenated state-goal tokens, QHyer can identify and combine successful trajectory segments from different source trajectories that share the same goal, enabling optimal path discovery that neither original trajectory achieves alone. 
+
+This section details our state-goal tokenization strategy illustrated in Figure 11 and its role in enabling trajectory stitching. The key insight is that concatenating state and goal into a unified token [s; g] allows the Transformer’s self-attention mechanism to directly model cross-dependencies between current state features and goal specifications within each token position. 
+
+Panel A shows the offline dataset structure as a graph, where multiple trajectories (indicated by different colors) traverse 27 Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL 
+
+overlapping state regions while pursuing different goals. This shared structure creates opportunities for trajectory stitching, which combines successful segments from different trajectories. No Goal State-Goal Separate State-Goal Concat Cube-single-play  
+
+> Scene-play
+> Puzzle-3x3-play
+> Antmaze-medium-diverse
+> 0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Success Rate
+> Ablation Study: State-Goal Tokenization Strategy
+> Figure 12. Ablation study on state-goal tokenization strategies.
+
+Panel B contrasts DT’s standard tokenization with QHyer’s approach. In vanilla DT, states and goals may be processed separately or with weak coupling. QHyer instead concate-nates [s; g] at each timestep, ensuring that goal information is directly available when computing attention over state features. This design maintains the sequence length at 3T
+
+(Q-value, state-goal, action tokens) rather than increasing to 
+
+4T with separate goal tokens, avoiding quadratic attention overhead. 
+
+Panel C demonstrates how this enables goal stitching. Con-sider two trajectories targeting goals a and b respectively. Neither trajectory alone reaches the optimal path to goal 
+
+a. However, by conditioning on state-goal concatenated tokens with NFs-based Q-value signals, QHyer identifies high-value segments from both trajectories and stitches them together, discovering an optimal path (shown in green) that was not present in any single demonstration. We empirically validate the effectiveness of state-goal concatenation through ablation studies comparing three tokenization strategies: No Goal (state-only input), State-Goal Separate (goal as additional token), and State-Goal Concat (our approach). Figure 12 shows a consistent ordering across all environments: No Goal < Separate < Concat. The performance gap between No Goal and goal-conditioned variants ( 37% –53% absolute improvement) confirms that goal information is essential for learning meaningful goal-reaching behaviors. Without explicit goal conditioning, the model degenerates to unconditional behavior cloning, unable to distinguish between trajectories targeting different goals. Among goal-conditioned strategies, concatenation outperforms separation by 16% –28% . This improvement stems from two factors: (1) Direct cross-dependency modeling : Concatenation enables self-attention to directly learn which state features are relevant for specific goals within each token, whereas separation requires the model to establish state-goal relationships across tokens through multiple attention layers. (2) Stronger conditioning signal : Separate tokenization dilutes the goal signal as it propagates through attention layers, weakening goal-awareness at decision time. Concatenation preserves the full goal information at every position where action prediction occurs. MSE Quantile Regression (L1) Expectile Regression (L2) Cube-double-play 
+
+Puzzle-4x4-play 
+
+Puzzle-4x6-play 
+
+Antmaze-umaze 
+
+0
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> Success Rate
+
+Ablation Study: Different Regression Functions  
+
+> Figure 13. Ablation study on regression functions for maximum Q-value learning.
+
+These results validate our design choice and explain why QHyer achieves effective trajectory stitching: the concatenated state-goal representation provides the necessary goal-aware context for identifying and combining high-value segments from different trajectories. 
+
+G.2. Effect of Regression Functions on Learning Stability 
+
+We compare MSE, Quantile Loss ( L1-based) (Koenker & Hal-lock, 2001), and Expectile Regression ( L2-based) (Newey & Powell, 1987; Kostrikov et al., 2022). Figure 13 shows con-sistent ordering: MSE < Quantile < Expectile, with Expectile achieving the best results and smallest variance. 
+
+Why MSE Fails. MSE learns the mean Q-value across all tra-jectories passing through each state. In Offline GCRL where both successful and failed trajectories share common states, this averaging produces predictions that lie between the max-imum and minimum Q-values. Such middle-ground estimates provide no discriminative signal for trajectory stitching because the model cannot distinguish promising paths from dead ends. 28 Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL 
+
+Why Quantile Loss Struggles. Quantile regression (Koenker & Hallock, 2001) correctly targets high-value regions via asymmetric weighting. However, the L1 loss creates a non-smooth point at zero error where gradients change direction abruptly (Liu et al., 2025; Jullien et al., 2023). For deep networks with many near-zero predictions, this causes oscillatory training dynamics and high variance across seeds. Recent theoretical work (Liu et al., 2025) shows that while quantile regression can recover in-distribution optimal values in deterministic environments, its L1 loss makes optimization less stable than L2-based alternatives. 
+
+Why Expectile Regression Succeeds. Expectile regression (Newey & Powell, 1987) replaces the L1 non-smooth point with an L2 smooth curve, achieving both optimistic targeting and gradient consistency. This smooth gradient landscape is particularly important for non-Markovian learning: inconsistent gradients from quantile loss disrupt the temporal repre-sentations learned by attention and Mamba branches, while expectile’s stable gradients allow these components to capture history-dependent patterns effectively. This explains why the Quantile-Expectile gap is largest on Cube-double-play ,the environment with the strongest non-Markovian properties. As shown in Theorem 3.1, expectile regression with τ → 1
+
+converges to the in-distribution optimal Q-value, providing theoretical justification for our empirical findings. 
+
+G.3. Trajectory Stitching Visualization Umaze    
+
+> Figure 14. D4RL
+> Antmaze-medium envi-ronment with trajectories from different behavioral policies.
+
+To further illustrate the trajectory stitching capabilities of different methods, we provide a qualitative comparison on the D4RL Antmaze-Medium task. As shown in Figure 15, we visualize the trajectories generated by DT, LSDT, IQL, and QHyer (with Expectile Regression). The maze environment consists of multiple regions, each represented by a distinct color corresponding to different data collection policies in the offline dataset (Figure 14): • Cyan : Bottom-left start region • Purple : Middle corridor • Yellow : Top-right goal region • Green : Bottom-right area • Red : Top-left area • Black : Out-of-distribution (OOD) states (i.e., passing through walls) The key challenge is to stitch trajectory segments from different regions to discover optimal paths from start to goal. (a) DT (b) LSDT (c) IQL (d) QHyer (Ours)           
+
+> Figure 15. Qualitative comparison of trajectory stitching capabilities on D4RL Antmaze-Medium task. Different colors represent trajectory segments from different data collection policies in the offline dataset. Black segments indicate OOD states where the agent passes through walls. (a) DT fails to reach the goal due to ineffective RTG conditioning. (b) LSDT moves correctly but stops early. (c) IQL successfully reaches the goal via value-based stitching, but requires bootstrapping and policy projection. (d) QHyer successfully reaches the goal with the advantages of no bootstrapping ,no policy projection , and sequence modeling for non-Markovian data .
+
+Successful trajectory stitching requires the agent to combine trajectory segments from different regions to reach the goal. Our key observations are: • DT (Chen et al., 2021) fails to reach the goal and instead wanders toward the bottom-right area, demonstrating its inability to stitch trajectories across different data collection policies. This failure stems from DT’s reliance on 29 Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL 
+
+return-to-go conditioning, which provides no discriminative signal in sparse reward settings where all failed trajectories receive identical RTG values. • LSDT (Wang et al., 2025) moves in the correct direction but stops in the middle corridor, showing limited stitching capability. Although LSDT improves upon DT by combining attention with Dynamic Convolution for better local pattern extraction, it still relies on RTG conditioning and cannot identify high-value stitching points without explicit value guidance. • IQL (Kostrikov et al., 2022) successfully reaches the goal through a valid path without OOD states. IQL’s expectile regression-based value learning enables trajectory stitching by identifying high-value actions. However, IQL requires bootstrapping to learn the maximum Q-value, which means it must first learn Qβ before learning ˆQ. This can lead to error accumulation in complex environments. • QHyer also successfully reaches the goal through a valid path without any OOD states. The trajectory smoothly transitions through cyan → purple → yellow regions, demonstrating proper trajectory stitching. Compared to IQL, QHyer avoids bootstrapping by using NFs for direct Q-value estimation, and avoids policy projection by using Q-conditioned supervised learning. 
+
+G.4. Evaluating the Capability of NFs to Accurately Estimate Goal-reaching Probability 
+
+In this section, we validate the accuracy of the NFs’s (Ghugare & Eysenbach, 2025) estimation of the discounted future state distribution by implementing the computation method outlined in Eysenbach et al. (2020) within a tabular setting. It is important to note that here we are solely validating the accuracy of the NFs in estimating the discounted future state distribution, which is unrelated to the actual implementation of the NFs in our QHyer framework. 0 1 2 3 4 5                    
+
+> Column ( j)
+> 012345Row ( i)
+> (0,1) (0,2) (0,3) (0,4) (1,0) (1,1) (1,2) (1,3) (1,4) (2,0) (2,1) (2,2) (2,3) (2,4) (3,0) (3,1) (3,2) (3,3) (3,4) (4,0) (4,1) (4,2) (4,3) (4,4)
+> GridWorld Environment (5×5)
+
+Figure 16. 5 × 5 Gridworld environment. 
+
+Specifically, we compute the true discounted future state distribu-tion in a modified GridWorld environment example and evaluate the estimation error by comparing it against the true distribution. We also compare the predictions of CVAE(Sohn et al., 2015), C-learning (Eysenbach et al., 2020) and CRL(Eysenbach et al., 2022) with the true future state density. First, we introduce the modified GridWorld environment used in this experiment. This environment is character-ized by stochastic dynamics and a continuous state space, such that the true Q-function for the indicator reward is zero. Specifically, the environment has a size of 5 × 5 (Figure 16), where the agent observes a noisy version of its current state. More precisely, when the agent is located at position (i, j ), it observes the state (i + ϵi, j + ϵj ), where 
+
+ϵi, ϵ j ∼ Unif [−0.5, 0.5] . Note that the observation uniquely identifies the agent’s position, so there is no partial observability. Similar to Eysenbach et al. (2020), we analytically compute the exact future state density function by first determining the future state density of the underlying GridWorld, noting that the density is uniform within each cell. We generated a tabular policy by sampling from a Dirichlet (1) distribution, and sampled 100 trajectories of length 100 from this policy for NFs training. 
+
+Analytic Future State Distribution Then, as described in Eysenbach et al. (2020), we can compute the true discounted future state distribution by first constructing the following two metrics: 
+
+T ∈ R25 ×25 : T [s, s ′] = X
+
+> a
+
+1(f (s, a ) = s′)π(a | s)
+
+T0 ∈ R25 ×4×25 : T [s, a, s ′] = 1(f (s, a ) = s′),
+
+30 Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL Monte Carlo   
+
+> C-learning
+> CVAE CRL NFs
+> 0.00
+> 0.15
+> 0.30
+> 0.45
+> 0.60
+> Error
+> Error of uniform distribution True Future State Density Distribution
+> 0.02 0.04 0.06 0.08 0.10 0.12 0.14
+
+NFs Estimated Distribution 
+
+> 0.02 0.04 0.06 0.08 0.10 0.12
+
+Figure 17. Experiments on the effectiveness of density estimation using NFs. Left: We evaluate CVAE, C-learning, CRL and NFs for predicting the future state distribution in the on-policy setting. As anticipated, NFs demonstrated the lowest estimation error among all methods evaluated. Conversely, CVAE exhibited the poorest estimation accuracy. In our empirical implementation, we observed that CVAE incurs significantly higher computational complexity due to its requirements for pre-training and importance sampling-based inference procedures (Wu et al., 2022). Middle: and Right: The visual comparison. For a given state, action, and future goal in the GridWorld trajectory data, we visualize the comparison between the actual future state density (goal-reaching probability) and the estimates provided by the NFs. The results indicate a minimal difference, further validating the effectiveness of the NFs in estimating the future state density (goal-reaching probability). 
+
+where f (s, a ) denotes the deterministic transition function. The future discounted state distribution is then given by: 
+
+P = (1 − γ) T0 + γT 0T + γ2T0T 2 + γ3T0T 3 + · · · 
+
+= (1 − γ)T0
+
+I + γT + γ2T 2 + γ3T 3 + · · · 
+
+= (1 − γ)T0 (I − γT )−1
+
+The tensor-matrix product T0T is equivalent to einsum (‘ijk,kh → ijh’, T0, T ). We use the forward KL divergence for estimating the error in our estimate, DKL (P || Q), where Q is the tensor of predictions: 
+
+Q ∈ R25 ×4×25 : Q[s, a, g ] = q(g | s, a ).
+
+Following the configuration outlined in Eysenbach et al. (2020), we compare the accuracy of the future discounted state distribution under against C-Learning and Q-learning: 
+
+On-policy Setting Figure 17 presents the results of our evaluation comparing CVAE, C-learning, CRL and NFs on the above modified "continuous GridWorld" environment under the on-policy setting. In this scenario, CVAE demonstrates higher error compared to C-learning, while NFs achieves the best performance. This highlights the accuracy of NFs in estimating the discounted state occupancy measure. This experiment aims to answer whether NFs solve the future state density estimation problem. 
+
+G.5. Can Expectile Regression Effectively Capture Maximum Q-values in Practice? 
+
+We empirically validate that expectile regression converges to in-distribution maximum Q-values in a controlled GridWorld setting, supporting our theoretical analysis in Theorem 3.1. 
+
+Metrics. We use coefficient of determination ( R2) measuring explained variance, and Mean Absolute Error (MAE) quantifying prediction deviation: 
+
+R2 = 1 −
+
+P(ytrue − ypred )2
+
+P(ytrue − ¯ytrue )2 , MAE = 1
+
+n
+
+> n
+
+X
+
+> i=1
+
+|ytrue ,i − ypred ,i |. (59) 
+
+Results. As shown in Figures 18 and 19, the results strongly support our theoretical analysis: 1. Standard MSE ( τ = 0 .5) learns the mean rather than maximum, yielding R2 = 0 .781 ;2. Performance improves monotonically with τ : R2 increases from 0.781 to 0.995 as τ goes from 0.5 to 0.99 ;31 Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL 
+
+3. At τ = 0 .99 , predicted values closely match ground-truth Qβ 
+
+> max
+
+with R2 = 0 .995 and MAE = 0 .0017 .
+
+Implications. These results validate that expectile regression effectively captures maximum in-distribution Q-values, which is essential for QHyer ’s trajectory stitching capability. The convergence aligns with Theorem 3.1: as τ → 1, the approximation error ϵτ → 0 and ˆQτ → Q⋆. Specifically, our theoretical bound predicts: 
+
+ϵτ ≤ (1 − τ )( Q⋆ − Qmin )
+
+τ · ˜c/ 2 + (1 − τ )(1 − ˜c/ 2) , (60) which decreases as τ increases, consistent with the monotonic improvement observed in Figure 19. However, excessively large τ (e.g., 0.999 ) may cause overfitting to outliers due to focusing on too few high-value samples, leading to increased variance. In practice, τ ∈ [0 .9, 0.95] balances accuracy and training stability, as validated in our ablation studies (Section 4.3). 0 1 2 3 4
+
+R2 = 0.607, MAE = 0.0195                    
+
+> 01234
+> Row
+> 0.006 -0.000 0.003 0.000 0.003
+> 0.005 0.007 0.006 0.006 -0.004
+> 0.006 0.012 0.022 0.032 0.018
+> 0.007 0.001 0.015 0.041 0.228
+> 0.021 0.014 0.010 0.303 0.312
+
+τ = 0.5 (Mean)
+
+0.0 
+
+0.1 
+
+0.2 
+
+0.3     
+
+> 01234
+
+R2 = 0.889, MAE = 0.0110                    
+
+> 01234
+> Row
+> 0.006 0.003 0.004 0.003 0.004
+> 0.007 0.009 0.008 0.009 0.003
+> 0.008 0.013 0.022 0.029 0.019
+> 0.010 0.009 0.022 0.043 0.192
+> 0.018 0.019 0.024 0.240 0.261
+
+τ = 0.7
+
+0.0 
+
+0.1 
+
+0.2 
+
+0.3     
+
+> 01234
+
+R2 = 0.989, MAE = 0.0041                    
+
+> 01234
+> Row
+> 0.005 0.006 0.005 0.007 0.006
+> 0.009 0.011 0.010 0.012 0.010
+> 0.011 0.016 0.023 0.029 0.020
+> 0.015 0.020 0.028 0.048 0.172
+> 0.016 0.026 0.043 0.188 0.204
+
+τ = 0.9
+
+0.0 
+
+0.1 
+
+0.2 
+
+0.3 
+
+> 01234
+> Row
+> Pred (τ = 0.5)
+> Pred (τ = 0.7)
+> Pred (τ = 0.9)
+> Pred (τ = 0.99)
+
+0 1 2 3 4
+
+R2 = 0.998, MAE = 0.0011
+
+> 01234
+> Row
+
+0.005 0.007 0.006 0.008 0.007 
+
+0.010 0.012 0.011 0.015 0.013 
+
+0.012 0.018 0.025 0.033 0.022 
+
+0.018 0.024 0.032 0.054 0.195 
+
+0.017 0.030 0.053 0.199 0.200 
+
+τ = 0.99
+
+Approaches Qβ
+
+max
+
+## 0.0 
+
+## 0.1 
+
+## 0.2 
+
+## 0.3 
+
+0 1 2 3 4
+
+Target 
+
+> 01234
+> Row
+
+0.005 0.008 0.006 0.009 0.007 
+
+0.011 0.013 0.011 0.015 0.014 
+
+0.013 0.018 0.025 0.033 0.022 
+
+0.018 0.025 0.033 0.055 0.192 
+
+0.016 0.031 0.055 0.192 0.192 
+
+True Qβ
+
+max(s, a, g)
+
+[Ground Truth] 
+
+## 0.0 
+
+## 0.1 
+
+## 0.2 
+
+## 0.3 
+
+> Pred (τ = 0.99)
+> R2 Score
+> Mean Absolute Error
+
+Figure 18. Visualization comparing predicted maximum Q-values from expectile regression with different τ values against ground-truth maximum Q-values ( Q⋆) in the GridWorld environment. As τ increases from 0.5 to 0.99 , the predictions converge toward the diagonal line (perfect prediction), validating Theorem 3.1. 
+
+32 Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL 01234   
+
+> Row
+> 01234
+> Row
+> 01234
+> Row
+> 01234
+> Row
+> 0.0 0.1 0.2 0.3
+
+True Qβ
+
+> max
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> Pred (τ = 0.5)
+
+R2 = 0.607, MAE = 0.0195  
+
+> Perfect
+> 0.0 0.1 0.2
+
+True Qβ
+
+> max
+> 0.00
+> 0.05
+> 0.10
+> 0.15
+> 0.20
+> 0.25
+> Pred (τ = 0.7)
+
+R2 = 0.889, MAE = 0.0110  
+
+> Perfect
+> 0.0 0.1 0.2
+
+True Qβ
+
+> max
+> 0.00
+> 0.05
+> 0.10
+> 0.15
+> 0.20
+> Pred (τ = 0.9)
+
+R2 = 0.989, MAE = 0.0041
+
+> Perfect
+> Pred (τ = 0.99)01234
+> Row
+> 01234
+> Row
+
+0.00 0.05 0.10 0.15 0.20 
+
+True Qβ
+
+> max
+
+0.00 
+
+0.05 
+
+0.10 
+
+0.15 
+
+0.20 
+
+> Pred (τ = 0.99)
+
+R2 = 0.998, MAE = 0.0011
+
+Perfect 
+
+0.6 0.8 1.0 
+
+Expectile Parameter (τ)
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> R2 Score
+
+Convergence to Qβ
+
+> max
+
+as τ → 1
+
+R2
+
+MAE 
+
+0.005 
+
+0.010 
+
+0.015 
+
+0.020 
+
+> Mean Absolute Error
+
+Figure 19. Curves of R2 and MAE metrics as a function of the expectile parameter τ . R2 increases monotonically from 0.781 (τ = 0 .5) to 
+
+0.995 (τ = 0 .99 ), while MAE decreases correspondingly. This empirical trend confirms that expectile regression with high τ effectively approximates the in-distribution optimal Q-value Q⋆, consistent with the theoretical bound in Theorem 3.1. 
+
+33 Q-conditioned Hybrid Attention-mamba Transformer for Offline Goal-conditioned RL 
+
+G.6. Comparison with Recent Offline RL Methods Adapted to GCRL 
+
+To strengthen baseline coverage, we adapt four recent offline RL methods to offline GCRL by attaching HER goal relabeling and following the OGBench evaluation protocol. These are Transitive RL (Park et al., 2026), SHARSA (Park et al., 2025b), DEAS (Kim et al., 2026), and QCFQL (Li et al., 2025). Results are averaged over 8 seeds at 1M training steps. 
+
+Table 11. Recent offline RL methods adapted to offline GCRL on OGBench play datasets. Mean success rate ( %) over 8 seeds. 
+
+Orange = best, underline = second best. 
+
+Environment GC-TrL GC-SHARSA GC-DEAS GC-QCFQL QHyer 
+
+cube-single-play 46 .2 ±0.8 30 .7 ±3.8 44 .1 ±2.6 38 .4 ±1.5 84 ±4
+
+cube-double-play 1.6 ±0.8 49 .3 ±4.7 10 .7 ±3.0 5.1 ±0.0 56 ±2
+
+cube-triple-play 0.8 ±0.6 36 .8 ±4.0 18 .1 ±2.3 1.4 ±0.7 10 ±5
+
+cube-quadruple-play 0.0 ±0.0 2.3 ±0.3 0.1 ±0.1 0.0 ±0.0 2 ±1
+
+scene-play 27 .7 ±6.2 44 .0 ±9.1 48 .7 ±3.4 36 .9 ±4.5 53 ±2
+
+puzzle-3x3-play 7.6 ±1.6 35 .6 ±2.5 32 .7 ±11 .0 14 .9 ±9.6 92 ±2
+
+puzzle-4x4-play 2.3 ±0.7 32 .4 ±9.7 26 .7 ±6.7 0.3 ±0.7 28 ±5
+
+puzzle-4x5-play 2.0 ±1.5 15 .1 ±3.1 16 .1 ±1.3 9.7 ±3.1 31 ±1
+
+puzzle-4x6-play 1.6 ±0.5 12 .1 ±2.4 17 .9 ±4.5 8.3 ±5.5 18 ±2
+
+Average 10.0 28.7 23.9 12.8 41.6 
+
+Interpretation. Three essential reasons explain the gap. First, none of these methods were originally validated under offline GCRL with sparse binary rewards at standard OGBench scale. TRL and SHARSA rely on oracle goals or the large-data regime, DEAS targets semi-sparse single-task settings, and QCFQL’s strongest numbers come from offline-to-online training. When forced into the pure offline, sparse-binary, multi-goal regime, their value targets and exploration mechanisms become mis-specified. Second, there are structural mismatches. TRL’s triangle inequality on temporal distance holds for continuous navigation but breaks under manipulation’s discrete contact-mode transitions, which is why TRL drops from 46 .2 on 
+
+cube-single to 1.6 on cube-double . Third, SHARSA must predict subgoals in the full multi-object pose space, which is far harder than 2D navigation waypoints, and DEAS and QCFQL execute fixed-length open-loop action chunks, so early errors compound and the fixed chunk length cannot align with variable-duration manipulation primitives. SHARSA and DEAS nonetheless remain nontrivially competitive on the hardest long-horizon tasks, suggesting that action chunking and temporal abstraction are complementary to our contributions. 
+
+G.7. Comparison with Graph-based Stitching (GAS) 
+
+We also compare against GAS (Baek et al., 2025), a graph-based offline GCRL stitching method. 
+
+Table 12. Comparison with GAS on navigation and visual manipulation. Mean success rate ( %) over 5 seeds. Orange = best. 
+
+Environment GAS QHyer 
+
+antmaze-giant-stitch (navigation) 88 ±4 70 ±2
+
+visual-scene-play (manipulation) 54 ±6 96 ±1
+
+Interpretation. GAS and QHyer occupy complementary regimes, and the reason is structural rather than a matter of tuning. On antmaze-giant-stitch , GAS replaces high-level policy learning with Dijkstra shortest-path search over a precomputed temporal-distance graph, which directly exploits the metric structure of continuous navigation. QHyer ’s flat sequence model cannot match this advantage on pure navigation. On visual-scene-play , the tables turn. GAS’s graph construction is bottlenecked by its ability to learn high-dimensional representations, whereas QHyer ’s end-to-end sequence modeling with content-adaptive memory benefits directly from pixel inputs, producing roughly a 42 -point improvement and nearly doubling the previous OGBench best. We therefore view the two methods as complementary tools rather than directly competing baselines. 34
