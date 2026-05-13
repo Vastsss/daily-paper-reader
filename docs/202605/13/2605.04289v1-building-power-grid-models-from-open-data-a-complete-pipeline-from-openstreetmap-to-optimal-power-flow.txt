@@ -1,0 +1,712 @@
+Title: Building Power Grid Models from Open Data: A Complete Pipeline from OpenStreetMap to Optimal Power Flow
+
+URL Source: https://arxiv.org/pdf/2605.04289v1
+
+Published Time: Thu, 07 May 2026 00:12:51 GMT
+
+Number of Pages: 39
+
+Markdown Content:
+# Building Power Grid Models from Open Data: A Complete Pipeline from OpenStreetMap to Optimal Power Flow 
+
+## Andrea Britto 1, Thiago Spina 1, Weiwei Yang 1, Spencer Fowers 1,Baosen Zhang 1,2 and Chris White 11Microsoft Research 
+
+> 2
+
+## University of Washington 
+
+## May 2026 
+
+Abstract 
+
+Access to realistic transmission grid models is essential for power systems research, yet detailed network data in the United States remains restricted under critical-infrastructure reg-ulations. We present a pipeline that constructs complete, OPF-solvable transmission network models entirely from publicly available data. The five-stage pipeline (1) extracts power infras-tructure from OpenStreetMap via a local Overpass API instance, (2) reconstructs bus-branch topology through voltage inference, line merging, and transformer detection, (3) estimates elec-trical parameters using voltage-class lookup tables calibrated with U.S. Energy Information Administration (EIA) plant-level data, (4) allocates hourly demand from EIA-930 to individual buses using US Census population as a spatial proxy, and (5) solves both DC and AC opti-mal power flow using PowerModels.jl with a progressive relaxation strategy that automatically loosens constraints on imprecise models. We validate the pipeline on all 48 contiguous US states and six multi-state regions, including the full Western (5,076 buses) and Eastern (21,697 buses) Interconnections. Of the 48 single-state models, 42 (88%) converge at the strictest relaxation level for AC-OPF at peak hour and 44 (92%) off-peak. Dispatch costs (median $22/MWh) and system losses (median 1.0%) are consistent with real wholesale-market outcomes. The pipeline relies exclusively on open data sources, enabling reproducible grid analysis without proprietary data. All 54 models (48 single-state and 6 multi-state) are publicly released at 
+
+https://github.com/microsoft/GridSFM .
+
+# 1 Introduction 
+
+The electrical grid is under greater stress today than at any point in its history. Three converging forces are simultaneously reshaping demand patterns, generation portfolios, and system failure modes: 
+
+• AI-driven demand growth. Large-scale data centers are now among the fastest-growing sources of electricity demand in advanced economies. The International Energy Agency projects that global data-center electricity consumption will more than double between 2024 and 2030, driven primarily by the computational requirements of training and serving large language models and other AI workloads [1]. A single hyperscale campus can consume as much electricity as a mid-sized city, and clusters of such facilities are increasingly concentrated in regions whose transmission infrastructure was not designed for dense, around-the-clock industrial loads. 1
+
+> arXiv:2605.04289v1 [eess.SY] 5 May 2026
+
+• Renewable integration. Solar and wind now account for a large and growing share of new US elec-tricity generation, fundamentally altering how power systems operate [2]. Unlike conventional plants, renewable resources are geographically constrained and inherently variable, requiring detailed understanding of how they interact with dispatchable (operator-controlled) generation during periods of stress. 
+
+• Extreme weather events. Winter Storm Uri (February 2021) triggered cascading failures across the Texas grid, leaving 4.5 million customers without power and causing an estimated $195 billion in damages [3]. Hurricane Maria (September 2017) caused prolonged, island-wide power outages in Puerto Rico. Weather-related grid disruptions in the United States have approximately doubled over the past two decades [4] – creating an urgent need for tools that can model cascading failures and support resilient system planning. Addressing these challenges requires quantitative models of the transmission grid – network representations of substations and transmission lines with realistic electrical parameters, generator characteristics, and demand distributions. Such models are essential to: 1. Predict congestion and plan transmission expansion. Identifying network bottlenecks where power flows approach thermal limits, and evaluating where new lines or upgrades would most effectively relieve constraints. 2. Optimize generator dispatch. Solving the Optimal Power Flow (OPF) problem – determining the least-cost combination of generators that meets demand while respecting all network constraints (thermal limits, voltage bounds, power balance). OPF and the other power-systems concepts used in this paper are formally defined in section 2. 3. Simulate cascading failures. Modeling how the loss of a single line or generator propagates through the network, tripping protections and shedding load – the mechanism behind large-scale blackouts. 4. Assess resilience under stress scenarios. Evaluating grid performance under extreme conditions: simultaneous high demand, low renewable output, and equipment outages. 5. Enable data-driven methods. Training and validating machine-learning models for congestion forecasting, anomaly detection, and operational decision support, all of which require large volumes of realistic grid states. In short, grid data is foundational infrastructure for the energy transition. Without it, re-searchers cannot study the systems they aim to improve. Yet as the next section describes, this data is largely inaccessible. 
+
+## 1.1 The Grid Data Problem 
+
+The electrical transmission grid is among the most complex engineered systems in the world, but detailed models of its topology and operating parameters are largely inaccessible to the research community. In the United States, the Federal Energy Regulatory Commission (FERC) classifies detailed grid topology, line impedance data (the electrical characteristics of transmission lines, defined in section 2.1), and operating parameters as Critical Energy Infrastructure Information (CEII) [5]. The North American Electric Reliability Corporation (NERC) further restricts access through its Critical Infrastructure Protection standards, which mandate physical and cyber security 2protections for bulk electric system data [6]. In practice, this means that the network models used for transmission planning, reliability assessment, and market simulation are treated as sensitive critical-infrastructure information. For researchers, the consequences are significant. Obtaining access to real grid models requires a formal application to FERC, a process that can take months and imposes strict redistribution restrictions – a researcher who receives CEII data cannot share it with collaborators at other institutions, let alone publish it. Commercial alternatives exist, but annual license fees range from $50,000 to $500,000, and the terms typically prohibit sharing derived models or results in a form that could reconstruct the original data. The academic community has long relied on standardized test cases to fill this gap. The IEEE 14-bus, 30-bus, 118-bus, and 300-bus systems [7] – where “bus” denotes a network node, typically a substation (see section 2.1) – have been workhorses for power systems research for decades. More recently, the IEEE PES Power Grid Library (PGLib-OPF) [8] has curated a collection of validated OPF benchmark cases ranging from 3-bus pedagogical examples to 10,000+ bus networks. However, even PGLib’s largest cases are designed to test solver algorithms, not to represent specific real-world grids. They predate large-scale renewable integration, lack High-Voltage Direct Current (HVDC) links (long-distance DC corridors that connect separate AC grids, defined in section 2.1), and do not capture the geographic and operational diversity of a continental-scale power system. Birchfield et al. [9] showed that standard test cases fail to reproduce key structural characteristics of real networks, including degree distributions, electrical diameter, and generation-load spatial patterns. More recently, the Texas A&M (TAMU) synthetic grid project [10] produced geographically realistic 2,000-bus and 10,000-bus test cases by statistically generating topologies that match real network properties. While valuable, these synthetic grids are constructed to resemble the real grid without being derived from it – their geographic correspondence to actual infrastructure is approximate, and they cannot be updated as the real grid evolves. This situation – where grid data is simultaneously indispensable for research and inaccessible to most researchers – motivates the present work. 
+
+## 1.2 Contribution and Paper Organization 
+
+This paper presents a complete pipeline that transforms raw OpenStreetMap (OSM) data – a collab-orative, freely available geographic database that includes mapped power infrastructure worldwide (section 2.3) – into solver-ready OPF models. The pipeline has been validated across all 48 con-tinental US states and multi-state regional models up to full interconnection scale. The goal is not to recover the true operational grid, but to generate structurally and electrically plausible transmission models that converge under AC-OPF, preserve real geographic correspondence, and reproduce system-level statistics within realistic ranges. Every data source used is publicly and freely accessible; the complete list of data sources, software libraries, and their roles is given in section 3.1. The pipeline consists of five sequential stages: 1. Data Extraction (section 3.2): Download power infrastructure from OSM. 2. Topology Reconstruction (section 3.3): Build a network model with inferred connectivity and circuit classification. 3. Parameter Estimation (section 3.4): Assign electrical parameters and generator characteris-tics. 4. Demand Allocation (section 3.5): Distribute real demand data to network buses. 35. Optimal Power Flow (section 3.6): Solve OPF with a progressive relaxation strategy. In addition to the pipeline methodology, we publicly release the complete set of solved models – 48 single-state and 6 multi-state regional networks – as PowerModels-compatible JSON files at 
+
+https://github.com/microsoft/GridSFM , providing the research community with ready-to-use OPF benchmarks derived from real infrastructure. The remainder of this paper is organized as follows. Section 2 provides essential power-systems background and describes the OSM data source. Section 3 describes the pipeline architecture, data sources, and each of the five pipeline stages in detail. Section 4 presents results for single-state and multi-state models. Section 5 discusses limitations and comparisons with existing approaches. Section 6 concludes. Appendices provide detailed parameter tables and solver configuration. 
+
+# 2 Background 
+
+This section defines power systems concepts and data sources used throughout the paper. Readers familiar with power systems modeling and operations may skip to section 3 and readers interested in more details may consult standard references [7, 11–13]. 
+
+## 2.1 Power Systems Primer 
+
+A power system consists of generators and loads connected by transmission lines and transform-ers. Their behavior is described using quantities such as voltages, currents, and power which are sinusoidal functions of time. Assuming three-phase balanced AC operations, these quantities can be described as complex numbers, also called complex phasors. Following standard electrical engi-neering convention, we use j = √−1 as the imaginary unit. The system is naturally described as a graph with buses connected by branches. A bus is a node in the graph that represents a point where electrical equipment connects. It can represent a generator, a load, or aggregation of devices. A bus is associated with a complex voltage, and the set of bus voltages can be thought of as the state of the system. The voltage magnitudes are typically tightly controlled at specific levels, ranging from 69 kV to 765 kV in transmission systems. A branch is either a transmission line or a transformer. A transmission line can be thought of as a circuit that carries current and power between two points. The main function of a transformer is to connect buses at different voltage levels. In both cases, it is described by a lumped circuit model with parameters R (resistance) and X (reactance). Together, they form the impedance 
+
+Z = R + jX , with the unit of Ohms. It is often easier to work with the inverse of Z, called the admittance, defined as Y = 1 
+
+> Z
+
+, with a unit of Siemens. For longer lines, the charging susceptances caused by the capacitance between the line and the ground are also included in the model. We also include HVDC (high voltage, direct current) lines in our models. They are used to transmit power across long distances where AC transmission is inconvenient or expensive. Instead of circuit elements, they are modeled as transport links that can carry power up to some capacity. At the organizational level, the continental US grid comprises three largely disconnected sys-tems: the Eastern Interconnection, the Western Interconnection (WECC), and Texas. All the systems operate nominally at 60 Hz, but they are not synchronized. In each interconnection, there are a number of system operators and balancing authorities to ensure the balance of supply and demand in defined geographic areas. Next, we describe this balancing process in more detail. 42.2 Optimal Power Flow 
+
+System operators balance demand and supply by solving the optimal power flow (OPF) problem. More concretely, OPF finds the least cost solution subject to generation and demand balance and other network constraints. In this section, we will first describe the fully nonlinear problem, called the AC-OPF problem, then we will describe some of its variants. 
+
+2.2.1 AC-OPF 
+
+Consider two buses i and k, connected by a transmission line with impedance Zik , or equivalently, admittance Yik = 1 
+
+> Zik
+
+. Let Vi = |Vi|ejθ i and Vk = |Vk|ejθ k be their voltages, respectively. The current from i to k is given by Ohm’s law: Iik = Yik (Vi − Vk). The complex power from bus i to bus k is defined as 
+
+Sik = ViI∗
+
+> ik
+
+,
+
+where ∗ denotes the complex conjugate. Separating Sik into real and imaginary parts, we have 
+
+Sik = Pik + jQ ik ,
+
+where Pik is called the active power 1 and Qik is called the reactive power. Active power has units of watts (W) or, more commonly in practice, kilowatts (kW) or megawatts (MW). Reactive power has units of volt-ampere-reactive (VAr), or kVAr and MVAr. There are several ways to write the power flow equations. Here, we provide the polar coordi-nate formulation. Writing Yik = gik + jb ik , where gik is called the conductance and bik is called susceptance, we have 
+
+Pik = |Vi|2gik − | Vi|| Vk| { gik cos( θi − θk) + bik sin( θi − θk)}
+
+Qik = −| Vi|2bik − | Vi|| Vk| { gik sin( θi − θk) − bik cos( θi − θk)}. (1) The active power injection at bus i is the sum of power flowing from bus i to its neighbors, defined as Pi = ∑ 
+
+> k∼i
+
+Pik , where k ∼ i denote bus k is connected to bus i. The reactive power injection Qi is defined in a similar way. Summing (1), we have 
+
+Pi = ∑
+
+> k∼i
+
+|Vi|2gik − | Vi|| Vk| { gik cos( θi − θk) + bik sin( θi − θk)}
+
+Qi = ∑
+
+> k∼i
+
+−| Vi|2bik − | Vi|| Vk| { gik sin( θi − θk) − bik cos( θi − θk)}, (2) and these are called the power flow equations in polar coordinates. By convention, a positive Pi
+
+(or Qi) means that the bus is injecting power into the system. We think of each device in the system as either a generator or a load. 2 We allow a bus to have both generation and load. For simplicity, we assume that a bus has at most one generator and at most one load. This assumption can be relaxed at the cost of slightly more cumbersome notations. We assign a cost of generation at bus i, written as Ci(Pg,i ), where Pg,i is the active power generated and Ci has units of $. The load is typically modeled as given and has both active and 
+
+> 1And is also called the real power in older texts
+> 2This categorization is flexible, for example, a battery storage could be a generator or a load depending on whether it is charging or discharging.
+
+5reactive components, written as Pd,i and Qd,i . The AC-OPF problem is 
+
+min ∑
+
+> i∈G
+
+Ci(Pg,i ) (3a) s.t. Pi = ∑
+
+> k∼i
+
+|Vi|2gik − | Vi|| Vk| { gik cos( θi − θk) + bik sin( θi − θk)} (3b) 
+
+Qi = ∑
+
+> k∼i
+
+−| Vi|2bik − | Vi|| Vk| { gik sin( θi − θk) − bik cos( θi − θk)} (3c) 
+
+Pi = Pgi − Pdi (3d) 
+
+Qi = Qgi − Qdi (3e) 
+
+P min  
+
+> g,i
+
+≤ Pgi ≤ P max  
+
+> g,i
+
+(3f) 
+
+Qmin  
+
+> g,i
+
+≤ Qgi ≤ Qmax  
+
+> g,i
+
+(3g) 
+
+V min  
+
+> i
+
+≤ | Vi| ≤ V max  
+
+> i
+
+(3h) 
+
+|Sik | ≤ Srated  
+
+> ik
+
+(3i) 
+
+|θi − θk| ≤ θmax  
+
+> ik
+
+, (3j) where (3b) and (3c) are the power flow equations, (3d) and (3e) are the power balance equations (supply=demand), (3f) and (3g) are the generator limits, (3h) is the voltage limit, (3i) is the line thermal limits, and (3j) is the angle limit coming from stability constraints. Overall, the AC-OPF problem is nonconvex and NP-hard in the worst case [13]. The study of this problem is a central subject in power systems and the interested reader can consult several standard textbooks and papers [11, 13–16]. In practice, the AC-OPF problem is generally solvable if it is feasible. More precisely, several solvers (e.g., IPOPT [17]) can solve networks of up to 
+
+∼ 10 , 000 buses in minutes, provided the problem has a solution. If the demand comes from actual measurements or historical data, then feasibility of AC-OPF is not typically a critical issue. However, for generated networks, the feasibility of AC-OPF can be a critical blocker. We are essentially asking for a set of data that satisfies the set of nonlinear equalities and inequalities under the constraint of (3). A generic set of parameters is typically not feasible, and it is not obvious how to make them feasible while ensuring that they are still realistic. An important contribution of this paper is to provide an interpretable and implementable method to accomplish this. We end this subsection by explaining a key simplification of the AC-OPF problem, called DC-OPF. 3 The DC power flow equations are a linearization of the AC power flow equations, where we set all voltage magnitudes to be 1 per unit, all conductances ( gik ) to 0, and assume angles differences are small so sin( θi − θk) ≈ θi − θk. With these assumptions, reactive powers are constant, and (3) simplifies to: 
+
+min ∑
+
+> i∈G
+
+Ci(Pg,i ) (4a) s.t. Pi = ∑
+
+> k∼i
+
+−bik (θi − θk) (4b) 
+
+Pi = Pgi − Pdi (4c) 
+
+P min  
+
+> g,i
+
+≤ Pgi ≤ P max  
+
+> g,i
+
+(4d) 
+
+|θi − θk| ≤ θmax  
+
+> ik
+
+. (4e) 
+
+> 3This terminology is unfortunate since the equations have nothing to do with direct current. It comes from the historical fact that DC analyzers were used to approximate AC power flow, and the name has stuck.
+
+6This problem is a linear program and thus can be easily solved. Because losses are ignored, the cost of DC-OPF is typically slightly lower than the cost of AC-OPF (by around 5%) [18]. 
+
+## 2.3 OpenStreetMap as a Data Source 
+
+OpenStreetMap (OSM) is a collaborative geographic database with over 10 million registered users [19] and tens of millions of elements tagged with the power=* key worldwide [20]. The power tagging schema provides a structured vocabulary for mapping electrical infrastructure: power=line 
+
+(overhead transmission lines, with voltage, conductor count, and circuit attributes), power=cable 
+
+(underground/undersea cables), power=substation , power=generator /plant (with fuel type and capacity), power=converter (HVDC terminals), and power=transformer .For the United States, OSM coverage of high voltage transmission (345 kV and above) is sub-stantial. Coverage diminishes at lower voltages: subtransmission (69–161 kV) is unevenly mapped, and distribution ( <69 kV) is largely absent – acceptable for transmission-level studies. The OSM power data was validated in [21] and the authors found that it is sufficient to reconstruct high-voltage networks in most developed countries. OSM data have four fundamental limitations for power systems modeling: (1) the lack of electrical parameters (e.g., line impedances and thermal ratings), (2) missing parallel circuits (a multi-circuit corridor appears as a single geographic feature), (3) incomplete voltage tags (e.g., about 15–30% of US lines do not have tags), and (4) no demand or cost data. Our solutions in section 3.3, section 3.4, and section 3.5 address these challenges and close the data gap. 
+
+Legal context. It is important to note that CEII protections cover proprietary network models – internal bus numbering, measured impedance values, control settings, and market-sensitive infor-mation. They do not prohibit mapping physical infrastructure that is plainly visible from public roads, satellite imagery, or other sources. Transmission towers, substations, and power plants are prominent features of the built environment. OpenStreetMap contributors map them the same way they map roads and buildings. In our work, we derive grid models entirely from publicly observable geographic data and government statistics; we do not access or reverse-engineer any CEII-protected data. For example, the electrical parameters we assign (see section 3.4) are engineering estimates from textbook lookup tables, not measured values from protected models. 
+
+# 3 System 
+
+## 3.1 Pipeline Architecture 
+
+Our pipeline transforms raw OpenStreetMap data into solver-ready OPF models through five se-quential stages (table 1). After the models are constructed, we solve OPF problems using Power-Models.jl [22], a Julia framework for power systems optimization that interfaces with the Ipopt [17] interior-point solver. 
+
+Data sources. Here, we describe the input data sources to our pipeline. They are all publicly and freely available: 
+
+• OpenStreetMap (OSM) [23]: infrastructure geography (substations, transmission lines, gen-erators). 
+
+• U.S. Energy Information Administration (EIA) Form 860 [24]: generator inventory – fuel type, nameplate capacity, and operating status for every US power plant operating at 
+
+≥ 1 MW, used to validate and supplement OSM generator data. 7Table 1: Pipeline stages overview.                   
+
+> Step Stage Primary Input Output
+> 1Data Extraction OSM (Overpass API) GeoJSON per state 2Topology Reconstruction GeoJSON Bus-branch network 3Parameter Estimation Network + LUTs + EIA Parameterized model 4Demand Allocation EIA-930 + Census + HIFLD Model with loads 5OPF Solve Complete model Solved power flow
+
+• EIA-923 [25]: generator heat rates and fuel costs, used to build quadratic cost curves. 
+
+• EIA-930 [26]: hourly demand of each balancing authority (BA) in the US. This is the primary input for the demand allocation stage. 
+
+• EIA Electric Power Annual [2]: circuit-miles of transmission line by voltage class, used to calibrate topology and capacity scaling factors. 
+
+• EIA Natural Gas Prices : Henry Hub spot price ($/MMBtu), used to override default natural gas fuel prices in generator cost curves so that dispatch reflects current market conditions. 
+
+• US Census Bureau [27]: census-tract population counts, used to distribute BA-level demand to individual buses via scaling proportionally to population [28, 29]. 
+
+• Electric planning Homeland Infrastructure Foundation-Level Data (HIFLD) [30]: Balancing authority boundary polygons, used to assign buses to BAs via spatial containment. 
+
+Output format. The final model is exported as a PowerModels-compatible JSON file (MAT-POWER structure) for the OPF solver, with all values in per-unit on a 100 MVA base (see Ap-pendix C for more details). 
+
+## 3.2 Data Extraction (Step 1) 
+
+The extraction stage queries a local Overpass API instance for power infrastructure features match-ing a defined set of tag values within a given US state, and converts them into a normalized GeoJ-SON feature collection. For networks spanning multiple states, per-state extracts are merged with cross-border de-duplication. 
+
+3.2.1 OSM Power Tagging Schema 
+
+OpenStreetMap represents geographic features using three primitive types: nodes (points), ways 
+
+(ordered sequences of nodes forming lines or polygons), and relations (groupings of nodes and ways). Each element carries key-value tags that describe its properties. The power infrastructure tagging schema [23] defines a structured vocabulary under the power=* key. Table 2 lists the feature types used by the pipeline. OSM also defines power=generator (individual turbine/panel nodes within a plant) and power= transformer tags. The pipeline downloads both but does not use them directly. Instead, generators are modeled at the aggregated plant level to avoid duplicate entries at a bus, and transformers are inferred from voltage transitions at substations rather than from the sparsely tagged OSM elements (in our US extract, fewer than 20% of inferred transformer locations carry an explicit 
+
+power=transformer tag). Section 3.3 provides more details on the inference approach. The voltage tag is the most important attribute for our grid modeling process. It is specified in volts (e.g., 345000 for 345 kV) and may be semicolon-delimited for multi-voltage features (e.g., 
+
+345000;138000 ). The cables tag counts physical conductors, while circuits counts independent 8Table 2: OSM power feature types used in the pipeline.                    
+
+> OSM Tag Geometry Key Attributes
+> power=line Way voltage ,cables ,circuits ,
+> frequency power=cable Way voltage ,cables ,location power=substation Node/Polygon voltage ,substation (type)
+> power=plant Node/Polygon plant:output:electricity ,
+> plant:source power=converter Node voltage ,converter (HVDC)
+
+electrical circuits. Since transmission lines are balanced three-phase, a single three-phase circuit uses three cables and a double-circuit tower carries six. The frequency tag distinguishes AC transmission lines from high voltage DC lines (see Section 3.3.11 for more details). Generator capacity and fuel type are primarily sourced from EIA-860 (Section 3.4) and the OSM plant tags provide a geographic starting point and cross-validation reference. 
+
+3.2.2 Local Overpass API 
+
+The Overpass API is a read-only query interface for OSM data that supports spatial and attribute-based filtering. Public Overpass instances enforce rate limits that make bulk extraction of US-scale data impractical. We therefore deploy a local instance using Docker, loaded with the official US extract ( ∼10 GB compressed). Our query uses area-based clipping for precise state boundary alignment rather than bounding boxes, which would include features from neighboring states. The downloader produces a GeoJSON preserving all original OSM tags as feature properties. 
+
+3.2.3 Data Quality Assessment 
+
+Before proceeding to topology reconstruction, we assess what OSM captures and what it misses by comparing OSM-derived statistics against the EIA Electric Power Annual [2], which reports circuit-miles of transmission line by voltage class. 
+
+Route-miles vs. circuit-miles. OSM maps transmission line routes – the physical path a cor-ridor follows. The EIA reports circuit-miles , counting each parallel circuit separately (a 100-mile corridor with 4 circuits counts as 400 circuit-miles). Since OSM typically represents each corridor as a single way regardless of circuit count, comparing the two provides some information on the number of parallel circuits, as shown by the ratio between the OSM count and the EIA count in Table 3. At most voltage levels, OSM-derived branch-miles exceed EIA circuit-miles. Two artifacts drive the inflation: (1) multi-voltage corridor splitting – a way tagged 345000;138000 produces two branch records, each carrying the full corridor length – and (2) cross-state double-counting, since each state is processed independently and border corridors appear in both models. These ratios are therefore upper bounds on actual route-miles; after accounting for double counting, the OSM coverage is broadly consistent with EIA totals at 230–345 kV. The exception is 765 kV, where OSM captures only about half the expected mileage, likely because some high voltage lines in remote areas have not yet been mapped. 9Table 3: OSM route-miles vs. EIA circuit-miles by voltage class (48 continental US states).                   
+
+> Voltage (kV) OSM / EIA Interpretation
+> 69 1.5 ×Way fragmentation 115 2.9 ×Significant over-count 138 2.1 ×Over-count 161 4.1 ×Likely tagging inconsistencies 230 1.5 ×Moderate over-count 345 1.8 ×Over-count 500 2.3 ×Over-count 765 0.5 ×Under-mapped
+
+Missing voltage tags. Across the 48 continental states, approximately 15–30% of power=line 
+
+ways lack a voltage tag. This fraction is higher for subtransmission and lower for EHV lines (≥345 kV), with the latter tend to be mapped by more experienced contributors. The voltage inference algorithm described in Section 3.3 addresses this gap. 
+
+Missing parallel circuits. OSM provides no reliable way to determine how many parallel circuits share a physical corridor. The circuits tag is often not present and the cables tag counts physical conductors, not circuits. This gap is the primary motivation for the topology and capacity scaling factors described in Section 3.4.3. 
+
+## 3.3 Topology Reconstruction (Step 2) 
+
+Topology reconstruction transforms the raw GeoJSON feature collection into a structural bus-branch model – buses with voltage levels, branches with geographic routes, generators assigned to buses, and HVDC links identified. Electrical parameters (impedance, thermal ratings, cost curves) are deferred to the parameter estimation stage (section 3.4). The reconstruction proceeds through a sequence of sub-steps, summarized in table 4. Table 4: Topology reconstruction sub-steps.                  
+
+> #Task
+> 1Load and parse OSM GeoJSON (section 3.3.1) 2Infer missing voltages (section 3.3.2) 3Filter by voltage ≥69 kV (section 3.3.3) 4Parse circuit counts (section 3.3.4) 5Build facility footprints (section 3.3.5) 6Build spatial endpoint index (section 3.3.6) 7Merge fragmented line segments (section 3.3.7) 8Classify circuits (section 3.3.8) 9Create buses (section 3.3.9) 10 Detect transformers (section 3.3.9) 11 Detect HVDC links (section 3.3.11) 12 Assign generators to nearest bus (section 3.3.10) 13 Validate and extract largest component (section 3.3.12)
+
+A typical single-state model contains 100–4,000 buses, 4–350 generators, and 200–6,500 branches. For the remainder of this section, we use Virginia as a running example to illustrate each sub-step 10 with concrete numbers. 
+
+3.3.1 Load and Parse 
+
+The GeoJSON feature collection produced by the extraction stage (section 3.2) is loaded and split by power type into substations, lines (including cables), and generators. Geometric objects that are not lines can sometimes appear in the lines layer (polygons and points) and are filtered out, voltages are parsed from semicolon-delimited strings into numeric lists, and generator capacities are normalized to MW. Additionally, HVDC status flags are set on each line using tag-based signals (section 3.3.11), so that subsequent circuit parsing can separate AC and DC circuits from the outset. 
+
+3.3.2 Voltage Inference 
+
+Since voltage determines which lines can be electrically connected and drives all parameter estima-tion (section 3.4), filling the gaps identified in section 3.2.3 is an essential early step. The algorithm performs iterative neighbor consensus over up to 10 iterations. In each iteration, every untagged line segment is examined against its topological neighbors – other segments that share a co-located endpoint. Voltage is assigned by the first matching rule: 1. Unanimous agreement. All neighbors at an endpoint share the same voltage. 2. Supermajority. At least three neighbors exist and ≥ 2/3 agree on a voltage. 
+
+Figure 1: Voltage inference for Virginia: 3,878 OSM-tagged lines (green), 60 inferred by neighbor consensus (orange), and 434 unresolved (red). 11 When an endpoint falls within a substation whose own voltage tag is set, that voltage is added to the candidate pool alongside neighbor votes, improving consensus at junctions where few line segments are tagged. Convergence typically occurs within 3–5 iterations. For Virginia, the algorithm starts with 4,372 line segments, of which 3,878 already carry voltage tags; iterative inference resolves 60 more, leaving 434 ( ∼10%) unresolved (see fig. 1). 
+
+3.3.3 Voltage Filter 
+
+Following NERC’s Bulk Electric System definition, all features below 69 kV are removed, sepa-rating bulk transmission from sub-transmission and distribution. Lines whose voltage could not be resolved by inference are also dropped. For Virginia, this step drops 637 of 4,372 segments, retaining 3,735 transmission-grade line segments (fig. 2). 
+
+Figure 2: Transmission filter ( ≥69 kV) for Virginia: 3,735 segments retained, colored by voltage class (69 kV blue through 765 kV brown). 
+
+3.3.4 Circuit Count Parsing 
+
+A single OSM way may carry multiple electrical circuits – for example, a double-circuit tower supports two independent three-phase circuits on the same structure, and a multi-voltage corridor may carry circuits at 345 kV and 138 kV side by side. Correctly determining the number of circuits per way is essential in the bus-branch model. OSM provides three tags that carry circuit-count information, but they are inconsistently ap-plied and sometimes contradictory: 
+
+• circuits : the most direct indicator, but present on only ∼19% of ways in our US extract. 12 • cables : the number of physical conductors, present on ∼88% of ways in our US extract. For a three-phase AC circuit, three cables form one circuit, so cables=6 implies two circuits. 
+
+• voltage : a semicolon-delimited list (e.g., 345000;138000 ) whose length indicates distinct cir-cuits at different voltage levels. The pipeline reconciles these signals in two passes. A first pass applies a simple priority rule: explicit circuits tag → cables ÷ 3 → default of 1. A second refinement pass resolves disagree-ments between the declared circuit count C, the voltage-list length V , and the cable count using a configurable mode. The default mode, trust_voltage , lets the voltage count override when V̸ = C:a way tagged voltage=345000;138000 produces two circuit records – one per voltage level – re-gardless of what the circuits or cables tags say. When V > C , the extra circuits are assigned to the highest voltages first; when V < C , additional circuits inherit the single declared voltage. Multi-voltage splitting is critical for parameter estimation: a 345 kV circuit and a 138 kV circuit on the same corridor have different impedance and thermal ratings (section 3.4), and must be modeled as separate branches. HVDC circuits receive a distinct key suffix so that AC and DC circuits are never merged in subsequent processing steps. 
+
+3.3.5 Facility Footprints 
+
+Substation polygons and generator plant polygons are collected into a spatial index of facility areas. Polygons are expanded by a small buffer ( 0.0006 ◦, ≈66 m) to account for endpoints that fall just outside the digitized boundary. Substations mapped as points (rather than area polygons) are assigned a distance-based buffer ( ∼100 m) at query time. Line endpoints are later tested against these footprints to determine which facility they belong to. 
+
+3.3.6 Endpoint Index 
+
+All line endpoints are discretized onto an integer grid at 10 −6 degree resolution ( ≈11 cm) and stored in a hash-based spatial index. Each endpoint is annotated with the facility it falls within (if any), enabling the subsequent merging and classification steps to operate in near-linear time. 
+
+3.3.7 Line Merging 
+
+A single physical transmission line between two substations is typically fragmented across many OSM ways (one per span between towers, or split at mapper boundaries). A 100-mile line may comprise 20–50 ways. These need to be stitched together to recover complete circuits. All way endpoints are snapped to the same 10 −6 degree grid used by the endpoint index (sec-tion 3.3.6). A union-find data structure then merges ways whose snapped endpoints coincide and whose voltages are compatible (identical, or one inherits the other’s). After merging, each disjoint set represents a continuous circuit between two facilities. Merging typically reduces the feature count by 60–80%. For example, Virginia’s 3,735 line segments merge into 1,644 distinct circuits. 
+
+3.3.8 Circuit Classification 
+
+Each merged circuit is classified by endpoint connectivity: 
+
+• Inter-facility : endpoints at two different substations or generation sites – the only type retained for the OPF model. 
+
+• Loop : both endpoints at the same facility (internal busbar wiring). 13 • Self-loop : a degenerate merge artifact in which the same line section index appears more than once in a merged circuit group, detected and removed before geometry reconstruction. 
+
+• Single-facility : one endpoint at a facility, the other dangling. 
+
+• Isolated : neither endpoint near any facility. 
+
+• Tap : a T-junction spur off a main line at a tower. Only inter-facility circuits become branches in the bus-branch model; removing taps biases the model toward meshed transmission behavior and may under-represent last-mile congestion into load pockets. For Virginia, 875 of 1,644 circuits are inter-facility; the remainder are loops (12), single-facility (441), taps (289), or isolated (27) – mapping artifacts that carry no inter-substation power flow (fig. 3). 
+
+Figure 3: Circuit classification for Virginia: 875 inter-facility circuits (green solid), 441 single-facility (dashed), 289 taps, 27 isolated, and 12 loops. Only inter-facility circuits become branches in the OPF model. 
+
+3.3.9 Bus Creation and Transformer Detection Spatial clustering. Line endpoints that fall within a substation footprint are assigned to that substation. Endpoints outside any mapped substation are clustered using a union-find approach with a 0.0005 ◦ threshold ( ≈50 m) to form ad-hoc bus locations. 14 Multi-voltage splitting. Most substations operate at multiple voltage levels (e.g., 345/138/69 kV). Because each voltage level must be a separate bus in the OPF model, the pipeline splits a spatial cluster into distinct buses when incident circuits span voltages that differ by more than 20%. This conservative threshold avoids splitting voltage classes that are nominally distinct but close. 
+
+Transformer inference. At any substation where buses at different voltage levels coexist, a transformer branch is inferred between the corresponding bus pair. A stricter dual threshold (> 10 kV absolute difference and > 1.2× ratio) is used here to suppress false positives from minor tagging discrepancies (e.g., 230/220 kV). In our US OSM extract, fewer than 20% of inferred transformer locations carry an explicit power=transformer tag, making inference the primary detection method. A final catch-all pass converts any remaining branch whose endpoint buses differ by more than 10% in voltage into a transformer, using the loosest threshold to avoid leaving any clear voltage mismatch as an AC line. Transformer electrical parameters are assigned in section 3.4. 
+
+3.3.10 Generator Assignment 
+
+Generators (from OSM plant features, supplemented by EIA-860) are assigned to their nearest bus via a spatial join with a maximum distance of ≈ 1 km. When an EIA-860 match is available (by name, fuel type, and proximity), the generator’s capacity is updated with the official EIA value. Default initial dispatch is set to 50% of Pmax as a placeholder; this value is overwritten by the merit-order dispatch in section 3.5.3 before the OPF solver runs. 
+
+3.3.11 HVDC Detection 
+
+HVDC lines are electrically distinct from AC branches and connect to the AC network through converter stations. However, OSM has no dedicated HVDC tag; these lines are tagged as ordinary 
+
+power=line or power=cable features. The pipeline therefore infers HVDC status using OR logic across multiple independent signals – any one is sufficient: 1. frequency=0 or frequency=dc .2. Voltage tag contains a ± prefix (bipolar HVDC convention). 3. line:type or cable:type set to dc .4. Cable count consistent with DC (1 or 2 conductors at > 100 kV, with no AC frequency tag). 5. Feature name matches a curated list of known US HVDC projects (e.g., Pacific Intertie, Cross-Sound Cable). A separate post-processing pass checks whether any remaining unclassified line has both endpoints within 500 m of a power=converter node, catching cases where none of the tag-based signals are present. Detected HVDC lines are exported as dcline entries in the PowerModels format, modeled as controllable point-to-point links with active-power limits derived from voltage class. Loss model parameters and reactive-power limits are assigned in section 3.4. 
+
+3.3.12 Validation and Final Assembly 
+
+The assembled network undergoes several validation and clean-up steps before export: 15 1. Voltage-level bridging. At multi-voltage substations where separate voltage-level buses are disconnected (no inferred transformer yet links them), a transformer bridge is created to restore connectivity. EHV substations ( ≥345 kV) receive two parallel units for N-1 redundancy. Elec-trical parameters for these bridges are assigned alongside all other transformers in section 3.4. 2. Isolated bus removal. Buses with no connected branches are removed. 3. Disconnected component removal. Disjoint connected components with no generators are removed since loads cannot be met. 4. Largest connected component. OPF requires a single connected AC network; the largest component (typically 90–99% of buses) is retained. 5. Slack bus assignment. The bus hosting the generator with the largest Pmax is designated as the reference (slack) bus. For Virginia, the full network contains 703 buses across 13 connected components; the largest component retains 661 buses (94%), 744 AC lines, 519 inferred transformers, and 65 generators. The reduction from 875 inter-facility circuits to 744 AC lines reflects isolated-bus and orphan-component pruning, and voltage-level bridging adjustments during validation (fig. 4). 
+
+Figure 4: Final bus-branch model for Virginia (largest connected component): 661 buses colored by voltage class, 744 AC lines, 519 inferred transformers (dashed purple), and 65 generators sized by capacity and colored by fuel type. 16 3.4 Parameter Estimation (Step 3) 
+
+The topology reconstruction stage (section 3.3) produces a bus-branch model with geographic co-ordinates, voltage levels, and structural connectivity – but no electrical parameters. This section assigns the quantitative values that every OPF formulation requires: line impedance and thermal ratings (section 3.4.1), transformer impedance (section 3.4.2), parallel-circuit scaling factors (sec-tion 3.4.3), generator cost curves and operational limits (section 3.4.4), and reactive-power limits (section 3.4.5). 
+
+3.4.1 Line Parameter Estimation 
+
+OSM provides the geographic route and voltage of a transmission line but nothing about its elec-trical characteristics. Resistance ( R), reactance ( X), shunt susceptance ( B), and thermal rat-ing (MVA) are therefore estimated from the line’s voltage class and assumed conductor type using voltage-indexed lookup tables (LUTs) derived from standard power engineering references [7] and conductor manufacturer catalogs. Each voltage class is associated with a representative conductor configuration reflecting typical US utility practice (see Appendix A). At extra-high voltages ( ≥345 kV), conductors are bundled (2–4 sub-conductors per phase) to reduce corona discharge and increase current-carrying capacity. The bundle configuration significantly affects impedance: a quad-bundle 765 kV line has very low resistance and high surge-impedance loading ( X/R ≈ 35 ), while a single-conductor 69 kV line is resistance-dominant ( X/R ≈ 8). All resistance values are at 75 °C, the standard operating temperature for thermal-limit studies. Lines identified as underground cables via power=cable or location=underground tags use a separate LUT with characteristics reflecting XLPE insulation: lower reactance (close phase spac-ing), much higher shunt susceptance (insulation dielectric), and lower thermal ratings (limited by insulation temperature rather than ambient cooling). Raw impedance values in Ω/km are converted to per-unit on a 100 MVA system base using 
+
+Zpu = ZΩ × Lkm 
+
+V 2
+
+> kV
+
+/S base 
+
+, (5) where Lkm is the line length computed from the merged circuit’s GeoJSON geometry (geodesic distance). LUT thermal ratings represent continuous (normal) ratings. Since each OPF snapshot repre-sents a single hour, short-term ratings are more appropriate than continuous limits. Transmission owners typically establish short-term emergency ratings 10–15% above the continuous value, re-flecting allowable transient conductor heating over periods of 15 minutes to 4 hours. The pipeline applies a configurable thermal margin of 1.10 × to all branch MVA limits to approximate short-term ratings. 
+
+3.4.2 Transformer Parameters 
+
+Each inferred transformer (section 3.3.9) is assigned impedance and rating from a lookup table indexed by its high-voltage / low-voltage pair (appendix A). The table covers 52 voltage-pair combinations, with typical values of Xpu = 0 .05 –0.16 and Rpu = 0 .002 –0.008 on the transformer’s own MVA base. 17 For auto-transformers – common when the voltage ratio is less than 3:1 and both sides are 
+
+≥230 kV (e.g. 345/230 kV) – the impedance is reduced by a winding-sharing factor: 
+
+Zauto = Zbase ×
+
+> (
+
+1 − VLV 
+
+VHV 
+
+> )
+
+, clamped to [0 .20 , 0.65] . (6) This reflects the physical reality that an auto-transformer’s impedance is proportional to the voltage 
+
+difference rather than the ratio, since only part of the winding carries the full current. 
+
+3.4.3 Topology and Capacity Factors 
+
+The most significant calibration challenge is compensating for missing parallel circuits. As discussed in section 3.3.4, OSM represents each transmission corridor as a single geographic route regardless of how many parallel circuits it carries. Since the number of parallel circuits directly determines both impedance ( N circuits in parallel divide impedance by N ) and transfer capacity ( N circuits multiply MVA by N ), this omission has a first-order impact on power flow results. The pipeline addresses this through two independently calibrated scaling factors applied to each branch: 1. Topology factor (NT ): models the equivalent number of parallel circuits for impedance pur-poses. Rscaled = R/N T , Xscaled = X/N T , Bscaled = B × NT , MVA scaled = MVA × NT .Calibrated for AC-OPF convergence (voltage profiles, reactive balance, angle stability). 2. Capacity factor (NC ): independently scales only the thermal rating without altering impedance, calibrated against EIA Electric Power Annual circuit-mile data [2]: MVA final = MVA LUT ×NT ×
+
+NC .Table 5 lists the single-state calibration values. Lower-voltage sub-transmission lines (69– 161 kV) require the largest correction because they are smaller, harder to distinguish from dis-tribution in aerial imagery, and less likely to attract mapper attention. EHV lines (230–345 kV) are well-mapped and need minimal correction. The 765 kV capacity-factor anomaly ( NC = 2 .0)reflects the finding from section 3.3.3 that OSM captures only about half the 765 kV circuit-miles reported by EIA. Table 5: Topology and capacity factors for single-state models.                   
+
+> Voltage (kV) NTNC
+> 69 3.00 1.5 115 2.25 1.0 138 1.75 1.0 161 1.50 1.0 230 1.00 1.0 345 1.00 1.0 525 1.25 1.0 765 1.00 2.0
+
+When single-state models are merged into multi-state regional models, each single-state factor is multiplied by an additional per-voltage scalar: ×3 for the topology factor and ×2 for the capacity factor (e.g. 69 kV rises from NT = 3 .0 to 9.0, from NC = 1 .5 to 3.0). These boosts are necessary because interstate transit flows – power routing through one state’s corridors to serve load in 18 another – demand additional impedance reduction and capacity headroom that were never needed in isolated single-state models. The same factors also apply to transformers: impedance is divided by NT (keyed to the low-voltage side) and the MVA rating is multiplied by the corresponding capacity factor, ensuring that transformer capacity scales consistently with the lines they connect. 
+
+3.4.4 Generator Cost Curves and Operational Limits 
+
+The OPF objective minimizes total generation cost, min ∑ 
+
+> i∈G
+
+Ci(Pg,i ), which requires a cost func-tion for every generator. Since OSM carries no cost information, these are estimated from fuel type, plant efficiency, and market fuel prices. Each generator is assigned a quadratic cost function Ci(Pg) = c2P 2 
+
+> g
+
++ c1Pg + c0, where c1 is the marginal cost ($/MWh) and c0 the no-load cost ($/h) [31]. Other cost functions can also be used. Cost parameters are determined through a priority hierarchy: 1. Plant-specific EIA-923 heat rate (highest priority). When the pipeline matches an OSM generator to an EIA-860 plant record by name, fuel type, and geographic proximity ( ≤ 5 km) [24], the plant’s actual heat rate (BTU/kWh) from EIA-923 [25] computes the marginal cost: 
+
+c1 = Heat Rate × Fuel Price 
+
+1000 + VOM . (7) A logarithmic size-adjustment curve scales the heat rate, penalizing smaller units (which tend to be less efficient) and rewarding larger ones, clamped to the range [0 .9, 1.3] . For natural gas generators, the fuel price defaults to $3.50/MMBtu but is overridden at run time with the current Henry Hub spot price fetched from the EIA Natural Gas API, ensuring that gas-plant costs reflect market conditions at the time of analysis. 2. Static fuel-type LUT (fallback). When EIA matching fails, costs are assigned from a default table indexed by canonical fuel type (section B), covering 14 fuel categories with marginal costs ranging from $0/MWh (solar, wind) to $90/MWh (diesel peakers). 
+
+Fuel-type normalization. OSM and EIA use inconsistent naming for fuel types (e.g. natural_gas ,
+
+lng , combined_cycle , ccgt , and gas_cc all represent natural-gas generation). A shared two-level mapping resolves this: 48 raw string variants are first normalized to 18 canonical technical types (e.g. gas , gas_turbine , solar ), which are then collapsed to 12 display categories (Solar, Wind, Hydro, Geothermal, Nuclear, Gas, Coal, Oil, Biomass, Waste, Battery, Unknown). The display categories define the RENEWABLE_FUELS set (Solar, Wind, Hydro, Geothermal) and the 
+
+ZERO_MARGINAL_COST set (renewables plus Nuclear) used for merit-order dispatch and decommit-ment protection. For Virginia, 55 of 65 generators are successfully matched to EIA-860 plant records (fig. 5), yielding marginal costs of $8–$209/MWh (median $19/MWh). 
+
+Minimum output. Thermal generators cannot operate below a minimum stable output. The pipeline assigns Pmin as a fraction of Pmax by fuel type: 50% for nuclear (must-run baseload), 30% for coal, 20% for gas CCGT, and 0% for gas turbines, renewables, and storage. 
+
+3.4.5 Reactive Power and Voltage Limits 
+
+AC-OPF requires reactive-power limits ( Qmax , Qmin ) and voltage bounds for each bus – parameters that OSM does not provide. Generator reactive capability is derived from a technology-dependent 19 Figure 5: Generator parameters for Virginia: 65 generators colored by fuel type, sized proportional to marginal cost ($/MWh). Pink rings indicate EIA-860–validated plants (55 of 65). Marginal costs range from $8/MWh (nuclear) to $209/MWh (oil peakers). rated power factor (PF) 
+
+Qmax = Pmax × tan(cos −1(P F )) (8) Synchronous machines (thermal and hydro) use power factors of 0.80–0.90 (nuclear 0.90, coal/gas 0.85, hydro 0.80), providing substantial reactive support. Inverter-based resources (solar, wind, battery) are limited to cos φ = 0 .95 . The absorption capability ( Qmin ) is a technology-dependent fraction of Qmax : synchronous machines absorb 40–60% of their rated Qmax , while inverter-based solar and battery are symmetric ( Qmin = −Qmax ). Bus voltage magnitude bounds follow standard planning practice [7]: load buses V ∈ [0 .95 , 1.05] pu, generator buses V ∈ [0 .95 , 1.10] pu. Branch angle differences are constrained by voltage class: ±30 °
+
+for EHV ( ≥100 kV), ±45 ° for subtransmission, and ±60 ° for transformers. Figure 6 summarizes the resulting capacity and fuel mix for Virginia. 
+
+## 3.5 Demand Allocation (Step 4) 
+
+OSM provides the physical infrastructure; operational data – how much power is consumed, where, and when – must come from public sources. This stage fetches hourly demand from EIA-930 [26], identifies the Balancing Authorities (BAs) that serve the modeled region, and distributes load to individual buses using census-tract population as a spatial proxy. 20 Figure 6: Capacity and fuel mix for Virginia: 65 generators totaling 9,273 MW nameplate, sized proportional to Pmax . Gas dominates (2,851 MW CCGT + 1,507 MW simple-cycle), followed by nuclear (1,827 MW), coal (1,092 MW), solar (885 MW), and hydro (715 MW). 
+
+3.5.1 Balancing Authority Detection 
+
+A single state may span multiple BAs. Virginia, for example, is predominantly within PJM but includes a small TVA footprint in the southwest (fig. 7). The pipeline assigns each bus to a BA via point-in-polygon testing against HIFLD BA boundary polygons [30]. The BA containing the most buses becomes the primary BA; secondary BAs are retained when their bus share exceeds 1% and at least one generator is present. Sub-BAs (e.g. Duke Energy Progress, PacifiCorp West) that do not publish standalone EIA-930 demand data are resolved to their parent BA via a mapping table – for instance, CPLE → DUK and PACW → PACE – ensuring demand data is always available. 
+
+Demand scaling. For each detected BA, hourly demand is fetched from EIA-930 and scaled by a regional fraction f that estimates what share of the BA’s load the model represents: 
+
+Dmodel = DBA × f. (9) The fraction is computed differently depending on the model scope, with three cases handled by a tiered strategy: 1. Single-state, single-BA (e.g. ERCOT/Texas, CAISO/California). When the BA serves ex-actly the modeled state, the fraction is 
+
+f = D peak state 
+
+D peak BA 
+
+, (10) 21 where D peak state is the state’s summer peak demand from EIA-861 [32] and D peak BA is the BA’s peak from EIA-930. For a true single-state BA this ratio is ≈1.0, requiring no approximation. 2. Single-state, multi-BA (e.g. Virginia spanning PJM and TVA). Buses are partitioned by their assigned BA. For each BA k, the fraction is the state peak scaled by the BA’s bus share and by the model’s OSM coverage – the ratio of OSM-captured generation capacity to the state’s peak demand: 
+
+fk = D peak state × bk
+
+D peak 
+
+> k
+
+× cosm , cosm = min 
+
+> (
+
+1, 
+
+> ∑
+
+P osm max 
+
+D peak state 
+
+> )
+
+, (11) where bk is the fraction of model buses assigned to BA k. The coverage cap prevents the model from claiming more load than its captured infrastructure can plausibly serve. For Virginia, 
+
+cosm ≈ 0.64 , reflecting that OSM captures roughly two-thirds of the generation needed to meet the state’s peak. 3. Multi-state region (e.g. PJM 14 states, Western 11 states). For each BA that overlaps the region, the fraction is the sum of state peaks for the overlapping states, divided by the BA peak. For single-state BAs within the region, the fraction is used directly (analogous to case 1); for multi-state BAs, it is multiplied by a capacity-based coverage ratio within that BA: 
+
+fk = 
+
+> ∑
+> s∈Sk
+
+D peak 
+
+> s
+
+D peak 
+
+> k
+
+×
+
+> 
+
+1 if BA k is single-state, 
+
+min (1, P model ,k  
+
+> max
+
+/P BA ,k  
+
+> max
+> )
+
+otherwise. (12) Here Sk is the set of modeled states served by BA k, and P model ,k  
+
+> max
+
+is the OSM-captured generation capacity within BA k. The coverage multiplier for multi-state BAs prevents over-allocation when the model covers only a subset of the BA’s geographic footprint (e.g. MISO spans states both inside and outside the PJM model). Demand is always fixed before any EIA generator injection (section 3.5.3), preventing a circular feedback between demand and capacity. For Virginia at 4 PM, PJM reports 151,392 MW; the state-demand fraction (6.1%) yields 9,158 MW. TVA contributes 141 MW from 11 buses, bringing the total scaled demand to 9,299 MW (fig. 7). 
+
+3.5.2 Census-Based Load Allocation 
+
+When the model spans multiple BAs, buses are partitioned by their assigned BA and demand is allocated independently within each partition. Within each partition, total demand is distributed to individual buses using US Census tract population as a spatial proxy for electricity consumption. Residential and commercial loads are the dominant demand components and both track population; this approach is consistent with methods used in PyPSA-Eur [33]. The pipeline downloads TIGER/Line census-tract boundaries and ACS 5-Year population esti-mates from the Census Bureau API, then performs a spatial join: each bus is assigned to the tract it falls within (with a nearest-neighbour fallback for unmatched buses). The bus’s share of total demand is proportional to the population in its tract: 
+
+Pd,i = Dmodel × pop i 
+
+> ∑
+> j
+
+pop j
+
+. (13) The reactive component Qd,i = Pd,i ×tan(arccos 0 .92) uses a load power factor of 0.92. For Virginia, 2,198 census tracts are matched to 661 buses. 22 Figure 7: BA detection for Virginia at 4 PM: PJM serves 650 buses (6.1% of BA capacity 
+
+→ 9,158 MW); TVA covers 11 south-western buses (0.5% → 141 MW). Total scaled demand: 9,299 MW. 
+
+3.5.3 Generation Dispatch 
+
+Before solving the OPF problem to optimize generation, it is useful to compute a rough estimate of the generation levels to gain some intuitive understanding and serve as initialization for the optimization problem. Our pipeline sets initial generator outputs that balance total generation with total load. A 3% loss factor is applied ( Dgross = Dmodel × 1.03 ) to account for resistive and transformer losses. Generators are dispatched in merit order : they are sorted by marginal cost and committed cheapest-first until cumulative output meets Dgross .
+
+Renewable derating. Solar and wind are the only fuel types treated as intermittent; all others (including hydro and nuclear) are fully dispatchable. Each intermittent generator’s Pmax is mul-tiplied by an hour- and season-dependent capacity factor drawn from idealized profiles covering three seasons (summer: Jun–Aug; winter: Dec–Feb; spring/fall: all other months). Solar capacity factors range from 0 overnight to a summer-noon peak of 0.95, with winter noon reaching only 0.70 and spring/fall 0.85. By 4 PM, the summer solar factor drops to 0.52, so Virginia’s 885 MW of nameplate solar is derated to 885 × 0.52 ≈ 460 MW. Wind capacity factors are more uniform across the day: summer values range from 0.20 (pre-dawn) to 0.60 (afternoon), while winter profiles are higher and flatter (0.35–0.58). At night, wind capacity factors remain 0.25–0.42, making wind a significant contributor to off-peak generation. 
+
+EIA generator injection. When the model’s total generation capacity falls below a 30% reserve margin above scaled demand, the pipeline injects additional generators from EIA-860 that 23 were not found in OSM. Unmatched EIA plants are sorted by capacity descending and assigned to the nearest bus with available connection slots ( ≤50 km), each bus limited by its branch degree. Injection continues until the 30% reserve margin floor is met. For Virginia, six generators are injected this way: two nuclear plants (North Anna 980 MW, Surry 848 MW), two gas units at Chalk Point (659 MW each), Warren County gas (580 MW), and Bath County hydro (1 MW) (fig. 8). 
+
+Slack bus. After dispatch, the slack bus is reassigned to the largest dispatchable (non-renewable) generator, ensuring sufficient headroom to absorb power imbalances and the feasibility of the OPF problem. 
+
+Figure 8: Final load distribution for Virginia at 4 PM: 9,299 MW allocated to 661 buses (sized proportional to load), 12,574 MW available capacity ( +35% reserve margin). Six EIA-injected generators (cyan rings) had no OSM match. 
+
+## 3.6 Optimal Power Flow (Step 5) 
+
+The final pipeline step solves an Optimal Power Flow (OPF) problem on the model produced by Steps 2–4. The implementation uses PowerModels.jl [22] interfacing with the Ipopt interior-point solver [17]. 
+
+3.6.1 Input Format and Solver Configuration 
+
+The solver receives a single JSON file in MATPOWER/PowerModels format containing buses, branches (AC lines and transformers), DC lines, generators, loads, and shunt elements. All values 24 are expressed in per-unit on a 100 MVA base (section C). Cost coefficients, voltage bounds, angle limits, and thermal ratings are included. Ipopt is configured with a primary convergence tolerance of 10 −4, an acceptable (relaxed) tol-erance of 10 −2, and a maximum of 10,000 iterations. Solutions meeting the strict tolerance receive 
+
+LOCALLY_SOLVED status; those converging only within the relaxed tolerance receive ALMOST_LOCALLY _SOLVED and are accepted as qualified successes. 
+
+3.6.2 DC and AC Formulations DC-OPF. The linear DC approximation is solved first as a screening tool and warm-start seed. It minimizes the same cost objective but with a simplified constraint set. DC-OPF solves in under one second for networks up to ∼5,000 buses. Like the AC formulation, it is attempted with progressive relaxation. 
+
+AC-OPF. The full nonlinear formulation includes voltage magnitudes, angles, and both real and reactive power at every bus. The DC-OPF solution provides initial values for bus voltage angles and generator dispatches; these are passed to the AC solver as starting points, dramatically improving convergence compared to a flat-voltage cold start. 
+
+3.6.3 Progressive Relaxation 
+
+Standard OPF assumes a well-characterized network with precise parameters. OSM-derived models violate this assumption: impedances are estimated from LUTs, parallel circuits are approximated by scaling factors, and demand allocation is a spatial heuristic. The result is that some models are infeasible under strict constraints – not because the underlying grid is infeasible, but because the model’s parameters are imprecise. Rather than requiring manual tuning per state, the pipeline automatically loosens constraints through a sequence of relaxation levels until convergence is achieved. Six cumulative levels (L0–L5) are defined, plus an AC-specific base layer (AC1) (table 6): Table 6: Progressive relaxation levels. Each level is cumulative, including all relaxations from previous levels.                                                           
+
+> Level Name Angle Thermal Vmin /V max Qfactor Load cap Pmin
+> L0 Strict default 1.0×default 1.0×100% default L1 Widen angles ±60 ◦1.0×default 1.0×100% default L2 Thermal headroom ±60 ◦1.2×default 1.0×100% default L3 Aggressive ±90 ◦1.5×default 1.0×100% ×0.5
+> L4 Load shedding ±90 ◦1.5×default 1.0×70% 0L5 Full relaxation ±90 ◦∞[0.85, 1.15] 2.0×70% 0AC1 Voltage+ Qrelax --[0.90, 1.10] 1.5×--
+
+Each level targets a specific class of infeasibility: L1 addresses angle-limit violations on long, high-impedance branches; L2 relieves thermal congestion from underestimated branch capacity; L3 reduces minimum-generation constraints on heavily loaded networks; L4 curtails load to 70% of total generation capacity when the network cannot deliver full demand; L5 removes essentially all binding constraints as a last resort. AC1 widens voltage bounds and increases reactive power limits, and is activated as a persistent base layer for all AC-OPF attempts because OSM-derived models frequently have reactive power imbalances from approximate line-charging parameters. 25 Impedance consistency. Before each OPF solve, a preprocessing pass ensures that every branch satisfies rate_a × x ≤ π/ 2, so that the DC power-flow constraint P ≤ rate_a remains compatible with the angle bounds. This check is applied at L0 and within each relaxation level (L1–L4); at L5, where thermal limits are removed (rate_a = 10 6), it is skipped. The fix eliminates spurious DC-OPF infeasibility on aggregated parallel circuits whose combined reactance, after topology-factor scaling, would otherwise exceed the feasible angle range. 
+
+Generator decommitment. Before any OPF solve, a preprocessing step checks whether total minimum generation ( ∑ Pmin ) exceeds total demand. If so, the most expensive dispatchable generators have their Pmin set to zero, allowing the OPF to dispatch them at zero output while keeping them grid-connected for reactive power support. Nuclear and renewable generators are protected from decommitment. This step reduces the need for the Pmin relaxation at L3/L4. 
+
+Convergence strategy. The solver proceeds in three stages: 1. DC progressive relaxation. Attempt DC-OPF at L0; if infeasible, escalate through L1–L5. 2. Reactive shunt injection. Shunt devices (capacitor banks and reactors) provide localized reactive-power compensation in real grids, but OSM carries no information about them. To fill this gap, the solver uses the DC dispatch to estimate per-bus reactive imbalance: for each bus, reactive demand and estimated branch losses ( Qloss ≈ P 2 
+
+> ij
+
+xij , computed from the DC power flows and branch reactances) are summed against available generator reactive capability and line-charging injection. Where the deficit (or surplus from excess line charging on long HV lines) exceeds a 15% margin, a compensating shunt capacitor (or reactor) is inserted. This dispatch-aware pre-conditioning targets compensation to buses that actually need it under the solved operating point, rather than relying on heuristic placement, and prevents reactive-power shortfall from being the sole cause of AC infeasibility. Because every bus with an unmet reactive deficit receives a shunt, the resulting coverage is high ( ∼90% of buses) compared to utility-grade reference models such as PGLib-OPF, where discrete physical devices appear at 5–15% of buses. This higher density reflects a modeling choice: our shunts act as proxy for all reactive resources absent from OSM, rather than representing individually cataloged equipment as in reference models. 3. AC progressive relaxation. Attempt AC-OPF at L0 with the DC warm-start and injected shunts. If infeasible, activate AC1, then escalate through L1–L5 (each with AC1 as the persistent base layer). Stop at first convergence. Each AC relaxation level is attempted as a separate subprocess with a 1,800-second timeout, en-suring that a stuck Ipopt solve does not block the pipeline. Every subprocess starts from the same DC-warm-started model. The relaxation level achieved is reported alongside all results, serving as both a convergence indicator and a model quality metric: a state solving at L0 has a well-characterized network; one requiring L4–L5 has significant data gaps. 
+
+3.6.4 Virginia Example 
+
+For Virginia at 4 PM, both formulations converge at L0 (strict) with LOCALLY_SOLVED status. DC-OPF produces a total cost of $186,589/hr ($20.1/MWh); AC-OPF yields $188,339/hr ($20.3/MWh), a 0.9% AC premium attributable to resistive losses and reactive power constraints. Total gener-ation is 9,392 MW against 9,299 MW of load, with 93 MW of losses (1.0%). AC-OPF solves in 21 seconds. 26 Figure 9 shows the economic dispatch map: generator circles are sized proportional to dispatched MW and colored by fuel type. Nuclear (red) and gas (teal/green) dominate, with four of six EIA-injected generators dispatching. The dispatch is dominated by nuclear (39%), gas (31%), coal (8%), gas turbine (7%), and hydro (7%), which together account for over 92% of generation. Figure 10 shows branch loading ratios: most lines operate below 20% of their thermal rating (grey), while a cluster of branches in the northern Virginia corridor and around Lynchburg reach 50–90% loading (orange/pink), consistent with the high population density in those areas. 
+
+Figure 9: AC-OPF economic dispatch for Virginia at 4 PM: 9,392 MW total generation across 71 generators, $20.3/MWh average cost. Generator circle size ∝ dispatched MW; color indicates fuel type. 
+
+3.6.5 Multi-State Regional Models 
+
+The pipeline supports merging per-state OSM downloads into multi-state regional models, enabling analysis of interstate power flows and regional dispatch patterns invisible in single-state models. Per-state GeoJSON files are combined, deduplicating features that appear in overlapping bounding boxes by their OSM identifier. The merged dataset then passes through the same pipeline (Steps 2– 5). 
+
+Transit flows and internal topology boost. Merging introduces interstate transit flows (section 3.4.3), which overload OSM’s single-circuit corridors. The multi-state topology and capac-ity factors described in the same section address this by multiplying the single-state factors by ×3
+
+(impedance) and ×2 (capacity). 27 Figure 10: AC-OPF line congestion for Virginia at 4 PM: 1,263 branches colored by loading ratio (flow / thermal rating). Median loading 5.2%; two branches reach 100%. Congestion concentrates in the northern Virginia–Washington corridor. 
+
+# 4 Results 
+
+Every model is solved at both 4 AM (off-peak) and 4 PM (peak) using the EIA-930 demand profile for July 15, 2024 (a summer weekday). Unless stated otherwise, figures refer to the 4 PM (peak) snapshot. 
+
+## 4.1 Single-State Models 
+
+The pipeline was run for all 48 contiguous US states. Every state achieves Ipopt’s LOCALLY_SOLVED 
+
+status for both DC-OPF and AC-OPF – 96 out of 96 solves converge successfully. For DC-OPF, 45 states solve at L0; Illinois and New York require L5, and Utah L3. For AC-OPF, 42 states solve at L0 and California requires only the lightweight AC1 base layer (voltage/reactive relaxation), while New Mexico and West Virginia need L2, Utah L3, and Illinois and New York L5. Table 7 lists the full results. Several patterns emerge from the results: 
+
+Relaxation distribution. For DC-OPF, 45 of 48 states solve at L0 (94%); the three excep-tions (Illinois L5, New York L5, Utah L3) are among the states that require elevated AC relaxation. For AC-OPF, 42 states solve at L0 (88%) and California requires only the AC1 base layer (volt-age/reactive relaxation). New Mexico (L2) and West Virginia (L2) need modest thermal headroom; Utah (L3) requires aggressive relaxation; Illinois (L5) and New York (L5) require full relaxation. Illinois exhibits negative losses ( −2.5%), indicating load shedding to reach feasibility – a sign that 28 Table 7: Single-state AC-OPF and DC-OPF results at 4 PM (peak), sorted by Load (MW) from largest to smallest. Negative loss percentages indicate load shedding under high relaxation. 
+
+State Load Buses Gens Br Rlx AC DC Loss AC Time (MW) ($/MWh) ($/MWh) (%) (s) Texas 74,049 3,889 509 6,852 L0 15.2 14.7 1.5 50 California 31,806 769 323 1,582 AC1 18.5 17.3 1.3 99 New York 27,746 626 645 1,157 L5 26.0 25.4 0.9 320 Florida 27,522 1,773 178 3,161 L0 26.9 26.4 1.1 29 Illinois 21,177 770 90 1,520 L5 15.8 14.6 −2.5 379 Pennsylvania 17,070 910 107 1,749 L0 22.2 22.0 0.7 21 Ohio 16,935 784 96 1,513 L0 24.9 24.4 1.4 21 Georgia 12,924 1,240 103 2,079 L0 18.4 18.2 0.7 23 North Carolina 11,537 704 110 1,509 L0 20.6 20.3 0.8 21 Tennessee 9,803 603 65 1,122 L0 15.8 15.5 1.2 20 Michigan 9,758 607 68 1,131 L0 22.5 21.9 1.5 20 Colorado 9,559 651 99 1,146 L0 12.9 12.4 1.5 20 Louisiana 9,552 571 48 999 L0 26.6 26.4 0.6 19 Alabama 9,501 494 55 864 L0 20.9 20.6 0.9 20 Virginia 9,299 661 71 1,263 L0 20.3 20.1 1.0 21 Indiana 9,204 1,271 97 2,316 L0 26.8 26.4 0.9 24 Oklahoma 9,058 906 64 1,460 L0 23.1 22.6 1.0 20 Nevada 8,672 296 106 614 L0 16.0 15.8 0.4 18 Missouri 8,645 1,033 65 1,753 L0 29.8 29.4 1.3 22 Arizona 7,822 730 78 1,356 L0 16.8 16.7 0.5 21 Arkansas 7,726 778 69 1,195 L0 20.0 19.7 1.0 20 Utah 7,364 244 240 419 L3 21.7 20.9 2.1 219 South Carolina 7,181 588 67 1,291 L0 16.3 16.0 1.0 20 Minnesota 7,131 718 97 1,297 L0 22.0 21.6 1.1 21 Mississippi 6,782 528 39 902 L0 23.2 22.8 1.2 19 Wisconsin 6,648 776 65 1,427 L0 26.6 26.0 1.5 21 Kansas 6,371 653 44 1,071 L0 25.1 24.7 1.1 20 Iowa 6,315 832 61 1,488 L0 22.4 22.0 1.0 21 New Jersey 6,210 258 57 580 L0 14.6 14.4 1.0 19 Massachusetts 5,623 222 99 426 L0 22.7 21.7 0.7 18 Nebraska 5,006 466 46 865 L0 24.3 23.8 1.0 20 Connecticut 4,994 156 41 281 L0 23.2 22.9 0.7 18 West Virginia 4,518 166 13 281 L2 33.2 32.8 0.9 75 Kentucky 4,113 701 34 1,327 L0 29.5 29.0 1.4 20 Maryland 3,749 165 27 385 L0 24.6 24.4 0.5 18 Wyoming 3,485 192 26 314 L0 30.6 29.9 2.0 18 Oregon 3,017 341 61 624 L0 13.6 13.5 0.3 19 Idaho 2,780 179 149 328 L0 4.4 4.3 1.1 19 New Mexico 2,268 150 24 252 L2 19.1 18.6 1.4 72 Washington 2,216 724 66 1,211 L0 11.3 11.2 0.2 19 New Hampshire 2,062 81 19 125 L0 18.2 17.8 1.5 17 North Dakota 1,797 312 10 561 L0 31.9 31.1 1.8 18 Montana 1,778 382 26 771 L0 21.6 19.0 7.1 19 South Dakota 1,538 252 13 489 L0 23.2 22.5 1.8 19 Delaware 1,506 33 9 77 L0 18.3 18.1 0.3 17 Vermont 937 40 27 58 L0 2.6 2.6 0.4 16 Maine 908 68 18 107 L0 19.9 19.4 1.3 17 Rhode Island 225 11 4 17 L0 104.1 103.7 0.3 17 
+
+the OSM topology is too sparse to carry the allocated demand. 
+
+Cost patterns. We report the average generation cost, defined as ¯c = Cobj /P load , where 29 Cobj ($/hr) is the OPF objective value and Pload (MW) is the total system load. The median average AC-OPF cost across states is $22.1/MWh. States with abundant hydropower (Washington $11.3, Vermont $2.6, Idaho $4.4, Oregon $13.6) or wind (Colorado $12.9) have the lowest average costs because these resources have near-zero marginal costs. States reliant on coal exhibit higher costs (Kentucky $29.5, West Virginia $33.2), as do states with limited local generation that must import through congested corridors (Rhode Island $104.1). Rhode Island is an outlier explained by its tiny grid (11 buses, 4 generators) with minimal local generation and high reliance on expensive peaking units. Figure 11 compares the absolute dispatch cost for every state under both formulations 
+
+Figure 11: DC-OPF vs. AC-OPF generation cost ($/hr) for all 48 contiguous states at 4 PM (peak). Bar heights are nearly identical for most states; the visible difference in a few cases reflects resistive losses captured only by the AC formulation. 
+
+AC–DC premium. The AC-OPF cost exceeds DC-OPF by 0.0–13.8% for L0 states, with a median premium of 1.8%. This premium reflects resistive losses and reactive-power constraints ignored by the DC linearization. States with long radial corridors (Montana: 13.8%, Massachusetts: 4.8%) show the largest gaps. The median value is consistent with the 1–5% range reported in the power systems literature for well-characterized networks [18], providing evidence that the OSM-derived models produce electrically plausible results despite estimated parameters. Figure 12 plots the premium for every state; states whose DC and AC solves converged at different relaxation levels are shown with dashed outlines and excluded from the average. 
+
+Figure 12: AC-OPF cost premium over DC-OPF (%) for each state. The average premium across states with matched relaxation levels is +2.4%. New Mexico and West Virginia (DC at L0, AC at L2) have mismatched relaxation levels, making their premiums not directly comparable. 
+
+Cost vs. fuel mix. Figure 13 ranks all 48 states by DC-OPF cost alongside their installed-capacity fuel mix. States at the bottom of the ranking (lowest cost) have large shares of hydro, wind, or nuclear capacity, all of which bid at near-zero marginal cost. States at the top tend to be dominated by gas and coal, or have very small grids with limited generation options. This ranking mirrors observed wholesale price patterns: EIA data show that hydro-dominated states (e.g. Washington, Oregon) consistently report the lowest average wholesale electricity rates, while gas-dependent states rank among the highest [2] – confirming that the model’s cost structure responds correctly to fuel-mix composition. 30 Figure 13: States ranked by DC-OPF dispatch cost ($/MWh, left panel) alongside their installed-capacity fuel mix (right panel). States with high renewable or nuclear shares consistently achieve lower marginal costs. 31 Losses. For the 42 L0 states, losses range from 0.2% (Washington) to 7.1% (Montana), with a median of 1.0%. These values are physically plausible: real US transmission losses average 2–3%, and the model captures only high-voltage lines where losses are relatively low. Montana’s elevated losses (7.1%) stem from long 230 kV corridors traversing sparsely populated terrain between hydro sources and load centers. 
+
+Solve time. AC-OPF solve time at the successful relaxation level ranges from 17 seconds (Vermont, 40 buses) to 51 seconds (Texas, 3,889 buses). Models requiring elevated relaxation levels spend additional time on failed attempts before reaching the successful level; cumulative AC-OPF time (across all attempted relaxation levels) for these states ranges from 1 to 8 minutes. 
+
+## 4.2 Multi-State Regional Models 
+
+Six multi-state regional models were solved, ranging from a two-state region to the full Eastern Interconnection (21,697 buses). All six achieve LOCALLY_SOLVED for both DC-OPF and AC-OPF. Table 8 summarizes the results. Table 8: Multi-state regional AC-OPF results at 4 PM.                                                                          
+
+> Region NBuses Gens Br Load Rlx AC DC Loss AC Time (MW) ($/MWh) ($/MWh) (%) Pacific NW 21,106 132 1,935 3,364 L0 10.0 10.0 0.1 21 s New England 6640 213 1,135 5,623 L0 16.7 16.7 0.2 19 s Desert SW 31,282 165 2,431 23,156 L0 18.3 18.1 0.6 25 s PJM 14 7,830 830 15,342 80,796 L0 20.5 20.5 0.6 2 min Western 11 5,076 746 9,511 80,754 L0 13.5 13.3 1.3 60 s Eastern 36 21,697 2,158 40,035 282,384 L3 17.9 17.8 0.5 47 min
+
+Pacific Northwest (OR + WA). This compact two-state region produces the lowest dispatch cost ($10.0/MWh), reflecting the region’s abundant hydropower. The model solves at L0 with only 0.1% losses. 
+
+New England (CT, MA, ME, NH, RI, VT). The six-state ISO-NE footprint solves at L0 with a cost of $16.7/MWh. Notably, the merged model eliminates the extreme $104.1/MWh cost seen for Rhode Island in isolation, because the merge provides import paths from neighbouring Connecticut and Massachusetts generators. 
+
+Desert Southwest (AZ, NV, UT). This three-state model solves at L0 (compared to Utah’s L3 in isolation), confirming that merging provides alternative transmission paths. The marginal cost is $18.3/MWh. 
+
+PJM (14 states, DC–VA). The PJM footprint is the largest L0 model (7,830 buses, 830 gen-erators) and solves in 2 minutes of AC-OPF time. At $20.5/MWh, the cost is within the range of real PJM day-ahead LMPs, indicating plausibility rather than calibration. Losses of 0.6% are typical for a dense Eastern grid. 
+
+Western Interconnection (11 states, AZ–WY). The full WECC footprint (5,076 buses, 746 generators, 9,511 branches) solves at L0 in 60 seconds of solve time. Losses of 1.3% (1,066 MW) are physically plausible for a region spanning 11 states. 
+
+Eastern Interconnection (36 states). The pipeline’s largest model at 21,697 buses and 2,158 generators solves at L3 in 47 minutes. The cost of $17.9/MWh is lower than PJM’s $20.5, reflecting the inclusion of low-cost hydro and wind states. Losses of 0.5% are lower than the West-ern model because the Eastern grid has denser interconnections and shorter average transmission distances. 32 4.3 Peak vs. Off-Peak Comparison 
+
+Each model was also solved at 4 AM (off-peak). Table 9 compares peak and off-peak results for the largest models. Table 9: Peak (4 PM) vs. off-peak (4 AM) comparison.                                                   
+
+> Model 4 PM (peak) 4 AM (off-peak) Load $/MWh Rlx Load $/MWh Rlx (MW) (MW) Texas 74,049 15.2 L0 47,608 21.4 L0 California 31,806 18.5 AC1 25,232 16.6 L2 Florida 27,522 26.9 L0 15,789 25.3 L0 New York 27,746 26.0 L5 19,115 30.3 L3 PJM 80,796 20.5 L0 50,414 20.0 L0 Eastern 282,384 17.9 L3 180,077 23.1 L2 Western 80,754 13.5 L0 57,836 15.3 L0
+
+Loads drop by 21–43% from peak to off-peak, consistent with typical diurnal demand curves. Across all 48 single-state models, 34 states show higher per-MWh costs off-peak (median in-crease $2.7/MWh), reflecting minimum-output constraints: at night, must-run generators (nuclear, large coal units with high minimum-output levels) form a larger fraction of total generation, re-ducing the system’s ability to dispatch cheaper units. Solar output also drops to zero at 4 AM, removing a zero-marginal-cost resource. The remaining 14 states are cheaper off-peak; among the table models, California ($18.5 → $16.6), Florida ($26.9 → $25.3), and PJM ($20.5 → $20.0) show this pattern, where night-time wind production or reduced congestion offsets the must-run premium. Relaxation levels are generally stable across hours. Of the 48 single-state models, 44 (92%) converge at L0 off-peak, up from 42 (88%) at peak. Two states that required elevated relaxation at peak improve to L0 off-peak (New Mexico L2 →L0, West Virginia L2 →L0); Illinois (L5 →L2), New York (L5 →L3), and Utah (L3 →L2) also improve but remain above L0. California is the exception, shifting from AC1 (peak) to L2 (off-peak) – the lower demand reduces reactive stress but exposes thermal constraints that the AC1 layer does not address. Among the regional models, New York improves from L5 to L3, and the Eastern model from L3 to L2, suggesting that lower demand partially alleviates topology bottlenecks. The Western model solves at L0 for both hours. 
+
+# 5 Discussion 
+
+## 5.1 Limitations 
+
+Topology completeness. OSM typically captures one circuit per transmission corridor; real net-works may have 2–50 parallel circuits. The topology and capacity factors (section 3.4.3) compensate for this under-representation, but they are calibrated heuristics rather than measured data. States where these factors prove insufficient (Illinois, New York) require elevated relaxation levels, and their solutions include load shedding that reduces physical fidelity. 
+
+Parameter accuracy. Line impedances are drawn from voltage-class lookup tables, not utility engineering records. Conductor type, spacing, bundling, and temperature are assumed from typical practice. Generator costs rely on EIA-923 heat-rate data (available for ∼31% of generators across all states) with a fuel-type LUT fallback for the remainder; a further 80% are matched to EIA-860 33 for validated capacity and fuel type. These approximations are sufficient for OPF convergence but preclude precise congestion pricing or stability analysis. 
+
+Demand model simplicity. Census-population-weighted allocation is a reasonable spatial proxy, but real load patterns depend on industrial facilities, commercial density, and weather. The model uses a single hourly snapshot rather than a time series, omitting storage cycling, ramp constraints, and dynamic stability. 
+
+## 5.2 Comparison to Existing Approaches 
+
+Compared to synthetic grids such as the TAMU test cases [9], our models preserve real geographic correspondence: every bus and branch maps to a physical OSM feature with coordinates. Synthetic grids reproduce aggregate statistics (degree distribution, impedance profiles) but cannot represent actual transmission corridors or generation sites. Compared to GridKit [34], which also extracts topology from OSM, our pipeline goes sub-stantially further: it produces OPF-solvable models with calibrated impedances, thermal ratings, generator cost curves, hourly demand allocation, and a built-in solver. GridKit provides topology only. Compared to PyPSA-Eur [33], our work fills an analogous role for the United States, where no ENTSO-E equivalent provides standardized network data. The challenges differ: US OSM coverage is less uniform than in Europe, and the lack of a central grid operator necessitates the multi-source data-fusion approach (EIA, HIFLD, Census) described in section 3.5. Critically, unlike prior OSM-based work that releases only code or topology, we publicly release the complete solved models – 48 single-state and 6 multi-state regional networks with calibrated parameters, demand profiles, and OPF solutions. 
+
+# 6 Conclusion 
+
+We have demonstrated that usable transmission grid models can be constructed entirely from open data. The five-stage pipeline – data extraction, topology reconstruction, parameter estimation, demand allocation, and optimal power flow – transforms crowdsourced OSM geometry and public EIA records into bus-branch models that converge under AC-OPF for all 48 contiguous US states and multi-state regions up to the full Eastern Interconnection. The proposed pipeline yields models where 88% of states solve at the strictest constraint level. Progressive relaxation handles the remaining cases while transparently reporting which constraints are binding, providing a built-in quality metric. While the pipeline architecture is general, the demand, generator, and Balancing Authority modules rely on US-specific sources (EIA, HIFLD, Census Bureau). Adapting these modules for other countries with open EIA-equivalent data (e.g. the ENTSO-E Transparency Platform for Europe) is a natural extension. We hope this work lowers the barrier to transmission-level power systems research, enabling students, policymakers, and researchers to study grid behavior without requiring access to re-stricted proprietary data. All 54 models are publicly available at https://github.com/microsoft/ GridSFM . While the pipeline architecture is US-focused, the methodology generalizes to any region with adequate OSM coverage and public demand statistics. 34 A Line Parameter Lookup Tables 
+
+Table 10 lists the per-kilometer parameters for AC overhead lines. Table 11 lists underground cable parameters. Table 12 lists representative transformer parameters for the most common voltage pairs (9 of 52 entries shown; the full table is voltage-pair-specific). All resistance values assume 75 °Cconductor temperature. Table 10: AC overhead line parameters (conservative mode). 
+
+kV R X B MVA Conductor Bundle (Ω/km) (Ω/km) (μS/km) 765 0.0076 0.267 5.46 2400 4×Bluebird 2156 kcmil 12 in 525 0.0100 0.290 4.60 2000 3×Bluebird 2156 kcmil -345 0.0200 0.370 3.50 1000 2×Bluebird 2156 kcmil -230 0.0280 0.450 3.00 600 1×Drake 795 kcmil -161 0.0350 0.460 2.80 400 1×Drake (TVA/MISO) -138 0.0400 0.450 2.60 300 1×Drake 795 kcmil -115 0.0450 0.450 2.40 250 1×Dove 556.5 kcmil -69 0.0600 0.470 2.00 150 1×Partridge 266.8 kcmil -
+
+Table 11: Underground cable parameters (XLPE insulation, conservative mode). 
+
+kV R (Ω/km) X (Ω/km) B (μS/km) MVA 500 0.0130 0.125 50.0 1400 230 0.0250 0.115 30.0 500 138 0.0350 0.105 20.0 250 69 0.0550 0.090 12.0 120 
+
+Table 12: Representative transformer parameters by voltage pair. 
+
+HV (kV) LV (kV) X (pu) R (pu) MVA Notes 765 500 0.10 0.002 1500 Autotransformer 765 345 0.12 0.002 1200 Large ratio 500 345 0.08 0.002 1200 Standard EHV 345 230 0.08 0.003 800 EHV/HV boundary 230 138 0.09 0.004 400 HV/subtransmission 230 69 0.10 0.005 250 Large step-down 138 69 0.08 0.005 150 Common subtransmission 115 69 0.07 0.005 150 Subtransmission 69 34.5 0.07 0.006 50 Subtrans/distribution 
+
+# B Generator Parameter Lookup Tables 
+
+Table 13 lists the default marginal cost and operational parameters by fuel type; table 14 lists the heat-rate defaults used when no EIA-923 match is available. 35 Table 13: Generator cost and operational defaults by fuel type. 
+
+Fuel c1 c0 Startup Pmin PF ($/MWh) ($/h) ($) (%) Nuclear 12.0 100 50,000 50 0.90 Coal 35.0 50 10,000 30 0.85 Gas (CCGT) 26.0 20 2,000 20 0.85 Gas turbine 70.0 10 500 0 0.85 Oil 80.0 30 1,000 10 0.85 Diesel 90.0 20 500 0 0.85 Biomass 45.0 30 3,000 20 0.85 Waste 40.0 40 5,000 30 0.85 Geothermal 5.0 50 1,000 70 0.85 Hydro 8.0 0 0 0 0.80 Solar 0.0 0 0 0 0.95 Wind 0.0 0 0 0 0.95 Battery 15.0 0 0 0 0.95 
+
+Table 14: Heat-rate defaults for thermal generators (used when no EIA-923 plant match is avail-able). 
+
+Fuel Heat rate Fuel price VOM (BTU/kWh) ($/MMBtu) ($/MWh) Nuclear 10,400 0.80 2.0 Coal 9,800 2.50 5.0 Gas (CCGT) 6,600 3.50 3.0 Gas turbine 10,000 3.50 4.0 Oil 10,500 15.00 4.0 Diesel 9,500 20.00 5.0 Biomass 12,000 2.00 8.0 Waste 14,000 0.00 15.0 
+
+# C Per-Unit Conversion 
+
+It is convenient to represent quantities used in the model to avoid numerical values spanning many orders of magnitudes. This is done by defining some “base” units and normalizing other quantities with respect to them. The resulting numbers are technically unit-less and they are referred to as per unit values. In our pipeline, we adopt the following base and per unit quantities: 
+
+Sbase = 100 MVA (14) 
+
+Vbase = nominal bus voltage (kV) (15) 
+
+Zbase = V 2
+
+> base
+
+/S base (16) 
+
+Zpu = Z/Z base Ppu = PMW /S base (17) The pipeline performs SI-to-per-unit conversion at the boundary between Steps 2–4 (which op-erate in physical units) and Step 5 (which expects per-unit input). Branch impedances, shunt admittances, generator limits, and load values are all converted during the export step. 36 References 
+
+[1] International Energy Agency. Energy and ai. Technical report, IEA, 2025. URL https: //www.iea.org/reports/energy-and-ai/ . Published 10 April 2025. [2] U.S. Energy Information Administration. Electric power annual 2024. Technical report, U.S. EIA, 2025. URL https://www.eia.gov/electricity/annual/ . Published 2025, data year 2024, accessed 2026. [3] Carey W. King, Erhan Kutanoglu, Benjamin D. Leibowicz, Ning Lin, Dev Niyogi, Varun Rai, Joshua D. Rhodes, Surya Santoso, David Spence, Stathis Tompaidis, Jay Zarnikau, and Hao Zhu. The timeline and events of the February 2021 Texas electric grid blackouts. Technical report, The University of Texas at Austin Energy Institute, 2021. URL https://energy. utexas.edu/research/ercot-blackout-2021 . Accessed 2026. [4] Climate Central. Weather-related power outages rising, 2024. URL https://www. climatecentral.org/climate-matters/weather-related-power-outages-rising . Ac-cessed 2026. [5] FERC. Critical energy infrastructure information (CEII), 2023. URL https://www.ecfr. gov/current/title-18/chapter-I/subchapter-X/part-388/section-388.113 . 18 CFR § 388.113. [6] North American Electric Reliability Corporation. Critical infrastructure protection standards CIP-002 through CIP-014, 2023. URL https://www.nerc.com/standards/ reliability-standards/cip .[7] J Duncan Glover, Mulukutla S Sarma, Thomas Jeffrey Overbye, and NP Padhy. Power system analysis and design , volume 2008. Cengage Learning Stamford, CT, USA, 2012. [8] Sogol Babaeinejadsarookolaee, Adam Birchfield, Richard D. Christie, Carleton Coffrin, Christopher DeMarco, Ruisheng Diao, Michael Ferris, Stephane Fliscounakis, Scott Greene, Renke Huang, Cedric Josz, Roman Korab, Bernard Lesieutre, Jean Maeght, Terrence W. K. Mak, Daniel K. Molzahn, Thomas J. Overbye, Patrick Panciatici, Byungkwon Park, Jonathan Snodgrass, Ahmad Tbaileh, Pascal Van Hentenryck, and Ray Zimmerman. The power grid library for benchmarking ac optimal power flow algorithms, 2021. URL https://arxiv.org/ abs/1908.02788 .[9] Adam B. Birchfield, Ti Xu, Kathleen M. Gegner, Komal S. Shetye, and Thomas J. Overbye. Grid structural characteristics as validation criteria for synthetic networks. IEEE Transactions on Power Systems , 32(4):3258–3265, 2017. doi: 10.1109/TPWRS.2016.2616385. [10] Ti Xu, Adam B. Birchfield, Komal S. Shetye, and Thomas J. Overbye. Creation of synthetic electric grid models for transient stability studies. In Proceedings of the IREP Symposium (Bulk Power System Dynamics and Control) , 2017. URL https://overbye.engr.tamu.edu/ wp-content/uploads/sites/146/2022/01/IREP_Ti_WithFooter_ARCHIVE.pdf .[11] Arthur R Bergen. Power systems analysis . Pearson Education India, 2009. [12] Daniel S Kirschen. Power Systems: Fundamental Concepts and the Transition to Sustainability .John Wiley & Sons, 2024. 37 [13] Steven Low. Power System Analysis: Analytical tools and structural properties . Cambridge University Press, 2026. [14] Baosen Zhang and David Tse. Geometry of injection regions of power networks. IEEE Trans-actions on Power Systems , 28(2):788–797, 2012. [15] Steven H Low. Convex relaxation of optimal power flow–part i: Formulations and equivalence. 
+
+IEEE Transactions on Control of Network Systems , 1(1):15–27, 2014. [16] Steven H Low. Convex relaxation of optimal power flow—part ii: Exactness. IEEE Transac-tions on Control of Network Systems , 1(2):177–189, 2014. [17] Andreas Wächter and Lorenz T. Biegler. On the implementation of an interior-point filter line-search algorithm for large-scale nonlinear programming. Mathematical Programming , 106: 25–57, 2006. doi: 10.1007/s10107-004-0559-y. [18] Daniel K. Molzahn and Ian A. Hiskens. A survey of relaxations and approximations of the power flow equations. Foundations and Trends in Electric Energy Systems , 4(1–2):1–221, 2019. [19] OpenStreetMap Wiki contributors. Stats — openstreetmap wiki, 2026. URL https://wiki. openstreetmap.org/wiki/Stats . Accessed 2026. [20] Jochen Topf and contributors. Openstreetmap taginfo, 2026. URL https://taginfo. openstreetmap.org/ . Tag usage statistics, accessed 2026-03-30. [21] Christopher Arderne, Conrad Zorn, Claire Nicolas, and Elco E. Koks. Predictive mapping of the global power system using open data. Scientific Data , 7:19, 2020. doi: 10.1038/ s41597-019-0347-4. [22] Carleton Coffrin, Russell Bent, Kaarthik Sundar, Yeesian Ng, and Miles Lubin. PowerMod-els.jl: An open-source framework for exploring power flow formulations. In Proceedings of the Power Systems Computation Conference (PSCC) , 2018. [23] OpenStreetMap Contributors. OpenStreetMap, 2026. URL https://www.openstreetmap. org . Accessed 2026. [24] U.S. Energy Information Administration. Form EIA-860: Annual electric generator report, 2024. URL https://www.eia.gov/electricity/data/eia860/ . Accessed 2026. [25] U.S. Energy Information Administration. Form EIA-923: Power plant operations report, 2024. URL https://www.eia.gov/electricity/data/eia923/ . Accessed 2026. [26] U.S. Energy Information Administration. EIA-930 hourly electric grid monitor, 2026. URL 
+
+https://www.eia.gov/electricity/gridmonitor/ . Accessed 2026. [27] U.S. Census Bureau. American community survey 5-year estimates, 2024. URL https:// data.census.gov . Accessed 2026. [28] Lester D Taylor. The demand for electricity: a survey. The Bell Journal of Economics , pages 74–110, 1975. [29] Rob J Hyndman and Shu Fan. Density forecasting for long-term peak electricity demand. 
+
+IEEE Transactions on Power Systems , 25(2):1142–1153, 2009. 38 [30] U.S. Department of Homeland Security. Electric planning areas (balancing authorities), 2025. URL https://services5.arcgis.com/HDRa0B57OVrv2E1q/arcgis/rest/services/ Electric_Planning_Areas/FeatureServer/0 . Homeland Infrastructure Foundation-Level Data (HIFLD); ArcGIS Feature Server. [31] Daniel S Kirschen and Goran Strbac. Fundamentals of power system economics . John Wiley & Sons, 2026. [32] U.S. Energy Information Administration. Form EIA-861: Annual electric power industry report, 2024. URL https://www.eia.gov/electricity/data/eia861/ . Accessed 2026. [33] Jonas Hörsch, Fabian Hofmann, David Schlachtberger, and Tom Brown. PyPSA-Eur: An open optimisation model of the European transmission system. Energy Strategy Reviews , 22: 207–215, 2018. doi: 10.1016/j.esr.2018.08.012. [34] Bart Wiegmans. GridKit: European and North American extracts, 2016. URL https:// zenodo.org/record/47317 . Dataset, Zenodo, accessed 2026. 39

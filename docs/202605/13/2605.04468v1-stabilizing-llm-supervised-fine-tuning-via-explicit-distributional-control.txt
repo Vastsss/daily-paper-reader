@@ -1,0 +1,912 @@
+Title: Stabilizing LLM Supervised Fine-Tuning via Explicit Distributional Control
+
+URL Source: https://arxiv.org/pdf/2605.04468v1
+
+Published Time: Thu, 07 May 2026 00:26:22 GMT
+
+Number of Pages: 17
+
+Markdown Content:
+## Stabilizing LLM Supervised Fine-Tuning via Explicit Distributional Control 
+
+Xinyu Wang * 1 Changzhi Sun * 2 Yuanbin Wu 1 Xiaoling Wang 1
+
+1. abstract 
+
+Post-training large language models (LLMs) often suffers from catastrophic forgetting, where improvements on a tar-get objective degrade previously acquired capabilities. Re-cent evidence suggests that this phenomenon is primarily driven by excessive distributional drift during optimization. Motivated by this perspective, we propose Anchored Learn-ing, a simple framework that explicitly controls distribu-tional updates during offline fine-tuning via a dynamically evolving moving anchor . Instead of matching a fixed refer-ence distribution, the anchor interpolates between the cur-rent model and a frozen reference to construct an intermedi-ate target that the model distills toward, transforming global fine-tuning into a sequence of local trust-region updates in distribution space. Theoretically, we prove this anchor-based update admits a linear KL-divergence upper bound per iteration, ensuring a stable transition between model distributions. Extensive experiments on iGSM, MedCalc, and IFEval show that Anchored Learning consistently lies on the Pareto frontier of gain–stability trade-offs, achieving near-optimal performance improvements while substantially reducing degradation compared to strong baselines. For example, while standard SFT suffers from over 53% per-formance degradation on iGSM and MedCalc, Anchored Learning slashes this drop to under 5% while maintaining near-optimal gains (e.g., 75.2% on iGSM). 
+
+2. Introduction 
+
+Post-training large language models (LLMs) to adapt them to new objectives is a central step in modern model develop-ment, enabling improved task performance, alignment, and domain specialization(Labrak et al., 2024; Peng et al., 2024). However, post-training often induces catastrophic forget-ting , where gains on the target task come at the expense of degraded performance on previously acquired capabili-ties (Kirkpatrick et al., 2017; Zhai et al., 2023). Understand-ing the mechanism behind this phenomenon is critical for designing stable and efficient fine-tuning algorithms. Recent empirical and theoretical studies converge on a com-mon conclusion: catastrophic forgetting is primarily driven   
+
+> 1School of Computer Science and Technology, East China Normal University, Shanghai, China 2TeleAI, Shanghai, China. Correspondence to: Xiaoling Wang <xlwang@cs.ecnu.edu.cn >.
+> Preprint. May 7, 2026.
+
+by excessive distributional drift during optimization. RL’s Razor shows that although reinforcement learning (RL) and supervised fine-tuning (SFT) often achieve compara-ble target-task performance, RL preserves prior capabilities significantly better, with the degree of forgetting strongly correlated with the KL-divergence between the fine-tuned and base policy, reflecting an implicit bias of on-policy RL toward KL-minimal solutions among all policies that solve the objective (Shenfeld et al., 2025). Complementarily, the robustness of RL has been attributed to the mode-seeking behavior induced by on-policy data rather than to algorith-mic components such as KL regularization or advantage estimation, with approximately on-policy updates already substantially mitigating forgetting (Chen et al., 2025). To-gether, these findings indicate that post-training stability is governed by how tightly the optimization trajectory controls distributional shift and mode preservation. These insights, however, remain largely descriptive: while on-policy RL implicitly constrains distributional drift, it does so through costly data collection and complex optimiza-tion pipelines, and offers limited direct control over the opti-mization trajectory. In contrast, standard SFT lacks any ex-plicit mechanism for regulating how far and in which direc-tion the model is allowed to move in distribution space, often leading to abrupt behavioral shifts (Lin et al., 2025; Pareja et al., 2025). Existing approaches based on static KL regular-ization, trust-region constraints, or fixed teacher distillation provide only indirect or globally tuned control (Yang et al., 2024; Wu et al., 2025a;b), and are poorly aligned with the local geometry of model distributions (Tab. 1). Therefore, a natural question is whether a simple and explicit mecha-nism can enable stable control of distributional updates in a purely offline setting, combining the efficiency of SFT with the stability of on-policy RL .In this work, we propose Anchored Learning , a simple framework that explicitly controls distributional updates during fine-tuning via a dynamically evolving moving an-chor . Instead of matching a fixed reference distribution, the anchor is constructed by interpolating between the current model and a frozen reference (e.g., an SFT model), yielding an intermediate target that the model distills toward at each iteration. As the anchor co-evolves with the optimization tra-jectory, successive updates are constrained to remain local in distribution space, transforming global fine-tuning into a sequence of conservative steps that effectively induce an im-plicit trust-region behavior while preserving the efficiency 1                                              
+
+> arXiv:2605.04468v1 [cs.LG] 6 May 2026 Stabilizing LLM Supervised Fine-Tuning via Explicit Distributional Control
+> Table 1. Comparison of representative post-training paradigms for continual adaptation. Dyn. Target indicates whether the supervision target is explicitly constructed to evolve with the current model during optimization. Prim. Superv. denotes the signal that defines the dominant optimization objective, rather than the input data source. Drift Ctrl. characterizes how distributional updates are constrained, either implicitly through sampling or losses, or explicitly via surrogate or KL-based constraints. Ctrl. Gran. specifies whether the drift constraint operates locally (pointwise or per-update) or globally over the parameter or policy space. Offline indicates whether training relies solely on a fixed dataset without online interaction. Anchored Learning is the only approach that simultaneously admits an explicitly constructed dynamic target, locally bounded drift control, and a fully offline training regime.
+> Method Dyn. Target Prim. Superv. Drift Ctrl. Ctrl. Gran. Offline
+> Supervised Fine-Tuning No Labeled Data Implicit (Forward KL) Global Yes Reward-Driven RL No Reward Signal Implicit (Sampling / Exploration) Local No Surrogate RL (e.g., PPO) No Reward Signal Explicit (Trust-Region / KL) Local No KL-Regularized Fine-Tuning No Fixed Reference Explicit (KL) Global Yes Distillation No Frozen Teacher Implicit (KL) Global Yes Anchored Learning (Ours) Yes Interpolated Anchor Explicit (Bounded) Local Yes
+
+and simplicity of offline training. Anchored Learning admits theoretical guarantees on dis-tributional stability. In particular, we show that the KL divergence between the anchored target and the current model admits an explicit per-iteration upper bound under both probability-space and logit-space anchoring, ensuring a stable and controlled transition between successive model distributions. In summary, our main contributions are: • We propose Anchored Learning , a simple and general framework that explicitly enforces local control over distributional updates in offline fine-tuning via a mov-ing anchor. • We provide theoretical guarantees on distributional sta-bility by deriving explicit per-iteration KL-divergence bounds for both probability-space and logit-space an-choring. • We demonstrate empirically that Anchored Learning achieves a strong trade-off between performance gains and stability across multiple benchmarks. 
+
+3. Preliminaries 
+
+Problem Setting. We study model adaptation in a super-vised fine-tuning (SFT) setting. Let D = {(xi, y i)}Ni=1 denote a labeled dataset for a new task, and let DX denote the empirical marginal distribu-tion over inputs induced by D. Let pbase (· | x) be a fixed base conditional distribution encoding previously acquired knowledge. Standard SFT minimizes the empirical neg-ative log-likelihood Lsft (θ) = E(x,y )∼D [− log pθ (y | x)] 
+
+on D starting from pbase , yielding an SFT reference model 
+
+psft (· | x). Throughout this work, we assume psft is trained once and then kept fixed. 
+
+Scope and Practical Constraints. In practice, the data used to acquire general capabilities in open-source LLMs is often unknown or unavailable, making replay or joint training on such data infeasible. Accordingly, we restrict our scope to purely offline fine-tuning on the target dataset 
+
+D, excluding replay-based methods, mixed-dataset train-ing, and parameter isolation, and focus on improving sta-bility through controlled optimization under this realistic constraint. 
+
+Limitations of Standard SFT. While SFT can effectively fit the target distribution induced by D, it provides no ex-plicit mechanism to preserve prior behaviors. When the target distribution differs substantially from pretraining, gra-dients may systematically overwrite previously acquired representations due to parameter sharing and non-convex optimization, leading to distributional drift and catastrophic forgetting. A natural baseline for mitigating forgetting is to regularize a trainable model pθ (· | x) toward the fixed base model 
+
+pbase (· | x) via a KL penalty: 
+
+min  
+
+> θ
+
+Lsft (θ) + λ E(x,y )∼D [KL( pθ (· | x) ∥ pbase (· | x))] ,
+
+(1) where λ > 0 controls the regularization strength. Although intuitive, this approach often performs poorly when the tar-get distribution deviates substantially from the base model. In practice, the gradients of the task loss and the KL penalty frequently conflict, leading to slow convergence or unstable optimization, while attraction toward a fixed base model becomes increasingly misaligned as adaptation progresses, suppressing beneficial task-specific updates and limiting final performance. These limitations motivate a mechanism that (i) reduces persistent gradient conflict, (ii) allows the reference distribu-tion to evolve during optimization, and (iii) enforces local, trust-region-like constraints for stable updates. 2Stabilizing LLM Supervised Fine-Tuning via Explicit Distributional Control <latexit sha1_base64="3MUkKiCoiAzY5Y40sOOBicuGr2A=">AAAB7XicbVDLSgNBEOyNrxhfUY9eBoPgKeyKr2PQi8cI5gHJEnons8mY2Z1lZlYIS/7BiwdFvPo/3vwbJ8keNLGgoajqprsrSATXxnW/ncLK6tr6RnGztLW9s7tX3j9oapkqyhpUCqnaAWomeMwahhvB2oliGAWCtYLR7dRvPTGluYwfzDhhfoSDmIecorFSs4siGWKvXHGr7gxkmXg5qUCOeq/81e1LmkYsNlSg1h3PTYyfoTKcCjYpdVPNEqQjHLCOpTFGTPvZ7NoJObFKn4RS2YoNmam/JzKMtB5Hge2M0Az1ojcV//M6qQmv/YzHSWpYTOeLwlQQI8n0ddLnilEjxpYgVdzeSugQFVJjAyrZELzFl5dJ86zqXVYv7s8rtZs8jiIcwTGcggdXUIM7qEMDKDzCM7zCmyOdF+fd+Zi3Fpx85hD+wPn8AY7BjyI=</latexit> 
+
+ω 
+
+> <latexit sha1_base64="4Ez8NcI/TNb/euYPd6gpRmhNeqs=">AAAB8XicbVDLSgNBEOz1GeMr6tHLYBC8GHbF1zHoxWME88BkCb2T2WTI7OwyMyuEJX/hxYMiXv0bb/6Nk2QPmljQUFR1090VJIJr47rfztLyyuraemGjuLm1vbNb2ttv6DhVlNVpLGLVClAzwSWrG24EayWKYRQI1gyGtxO/+cSU5rF8MKOE+RH2JQ85RWOlR4+ckg6KZIDdUtmtuFOQReLlpAw5at3SV6cX0zRi0lCBWrc9NzF+hspwKti42Ek1S5AOsc/alkqMmPaz6cVjcmyVHgljZUsaMlV/T2QYaT2KAtsZoRnoeW8i/ue1UxNe+xmXSWqYpLNFYSqIicnkfdLjilEjRpYgVdzeSugAFVJjQyraELz5lxdJ46ziXVYu7s/L1Zs8jgIcwhGcgAdXUIU7qEEdKEh4hld4c7Tz4rw7H7PWJSefOYA/cD5/ABbPj+g=</latexit>
+
+1 → ω
+
+Update 
+
+Detach Interpolation 
+
+Init <latexit sha1_base64="UCf6E6ebryzm2OtBCMV/CGC9FKE=">AAAB+XicbVDLSsNAFJ34rPUVdelmsAh1UxLxtSy6cVnBPqCNYTKdtEMnkzBzUyghf+LGhSJu/RN3/o3TNgttPXDhcM693HtPkAiuwXG+rZXVtfWNzdJWeXtnd2/fPjhs6ThVlDVpLGLVCYhmgkvWBA6CdRLFSBQI1g5Gd1O/PWZK81g+wiRhXkQGkoecEjCSb9uJn/VgyIA8ZVU4y3Pfrjg1Zwa8TNyCVFCBhm9/9foxTSMmgQqiddd1EvAyooBTwfJyL9UsIXREBqxrqCQR0142uzzHp0bp4zBWpiTgmfp7IiOR1pMoMJ0RgaFe9Kbif143hfDGy7hMUmCSzheFqcAQ42kMuM8VoyAmhhCquLkV0yFRhIIJq2xCcBdfXiat85p7Vbt8uKjUb4s4SugYnaAqctE1qqN71EBNRNEYPaNX9GZl1ov1bn3MW1esYuYI/YH1+QOeNpOp</latexit> 
+
+pω(t) 
+
+> <latexit sha1_base64="7oYdLNUqwRh6qy350Q5uaN1tRJs=">AAAB+3icbVDLSgNBEJz1GeNrjUcvg0EQhLArvo5BLx4jmAckS5idzCZDZmeWmV41LPkVLx4U8eqPePNvnCR70MSChqKqm+6uMBHcgOd9O0vLK6tr64WN4ubW9s6uu1dqGJVqyupUCaVbITFMcMnqwEGwVqIZiUPBmuHwZuI3H5g2XMl7GCUsiElf8ohTAlbquiXAHcEiIFqrRwz4BPtdt+xVvCnwIvFzUkY5al33q9NTNI2ZBCqIMW3fSyDIiAZOBRsXO6lhCaFD0mdtSyWJmQmy6e1jfGSVHo6UtiUBT9XfExmJjRnFoe2MCQzMvDcR//PaKURXQcZlkgKTdLYoSgUGhSdB4B7XjIIYWUKo5vZWTAdEEwo2rqINwZ9/eZE0Tiv+ReX87qxcvc7jKKADdIiOkY8uURXdohqqI4qe0DN6RW/O2Hlx3p2PWeuSk8/soz9wPn8AYcWTXw==</latexit>
+
+t → t + 1  
+
+> <latexit sha1_base64="3enH981dG1fQQoF6NyeGutvQrIA=">AAAB7nicbVDLSgNBEOz1GeMr6tHLYBDiJeyKr2PQi8cI5gHJGmYnk2TI7Ow60yuEJR/hxYMiXv0eb/6Nk2QPmljQUFR1090VxFIYdN1vZ2l5ZXVtPbeR39za3tkt7O3XTZRoxmsskpFuBtRwKRSvoUDJm7HmNAwkbwTDm4nfeOLaiEjd4yjmfkj7SvQEo2ilxuNDWsKTcadQdMvuFGSReBkpQoZqp/DV7kYsCblCJqkxLc+N0U+pRsEkH+fbieExZUPa5y1LFQ258dPpuWNybJUu6UXalkIyVX9PpDQ0ZhQGtjOkODDz3kT8z2sl2LvyU6HiBLlis0W9RBKMyOR30hWaM5QjSyjTwt5K2IBqytAmlLchePMvL5L6adm7KJ/fnRUr11kcOTiEIyiBB5dQgVuoQg0YDOEZXuHNiZ0X5935mLUuOdnMAfyB8/kD9WyPVg==</latexit>
+
+q(t) 
+
+> <latexit sha1_base64="i1tY9TplVxM9Hv+PwqUdkOb8rgc=">AAACEHicbVC7SgNBFJ2NrxhfUUubwSAmTdgVX2XQRtAignlAdg2zk0kyZPbhzF0hrPsJNv6KjYUitpZ2/o2zSQpNPHDhcM693HuPGwquwDS/jczc/MLiUnY5t7K6tr6R39yqqyCSlNVoIALZdIligvusBhwEa4aSEc8VrOEOzlO/cc+k4oF/A8OQOR7p+bzLKQEttfP7tkegL7348iop3t3GRSgl9gMO27ENfQZkrCSldr5gls0R8CyxJqSAJqi28192J6CRx3yggijVsswQnJhI4FSwJGdHioWEDkiPtTT1iceUE48eSvCeVjq4G0hdPuCR+nsiJp5SQ8/Vnen5atpLxf+8VgTdUyfmfhgB8+l4UTcSGAKcpoM7XDIKYqgJoZLrWzHtE0ko6AxzOgRr+uVZUj8oW8flo+vDQuVsEkcW7aBdVEQWOkEVdIGqqIYoekTP6BW9GU/Gi/FufIxbM8ZkZhv9gfH5A2/lnNg=</latexit>
+
+KL( q(t)→pω(t) ) 
+
+> <latexit sha1_base64="s+PoNMkzkfBxm6PsB92ahFLzyMg=">AAAB+HicbVDLSgMxFL3js9ZHR126CRbBVZkRX8uiG5cV7APaYcikaRuaZIYkI9ShX+LGhSJu/RR3/o2ZdhbaeiBwOOfe5ORECWfaeN63s7K6tr6xWdoqb+/s7lXc/YOWjlNFaJPEPFadCGvKmaRNwwynnURRLCJO29H4Nvfbj1RpFssHM0loIPBQsgEj2FgpdCtJ2BPYjJTI8mumoVv1at4MaJn4BalCgUbofvX6MUkFlYZwrHXX9xITZFgZRjidlnuppgkmYzykXUslFlQH2Sz4FJ1YpY8GsbJHGjRTf29kWGg9EZGdzEPqRS8X//O6qRlcBxmTSWqoJPOHBilHJkZ5C6jPFCWGTyzBRDGbFZERVpgY21XZluAvfnmZtM5q/mXt4v68Wr8p6ijBERzDKfhwBXW4gwY0gUAKz/AKb86T8+K8Ox/z0RWn2DmEP3A+fwBf5ZOS</latexit>
+
+pbase  
+
+> <latexit sha1_base64="soPcSTcWLCRZ3ax0g4og4o9wiOY=">AAAB9XicbVDLSgMxFL3js9ZX1aWbYBFclRnxtSy6cVnBPqCtJZNm2tBMZkjuKGXof7hxoYhb/8Wdf2OmnYW2HggczrmXe3L8WAqDrvvtLC2vrK6tFzaKm1vbO7ulvf2GiRLNeJ1FMtItnxouheJ1FCh5K9achr7kTX90k/nNR66NiNQ9jmPeDelAiUAwilZ6iHudkOJQh6kJcNIrld2KOwVZJF5OypCj1it9dfoRS0KukElqTNtzY+ymVKNgkk+KncTwmLIRHfC2pYqG3HTTaeoJObZKnwSRtk8hmaq/N1IaGjMOfTuZZTTzXib+57UTDK66qVBxglyx2aEgkQQjklVA+kJzhnJsCWVa2KyEDammDG1RRVuCN//lRdI4rXgXlfO7s3L1Oq+jAIdwBCfgwSVU4RZqUAcGGp7hFd6cJ+fFeXc+ZqNLTr5zAH/gfP4AR1+TCQ==</latexit>
+
+psft 
+
+SFT 
+
+Inner Loop Outer Loop 
+
+Figure 1. Overview of the Anchored Learning framework. Starting from the base model pbase , a supervised fine-tuned model psft is ob-tained via standard SFT and kept fixed thereafter. At outer iteration 
+
+t, an anchor distribution q(t) is constructed by interpolating be-tween the current trainable model pθ(t) and the frozen SFT model with coefficient α. The anchor is detached from the computation graph and serves as a fixed target for the inner-loop optimization, which minimizes the distillation objective KL( q(t) ∥ pθ ) to update the model parameters. The updated model becomes pθ(t+1) for the next outer iteration. Gray boxes indicate frozen models ( pbase and 
+
+psft ), while pθ(t) is updated during training. 
+
+4. Approach 
+
+We propose Anchored Learning , a two-level framework that explicitly controls distributional drift relative to the base model while enabling effective adaptation to the new dataset 
+
+D (Alg. 1). Instead of regularizing toward a fixed reference distribution, Anchored Learning constructs a dynamic an-chor that co-evolves with the model and provides a locally consistent optimization target (Fig. 1). Anchored Learning decouples anchor selection from anchor fitting . In the outer loop, an anchor distribution q(t) specifies the desired direction of model evolution (Sec. 4.1), while in the inner loop, the model is updated to approximate this anchor via a generic distillation objective (Sec. 4.2). The anchor is instantiated using interpolation schemes between the current model and the fixed SFT reference model psft 
+
+(Sec. 4.3), providing an explicit mechanism to balance sta-bility and plasticity. This design induces a local trust-region behavior: at each outer iteration, the model moves only a controlled distance from its current state toward a task-optimal direction, mitigating persistent gradient conflicts and excessive drift. 
+
+4.1. Outer Loop: Anchor Selection via Interpolation 
+
+Anchored Learning proceeds in discrete outer iterations indexed by t = 0 , 1, 2, . . . , T , where T denotes the total number of outer iterations and the initial model ( t = 0 )corresponding to the base distribution pbase . At each itera-tion, an anchor distribution is constructed by interpolating between the current model pθ(t) (· | x) and the fixed SFT reference model psft (· | x):
+
+q(t)(· | x) = Iα(pθ(t) (· | x), p sft (· | x)) , (2) where Iα denotes an interpolation operator with coefficient 
+
+α ∈ (0 , 1) . Interpolating with the current model is essential: if interpolation were performed only against a fixed refer-ence, the anchor would be static and the procedure would degenerate into conventional distillation with a fixed teacher. The specific instantiations of Iα are described in Sec. 4.3. Although we focus on interpolation between two models, the framework naturally extends to multiple references. 
+
+4.2. Inner Loop: Anchor Fitting via Distillation 
+
+Given the anchor distribution q(t), the inner loop approxi-mately projects the current model onto the anchor by mini-mizing the distillation objective: 
+
+θ(t+1) ≈ arg min 
+
+θ Ldistill (θ; q(t)), initialized at θ(t).
+
+(3) In practice, this minimization is carried out by running a gradient-based optimizer for K epochs over the dataset D
+
+(e.g., AdamW or SGD). We implement the inner loop using a simple off-policy knowledge distillation scheme on the fixed dataset D. The framework naturally extends to on-policy or hybrid distillation variants, which we leave to future work. 
+
+4.3. Instantiations of the Interpolation Operator 
+
+We instantiate the interpolation operator Iα in two represen-tation spaces: logit space and probability space. 
+
+Logit-space interpolation. Let zθ(t) (x) and zsft (x) de-note the pre-softmax logits of the current and SFT models, respectively. The interpolated logits are 
+
+z(t)(x) = (1 − α) zθ(t) (x) + α z sft (x), (4) and the anchor distribution is obtained via 
+
+q(t)(· | x) = softmax  z(t)(x). (5) 
+
+Probability-space interpolation. Interpolation can also be performed directly on predictive distributions: 
+
+q(t)(· | x) = (1 − α) pθ(t) (· | x) + α p sft (· | x), (6) which corresponds to a convex mixture of model predictions. We implicitly assume that all distributions share the same support so that the KL divergence is well-defined. 
+
+5. Theoretical Analysis 
+
+We analyze the properties of the anchor distribution q(t)(·| x)
+
+defined in Eq. (2) . All results hold pointwise for any input 3Stabilizing LLM Supervised Fine-Tuning via Explicit Distributional Control 
+
+(x, y ) ∈ D . We provide proof sketches to highlight the key mechanisms, while full derivations are deferred to Ap-pendix A. 
+
+5.1. Bounded Divergence in Probability Space 
+
+We first establish that when using probability-space interpo-lation (Eq. (6) ), the anchor distribution bounds the update magnitude relative to the current model, acting as a dynamic trust-region constraint. 
+
+Lemma 5.1 (Divergence Bound for Probability Interpola-tion) . Let the anchor q(t) be defined via probability-space interpolation as 
+
+q(t) = (1 − α)pθ(t) + αp sft , α ∈ [0 , 1] .
+
+Then, 
+
+KL  q(t)(·| x) ∥ pθ(t) (·| x) ≤ α KL  psft (·| x) ∥ pθ(t) (·| x).
+
+(7) 
+
+Proof. The result follows from the convexity of the mapping 
+
+q 7 → KL( q ∥ pθ(t) ) and Jensen’s inequality, together with the identity KL( pθ(t) ∥ pθ(t) ) = 0 .
+
+5.2. Geometric Interpretation of Logit Interpolation 
+
+When using logit-space interpolation (Eq. (4) ), the result-ing anchor distribution takes the form of a renormalized geometric mean: 
+
+q(t) 
+
+> y
+
+(x) = pθ(t) (y|x)1−α psft (y|x)α
+
+Z(x) , (8) where Z(x) is the partition function. This form admits a natural geometric interpretation. 
+
+Lemma 5.2 (Reverse-KL Barycenter / Geodesic Path) . Let 
+
+α ∈ (0 , 1) and define 
+
+J (p) ≜ (1 −α) KL  p ∥ pθ(t) (·| x)+α KL  p ∥ psft (·| x).
+
+(9) 
+
+Then the anchor distribution q(t) in Eq. (8) satisfies 
+
+q(t)(·| x) = arg min 
+
+> p∈∆
+
+J (p). (10) 
+
+Proof. The result follows from solving the first-order op-timality conditions of the constrained problem via a La-grangian formulation; a complete derivation is provided in Appendix A. 
+
+Remark on Information Geometry. Lemma 5.2 implies that q(t) lies on the exponential geodesic ( e-geodesic) con-necting pθ(t) and psft , equivalently corresponding to linear interpolation in log-probability (logit) space followed by normalization. This suggests that logit-space Anchored Learning encourages the model to move along a smooth and statistically natural path toward the SFT reference. 
+
+Lemma 5.3 (Bound for Logit Interpolation) . Let α ∈ [0 , 1) .For the anchor distribution q(t) defined in Eq. (8) , the diver-gence from the current model satisfies 
+
+KL  q(t)(·| x) ∥ pθ(t) (·| x) ≤ α
+
+1 − α KL  pθ(t) (·| x) ∥ psft (·| x).
+
+(11) 
+
+Proof. By the optimality of q(t) in Lemma 5.2, the weighted sum of divergences evaluated at q(t) is no larger than that evaluated at any other distribution, in particular pθ(t) .Expanding the objective, dropping the non-negative term 
+
+KL( q(t) ∥ psft ), and rearranging terms yields the stated bound. 
+
+5.3. Trust-Region Interpretation and Dynamic Stability 
+
+Lemma 5.1 and Lemma 5.3 show that under both probability-space and logit-space interpolation, the anchor distribution q(t) stays within a controlled divergence from the current model pθ(t) . Consequently, minimizing the distil-lation objective KL( q(t) ∥ pθ ) induces a local and bounded behavioral update at each outer iteration, which can be inter-preted as an implicit trust-region constraint in distribution space. Crucially, the anchor is constructed relative to the current 
+
+model rather than a fixed reference. This dynamic coupling makes the target distribution co-evolve with the optimiza-tion trajectory, preventing the training objective from im-posing a persistent attraction toward a static and potentially misaligned base distribution once partial adaptation has occurred. As a result, Anchored Learning reduces the opti-mization tension that commonly arises when simultaneously fitting the new task and preserving the base behavior. To contrast, consider static KL regularization toward the base model, which implicitly optimizes a fixed compromise objective of the form 
+
+min  
+
+> p∈∆
+
+(1 −β) KL  p ∥ psft 
+
++β KL  p ∥ pbase 
+
+, β ∈ (0 , 1) .
+
+(12) The optimizer of Eq. (12) is a single barycenter between 
+
+psft and pbase , independent of the current model state. Such a static target can remain misaligned with the desired adap-tation trajectory after the model has already moved toward the task distribution, thereby inducing persistent gradient conflicts between fitting and preservation objectives. In contrast, Anchored Learning realizes a sequence of mov-ing barycenters that continuously interpolate between the current model and the SFT reference. 
+
+Proposition 5.4 (Dynamic Convergence of Anchored Learn-ing) . Assume that the inner-loop optimization exactly matches the anchor distribution at each outer iteration, i.e., pθ(t+1) = q(t), and that the anchor is constructed via 
+
+4Stabilizing LLM Supervised Fine-Tuning via Explicit Distributional Control 
+
+probability-space interpolation: 
+
+q(t) = (1 − α)pθ(t) + αp sft , α ∈ (0 , 1) .
+
+Then the induced recursion satisfies 
+
+pθ(t+1) = (1 − α)pθ(t) + αp sft ,
+
+and converges geometrically to psft as t → ∞ . Moreover, 
+
+KL  pθ(t) ∥ psft 
+
+ ≤ (1 − α)t KL  pbase ∥ psft 
+
+.
+
+Under the exact-projection assumption, the resulting re-cursion converges geometrically to psft while maintaining bounded stepwise deviation; detailed derivations are pro-vided in Appendix A.4. This perspective explains why Anchored Learning yields stable progressive adaptation whereas naive static regularization often fails to achieve a favorable trade-off in practice. 
+
+6. Experiments 
+
+6.1. Experimental Setup Datasets. We evaluate Anchored Learning under task-specific fine-tuning settings across three representative tar-get tasks: iGSM (Ye et al., 2025), a synthetic grade-school mathematics benchmark with controllable difficulty; Med-Calc (Khandekar et al., 2024), a benchmark for medical calculation and numerical reasoning; and IFEval (Zhou et al., 2023), which evaluates instruction-following under verifiable constraints. For each task, models are fine-tuned or distilled on the official training split, hyperparameters are selected based on the corresponding validation set when available, and final performance is reported on the test set. To quantify catastrophic forgetting, we additionally eval-uate all finetuned models on a suite of general-purpose benchmarks that are not observed during target-task training. These include MMLU-Pro (Wang et al., 2024) for knowl-edge and reasoning, Countdown (Pan et al., 2025) for math-ematical reasoning, and MBPP , MBPP+ , HumanEval ,and HumanEval+ (Liu et al., 2023) for code generation. This evaluation protocol enables simultaneous assessment of target-task gains and degradation of prior capabilities. 
+
+Models. We evaluate our method on two diverse model families to assess robustness across architectures and scales: Qwen2.5-Instruct (Qwen et al., 2025) at scales of 1.5B, 3B, 7B, and 14B parameters, and Llama-3.2-3B-Instruct (Grattafiori et al., 2024). Unless otherwise speci-fied, the Qwen2.5-3B-Instruct and Llama-3.2-3B-Instruct models serve as the primary testbeds for baseline compar-isons due to their comparable parameter counts. 
+
+Training Protocol. For all methods, fine-tuning or distilla-tion is performed on the same target-task training data using identical optimization budgets to ensure fair comparison. Unless otherwise specified, all models are initialized from the corresponding instruction-tuned checkpoints. Hyperpa-rameters for baseline methods follow the settings reported in their original papers or are tuned within comparable search ranges. Unless otherwise specified, all experiments use Qwen2.5-3B-Instruct as the default model, with logit-space interpolation, an interpolation coefficient α = 0 .5, K = 5 
+
+inner-loop iterations per outer iteration, and a total of T = 5 
+
+outer iterations. 
+
+Evaluation Metrics. We report Accuracy for all non-coding benchmarks and Pass@1 for code generation tasks. To summarize general capability retention, we addition-ally report a consolidated General Average score computed across all evaluation benchmarks. 
+
+Baselines. We compare Anchored Learning against stan-dard SFT (full fine-tuning, learning rate 1 × 10 −5) and a diverse set of forgetting-mitigation baselines. These include 
+
+Low-SFT (Pareja et al., 2025; Lin et al., 2025), which ap-plies a substantially reduced learning rate ( 1 × 10 −6) to preserve general capabilities; KL-SFT , which adds a KL penalty with coefficient λ = 0 .2 to constrain the fine-tuned model toward a fixed reference distribution; Self-SFT (Ze-likman et al., 2022; Chen et al., 2025), which bootstraps training data from model-generated responses filtered by a ground-truth reward function; Iter-SFT (Chen et al., 2025), which leverages approximately on-policy data generation to reduce distributional shift; STM (Wu et al., 2025a), which masks high-perplexity tokens to reduce the influence of outliers during optimization; and DFT (Wu et al., 2025b), which dynamically rescales the training objective based on token probabilities to stabilize gradient updates. All base-lines are trained under comparable optimization budgets and follow the recommended hyperparameter settings from their original works when applicable. 
+
+6.2. Main Results 
+
+Fig. 2 summarizes the trade-offs between domain perfor-mance and general performance across six model–task set-tings. Three consistent observations emerge. 
+
+First , standard SFT achieves the highest domain perfor-mance but suffers from severe degradation in general capa-bilities, often collapsing toward the lower-right corner of the plots. This confirms that unconstrained fine-tuning induces substantial distributional drift and catastrophic forgetting. 
+
+Second , existing mitigation baselines alleviate forgetting to varying degrees but typically sacrifice substantial domain performance, leading to points clustered toward the upper-left or central regions. This highlights the inherent difficulty of achieving both strong adaptation and stable retention 5Stabilizing LLM Supervised Fine-Tuning via Explicit Distributional Control 0.25 0.50 0.75 1.00                          
+
+> 0.00
+> 0.15
+> 0.30
+> 0.45
+> 0.60
+> General
+> (a) Qwen2.5-3B-Instruct + iGSM
+> 0.15 0.30 0.45 0.60
+> 0.00
+> 0.15
+> 0.30
+> 0.45
+> 0.60
+> (b) Qwen2.5-3B-Instruct + MedCalc
+> 0.40 0.48 0.56 0.64 0.72
+> 0.500
+> 0.525
+> 0.550
+> 0.575
+> 0.600
+> (c) Qwen2.5-3B-Instruct + IFEval
+> 0.25 0.50 0.75 1.00
+> Domain
+> 0.00
+> 0.15
+> 0.30
+> 0.45
+> General
+> (d) Llama3.2-3B-Instruct + iGSM
+> 0.15 0.30 0.45 0.60
+> Domain
+> 0.00
+> 0.15
+> 0.30
+> 0.45
+> (e) Llama3.2-3B-Instruct + MedCalc
+> 0.32 0.40 0.48 0.56 0.64
+> Domain
+> 0.36
+> 0.40
+> 0.44
+> 0.48
+> (f) Llama3.2-3B-Instruct + IFEval
+> Base Ours SFT Low-SFT Iter-SFT Self-SFT STM DFT KL-SFT
+
+Figure 2. Performance trade-offs between domain performance (x-axis) and general performance (y-axis) across three target tasks (iGSM, MedCalc, and IFEval) for Qwen2.5-3B-Instruct (top row) and Llama3.2-3B-Instruct (bottom row). Each point corresponds to a different fine-tuning method. Points closer to the upper-right corner indicate better performance–stability trade-offs. Anchored Learning (Ours) consistently lies near the Pareto frontier, achieving strong domain gains while preserving general capabilities. 
+
+Table 2. Scaling comparison across Qwen2.5 model sizes on iGSM. We report general performance and domain performance on iGSM. Anchored Learning consistently preserves higher general capabilities than Low-SFT while achieving comparable domain performance across all scales. 
+
+Data Method 1.5B 3B 7B 
+
+Domain 
+
+Base 0.144 0.184 0.228 Low-SFT 0.954 0.930 0.970 Ours 0.950 0.936 0.968 
+
+General 
+
+Base 0.452 0.571 0.674 Low-SFT 0.374 0.496 0.592 Ours 0.395 0.533 0.616 using static regularization or data-centric heuristics. 
+
+Third , Anchored Learning consistently lies near the Pareto frontier across all settings, achieving strong domain gains while maintaining general performance close to the base model. This demonstrates that explicitly controlling the op-timization trajectory via a moving anchor enables a superior performance–stability trade-off compared to both aggressive fine-tuning and conservative regularization baselines. 
+
+6.3. Scaling Analysis Scaling behavior across model sizes. Tab. 2 reports per-formance on iGSM across three Qwen2.5 model scales (1.5B, 3B, and 7B), comparing general capability reten-tion and domain performance. Across all scales, Anchored Learning consistently preserves substantially higher general performance than Low-SFT, while achieving comparable domain accuracy. Specifically, on the smallest 1.5B model, Anchored Learning improves general performance from 0.374 (Low-SFT) to 0.395, while maintaining nearly iden-tical iGSM accuracy (0.950 vs. 0.954). This trend persists at 3B and 7B scales, where Anchored Learning recovers a significant portion of the general capability gap to the base model, improving over Low-SFT by +3.7 and +2.4 points respectively, without sacrificing domain performance. No-tably, the domain accuracy of Anchored Learning closely matches that of Low-SFT across all sizes, indicating that sta-bility gains are not obtained at the cost of reduced adaptation effectiveness. These results demonstrate that the benefits of Anchored Learning are robust to model scaling and do not rely on a specific parameter regime. The consistent improve-ment in general retention across model sizes suggests that explicit control of distributional updates provides a scalable mechanism for stabilizing offline fine-tuning. 6Stabilizing LLM Supervised Fine-Tuning via Explicit Distributional Control 10% 20% 30% 40% 50% 60% 70% 80% 90% 
+
+interpolation coefficient  
+
+> 25
+> 30
+> 35
+> 40
+> 45
+> 50
+> 55
+> 60
+> Domain Performance %
+> Domain Performance
+> General Performance
+> Base Model (General)
+> SFT Model (Domain) 46
+> 48
+> 50
+> 52
+> 54
+> 56
+> 58
+> 60
+> General Performance %
+
+Figure 3. Domain (left) and general (right) performance versus the interpolation coefficient α for Qwen2.5-3B-Instruct on MedCalc. Dashed lines denote the SFT and base reference levels, illustrating a performance–stability trade-off. 
+
+6.4. Other Analysis 
+
+We conduct ablation studies on Qwen2.5-3B-Instruct with 
+
+MedCalc as the target task to analyze the contribution of different components and hyperparameters. 
+
+Sensitivity to the interpolation coefficient. Fig. 3 illus-trates the effect of the interpolation coefficient on domain performance and general performance. Domain perfor-mance increases rapidly at small coefficients and quickly saturates, indicating diminishing returns from more aggres-sive interpolation. In contrast, general performance gradu-ally degrades and exhibits non-monotonic variations as the coefficient increases, reflecting the heightened sensitivity of stability to update strength. An intermediate range of coeffi-cients achieves a favorable performance–stability trade-off, motivating the use of controlled interpolation to balance adaptation and retention. 
+
+Sensitivity to update schedule. Fig. 4 examines how the update schedule, parameterized by the numbers of outer and inner loop iterations, affects (i) target-domain perfor-mance and (ii) general capability retention. First, the two objectives respond fundamentally differently to the same schedule changes. Target-domain performance increases almost monotonically with the number of outer iterations and quickly reaches a saturation regime (top panel), whereas general performance exhibits clear non-monotonic behavior with structured variations across the grid (bottom panel). This indicates that optimizing for target accuracy alone can be misleading, as stability is governed by path-dependent ef-fects rather than a simple notion of “more training is better.” 1 2 3 4 5 6 7 8 9 10          
+
+> Outer Loop Num T
+> 2
+> 3
+> 4
+> 5
+> 6
+> 7
+> 8
+> 9
+> 10
+> Inner Loop Num K
+> Domain Performance
+> 0.28 0.32
+> 0.36
+> 0.40
+> 0.44
+> 0.48
+> 0.52
+> 12345678910
+> Outer Loop Num T
+> 2
+> 3
+> 4
+> 5
+> 6
+> 7
+> 8
+> 9
+> 10
+> Inner Loop Num K
+> General Performance
+> 0.49
+> 0.49
+> 0.50
+> 0.50
+> 0.50
+> 0.50
+> 0.50
+> 0.50
+> 0.51
+> 0.51
+> 0.51
+> 0.51
+> 0.51
+> 0.51
+> 0.51
+> 0.51
+> 0.51
+> 0.51
+> 0.51
+> 0.52
+> 0.52
+> 0.52
+> 0.16
+> 0.24
+> 0.32
+> 0.40
+> 0.48
+> 0.56
+> 0.492
+> 0.498
+> 0.504
+> 0.510
+> 0.516
+> 0.522
+
+Figure 4. Sensitivity of target and general performance to the outer and inner loop iterations on Qwen2.5-3B-Instruct with MedCalc as the target task. General performance exhibits non-monotonic degradation despite saturated target accuracy. 
+
+Second, high target accuracy does not necessarily imply sta-ble adaptation. In several regions, the model already attains near-saturated domain performance while general perfor-mance degrades noticeably, forming distinct degradation basins. This suggests that aggressive or poorly balanced schedules can induce stability loss even when the target objective appears well optimized, consistent with the view that catastrophic forgetting is driven by excessive distribu-tional drift along the optimization trajectory. Third, these degradation regions are localized and highly sensitive to the schedule, implying that static hyperparameter choices are unlikely to reliably avoid instability. Small changes in the inner or outer iteration counts can move the training dynamics across these basins, leading to markedly different general retention. Together, these observations motivate the need for explicit trajectory control mechanisms, rather than relying solely on fixed schedules or globally tuned regular-izers, to achieve robust gain–stability trade-offs in offline 7Stabilizing LLM Supervised Fine-Tuning via Explicit Distributional Control 1 2 3 4 5 6 7 8 
+
+> Outer Loop Num T
+> 35
+> 40
+> 45
+> 50
+> 55
+> 60
+> Domain Performance %
+> Logit (Domain)
+> Probability (Domain)
+> Logit (General)
+> Probability (General)
+> Base Model (General)
+> SFT Model (Domain) 46
+> 48
+> 50
+> 52
+> 54
+> 56
+> 58
+> 60
+> General Performance %
+
+Figure 5. Difference of the interpolation space (logit vs. prob-ability) on domain and general performance across outer loop iterations for Qwen2.5-3B-Instruct on MedCalc. 
+
+fine-tuning. 
+
+Sensitivity to interpolation operator. Fig. 5 highlights a distinct plasticity-stability trade-off. The performance divergence stems from the mathematical properties of the averaging methods. Probability-space interpolation operates as an arithmetic mean, inducing mode-covering behavior that favors plasticity. This yields superior domain adaptation (Blue-dashed) but higher forgetting. In contrast, Logit-space interpolation acts as a geometric mean (after renormaliza-tion), inducing mode-seeking behavior. This conservative aggregation favors stability, better preserving general capa-bilities (Red-solid) by suppressing low-probability tails. 
+
+7. Related Work 
+
+Post-training Stability and Forgetting. Catastrophic for-getting is a long-standing challenge in neural network adap-tation (Kirkpatrick et al., 2017), and has recently been re-visited in the context of LLM post-training. Recent com-parisons between RL and SFT suggest that on-policy RL tends to forget less while achieving comparable target per-formance, and that forgetting correlates with distributional shift measured by KL divergence to the base policy (Shen-feld et al., 2025). Complementarily, the robustness of RL has been attributed to the mode-seeking effect induced by (approximately) on-policy data, rather than specific algo-rithmic components such as KL regularization or advantage estimation (Chen et al., 2025). Our work builds on these insights but targets a different setting: we focus on purely of-fline SFT where general-domain data is unavailable, and aim to explicitly control distributional drift through the design of the optimization trajectory. 
+
+Stabilizing Supervised Fine-Tuning. A broad line of work seeks to stabilize SFT and mitigate capability degrada-tion through optimization- or data-centric interventions. On the optimization side, reducing the learning rate has been shown to improve retention and preserve general capabili-ties (Pareja et al., 2025; Lin et al., 2025), while token- or objective-level modifications such as low-perplexity token learning and dynamic objective rescaling can improve ro-bustness (Wu et al., 2025a;b). On the data side, self-training and self-distillation approaches aim to narrow distribution gaps by distilling from model-generated or teacher out-puts (Zelikman et al., 2022; Yang et al., 2024), and approxi-mately on-policy data generation has also been explored to reduce forgetting (Chen et al., 2025). In contrast to these approaches, Anchored Learning introduces a dynamically evolving intermediate target (a moving anchor) to explic-itly control distributional updates during offline fine-tuning, with theoretical per-iteration KL stability guarantees. 
+
+8. Conclusion 
+
+We presented Anchored Learning , a simple framework that explicitly controls distributional updates during offline fine-tuning through a dynamically evolving moving anchor. By shaping intermediate target distributions, Anchored Learn-ing transforms global optimization into a sequence of lo-cal and conservative updates, yielding implicit trust-region behavior with minimal overhead. We established theoret-ical guarantees on distributional stability via explicit per-iteration KL-divergence bounds and demonstrated empir-ically that the method substantially reduces catastrophic forgetting while maintaining strong target-task performance across multiple benchmarks. These results highlight the im-portance of explicit trajectory control for stable post-training and suggest a practical alternative to implicit stability mech-anisms in on-policy reinforcement learning. 
+
+Limitation 
+
+The primary limitation of Anchored Learning is the addi-tional computational overhead compared to standard SFT. Each iteration requires constructing an anchored target via interpolation and an extra forward pass for distillation, lead-ing to moderately higher training latency and memory us-age, typically about 1.5×–2× in our experiments. Although this overhead is substantially lower than that of on-policy reinforcement learning, it may limit scalability in highly resource-constrained settings. 
+
+References 
+
+Chen, H., Razin, N., Narasimhan, K., and Chen, D. Retain-ing by doing: The role of on-policy data in mitigating forgetting. arXiv preprint arXiv:2510.18874 , 2025. 8Stabilizing LLM Supervised Fine-Tuning via Explicit Distributional Control 
+
+Grattafiori, A., Dubey, A., Jauhri, A., Pandey, A., Kadian, A., Al-Dahle, A., Letman, A., Mathur, A., Schelten, A., Vaughan, A., et al. The llama 3 herd of models. arXiv preprint arXiv:2407.21783 , 2024. Khandekar, N., Jin, Q., Xiong, G., Dunn, S., Applebaum, S., Anwar, Z., Sarfo-Gyamfi, M., Safranek, C., Anwar, A., Zhang, A., et al. Medcalc-bench: Evaluating large language models for medical calculations. Advances in Neural Information Processing Systems , 37:84730– 84745, 2024. Kirkpatrick, J., Pascanu, R., Rabinowitz, N., Veness, J., Des-jardins, G., Rusu, A. A., Milan, K., Quan, J., Ramalho, T., Grabska-Barwinska, A., et al. Overcoming catastrophic forgetting in neural networks. Proceedings of the national academy of sciences , 114(13):3521–3526, 2017. Labrak, Y., Bazoge, A., Morin, E., Gourraud, P.-A., Rouvier, M., and Dufour, R. BioMistral: A collec-tion of open-source pretrained large language mod-els for medical domains. In Ku, L.-W., Martins, A., and Srikumar, V. (eds.), Findings of the Association for Computational Linguistics: ACL 2024 , pp. 5848– 5864, Bangkok, Thailand, August 2024. Association for Computational Linguistics. doi: 10.18653/v1/2024. findings-acl.348. URL https://aclanthology. org/2024.findings-acl.348/ .Lin, J., Wang, Z., Qian, K., Wang, T., Srinivasan, A., Zeng, H., Jiao, R., Zhou, X., Gesi, J., Wang, D., et al. Sft doesn’t always hurt general capabilities: Revisit-ing domain-specific fine-tuning in llms. arXiv preprint arXiv:2509.20758 , 2025. Liu, J., Xia, C. S., Wang, Y., and ZHANG, L. Is your code generated by chatGPT really correct? rigorous evaluation of large language models for code generation. In Thirty-seventh Conference on Neural Information Processing Systems , 2023. URL https://openreview.net/ forum?id=1qvx610Cu7 .Pan, J., Zhang, J., Wang, X., Yuan, L., Peng, H., and Suhr, A. Tinyzero. https://github.com/Jiayi-Pan/TinyZero, 2025. Accessed: 2025-01-24. Pareja, A., Nayak, N. S., Wang, H., Killamsetty, K., Su-dalairaj, S., Zhao, W., Han, S., Bhandwaldar, A., Xu, G., Xu, K., Han, L., Inglis, L., and Srivastava, A. Unveil-ing the secret recipe: A guide for supervised fine-tuning small LLMs. In The Thirteenth International Confer-ence on Learning Representations , 2025. URL https: //openreview.net/forum?id=eENHKMTOfW .Peng, B., Ling, X., Chen, Z., Sun, H., and Ning, X. eceLLM: Generalizing large language models for e-commerce from large-scale, high-quality instruction data. In Forty-first International Conference on Machine Learning ,2024. URL https://openreview.net/forum? id=LWRI4uPG2X .Qwen, :, Yang, A., Yang, B., Zhang, B., Hui, B., Zheng, B., Yu, B., Li, C., Liu, D., Huang, F., Wei, H., Lin, H., Yang, J., Tu, J., Zhang, J., Yang, J., Yang, J., Zhou, J., Lin, J., Dang, K., Lu, K., Bao, K., Yang, K., Yu, L., Li, M., Xue, M., Zhang, P., Zhu, Q., Men, R., Lin, R., Li, T., Tang, T., Xia, T., Ren, X., Ren, X., Fan, Y., Su, Y., Zhang, Y., Wan, Y., Liu, Y., Cui, Z., Zhang, Z., and Qiu, Z. Qwen2.5 technical report, 2025. URL https: //arxiv.org/abs/2412.15115 .Shenfeld, I., Pari, J., and Agrawal, P. Rl’s razor: Why online reinforcement learning forgets less. arXiv preprint arXiv:2509.04259 , 2025. Wang, Y., Ma, X., Zhang, G., Ni, Y., Chandra, A., Guo, S., Ren, W., Arulraj, A., He, X., Jiang, Z., et al. Mmlu-pro: A more robust and challenging multi-task language un-derstanding benchmark. Advances in Neural Information Processing Systems , 37:95266–95290, 2024. Wu, C.-C., Tam, Z. R., Lin, C.-Y., Chen, Y.-N., Sun, S.-H., and yi Lee, H. Mitigating forgetting in LLM fine-tuning via low-perplexity token learning. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025a. URL https://openreview.net/ forum?id=1ktdvp1EYI .Wu, Y., Zhou, Y., Ziheng, Z., Peng, Y., Ye, X., Hu, X., Zhu, W., Qi, L., Yang, M.-H., and Yang, X. On the general-ization of sft: A reinforcement learning perspective with reward rectification. arXiv preprint arXiv:2508.05629 ,2025b. Yang, Z., Pang, T., Feng, H., Wang, H., Chen, W., Zhu, M., and Liu, Q. Self-distillation bridges distribution gap in language model fine-tuning. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pp. 1028–1043, 2024. Ye, T., Xu, Z., Li, Y., and Allen-Zhu, Z. Physics of language models: Part 2.1, grade-school math and the hidden rea-soning process. In The Thirteenth International Confer-ence on Learning Representations , 2025. URL https: //openreview.net/forum?id=Tn5B6Udq3E .Zelikman, E., Wu, Y., Mu, J., and Goodman, N. STar: Bootstrapping reasoning with reasoning. In Oh, A. H., Agarwal, A., Belgrave, D., and Cho, K. (eds.), Ad-vances in Neural Information Processing Systems ,2022. URL https://openreview.net/forum? id=_3ELRdg2sgI .9Stabilizing LLM Supervised Fine-Tuning via Explicit Distributional Control 
+
+Zhai, Y., Tong, S., Li, X., Cai, M., Qu, Q., Lee, Y. J., and Ma, Y. Investigating the catastrophic forgetting in multimodal large language model fine-tuning. In Con-ference on Parsimony and Learning (Proceedings Track) ,2023. URL https://openreview.net/forum? id=g7rMSiNtmA .Zhou, J., Lu, T., Mishra, S., Brahma, S., Basu, S., Luan, Y., Zhou, D., and Hou, L. Instruction-following evalu-ation for large language models, 2023. URL https: //arxiv.org/abs/2311.07911 .10 Stabilizing LLM Supervised Fine-Tuning via Explicit Distributional Control 
+
+A. Detailed Theoretical Proofs 
+
+In this appendix, we provide rigorous derivations for the properties of the Anchored Learning target distributions discussed in Section 5. Throughout this appendix, all lemma and proposition numbers refer to those in Section 5. All arguments are carried out pointwise for a fixed input x; for notational simplicity, we omit the conditioning on x and write pθ(t) in place of 
+
+pθ(t) (· | x) whenever no ambiguity arises. 
+
+Standing Assumption. All model distributions are induced by a softmax parameterization and therefore have full support on the discrete output space, i.e., pi > 0 for all tokens i. Consequently, all Kullback–Leibler (KL) divergences appearing below are finite and well-defined, and all logarithms are taken over strictly positive arguments. Moreover, this assumption guarantees that all optimal solutions considered below lie in the interior of the probability simplex. 
+
+A.1. Probability-Space Interpolation (Proof of Lemma 5.1) 
+
+We first establish the divergence bound under linear interpolation in probability space. 
+
+Restatement of Lemma 5.1. Let the anchor be defined as 
+
+q(t) = (1 − α)pθ(t) + αp sft , α ∈ [0 , 1] .
+
+Then 
+
+KL  q(t) ∥ pθ(t)
+
+ ≤ α KL  psft ∥ pθ(t)
+
+.
+
+Proof. For a fixed reference distribution pθ(t) , define the functional 
+
+F (u) ≜ KL( u∥pθ(t) ) = X
+
+> i
+
+ui log ui − X
+
+> i
+
+ui log pθ(t),i .
+
+The first term is the negative entropy, which is convex in u since the scalar function f (t) = t log t satisfies f ′′ (t) = 1 /t > 0
+
+for all t > 0. The second term is linear in u. Hence, F is convex on the probability simplex. By Jensen’s inequality, for any distributions u1, u 2 and λ ∈ [0 , 1] ,
+
+F  (1 − λ)u1 + λu 2
+
+ ≤ (1 − λ)F (u1) + λF (u2).
+
+Instantiating this inequality with u1 = pθ(t) , u2 = psft , and λ = α, and noting that KL( pθ(t) ∥pθ(t) ) = 0 , yields 
+
+KL  (1 − α)pθ(t) + αp sft ∥ pθ(t)
+
+ ≤ α KL  psft ∥ pθ(t)
+
+.
+
+Substituting the definition of q(t) completes the proof. 
+
+A.2. Logit-Space Interpolation (Proof of Lemma 5.2) 
+
+We next derive the closed-form solution of the reverse-KL barycenter and show that it coincides with geometric-mean (logit-space) interpolation. 
+
+Restatement of Lemma 5.2. Let ∆ denote the probability simplex. The optimization problem 
+
+min  
+
+> u∈∆
+
+J (u) where J (u) = (1 − α)KL( u∥pθ(t) ) + αKL( u∥psft ),
+
+admits the unique minimizer 
+
+q(t) 
+
+> i
+
+= 1
+
+Z p 1−αθ(t),i p α
+
+> sft ,i
+
+, Z = X
+
+> j
+
+p 1−αθ(t),j p α 
+
+> sft ,j
+
+.
+
+Proof. We enforce the simplex constraint P 
+
+> i
+
+ui = 1 via a Lagrange multiplier λ. The Lagrangian is 
+
+L(u, λ ) = (1 − α) X
+
+> i
+
+ui log ui
+
+pθ(t),i 
+
++ α X
+
+> i
+
+ui log ui
+
+psft ,i 
+
++ λ
+
+ X 
+
+> i
+
+ui − 1
+
+
+
+= X
+
+> i
+
+ui
+
+h
+
+log ui − (1 − α) log pθ(t),i − α log psft ,i + λ
+
+i
+
+− λ. 
+
+11 Stabilizing LLM Supervised Fine-Tuning via Explicit Distributional Control 
+
+For each coordinate k, using ddx (x log x) = 1 + log x, we obtain 
+
+∂L
+
+∂u k
+
+= 1 + log uk − log  p1−αθ(t),k pα
+
+> sft ,k
+
+ + λ. 
+
+Setting this derivative to zero yields 
+
+log uk = log  p1−αθ(t),k pα
+
+> sft ,k
+
+ − (1 + λ), uk = C p 1−αθ(t),k pα
+
+> sft ,k
+
+,
+
+where C = e−(1+ λ) is a normalization constant. Enforcing P 
+
+> k
+
+uk = 1 gives 
+
+C−1 = X
+
+> j
+
+p1−αθ(t),j pα 
+
+> sft ,j
+
+=: Z, 
+
+and therefore 
+
+u∗ 
+
+> k
+
+= p1−αθ(t),k pα
+
+> sft ,k
+
+Z .
+
+Since both reference distributions have full support and α ∈ (0 , 1) , the objective J is strictly convex on the interior of the simplex. Hence, the stationary point characterized above is the unique global minimizer. Taking logarithms shows that 
+
+log q(t) 
+
+> i
+
+= (1 − α) log pθ(t),i + α log psft ,i − log Z, 
+
+which corresponds to linear interpolation in log-probability (logit) space. 
+
+A.3. Logit-Space Divergence Bound (Proof of Lemma 5.3) 
+
+We finally establish an upper bound on the divergence between the logit-interpolated anchor and the current model distribution. 
+
+Restatement of Lemma 5.3. Let α ∈ [0 , 1) . For the anchor q(t) defined by logit interpolation, 
+
+KL( q(t)∥pθ(t) ) ≤ α
+
+1 − α KL( pθ(t) ∥psft ).
+
+Proof. Let J (u) denote the objective defined in Lemma 5.2. Since q(t) is the global minimizer of J over ∆, for any 
+
+u′ ∈ ∆,
+
+J (q(t)) ≤ J (u′).
+
+Choosing u′ = pθ(t) gives 
+
+J (pθ(t) ) = (1 − α)KL( pθ(t) ∥pθ(t) ) + αKL( pθ(t) ∥psft ) = αKL( pθ(t) ∥psft ).
+
+On the other hand, 
+
+J (q(t)) = (1 − α)KL( q(t)∥pθ(t) ) + αKL( q(t)∥psft ).
+
+Combining the two displays and using the non-negativity of KL divergence yields 
+
+(1 − α)KL( q(t)∥pθ(t) ) ≤ αKL( pθ(t) ∥psft ).
+
+Dividing both sides by 1 − α (which is strictly positive) completes the proof. 
+
+A.4. Dynamic Versus Static Barycenters (Proof of Proposition 5.4) 
+
+We provide detailed derivations for the comparison between static KL barycenters and the dynamic anchor recursion used in Anchored Learning. 12 Stabilizing LLM Supervised Fine-Tuning via Explicit Distributional Control 
+
+Dynamic Anchor Recursion. Assume that the inner-loop optimization exactly matches the anchor distribution at each outer iteration, i.e., 
+
+pθ(t+1) = q(t). (13) For probability-space interpolation, the anchor is defined as 
+
+q(t) = (1 − α)pθ(t) + αp sft , α ∈ (0 , 1) . (14) Substituting Eq. (14) into Eq. (13) yields the linear recursion 
+
+pθ(t+1) = (1 − α)pθ(t) + αp sft . (15) Unrolling Eq. (15) gives 
+
+pθ(t) = (1 − α)tpθ(0) +
+
+> t−1
+
+X
+
+> k=0
+
+(1 − α)kαp sft 
+
+= (1 − α)tpbase +  1 − (1 − α)tpsft , (16) where we used the initialization pθ(0) = pbase and the finite geometric series identity. Since (1 − α)t → 0 as t → ∞ , the sequence converges pointwise to psft . Moreover, the convergence rate is geometric with ratio (1 − α).To quantify the convergence in divergence, we invoke the joint convexity of KL divergence in its first argument: 
+
+KL  pθ(t) ∥ psft 
+
+ = KL  (1 − α)tpbase + (1 − (1 − α)t)psft ∥ psft 
+
+
+
+≤ (1 − α)tKL  pbase ∥ psft 
+
+. (17) Hence, the divergence to the SFT distribution decays exponentially over outer iterations. 
+
+Static KL Barycenter. Consider the static optimization problem 
+
+p⋆ = arg min 
+
+> p∈∆
+
+(1 − β) KL  p ∥ psft 
+
+ + β KL  p ∥ pbase 
+
+, β ∈ (0 , 1) . (18) By an argument analogous to the derivation in this appendix (Proof of Lemma 5.2), the unique minimizer admits the closed form 
+
+p⋆i = 1
+
+Zβ
+
+p 1−β 
+
+> sft ,i
+
+p β
+
+> base ,i
+
+, Zβ = X
+
+> j
+
+p 1−β 
+
+> sft ,j
+
+p β 
+
+> base ,j
+
+. (19) Unless β = 0 , p⋆ differs from psft and therefore remains at a strictly positive KL divergence: 
+
+KL( p⋆ ∥ psft ) > 0.
+
+Consequently, static regularization enforces convergence to a fixed compromise distribution rather than to the task-optimal distribution. 
+
+Comparison. Equations (16) –(17) show that the dynamic anchor recursion converges geometrically to psft while main-taining controlled stepwise deviation from the current model. In contrast, Eq. (19) demonstrates that static KL regularization converges in a single step to a fixed barycenter that does not evolve with the optimization trajectory. This formalizes the fundamental distinction between progressive adaptation and static compromise. 
+
+B. Detailed Experimental Results 
+
+To supplement the visual results discussed in the main text, we report the comprehensive numerical data in this section. Tables 3, 4, and 5 provide the exact accuracy and pass rates for the comparative experiments on iGSM, MedCalc, and IFEval, respectively. 13 Stabilizing LLM Supervised Fine-Tuning via Explicit Distributional Control  
+
+> Table 3. Detailed numerical results based on Qwen2.5-3B-Instruct across general and iGSM benchmark.
+
+Method General Domain Overall Avg. Science Coding Math Math mmlu pro humaneval humaneval+ mbpp mbpp+ countdown iGSM acc pass@1 pass@1 pass@1 pass@1 acc acc Base 0.419 0.738 0.677 0.743 0.622 0.225 0.184 0.515 SFT 0.031 0.012 0.012 0.026 0.019 0.000 1.000 0.157 Low-SFT 0.333 0.689 0.646 0.714 0.590 0.004 0.930 0.558 KL-SFT 0.102 0.140 0.128 0.185 0.159 0.000 0.606 0.189 STM 0.321 0.713 0.646 0.693 0.598 0.078 0.594 0.520 DFT 0.163 0.457 0.421 0.481 0.423 0.000 0.524 0.353 Self-SFT 0.386 0.713 0.665 0.754 0.656 0.250 0.250 0.525 Iter-SFT 0.377 0.713 0.646 0.741 0.638 0.290 0.294 0.528 Ours 0.377 0.701 0.640 0.704 0.593 0.184 0.936 0.591  
+
+> Table 4. Detailed numerical results based on Qwen2.5-3B-Instruct across general and MedCalc benchmark.
+
+Method General Domain Overall Avg. Science Coding Math Medical mmlu pro humaneval humaneval+ mbpp mbpp+ countdown MedCalc acc pass@1 pass@1 pass@1 pass@1 acc acc Base 0.419 0.738 0.677 0.743 0.622 0.225 0.133 0.508 SFT 0.109 0.012 0.012 0.012 0.012 0.000 0.574 0.104 Low-SFT 0.317 0.665 0.604 0.680 0.556 0.047 0.544 0.488 KL-SFT 0.096 0.104 0.079 0.143 0.127 0.000 0.356 0.129 STM 0.277 0.646 0.598 0.693 0.569 0.046 0.147 0.425 DFT 0.297 0.604 0.530 0.635 0.550 0.043 0.145 0.401 Self-sft 0.394 0.689 0.671 0.661 0.556 0.191 0.216 0.483 Iter-SFT 0.338 0.640 0.561 0.733 0.611 0.209 0.290 0.483 Ours 0.356 0.683 0.628 0.704 0.598 0.096 0.563 0.518 
+
+C. Evaluation across the Incremental Learning Stages 
+
+Tab. 9 reports performance across three incremental adaptation stages on Qwen2.5-3B-Instruct. At Stage 1 (iGSM), both methods achieve strong domain adaptation, while Anchored Learning preserves higher general performance than Low-SFT (0.533 vs. 0.496 in General Avg) and attains slightly better overall performance. At Stage 2 (iGSM →MedCalc), the gap in domain performance becomes more pronounced: Anchored Learning substantially improves medical accuracy (0.512 vs. 0.505) and yields a higher Domain Avg (0.577 vs. 0.470), while maintaining comparable general performance. At Stage 3 (iGSM →MedCalc →IFEval), Anchored Learning consistently dominates Low-SFT across both domain and general metrics, achieving a markedly higher Domain Avg (0.505 vs. 0.331) and the best Overall Avg (0.492 vs. 0.459). These results demonstrate that Anchored Learning accumulates substantially less performance degradation across successive adaptation stages, highlighting its effectiveness in mitigating compounding distributional drift under multi-stage fine-tuning. 
+
+D. Algorithmic Details of Anchored Learning 
+
+This section provides the full pseudocode of Anchored Learning for completeness. Alg. 1 summarizes the iterative procedure. The algorithm takes as input a base model pbase , a fixed reference model psft ,an interpolation coefficient α ∈ (0 , 1) , and the total number of outer iterations T . The model is initialized from the base distribution and updated over T outer iterations. At each outer iteration t, an anchor distribution q(t)(· | x) is first constructed by interpolating between the current model 
+
+pθ(t) and the fixed reference model according to Eq. (2). The model parameters are then updated by distilling toward the 14 Stabilizing LLM Supervised Fine-Tuning via Explicit Distributional Control  
+
+> Table 5. Detailed numerical results based on Qwen2.5-3B-Instruct across general and IFEval benchmark.
+
+Method General Domain Overall Avg. Science Coding Math Ins Following mmlu pro humaneval humaneval+ mbpp mbpp+ countdown ifeval acc pass@1 pass@1 pass@1 pass@1 acc acc Base 0.419 0.738 0.677 0.743 0.622 0.225 0.398 0.546 SFT 0.375 0.683 0.622 0.696 0.582 0.138 0.694 0.541 Low-SFT 0.417 0.726 0.659 0.741 0.611 0.171 0.449 0.539 KL-SFT 0.383 0.744 0.671 0.680 0.595 0.056 0.504 0.519 STM 0.361 0.732 0.671 0.709 0.598 0.121 0.585 0.540 DFT 0.413 0.701 0.659 0.722 0.630 0.168 0.575 0.553 Self-SFT 0.411 0.671 0.640 0.701 0.595 0.237 0.526 0.540 Iter-SFT 0.358 0.701 0.659 0.717 0.595 0.209 0.526 0.538 Ours 0.409 0.707 0.646 0.706 0.611 0.170 0.652 0.557  
+
+> Table 6. Detailed numerical results based on Llama-3.2-3B-Instruct across general and iGSM benchmark.
+
+Method General Domain Overall Avg. Science Coding Math Math mmlu pro humaneval humaneval+ mbpp mbpp+ countdown iGSM acc pass@1 pass@1 pass@1 pass@1 acc acc Base 0.347 0.549 0.500 0.627 0.516 0.051 0.166 0.394 SFT 0.012 0.060 0.060 0.012 0.012 0.000 1.000 0.191 Low-SFT 0.363 0.530 0.470 0.638 0.540 0.000 0.648 0.456 KL-SFT 0.020 0.183 0.165 0.243 0.217 0.000 0.624 0.207 STM 0.292 0.506 0.457 0.643 0.534 0.000 0.492 0.418 DFT 0.082 0.232 0.207 0.291 0.220 0.000 0.660 0.242 Self-SFT 0.312 0.543 0.476 0.534 0.466 0.070 0.242 0.378 Iter-SFT 0.322 0.564 0.503 0.564 0.494 0.050 0.272 0.396 Ours 0.343 0.573 0.512 0.669 0.548 0.000 0.994 0.520 
+
+anchor distribution via the objective in Eq. (3), yielding the next iterate pθ(t+1) . The final adapted model after T iterations is returned as pθ(T ) .
+
+E. Case Study 
+
+To demonstrate the effectiveness of our method in preventing catastrophic forgetting, we present a case study involving a general arithmetic reasoning task (”Make 78”). The models were fine-tuned on the iGSM dataset , a domain-specific corpus focused on solving linear equations involving variables (e.g., expressions similar to x + y + z). As shown in Figure 6, the Base Model successfully leverages its pre-trained general reasoning capabilities to deduce the correct arithmetic combination ( 77 + 56 − 55 = 78 ). The behavior of the Low-SFT model highlights the impact of negative transfer from the specific domain. Although the model remains compliant with the output format instructions (producing a boxed answer), its internal reasoning is heavily biased by the SFT data distribution. Instead of performing the necessary arithmetic search, the model mimics the syntactic patterns of the iGSM dataset—defining variables and constructing rigid linear equations—which leads to a logical failure on this general reasoning task. In contrast, Anchored Learning effectively mitigates this interference. It resists the tendency to overfit to the specific stylistic patterns of the iGSM data, thereby retaining the robust reasoning capabilities of the Base Model and correctly solving the problem. 15 Stabilizing LLM Supervised Fine-Tuning via Explicit Distributional Control  
+
+> Table 7. Detailed numerical results based on Llama-3.2-3B-Instruct across general and MedCalc benchmark.
+
+Method General Domain Overall Avg. Science Coding Math Medical mmlu pro humaneval humaneval+ mbpp mbpp+ countdown MedCalc acc pass@1 pass@1 pass@1 pass@1 acc acc Base 0.347 0.549 0.500 0.627 0.516 0.051 0.078 0.381 SFT 0.011 0.060 0.060 0.019 0.019 0.000 0.547 0.102 Low-SFT 0.332 0.537 0.488 0.611 0.500 0.012 0.513 0.428 KL-SFT 0.2 0.096 0.104 0.079 0.101 0.093 0.000 0.356 0.118 STM 0.243 0.537 0.470 0.579 0.484 0.006 0.085 0.343 DFT 0.280 0.457 0.415 0.574 0.481 0.000 0.145 0.336 Self-SFT 0.269 0.537 0.476 0.601 0.500 0.016 0.173 0.367 Iter-SFT 0.280 0.577 0.509 0.619 0.535 0.012 0.238 0.396 Ours 0.333 0.561 0.500 0.677 0.455 0.019 0.564 0.444  
+
+> Table 8. Detailed numerical results based on Llama-3.2-3B-Instruct across general and IFEval benchmark.
+
+Method General Domain Overall Avg. Science Coding Math Ins Following mmlu pro humaneval humaneval+ mbpp mbpp+ countdown ifeval acc acc acc acc acc acc acc Base 0.347 0.549 0.500 0.627 0.516 0.051 0.356 0.421 SFT 0.327 0.507 0.425 0.520 0.420 0.012 0.656 0.410 Low-SFT 0.378 0.524 0.457 0.558 0.466 0.035 0.642 0.437 KL-SFT 0.355 0.494 0.410 0.544 0.466 0.013 0.428 0.387 STM 0.333 0.573 0.494 0.696 0.590 0.052 0.568 0.472 DFT 0.347 0.543 0.488 0.622 0.534 0.046 0.570 0.450 Self-SFT 0.296 0.543 0.476 0.534 0.466 0.057 0.496 0.410 Iter-SFT 0.309 0.571 0.515 0.569 0.497 0.050 0.526 0.434 Ours 0.368 0.573 0.518 0.587 0.481 0.050 0.600 0.454      
+
+> Table 9. Performance comparisons across incremental learning stages (iGSM →MedCalc →IFEval) on Qwen2.5-3B-Instruct.
+
+Method General Domain Overall Avg. Science Coding Math Gen. Avg. Math Medical Ins. Foll. Dom. Avg. mmlu pro hum hum+ mbpp mbpp+ count iGSM medcalc ifeval acc pass@1 pass@1 pass@1 pass@1 acc acc acc acc Base 0.419 0.738 0.677 0.743 0.622 0.225 0.571 0.184 0.133 0.398 0.238 0.466 
+
+Stage 1: iGSM 
+
+Low-SFT 0.333 0.689 0.646 0.714 0.590 0.004 0.496 0.930 0.100 0.292 0.441 0.423 Ours 0.377 0.701 0.640 0.704 0.593 0.184 0.533 0.936 0.073 0.367 0.459 0.455 
+
+Stage 2: iGSM → MedCalc 
+
+Low-SFT 0.299 0.646 0.591 0.677 0.553 0.003 0.462 0.622 0.505 0.284 0.470 0.448 Ours 0.308 0.610 0.579 0.643 0.545 0.002 0.448 0.884 0.512 0.334 0.577 0.457 
+
+Stage 3: iGSM → MedCalc → IFEval 
+
+Low-SFT 0.368 0.713 0.652 0.659 0.577 0.170 0.523 0.330 0.157 0.506 0.331 0.459 Ours 0.366 0.707 0.665 0.704 0.603 0.061 0.518 0.700 0.297 0.519 0.505 0.492 
+
+16 Stabilizing LLM Supervised Fine-Tuning via Explicit Distributional Control 
+
+Algorithm 1 Anchored Learning 
+
+Input: Base model pbase , fixed SFT model psft , interpolation coefficient α ∈ (0 , 1) , outer iterations T
+
+Output: Adapted model pθ(T )
+
+1: Initialize pθ(0) ← pbase 
+
+2: for t = 0 , 1, . . . , T − 1 do 
+
+3: Step 1: Anchor Selection via Interpolation 
+
+4: Compute q(t)(· | x) according to Eq. 2 
+
+5: Step 2: Anchor Fitting via Distillation 
+
+6: Update θ(t+1) according to Eq. 3 
+
+7: end for 
+
+8: return pθ(T )
+
+Input Prompt 
+
+In this task, you need to use a list of numbers x = (55, 56, 77) to create an equation that leads up to the target number y = 78 using the basic arithmetic operations (+, -, *, /), and each number can only be used once. Think and return the final answer in . For example, with x = (1, 2, 3) and y = 1, your answer should be (1 + 2) /3 .
+
+Base Model Response (Pre-trained) 
+
+To solve the problem for the given target values x = (55 , 56 , 77) and y = 78 , we need to construct an equation using the numbers 55, 56, and 77 exactly once... [...Step-by-step derivation omitted for brevity...] Consider the equation 77 + 56 − 55 : First, calculate 77 + 56 = 133 . Then, subtract 55 from 133: 133 − 55 = 78 .Therefore, the final answer is: 77 + 56 − 55 ✓(Correct) 
+
+Baseline Model Response (Low-SFT) 
+
+Define x as a list, x = [55, 56, 77]; Define y as 78; Define some variables as V; Define the equation as: y = (x[0] + x[1]) * x[2] = 78; The final answer is y .
+
+Analysis: The model fails to solve the math problem. It hallucinates a coding structure and incorrect logic ( (55 + 56) ∗ 77 ̸ = 78 ), indicating catastrophic forgetting of general arithmetic reasoning. ✗(Incorrect) 
+
+Our Model Response (Anchored Learning) 
+
+To solve for the target number 78 using the numbers 55, 56, and 77 with the basic arithmetic operations, we need to strategically apply the operations. Let’s break it down step by step: 1. Start with the given numbers: 55, 56, and 77. 2. Notice that 77 is close to 78, so we can use 77 directly and adjust it to 78 by adding 1. 3. To get 1, we can use 56 − 55 = 1 . 4. So, the equation is 77 + (56 − 55) = 78 .Therefore, the final answer is 77 + 56 − 55 . ✓(Correct) 
+
+Figure 6. Case Study on Countdown Task. While the Baseline model loses its ability to perform basic math (likely due to overfitting on the domain-specific fine-tuning data), our method preserves the reasoning capabilities inherent in the Base Model. 
+
+17
