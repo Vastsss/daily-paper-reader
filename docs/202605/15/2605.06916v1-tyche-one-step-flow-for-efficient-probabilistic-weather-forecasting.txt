@@ -1,0 +1,901 @@
+Title: Tyche: One Step Flow for Efficient Probabilistic Weather Forecasting
+
+URL Source: https://arxiv.org/pdf/2605.06916v1
+
+Published Time: Mon, 11 May 2026 00:19:07 GMT
+
+Number of Pages: 27
+
+Markdown Content:
+# Tyche: One Step Flow for Efficient Probabilistic Weather Forecasting 
+
+Fan Xu 1,2∗, Yuan Gao 3∗, Kun Wang 4, Rui Su 2,5, Fenghua Ling 5, Hao Wu 3†, Wanli Ouyang 2,6†
+
+> 1
+
+USTC, 2SLAI, 3THU, 4NTU, 5Shanghai AI Lab, 6CUHK 
+
+> ∗
+
+Equal contribution †Corresponding Author 
+
+Probabilistic weather forecasting requires not only accurate trajectories, but calibrated distributions over plausible atmospheric futures. Recent data-driven systems have achieved remarkable determinis-tic skill, and diffusion-based ensemble forecasters have substantially improved sample realism and uncertainty quantification. However, their inference cost scales with forecast horizon, ensemble size, and the number of denoising steps required for each transition, making large operational ensembles expensive. To address this, we present Tyche, a one-step conditional flow model for efficient probabilis-tic weather forecasting. Tychemodels the conditional forecast distribution with a destination-aware average-velocity flow that maps Gaussian noise directly to future weather states in a single function evaluation (1-NFE). To make this one-step transport learnable in high-dimensional geophysical fields, we derive a JVP-regularized rectification objective that enforces temporal self-consistency across source and destination flow timesteps without explicitly forming Jacobians. The transport field is parameterized by an isotropic Swin-style transformer that preserves fine-scale spatial structure while remaining scalable on global grids. To improve ensemble reliability under autoregressive forecasting, we further introduce a rollout-based finetuning stage with curriculum CRPS calibration supervision. Experiments on ERA5 at 1.5 ◦ and 6-hour resolution show that our Tyche, using merely a single NFE, matches or exceeds the forecast skill and calibration of state-of-the-art multi-step generative baselines and the operational ECMWF IFS ensemble.  
+
+> Date:
+
+May 5, 2026  
+
+> Author emails:
+
+markxu@mail.ustc.edu.cn 
+
+§ Code: https://github.com/Sunxkissed/Tyche 
+
+# 1 Introduction 
+
+Many high-impact decisions in aviation, energy, agriculture, disaster response, and climate-risk manage-ment (McPhillips et al., 2018; Raymond et al., 2020) depend not on a single most likely atmospheric trajectory, but on a calibrated distribution over plausible futures. This is especially important at medium-range lead times, where small perturbations in the initial state can amplify into substantially different outcomes. Recent deterministic machine-learning weather prediction (MLWP) systems (Alet et al., 2025; Cui et al., 2025; Gao et al., 2025; Wang et al., 2025), such as FourCastNet (Pathak et al., 2022), Pangu-Weather (Bi et al., 2023), GraphCast (Lam et al., 2023), and NeuralGCM (Kochkov et al., 2024), have achieved comparable or better performance compared to traditional operational weather prediction systems (Brotzge et al., 2023; Nipen et al., 2020; Ren et al., 2021). Although they have much lower computing costs, these deterministic models fail to faithfully represent high-impact extreme events as forecast uncertainty grows over time. Recent work on global probabilistic weather forecasting has begun to close this gap. One line of work revisits the forecast objective itself, replacing deterministic regression with explicitly probabilistic training, for example through hierarchical latent-variable graph models (Oskarsson et al., 2024) or proper-score optimization in AIFS-CRPS (Lang et al., 2026). Another line embraces explicit generative modeling. Diffusion-based systems such as GenCast (Price et al., 2025) produce sharp samples with realistic spectra and strong extreme-event skill. Follow-up work explores direct lead-time conditioning with temporally correlated noise (Andrae et al., 2025), rolling diffusion with progressive uncertainty schedules (Cachay et al., 2025), latent-space diffusion (Zhuang & Duraisamy, 2025), and one-step consistency-style forecasting (Stock et al., 2025). Together, these works 1
+
+> arXiv:2605.06916v1 [cs.LG] 7 May 2026
+
+establish that ensemble skill, calibration, and realism are all attainable in data-driven forecasting.  
+
+> Figure 1 Comparison of forecast performance, training cost, and inference speed. The larger the circle, the slower the inference speed.
+
+While, one important remaining bottleneck is effi-ciency (Utku & Can, 2023). Existing probabilistic approaches typically require more than 20 function evaluations, resulting in over an order of magni-tude higher computational cost than deterministic approaches. In global probabilistic forecasting, the cost of inference compounds along three axes: the rollout length L, the ensemble size K, and the num-ber of denoising or integration steps NNFE required for each forecast transition. For diffusion and stan-dard continuous-time flow models, this yields the unfavorable scaling total NFEs ∝ L × K × NNFE .
+
+When NNFE ≫ 1, the settings in which ensembles matter most, namely long forecast horizons and large ensemble sizes, are also the settings in which sampling becomes most expensive. (Andrae et al., 2025; Cachay et al., 2025; Price et al., 2025; Zhuang & Duraisamy, 2025). Recent one-step models partially alleviate this tension (Song et al., 2023; Lu & Song, 2024; Stock et al., 2025), but its sampling methods are not flexible and often restricted to distillation frame. So the field still lacks a transport formulation explicitly designed for one-step conditional generation on high-dimensional geophysical states. 
+
+"For operational ensemble forecasting, the key design choice is not only the backbone, but the transport object." Standard flow matching parameterizes an instantaneous velocity field and therefore inherits numerical integration at test time (Lipman et al., 2022; Wildberger et al., 2023; Kornilov et al., 2024). By contrast, recent one-step generative work suggests that interval-averaged transport can make single-step sampling intrinsic rather than distilled (Liu et al., 2022; Geng et al., 2025a). We adopt this viewpoint for probabilistic weather forecasting and propose Tyche, a one-step conditional flow model targeting destination-aware average velocity . Given a conditioning atmospheric state and a noisy latent state, Tyche predicts the average transport needed to move directly from the current point on the probability path to a chosen destination time, enabling direct 1-NFE sampling. The transport field is parameterized by an isotropic Swin-style transformer that preserves fixed spatial resolution, using local windows, shifted windows, and axial rotary position encoding to retain fine-scale meteorological structure on global grids. As efficient transport alone does not guarantee effective ensembles, we further separate transport learning from uncertainty calibration. Specifically, after one-step pretraining, we inference the model with parallel autoregressive ensemble rollouts, and finetune with a CRPS-based curriculum probabilistic loss. As shown in Figure 1, our method achieves highly competitive performance while maintaining low training and inference costs. In summary, we make the following key contributions: ➊ Efficient Probabilistic Framework. We propose Tyche, a conditional 1-NFE flow-based generative framework specifically tailored for global probabilistic weather forecasting. Tyche effectively resolves the scalability bottleneck of multi-step diffusion models at the cost of deterministic baselines. ➋ Novel Two-Stage Strategy. To achieve distillation-free one-step generation on high dimensional atmospheric grids, we introduce a destination-aware average-velocity flow to bypass intractable computational overheads. Further, we propose a curriculum autoregressive finetuning strategy based on the CRPS objective to overcome the ensemble collapse and error accumulation issues. ➌ Superior Performance. 
+
+Extensive experiments demonstrate that Tyche achieves highly calibrated ensembles and exceptional extreme weather prediction skills using merely a single function evaluation. To be specific, our proposed Tyche matches or exceeds the ensemble skill of state-of-the-art multi-step generative baselines, while running 12 −45 × faster than these generative baselines. 
+
+# 2 Related Work  
+
+> Probabilistic Weather Forecasting.
+
+Modern machine-learning weather prediction (Chen et al., 2023; Bodnar et al., 2025; Allen et al., 2025; Wu et al., 2025) has been driven by highly accurate deterministic forecasters 2such as FourCastNet (Pathak et al., 2022), Pangu-Weather (Bi et al., 2023), GraphCast (Lam et al., 2023), and NeuralGCM (Kochkov et al., 2024). While these models achieve strong medium-range skill, they do not explicitly model the conditional distribution of future states, and regression-based training tends to produce conditional-mean forecasts as uncertainty grows. To address this limitation, recent work has shifted toward probabilistic forecasting (Li et al., 2025), especially explicit generative modeling like diffusion. GenCast (Price et al., 2025) established diffusion as a strong paradigm for global probabilistic weather forecasting, showing that learned ensembles can achieve diverse samples and strong downstream utility. LaDCast (Zhuang & Duraisamy, 2025) moves diffusion into a compressed latent space to improve scalability. ERDM (Cachay et al., 2025) models a forecast window jointly with progressively increasing uncertainty, adapting EDM design choices to sequence forecasting. However, despite their competitive performance, most existing methods remain constrained by multi-step denoising, with inference costs often exceeding those of deterministic models by more than an order of magnitude. In contrast, our method aims to achieve exceptional and efficient probabilistic forecasting through intrinsic one-step conditional transport.  
+
+> Efficient Generative Transport.
+
+Diffusion models and neural ODEs provide expressive continuous generative frameworks (Chen et al., 2018; Ho et al., 2020; Croitoru et al., 2023), while flow matching formulates generation through learned instantaneous dynamics (Lipman et al., 2022; Liu et al., 2022; Gat et al., 2024). However, these formulations typically require either multi-step denoising or numerical integration at inference time, which becomes increasingly expensive in high-dimensional autoregressive settings. Recent work therefore explores transport parameterizations that enable few-step or one-step generation, including consistency models (Song et al., 2023; Lu & Song, 2024), Shortcut models (Frans et al., 2024), and MeanFlow-style formulations based on interval-averaged transport (Geng et al., 2025a,b; Zhang et al., 2025). In weather forecasting, Swift (Stock et al., 2025) is the closest 1-NFE counterpart, utilizing continuous-time consistency models to improve long-horizon ensemble forecasting efficiency. Instead of parameterizing instantaneous dynamics or a distilled consistency map, our method directly learns a destination-aware average velocity through JVP-regularized rectification for one-step conditional geophysical transport. 
+
+# 3 Preliminaries  
+
+> Problem setup.
+
+We consider probabilistic weather forecasting over a sequence of high-dimensional atmospheric fields {xt}Tt=1 , where xt ∈ RC×H×W denotes the weather state at time t, with C physical variables ( e.g. ,
+
+temperature, geopotential, humidity ), and H, W represent the spatial grid dimensions of latitude and longitude. Given the current observations xt as conditioning state, our goal is to learn the conditional probability distribution pψ (xt+1 | xt) of the next future state xt+1 . Further, we model the forecast dynamics as a Markov chain, so that the conditional distribution at an arbitrary lead time h can be obtained through recursive transitions. Following the standard autoregressive forecasting formulation, this conditional distribution can be factorized as: 
+
+pψ
+
+ xt+1: t+h | xt =
+
+> h
+
+Y
+
+> i=1
+
+pψ
+
+ xt+i | xt+i−1 . (1)  
+
+> Diffusion and Flow Matching formulation.
+
+Diffusion models (Ho et al., 2020; Nichol & Dhariwal, 2021) define a forward corruption process that gradually perturbs a clean target sample x ∼ pdata (x) into noise over a continuous timestep t ∈ [0 , 1] . Specifically, the noisy state is constructed as zt = φtx + σtϵ with ϵ ∼ N (0 , I ),where φt and σt are pre-defined schedule coefficients that depend on t and satisfy z0 = x and z1 = ϵ. Flow matching (Lipman et al., 2022) provides a deterministic alternative by choosing a straight probability path between the noise distribution and the data distribution, setting φt = 1 − t and σt = t:
+
+zt = (1 − t)x + tϵ, vt ≜ v(zt, t |x) = ϵ − x, (2) where vt denotes the corresponding ground-truth velocity along the path. A neural vector field vθ (zt, t ) is then trained to match this target velocity by minimizing: 
+
+LFM (θ) = Et, x, ϵ 
+
+h
+
+∥vθ (zt, t ) − vt∥22
+
+i
+
+. (3) After training, generation is performed by solving the probability flow ODE (PF-ODE) dz t/dt = vθ (zt, t ) from 
+
+t = 1 to t = 0 , starting with an initial value z1 ∼ N (0 , I ).3Figure 2 The overview of Tyche. (a): Learn a average-velocity field with JVP-based rectification for direct one-step transport. (b): Parameterize the transport field with a conditional isotropic Swin-style backbone. (c): Finetune the transport model with curriculum autoregressive ensemble rollouts. 
+
+# 4 Methodology  
+
+> Framework Overview.
+
+Given a conditioning atmospheric state c = xτ , our goal is to model the conditional distribution of a future weather field x = xτ +1 . As shown in Figure 2, Tyche combines a destination-aware average-velocity flow formulation with a Swin-based velocity network. The flow formulation enables direct transport from Gaussian noise to a forecast state in one function evaluation, while the network provides a scalable parameterization for high-resolution global grids. Training is conducted in two stages: we first pretrain the transport field with a JVP-based rectification objective, and then finetune the model with rollout-based probabilistic supervision for ensemble calibration. 
+
+4.1 One-Step Generative Transport via Rectified Average Velocity 
+
+To distinguish the physical forecast horizon from the generative transport process, we reserve τ for the physical forecast index and use t ∈ [0 , 1] to denote the continuous flow time. Conditioned on the current atmospheric state xτ , we consider the standard linear probability path between the target future field xτ +1 and Gaussian noise ϵ ∼ N (0 , I ):
+
+zt = (1 − t)xτ +1 + tϵ, t ∈ [0 , 1] . (4) The reference instantaneous velocity driving this path is constant, namely vt ≜ dzt 
+
+> dt
+
+= ϵ − xτ +1 .Standard flow matching parameterizes an instantaneous vector field and typically requires multi-step numerical integration at inference time. Inspired by MeanFlow (Geng et al., 2025a), we aim to directly learn the 
+
+destination-conditioned average velocity required to transport a state from the current flow time t to a target destination time r (0 ≤ r < t ≤ 1). 
+
+u⋆(zt, r, t, x τ ) ≜ 1
+
+t − r
+
+Z tr
+
+v(zs, s, x τ ) d s = zt − zr
+
+t − r , (5) where v(zs, s, x τ ) denotes the underlying instantaneous velocity field of the conditional transport given xτ .By definition, this average-velocity field induces the transport relation: 
+
+zr = zt − (t − r)u⋆(zt, r, t, x τ ), (6) Direct supervision of u⋆(zt, r, t, x τ ) is intractable because it requires evaluating the time integral in Eq. equa-tion 5. To obtain a trainable objective, we exploit the differential identity satisfied by the average-velocity field (with respect to t, while r is independent): 
+
+u⋆(zt, r, t, x τ ) = vt − (t − r) ddt u⋆(zt, r, t, x τ ), ddt u⋆(zt, r, t, x τ ) ≜ vt ∂z u⋆ + ∂tu⋆, (7) 4where u⋆ is the abbreviation of u⋆(zt, r, t, x τ ). We know that the total derivative can be interpreted as a Jacobian-vector product (JVP) between the Jacobian [∂z u⋆, ∂ r u⋆, ∂ tu⋆] and the tangent vector [vt, 0, 1] , and can therefore be computed efficiently using forward-mode automatic differentiation. We therefore parameterize a conditional transport field u⋆θ (zt, r, t, x τ ) and construct the practical rectified target: 
+
+utgt (zt, r, t, x τ ) = vt − (t − r) ( vt ∂z u⋆θ + ∂tu⋆θ )) . (8) We then optimize the first stage transport objective: 
+
+Lave (θ) = Eϵ, x τ , x τ +1 Et∼U [0 ,1] , r ∼U [0 ,t ]
+
+h
+
+∥uθ (zt, r, t, x τ ) − sg( utgt (zt, r, t, x τ )) ∥2
+
+> F
+
+i
+
+, (9) where sg (·) denotes the stop-gradient operator. At inference time, one-step conditional generation is obtained by evaluating the learned average-velocity field only once at the noise endpoint: 
+
+ˆxτ +1 = ϵ − uθ (ϵ, 0, 1, x τ ), (10) which produces a forecast sample with a single neural function evaluation (1-NFE). 
+
+4.2 Velocity Transport Network Parameterization  
+
+> Temporal Conditioning and Adaptive Modulation.
+
+We parameterize the average-velocity field uθ (zt, r, t, x τ ) with a conditional isotropic Swin-style diffusion transformer. We first concatenate the noisy state zt and the conditioning field xτ , patchify the corresponding tensor, and add learned absolute positional embeddings 
+
+Pabs to encode fixed geographic structure. Further, we sample the source and destination flow timesteps 
+
+(r, t ) ∈ [0 , 1] from a logit-normal distribution. By the way, for a fixed fraction of samples, we set r = t to expose the model to the boundary case that recovers standard flow matching. To condition the transport field on both the current flow time t and the destination time r, we encode them separately with sinusoidal timestep embeddings followed by two independent MLPs, and sum the resulting embeddings. This temporal representation modulates each transformer block through Adaptive RMSNorm (Jiang et al., 2023): 
+
+temb = ft(ϕ(t))+ fr (ϕ(r)) , [α(l), β (l), γ (l)] = W (l)mod temb + b(l)mod ,
+
+M(l)(z) = RMSNorm( z) ⊙  1 + α(l) + β(l). (11) Here γ(l) acts as a channel-wise residual gate. The modulation layers are zero-initialized, making each residual branch identity-like at initialization and stabilizing early-stage training.  
+
+> Isotropic Swin Transformer.
+
+Following the Swin Transformer paradigm, self-attention is constrained within local windows of size Wh × Ww, reducing the computational complexity from O(N 2) to O(N · WhWw). To capture the relative movements of advective flows and vortices, we apply 2D Axial Rotary Positional Embeddings (RoPE) (Heo et al., 2024) to the queries Q and keys K along both X and Y spatial axes inside the local window prior to the dot-product attention calculation. To reconstruct global atmospheric teleconnections without destroying the isotropic resolution, we alternate between regular and shifted window partitioning across consecutive layers. Let S denote the cyclic shift operator applied at odd layers to cross window boundaries, yielding the pre-aligned feature ˆz(l) = S(z(l−1) ).Integrating these mechanisms, the full forward pass for the l-th IsoSwin Block is formulated as a gated dynamical system: 
+
+˜z(l) = ˆ z(l) + γ(l)att ⊙ WAttn RoPE 
+
+
+
+M(l)att (ˆ z(l))
+
+
+
+,z(l) = S−1
+
+˜z(l) + γ(l)ffn ⊙ SwiGLU 
+
+
+
+M(l)ffn (˜ z(l))
+
+  
+
+,
+
+(12) where S−1 reverses the cyclic shift to align the spatial grid for the next layer, and SwiGLU (Shazeer, 2020) acts as the channel-mixing feed-forward network. After the final block, a lightweight output head linearly maps the latent tokens back to patch values and unpatchifies them to the physical grid, yielding the predicted transport field uθ (zt, r, t, x τ ). Detailed layer-wise formulations and implementation specifics are deferred to the Appendix B.2. 54.3 Two-Stage Training Objective and Ensemble Inference 
+
+⋆ Stage I: One-step transport pretraining. We first pretrain the transport network to learn a one-step average-velocity field. For each training pair (xτ , x τ +1 ), we sample Gaussian noise ϵ ∼ N (0 , I ) and flow-time pair 
+
+r, t ∈ [0 , 1] . Then we utilize the Lave (θ) and the corresponding Jacobian-vector product to supervise the direct average-velocity transport update uθ (ϵ, 0, 1, x τ ).
+
+⋆ Stage II: Curriculum probabilistic calibration. Although Stage I learns accurate local transport, recursive weather forecasting additionally requires calibrated uncertainty under autoregressive rollout. We therefore finetune the pretrained model using short ensemble rollouts and gradually increase the rollout horizon during training. At curriculum stage m, let Rm be the current rollout length. Starting from c0 = xτ , each ensemble member is generated recursively by: 
+
+ˆxτ +lk = ϵlk − uθ
+
+ ϵlk, 0, 1, c l−1
+
+> k
+
+ , ϵlk ∼ N (0 , I ), k = 1 , . . . , K, (13) where cl−1 
+
+> k
+
+is the conditioning state formed from the previous prediction, and K represents the number of ensemble members. Given the ensemble {ˆxτ +lk }Kk=1 and the ground-truth state xτ +l at lead time l, we optimize the empirical Continuous Ranked Probability Score (CRPS): 
+
+LCRPS (l) = 1
+
+K
+
+> K
+
+X
+
+> k=1
+
+ˆxτ +lk − xτ +l 
+
+> 1
+
+− 12K2
+
+> K
+
+X
+
+> k=1
+> K
+
+X
+
+> k′=1
+
+ˆxτ +lk − ˆxτ +lk′ 1 . (14) The first term encourages ensemble accuracy, while the second term discourages ensemble collapse by rewarding appropriate dispersion. Rather than supervising every intermediate rollout step, we evaluate the calibration loss only on the terminal forecast state of the rollout. In our experimental setting, we do not perform many rounds of iterative finetuning. We set m = 2 , with the corresponding rollout horizons Rm set to 1 and 2,respectively. Further details are provided in the experiments. 
+
+⋆ 1-NFE Ensemble Inference. To generate a K-member forecast ensemble, we sample K independent noise instances, set the current state to pure noise ( t = 1 ), and the destination to the target forecast ( r = 0 ). The future ensemble is generated via a single function evaluation (1-NFE): 
+
+ˆxτ +lk = ϵlk − uθ
+
+ ϵlk, 0, 1, x τ +l−1
+
+> k
+
+ , l = 1 , . . . , H, k = 1 , . . . , K. (15) Naturally, all K ensemble members for the next time step can be generated in parallel on a single GPU with a single batched inference pass. This circumvents the computationally prohibitive multi-step ODE solvers, reducing the generation time of high-fidelity weather ensembles from minutes to milliseconds, while maintaining physically consistent spatial spread. 
+
+# 5 Experiment 
+
+5.1 Experimental Settings  
+
+> Datasets.
+
+We train and evaluate Tyche on the ERA5 reanalysis dataset Hersbach et al. (2020) at 1.5 ° resolution (120 × 240 grid) and 6-hourly interval. Tyche is trained to forecast nine variables: four surface-level variable (u10 , v10 , t2m , mslp ) and five atmospheric variables ( z, q, t, u, v) at 13 pressure levels ( 50 , 100 , 150 , 200 ,
+
+250 , 300 , 400 , 500 , 600 , 700 , 800 , 925 , 1000 ). Totally, the data contains 69 channels. Before training, all variables are standardized by subtracting their respective means and dividing by their standard deviations. Specifically, we utilize data from 1979–2017 for training, 2018-2019 for validation, and 2020 for testing. More details are illustrated in Appendix A.1.  
+
+> Baselines.
+
+To comprehensively evaluate Tyche, we conduct experiments against two main categories of state-of-the-art baselines: deterministic approaches and probabilistic approaches. ✥ For deterministic baselines, we choose Pangu Bi et al. (2023) and GraphCast Lam et al. (2023). These two are based on advanced Transformer or GNN-style architectures. ✥ For probabilistic baselines, we select ARCI Andrae et al. (2025), Swift Stock et al. (2025), ArchesWeatherGen (ArchesGen) Couairon et al. (2024), GenCast Price et al. (2025), and NeuralGCM-ENS Kochkov et al. (2024). All these approaches are combination of neural networks and 6Table 1 We evaluate the performance of our Tyche again five baselines (two deterministic baselines and three probabilistic baselines) up to 10 days (40 iteration). We report the RMSE results of three variables: u10 , t2m , and mslp , and a small RMSE ( ↓) identify better performance. 
+
+Model 6-Hour 1-Day 3-Day 7-Day 10-Day 
+
+u10 t2m mslp u10 t2m mslp u10 t2m mslp u10 t2m mslp u10 t2m mslp 
+
+Pangu 0.58 0.92 0.64 1.14 1.50 1.47 2.53 1.90 3.62 4.05 3.23 7.02 4.85 4.05 10.29 GraphCast 0.48 0.75 0.53 0.96 1.24 1.09 2.21 2.28 2.86 3.97 3.62 6.64 4.94 4.50 10.28 ARCI 0.89 1.41 0.95 1.45 2.40 1.63 2.75 3.55 3.50 5.32 5.23 8.47 5.92 6.37 11.26 Swift 0.85 1.32 0.88 1.46 2.32 1.56 2.81 3.32 3.26 5.14 5.11 7.54 5.24 5.58 10.49 ArchesGen 0.62 0.82 0.57 1.11 1.25 1.27 2.15 1.88 2.71 4.25 3.35 6.84 4.88 4.17 9.91 Tyche (Our) 0.51 0.76 0.49 1.09 1.19 0.93 2.13 1.68 2.49 3.89 2.77 6.03 4.71 3.74 8.58      
+
+> Figure 3 Comparison of 7-day forecasts for four variables: u10 ,t2m ,mslp , and z7 .
+
+Diffusion models. Fur better evaluate, we also compare with ECMWF IFS ensemble (IFS-ENS) Rasp et al. (2024). See Appendix A.2 for detailed descriptions.  
+
+> Implementation details.
+
+For Tyche, training pipeline is divided into two stages. In Stage I, the model is trained using the MSE loss over 300 epochs. We used the AdamW optimizer with an initial learning rate of 10 −4, scheduled by a cosine annealing policy with a minimum learning rate of 10 −6. In Stage II, we perform curriculum autoregressive training using the empirical CRPS loss with an ensemble size of 2. The rollout horizon progressively increases from 1 to 2. The learning rate is reduced to 10 −5 for this stage. The architecture backbone consists of 12 transformer blocks, configured with a hidden dimension of 1024 and 12 attention heads. Spatial interactions are restricted to local windows of size 10 × 10 , which are cyclically shifted by 5 × 5 in alternating blocks. In our setting, it has around 910 MB trainable parameters. For compared baselines except GenCast, NeuralGCM-ens, and IFS-ENS, we utilize the official implementation for all models and train from scratch to ensure relative fairness. Specifically, for other three, we download the saved inference data of corresponding year with certain dimensions from Weatherbench2. The ensemble number is as the same of other baselines. To ensure computational efficiency, we conducted all training on eight 80GB NVIDIA H100 GPUs, and inference on a single H100 GPU. More details see in Apendix A.2.  
+
+> Evaluation.
+
+We aim to generate 20 members for each compared model. Specifically, for deterministic approaches, we add independent noise to initial state; and for probabilistic approaches, we directly generate 20 members parallelly. For evaluation, we report metrics like latitude-weighted root mean square error (RMSE) and continuous ranked probability score (CRPS). Also, we report spread to skill ratio (SSR) to quantify the uncertainty capability. More details are demonstrated in Appendix A.3. 
+
+5.2 Main Results  
+
+> Forecasting Performance.
+
+To evaluate the effectiveness of our method, we first compare Tyche with two deterministic baselines and three probabilistic baselines. Both of them are trained from scratch. Regarding 7Figure 4 Ensemble Skill Curves Across Forecast Lead Time. We report the latitude-weighted RMSE ( ↓), latitude-weighted CRPS ( ↓), and SSR ( → 1) of several upper-air variables. 
+
+the number of sampling steps during inference, we use 10-step sampling for ARCI and ArchesGen. While for Swift and our method, which are designed for one-step generation, we use single-step sampling. Here, we do not use the ensemble mean of probabilistic models for comparison, we instead select only one inference member. Table 1 reports the latitude-weighted RMSE of Tyche and five baselines from 6 hours to 10 days on three representative surface variables, namely u10 , t2m , and mslp . Overall, Tyche consistently achieves the best or second-best performance across almost all variables and forecast horizons. We observe that within the first day of forecasting, GraphCast achieves the best performance across multiple variables, while Pangu also delivers competitive results. This suggests that deterministic models retain a clear advantage at short lead times, where error accumulation remains limited. At 3 days, Tyche achieves the lowest RMSE on all three variables. Compared with GraphCast, Tyche reduces the 3-day RMSE from 2.21 to 2.13 on u10 , from 2.28 to 1.68 on t2m , and from 2.86 to 2.49 on mslp . Typically, when the forecast horizon extending 3-day, Tyche still maintains the best performance across all three variables. Figure 3 provides a qualitative comparison of 7-day forecasts for u10 , t2m , mslp , and z7 , where z7 represents geopotential at 500 hPa. The visual results are consistent with the quantitative findings in Table 1. Compared with other baselines, Tyche better preserves large-scale spatial structures and produces forecast fields that are visually closer to the ground truth. For u10 , Tyche captures the major wind patterns in the mid-latitudes and Southern Ocean with less over-smoothing. For t2m , it maintains coherent meridional temperature gradients and more realistic regional variations. For mslp , Tyche better reconstructs large-scale pressure systems. For 
+
+z7 , Tyche also preserves the global geopotential structure more faithfully, indicating improved stability for upper-air variables. In summary, the quantitative and qualitative results jointly demonstrate the effectiveness of Tyche.  
+
+> Ensemble Performance.
+
+Further, we evaluate the probabilistic forecasting skills of Tyche by comparing it with state-of-the-art ensemble forecasting systems, including GenCast, NeuralGCM-ENS, and IFS-ENS. To ensure a fair comparison, we use 20 ensemble members for both Tyche and all compared ensemble baselines. Figure 4 reports the latitude-weighted RMSE, CRPS, and SSR over a 10-day forecast horizon on key upper-air variables, including U500 , U850 , V500 , and V850 . Unlike the single-member comparison in Table 1, this evaluation focuses on the performance of the ensemble skills. As illustrated in Figure 4, the curves of Tyche follow a similar growth trend to established ensemble baselines, indicating that the proposed one-step probabilistic generator does not suffer from rapid error divergence during autoregressive rollout. Specifically, Tyche demonstrates competitive performance against compared systems in terms of RMSE. Meanwhile, the 8Figure 5 Visualization of 3-day MSLP ensemble forecast performance over the Southern Ocean. 
+
+CRPS curves show that Tyche produces meaningful ensemble distributions rather than merely accurate individual samples, demonstrating its ability to capture forecast uncertainty over medium-range lead times. Additionally, the SSR curves rigorously validate the model’s probabilistic calibration. Following an initial short-term adjustment, the SSR of Tyche converges tightly toward the optimal value of 1. As known, GenCast follows a conventional diffusion-based generative paradigm and requires more than 20 denoising steps during inference, while NeuralGCM-ENS incorporates physics-based numerical solvers into the forecasting process. Meanwhile, Tyche is a purely data-driven probabilistic model and performs only single-step sampling at inference time. Beyond aggregated metrics, Tyche demonstrates exceptional physical fidelity in capturing high-frequency, synoptic-scale structures. As visualized in Figure 5, we examine the Mean Sea Level Pressure (MSLP ) over the dynamically volatile Southern Ocean at a 3-day lead time ( Iteration=12 ). An individual forecast ( Predicted Member 1 ) exhibits physically realistic vortex structures that strictly adhere to the ground truth. And the predicted mean displays the characteristic smoothing expected from a well-calibrated ensemble, without the appearance of blur. This demonstrates the superior ensemble performance of our method.                         
+
+> Table 2 Computational efficiency and inference comparison.
+> Model Methodology NFE per Rollout Inference Latency
+> IFS-ENS Operational NWP N/A (Physics) Hours GenCast EDM 20 ∼45 mins ARCI EDM 20 ∼12 mins ArchesWeatherGen Flow Matching 25 ∼37 mins
+> Tyche (Our) Average Transport 1∼62 secs
+> Efficiency Analysis.
+
+The primary bottleneck of modern probabilis-tic weather forecasting lies in the inference computational cost, which strictly compounds along four axes: the forecast rollout length ( L); the ensemble size ( K); the number of function evaluations (NNFE ) per rollout; and the infer-ence cost ( M ) per NFE. Conse-quently, the total inference cost scales as O(L × K × NNFE × M ). Multi-step diffusion models ( e.g. , GenCast, ArchesWeatherGen) typically require NNFE ≥ 10 per rollout, making the generation of multi-day high-fidelity weather ensembles take minutes and rendering large-scale operational deployment prohibitively expensive. Tyche fundamentally breaks this computational bottleneck through its average velocity transport formulation. As detailed in Table 2, Tyche can parallelly generate a 20-member, 15-day trajectory (60 autoregressive iteration) in merely ∼ 65 seconds. This achieves an order-of-magnitude acceleration, running approximately 12 × to 45 × faster than current probabilistic MLWP systems (with the same resolution of data). Thus, Tyche matches the inference speeds of deterministic methods, while preserving the robust diversity and calibration typically restricted to costly multi-step diffusion and operational NWP systems.                                   
+
+> Table 3 Ablation study on generative transport strategy.
+> Method 1-NFE 3-NFE 10-NFE Step-1 Step-10 Step-1 Step-10 Step-1 Step-10 w/ EDM ––0.145 0.428 0.108 0.245 w/ TrigFlow ––0.134 0.390 0.101 0.250 w/ sCM 0.154 0.462 0.151 0.454 ––Ours 0.103 0.242 0.099 0.237 ––
+> Ablation on Generative Transport Strategy.
+
+We further investi-gate the effectiveness of generative transport strategy. Specifically, we conduct an ablation study compar-ing Tyche against three alternative state-of-the-art generative trans-port strategies: ✤ EDM (a uni-fied diffusion model ) (Karras et al., 2022), ✤ Triglow (a customized v-
+
+9prediction flow matching ) (Lu & Song, 2024), and ✤ sCM (the continuous-time consistency model ) (Lu & Song, 2024). To isolate the effect of the generative transport strategy, we conduct all ablation experiments under a unified model architecture and vary only the diffusion or flow training strategy. For each compared strategy, we follow the hyperparameter settings recommended in the original paper. We evaluate each method under three sampling budgets, namely 1-NFE, 3-NFE, and 10-NFE, and report RMSE within two autoregressive horizons (the 1-step and 10-step rollouts mean), as shown in Table 3. The results reveal the efficiency tradeoff for conventional multi-step generative samplers. Both TrigFlow and EDM benefit from increasing the number of function evaluations. By contrast, sCM supports fast one-step generation, but its rollout error remains high. In contrast, Tyche achieves strong performance with only a single function evaluation. At 1-NFE, Tyche obtains 0.103 RMSE at Step-1 and 0.242 RMSE at Step-10, matching the 10-NFE EDM result while using only one tenth of the sampling budget. With 3-NFE inference, Tyche further improves the Step-1 and Step-10 RMSE to 0.099 and 0.237, achieving the best performance among all compared settings.   
+
+> Figure 6 Typhoon ensemble track for Ma-on and Ernesto.
+> Typhoon Tracking.
+
+We further eval-uate Tyche’s capability in pre-dicting high-impact synoptic-scale events through tropical cyclone tracking. Figure 6 compares the trajectories for Typhoon Ma-on 
+
+(2022/08) and Ernesto (2024/08) .Crucially, the individual ensemble members of Tyche (thin grey lines) form a well-calibrated cone of un-certainty. And the ensemble aver-age trajectory fits the best trajec-tory very well. For the westward-moving Ma-on, the ensemble mean of Tyche (thick red line) tightly adheres to the ground truth, accurately reproducing the landfall direction. For the northeastward-curving Ernesto, Tyche successfully captures the complex recurvature dynamics, aligning perfectly with the late-stage evolution where IFS-HRES exhibits a noticeable westward cross-track error. These findings suggest that the proposed one-step transport effectively preserves coherent vortex motion, offering robust and scalable probabilistic forecasts for extreme weather phenomena. 
+
+# 6 Conclusion & Limitation 
+
+In this paper, we introduced Tyche, a fundamentally new generative framework that breaks the computational bottleneck of multi-step diffusion and flow models in global probabilistic weather forecasting. Tyche achieves 1-NFE generation by learning a destination-aware average-velocity flow. Further, we effectively mitigated the theoretically bounded autoregressive error accumulation via a curriculum-based CRPS finetuning strategy. Experiments show that Tyche matches or surpasses the state-of-the-art multi-step generative methods. As a current limitation, the highly efficient inference of Tyche requires a relatively high GPU memory overhead, leaving room for further research. 10 References 
+
+Ferran Alet, Ilan Price, Andrew El-Kadi, Dominic Masters, Stratis Markou, Tom R Andersson, Jacklynn Stott, Remi Lam, Matthew Willson, Alvaro Sanchez-Gonzalez, et al. Skillful joint probabilistic weather forecasting from marginals. arXiv preprint arXiv:2506.10772 , 2025. Anna Allen, Stratis Markou, Will Tebbutt, James Requeima, Wessel P Bruinsma, Tom R Andersson, Michael Herzog, Nicholas D Lane, Matthew Chantry, J Scott Hosking, et al. End-to-end data-driven weather prediction. Nature , 641 (8065):1172–1179, 2025. Martin Andrae, Tomas Landelius, Joel Oskarsson, and Fredrik Lindsten. Continuous ensemble weather forecasting with diffusion models. In The Thirteenth International Conference on Learning Representations , 2025. URL 
+
+https://openreview.net/forum?id=ePEZvQNFDW .Kaifeng Bi, Lingxi Xie, Hengheng Zhang, Xin Chen, Xiaotao Gu, and Qi Tian. Accurate medium-range global weather forecasting with 3d neural networks. Nature , 619(7970):533–538, 2023. Cristian Bodnar, Wessel P Bruinsma, Ana Lucic, Megan Stanley, Anna Allen, Johannes Brandstetter, Patrick Garvan, Maik Riechert, Jonathan A Weyn, Haiyu Dong, et al. A foundation model for the earth system. Nature , 641(8065): 1180–1187, 2025. Jerald A Brotzge, Don Berchoff, DaNa L Carlis, Frederick H Carr, Rachel Hogan Carr, Jordan J Gerth, Brian D Gross, Thomas M Hamill, Sue Ellen Haupt, Neil Jacobs, et al. Challenges and opportunities in numerical weather prediction. Bulletin of the American Meteorological Society , 104(3):E698–E705, 2023. Salva Rühling Cachay, Miika Aittala, Karsten Kreis, Noah Brenowitz, Arash Vahdat, Morteza Mardani, and Rose Yu. Elucidated rolling diffusion models for probabilistic forecasting of complex dynamics. arXiv preprint arXiv:2506.20024 ,2025. Lei Chen, Xiaohui Zhong, Feng Zhang, Yuan Cheng, Yinghui Xu, Yuan Qi, and Hao Li. Fuxi: A cascade machine learning forecasting system for 15-day global weather forecast. npj climate and atmospheric science , 6(1):190, 2023. Ricky TQ Chen, Yulia Rubanova, Jesse Bettencourt, and David K Duvenaud. Neural ordinary differential equations. 
+
+Advances in neural information processing systems , 31, 2018. Guillaume Couairon, Renu Singh, Anastase Charantonis, Christian Lessig, and Claire Monteleoni. Archesweather & archesweathergen: a deterministic and generative model for efficient ml weather forecasting. arXiv preprint arXiv:2412.12971 , 2024. Florinel-Alin Croitoru, Vlad Hondru, Radu Tudor Ionescu, and Mubarak Shah. Diffusion models in vision: A survey. 
+
+IEEE transactions on pattern analysis and machine intelligence , 45(9):10850–10869, 2023. Yingzhe Cui, Ruohan Wu, Xiang Zhang, Ziqi Zhu, Bo Liu, Jun Shi, Junshi Chen, Hailong Liu, Shenghui Zhou, Liang Su, et al. Forecasting the eddying ocean with a deep neural network. Nature Communications , 16(1):2268, 2025. Kevin Frans, Danijar Hafner, Sergey Levine, and Pieter Abbeel. One step diffusion via shortcut models. arXiv preprint arXiv:2410.12557 , 2024. Yuan Gao, Hao Wu, Ruiqi Shu, Huanshuo Dong, Fan Xu, Rui Ray Chen, Yibo Yan, Qingsong Wen, Xuming Hu, Kun Wang, et al. Oneforecast: A universal framework for global and regional weather forecasting. arXiv preprint arXiv:2502.00338 , 2025. Itai Gat, Tal Remez, Neta Shaul, Felix Kreuk, Ricky TQ Chen, Gabriel Synnaeve, Yossi Adi, and Yaron Lipman. Discrete flow matching. Advances in Neural Information Processing Systems , 37:133345–133385, 2024. Zhengyang Geng, Mingyang Deng, Xingjian Bai, J Zico Kolter, and Kaiming He. Mean flows for one-step generative modeling. arXiv preprint arXiv:2505.13447 , 2025a. Zhengyang Geng, Yiyang Lu, Zongze Wu, Eli Shechtman, J Zico Kolter, and Kaiming He. Improved mean flows: On the challenges of fastforward generative models. arXiv preprint arXiv:2512.02012 , 2025b. Byeongho Heo, Song Park, Dongyoon Han, and Sangdoo Yun. Rotary position embedding for vision transformer. In 
+
+European Conference on Computer Vision , pp. 289–305. Springer, 2024. Hans Hersbach, Bill Bell, Paul Berrisford, Shoji Hirahara, András Horányi, Joaquín Muñoz-Sabater, Julien Nicolas, Carole Peubey, Raluca Radu, Dinand Schepers, et al. The era5 global reanalysis. Quarterly journal of the royal meteorological society , 146(730):1999–2049, 2020. 
+
+11 Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models. Advances in neural information processing systems , 33:6840–6851, 2020. Zixuan Jiang, Jiaqi Gu, Hanqing Zhu, and David Pan. Pre-rmsnorm and pre-crmsnorm transformers: equivalent and efficient pre-ln transformers. Advances in Neural Information Processing Systems , 36:45777–45793, 2023. Tero Karras, Miika Aittala, Timo Aila, and Samuli Laine. Elucidating the design space of diffusion-based generative models. Advances in neural information processing systems , 35:26565–26577, 2022. Dmitrii Kochkov, Janni Yuval, Ian Langmore, Peter Norgaard, Jamie Smith, Griffin Mooers, Milan Klöwer, James Lottes, Stephan Rasp, Peter Düben, et al. Neural general circulation models for weather and climate. Nature , 632 (8027):1060–1066, 2024. Nikita Kornilov, Petr Mokrov, Alexander Gasnikov, and Alexander Korotin. Optimal flow matching: Learning straight trajectories in just one step. Advances in Neural Information Processing Systems , 37:104180–104204, 2024. Remi Lam, Alvaro Sanchez-Gonzalez, Matthew Willson, Peter Wirnsberger, Meire Fortunato, Ferran Alet, Suman Ravuri, Timo Ewalds, Zach Eaton-Rosen, Weihua Hu, et al. Learning skillful medium-range global weather forecasting. Science , 382(6677):1416–1421, 2023. Simon Lang, Mihai Alexe, Mariana CA Clare, Christopher Roberts, Rilwan Adewoyin, Zied Ben Bouallègue, Matthew Chantry, Jesper Dramsch, Peter D Dueben, Sara Hahner, et al. Aifs-crps: ensemble forecasting using a model trained with a loss function based on the continuous ranked probability score. npj Artificial Intelligence , 2(1):18, 2026. Qi Li, Zhenyu Zhang, Lei Yao, Zhaoxia Li, Tianyi Zhong, and Yong Zhang. Diffusion-based decoupled deterministic and uncertain framework for probabilistic multivariate time series forecasting. In The Thirteenth International Conference on Learning Representations , 2025. Yaron Lipman, Ricky TQ Chen, Heli Ben-Hamu, Maximilian Nickel, and Matt Le. Flow matching for generative modeling. arXiv preprint arXiv:2210.02747 , 2022. Xingchao Liu, Chengyue Gong, and Qiang Liu. Flow straight and fast: Learning to generate and transfer data with rectified flow. arXiv preprint arXiv:2209.03003 , 2022. Cheng Lu and Yang Song. Simplifying, stabilizing and scaling continuous-time consistency models. arXiv preprint arXiv:2410.11081 , 2024. Lauren E McPhillips, Heejun Chang, Mikhail V Chester, Yaella Depietri, Erin Friedman, Nancy B Grimm, John S Kominoski, Timon McPhearson, Pablo Méndez-Lázaro, Emma J Rosi, et al. Defining extreme events: A cross-disciplinary review. Earth’s Future , 6(3):441–455, 2018. Alexander Quinn Nichol and Prafulla Dhariwal. Improved denoising diffusion probabilistic models. In International conference on machine learning , pp. 8162–8171. PMLR, 2021. Thomas N Nipen, Ivar A Seierstad, Cristian Lussana, Jørn Kristiansen, and Øystein Hov. Adopting citizen observations in operational weather prediction. Bulletin of the American Meteorological Society , 101(1):E43–E57, 2020. Joel Oskarsson, Tomas Landelius, Marc P Deisenroth, and Fredrik Lindsten. Probabilistic weather forecasting with hierarchical graph neural networks. Advances in Neural Information Processing Systems , 37:41577–41648, 2024. Jaideep Pathak, Shashank Subramanian, Peter Harrington, Sanjeev Raja, Ashesh Chattopadhyay, Morteza Mardani, Thorsten Kurth, David Hall, Zongyi Li, Kamyar Azizzadenesheli, et al. Fourcastnet: A global data-driven high-resolution weather model using adaptive fourier neural operators. arXiv preprint arXiv:2202.11214 , 2022. Ilan Price, Alvaro Sanchez-Gonzalez, Ferran Alet, Tom R Andersson, Andrew El-Kadi, Dominic Masters, Timo Ewalds, Jacklynn Stott, Shakir Mohamed, Peter Battaglia, et al. Probabilistic weather forecasting with machine learning. 
+
+Nature , 637(8044):84–90, 2025. Stephan Rasp, Stephan Hoyer, Alexander Merose, Ian Langmore, Peter Battaglia, Tyler Russell, Alvaro Sanchez-Gonzalez, Vivian Yang, Rob Carver, Shreya Agrawal, et al. Weatherbench 2: A benchmark for the next generation of data-driven global weather models. Journal of Advances in Modeling Earth Systems , 16(6):e2023MS004019, 2024. Colin Raymond, Radley M Horton, Jakob Zscheischler, Olivia Martius, Amir AghaKouchak, Jennifer Balch, Steven G Bowen, Suzana J Camargo, Jeremy Hess, Kai Kornhuber, et al. Understanding and managing connected extreme events. Nature climate change , 10(7):611–621, 2020. 
+
+12 Xiaoli Ren, Xiaoyong Li, Kaijun Ren, Junqiang Song, Zichen Xu, Kefeng Deng, and Xiang Wang. Deep learning-based weather prediction: a survey. Big Data Research , 23:100178, 2021. Noam Shazeer. Glu variants improve transformer. arXiv preprint arXiv:2002.05202 , 2020. Yang Song, Prafulla Dhariwal, Mark Chen, and Ilya Sutskever. Consistency models. arXiv preprint arXiv:2303.01469 ,2023. Jason Stock, Troy Arcomano, and Rao Kotamarthi. Swift: An autoregressive consistency model for efficient weather forecasting. arXiv preprint arXiv:2509.25631 , 2025. A Utku and U Can. An efficient hybrid weather prediction model based on deep learning. International Journal of Environmental Science and Technology , 20(10):11107–11120, 2023. Mengze Wang, Benedikt Barthel Sorensen, and Themistoklis Sapsis. Gen2: A generative prediction-correction framework for long-time emulations of spatially-resolved climate extremes. arXiv preprint arXiv:2508.15196 , 2025. Jonas Wildberger, Maximilian Dax, Simon Buchholz, Stephen Green, Jakob H Macke, and Bernhard Schölkopf. Flow matching for scalable simulation-based inference. Advances in Neural Information Processing Systems , 36: 16837–16864, 2023. Hao Wu, Yuan Gao, Ruijian Gou, Xian Wu, Chuhan Wu, Huahui Yi, Johannes Brandstetter, Fan Xu, Kun Wang, Penghao Zhao, et al. Advanced long-term earth system forecasting. arXiv preprint arXiv:2505.19432 , 2025. Huijie Zhang, Aliaksandr Siarohin, Willi Menapace, Michael Vasilkovsky, Sergey Tulyakov, Qing Qu, and Ivan Skorokhodov. Alphaflow: Understanding and improving meanflow models. arXiv preprint arXiv:2510.20771 , 2025. Yilin Zhuang and Karthik Duraisamy. Ladcast: A latent diffusion model for medium-range ensemble weather forecasting. 
+
+arXiv preprint arXiv:2506.09193 , 2025. 
+
+13 Appendix Contents 
+
+A Detailed Experimental Settings . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 15 A.1 Data Description . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 15 A.2 Details of Baselines and Implementations . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 15 A.2.1 Deterministic Baselines . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 15 A.2.2 Probabilistic and Generative Baselines . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 16 A.2.3 Operational NWP Baseline . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 16 A.2.4 Implementation Details . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 16 A.3 Evaluation Metrics . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 17 B Details of Tyche . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 18 B.2 Details of Network Architecture . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 19 B.1 Pseudocode of Tyche . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 18 C Theoretical Analysis and Proofs . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 20 C.1 The Discretization Error Perspective for One-Step Transport . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 20 C.2 Proof of Theorem . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 20 C.3 Bridging Theory and Practice: The Rationale for Stage II Design . . . . . . . . . . . . . . . . . . . . . . . . . . . 21 D Extended Experiments . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 22 D.1 Ablation study . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 22 D.2 Comparison on more variables . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 22 D.3 Ensemble skills comparison . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 23 D.4 Detailed visualizations on more horizons and variables . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 24 14 A Detailed Experimental Settings 
+
+A.1 Data Description 
+
+We use a collection of upper-air and surface-level meteorological variables as both model inputs and prediction targets. The full list of variables is summarized in Table 4. For pressure-level fields, we include five atmospheric variables: Geopotential (z), Specific humidity (q), Temperature (t), U component of wind (u), and V component of wind (v). These variables are defined on 13 standard pressure levels, namely 50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, and 1000 hPa. In addition, we use four single-level variables, including 10 metre u wind component (u10), 10 metre v wind component (v10), 2 metre temperature (t2m), and Mean sea level pressure (mslp). Before training, each variable is standardized using statistics computed from the training period (1979-2017). The same normalization parameters are then kept fixed for all experiments to ensure consistency across different settings. All data are processed on a 1.5◦ latitude–longitude grid. Following the common preprocessing strategy for this grid resolution, the southernmost latitude row is discarded from the original 1.5◦ grid 
+
+(121 × 240) to make the latitude dimension even.     
+
+> Table 4 Description of data variables used.
+> Type Variable name Short name Param ID
+
+Atmospheric Geopotential z 129 Atmospheric Specific humidity q 133 Atmospheric Temperature t 130 Atmospheric U component of wind u 131 Atmospheric V component of wind v 132 Single 10 metre u wind component u10 165 Single 10 metre v wind component v10 166 Single 2 metre temperature t2m 167 Single Mean sea level pressure mslp 151 
+
+A.2 Details of Baselines and Implementations 
+
+To provide a comprehensive evaluation of Tyche, we compare it against a robust suite of state-of-the-art weather forecasting systems. These baselines are broadly categorized into purely deterministic ML models, modern generative/probabilistic ML models, and traditional operational numerical weather prediction (NWP).  
+
+> A.2.1 Deterministic Baselines
+
+These models aim to minimize the mean-squared error (MSE) of the forecast but are known to oversmooth predictions at longer lead times, lacking the capability to capture the full distribution of weather uncertainties. 
+
+• Pangu-Weather Bi et al. (2023): A highly influential deterministic MLWP model utilizing a 3D Earth-Specific Transformer. It processes data using height-specific attention mechanisms and trains independent networks for specific lead times ( e.g. , 1h, 3h, 6h, 24h) to circumvent the error accumulation typical of high-frequency autoregressive rollouts. 
+
+• GraphCast Lam et al. (2023): A state-of-the-art deterministic model based on Graph Neural Networks (GNNs). It maps the latitude-longitude grid to a multi-scale icosahedral mesh using an encode-process-decode architecture, typically generating forecasts autoregressively at 6-hour intervals. 15 A.2.2 Probabilistic and Generative Baselines 
+
+These models represent the forefront of global AI weather ensemble forecasting (2024–2025), aiming to produce sharp, well-calibrated ensemble members that can capture extreme events and uncertainty growth. 
+
+• GenCast Price et al. (2025): A full-space conditional autoregressive diffusion model that serves as the gold-standard ML probabilistic baseline. It learns the one-step conditional distribution and rolls out autore-gressively (typically in 12-hour steps). While it achieves exceptional calibration and sharpness matching operational NWP, it relies on multiple denoising evaluations per step, making sampling computationally expensive. 
+
+• ARCI Andrae et al. (2025): A continuous lead-time diffusion model designed for temporal interpolation. Instead of costly fine-grained autoregressive rollouts, ARCI conditions the diffusion directly on lead time and correlates the driving noise (via an Ornstein-Uhlenbeck process) across times. This allows independent marginals to form a temporally consistent trajectory, combining coarse autoregressive steps ( e.g. , 24h) with cheap high-resolution ( e.g. , 6h or 1h) interpolation. 
+
+• ArchesWeatherGen Couairon et al. (2024): A computationally efficient, two-stage residual generative frame-work. It first utilizes a deterministic backbone (ArchesWeather, featuring Cross-Level Attention) to predict the mean state. Subsequently, a flow-matching generative model is trained to predict the normalized residuals between the deterministic output and the ERA5 ground truth. This explicitly decouples mean prediction from distributional correction. 
+
+• Swift Stock et al. (2025): A highly efficient 1-NFE consistency model. Swift pretrains a probability-flow/diffusion-style model and distills it into a single-step consistency model. A key innovation is its autoregressive multi-step fine-tuning utilizing the Continuous Ranked Probability Score. It represents the state-of-the-art for ultra-fast, single-step ensemble generation. 
+
+• NeuralGCM-ENS Kochkov et al. (2024): A hybrid approach bridging traditional physics and machine learning. It relies on a differentiable general circulation model (dynamical core) combined with neural networks that parameterize unresolved sub-grid physics. The ensemble variant generates multiple trajectories via initial perturbations, providing a strong, physically-constrained probabilistic baseline.  
+
+> A.2.3 Operational NWP Baseline
+
+• IFS-ENS Rasp et al. (2024): The ECMWF Integrated Forecasting System Ensemble. This is the gold-standard operational numerical weather prediction baseline. It relies on solving physical equations explicitly and uses Singular Vectors and Ensemble of Data Assimilations (EDA) to perturb initial conditions, typically generating a 50-member ensemble with plus one unperturbed control.  
+
+> A.2.4 Implementation Details
+
+In our experiments, Tycheis trained on the ERA5 dataset at a spatial resolution of 1.5◦, totally utilizing 69 atmospheric and surface variables. The model is trained on 8 × 80GB NVIDIA H100 GPUs. During inference, an ensemble of 20 members is generated parallelly on a single GPU. Compared to multi-step diffusion baselines like GenCast, Tycherequires only 1 NFE per forecast step, taking approximately 8 seconds to generate a 15-day (60 iteration) trajectory, thereby offering a highly favorable compute-skill Pareto frontier. 
+
+Architecture of Tyche. The backbone of Tycheis a non-hierarchical Swin Transformer configured with 12 transformer blocks. Each block features a hidden dimension of 1024 and 12 attention heads. Spatial interactions are restricted to local windows of size 10 × 10 , which are cyclically shifted by 5 × 5 in alternating blocks. To effectively capture spatial dependencies and temporal dynamics, we employ learned absolute positional embeddings combined with 2D axial Rotary Positional Embeddings (RoPE) within the windows. Furthermore, the architecture utilizes pre-RMSNorm paired with adaptive modulation (generating scale, shift, and gating factors conditioned on the time steps) to stabilize the generative learning process. In this configuration, the model contains approximately 910M trainable parameters. 16 Training Pipeline of Tyche. The training pipeline is meticulously divided into two stages to decouple deterministic representation learning from probabilistic calibration: 
+
+➠ Stage I (One-step flow pretraining): The model is trained from scratch to learn the underlying vector field using an MSE-based objective with 300 epochs. We use the AdamW optimizer with a weight decay of 1e−4
+
+and an initial learning rate of 1e−4, which is scheduled by a cosine annealing policy decaying to a minimum learning rate of 1e−6.
+
+➠ Stage II (Curriculum probabilistic calibration): To explicitly calibrate the uncertainty and ensure long-rollout stability, we perform curriculum autoregressive training using an empirical CRPS loss. The training utilizes a small ensemble size of 2 to maintain computational tractability. The autoregressive rollout horizon progressively increases from 1 to 2 steps, with each curriculum stage trained for 15 epochs. The learning rate is reduced and fixed at 1e−5 for this stage. 
+
+Baseline Configurations and Fairness. To ensure a rigorous and fair evaluation, the implementations of our selected baselines are handled as follows: 
+
+➠ Trained from Scratch: For Pangu, GraphCast, ARCI, Swift, and ArchesWeatherGen, we utilize their official codebases and train them from scratch on the exact same 1.5◦ ERA5 dataset split as Tyche. All training for these baselines is uniformly conducted on eight 80GB NVIDIA H100 GPUs. 
+
+➠ Downloaded Operational/Large-Scale References: For GenCast, NeuralGCM-ENS, and IFS-ENS, training from scratch is operationally restricted. We directly download their official saved inference data for the corresponding evaluation years and variables from WeatherBench2 Rasp et al. (2024). Across all probabilistic methods and operational references, the evaluated ensemble number is strictly aligned to 20 members to ensure fair comparison of generative diversity and calibration metrics. 
+
+A.3 Evaluation Metrics 
+
+To comprehensively evaluate the performance of our probabilistic forecasts, we employ standard metrics from meteorology and uncertainty quantification, including the Latitude-weighted Root Mean Square Error (RMSE), Ensemble Spread, Spread-to-Skill Ratio (SSR), and Continuous Ranked Probability Score (CRPS). To ensure fair evaluation across the globe, all spatial aggregations are weighted by latitude. Let M be the total number of grid cells. For a grid cell i at latitude θi, the normalized area-based latitude weight wi is defined as: 
+
+wi = cos( θi)
+
+> 1
+> M
+
+PMj=1 cos( θj ) , (16) such that the weights average to 1 over the entire grid. In the following formulations, let N denote the total number of forecast initialization times (indexed by n), and K denote the ensemble size (indexed by k). Let yi,n represent the ground truth for grid cell i at time n,
+
+xki,n represent the corresponding prediction of the k-th ensemble member, and ¯xi,n = 1
+
+> K
+
+PKk=1 xki,n denote the ensemble mean. 
+
+Latitude-weighted RMSE (Skill). RMSE measures the deterministic accuracy of the forecast. For ensemble models, it is calculated based on the ensemble mean: RMSE = 1
+
+N
+
+> N
+
+X
+
+> n=1
+
+vuut 1
+
+M
+
+> M
+
+X
+
+> i=1
+
+wi (yi,n − ¯xi,n )2. (17) 
+
+Ensemble Spread. Spread quantifies the variability or uncertainty captured within the ensemble members. It is calculated as the root mean square of the ensemble variance: Spread = 1
+
+N
+
+> N
+
+X
+
+> n=1
+
+vuut 1
+
+M
+
+> M
+
+X
+
+> i=1
+
+wi
+
+1
+
+K − 1
+
+> K
+
+X
+
+> k=1
+
+(xki,n − ¯xi,n )2
+
+!
+
+. (18) 17 Spread-to-Skill Ratio (SSR). Ideally, a well-calibrated probabilistic forecast should achieve a balance where the ensemble spread is proportional to the RMSE error of the ensemble mean. The SSR evaluates this reliability, with values close to 1 indicating optimal effective uncertainty estimation: SSR =
+
+r K + 1 
+
+K
+
+Spread RMSE , (19) where p(K + 1) /K is a statistical correction factor for finite ensemble sizes. 
+
+Continuous Ranked Probability Score (CRPS). CRPS is a widely used metric for probabilistic forecasting that compares the cumulative distribution function (CDF) of the predicted ensemble against the observation. It penalizes errors in both the location and the shape of the predicted distribution. Following the standard in WeatherBench2, we utilize the unbiased estimator of CRPS: CRPS = 1
+
+N
+
+> N
+
+X
+
+> n=1
+
+1
+
+M
+
+> M
+
+X
+
+> i=1
+
+wi
+
+1
+
+K
+
+> K
+
+X
+
+> k=1
+
+|xki,n − yi,n | − 12K2
+
+> K
+
+X
+
+> k=1
+> K
+
+X
+
+> k′=1
+
+|xki,n − xk′
+
+> i,n
+
+|
+
+!
+
+. (20) 
+
+# B Details of Tyche 
+
+B.1 Pseudocode of Tyche 
+
+The detailed pseudocode of Tycheis illustrated in Algorithm 1. 
+
+Algorithm 1 Training and Inference Workflow of Tyche 
+
+Require: Training dataset D = {(xτ , x τ +1 , . . . )}, model parameters θ, ensemble size K.
+
+/* Stage I: One-step Transport Pretraining */  
+
+> 1:
+
+for each pretraining iteration do  
+
+> 2:
+
+Sample (xτ , x τ +1 ) ∼ D , noise ϵ ∼ N (0 , I ), and times r < t ∈ [0 , 1] . 
+
+> 3:
+
+Construct intermediate state zt ← (1 − t)xτ +1 + tϵ and target vt ← ϵ − xτ +1 . 
+
+> 4:
+
+Compute total derivative ddt u⋆θ via Jacobian-Vector Product (JVP).  
+
+> 5:
+
+Calculate rectified target utgt ← vt − (t − r) ddt u⋆θ . ▷ Eq. 8  
+
+> 6:
+
+Update θ by minimizing Lave = MSE  uθ (zt, r, t, x τ ), sg( utgt ). ▷ Eq. 9  
+
+> 7:
+
+end for /* Stage II: Curriculum Probabilistic Calibration */  
+
+> 8:
+
+for each curriculum stage with rollout horizon Rm do  
+
+> 9:
+
+for each finetuning iteration do  
+
+> 10:
+
+Sample initial condition xτ and target state xτ +Rm from D. 
+
+> 11:
+
+Initialize K parallel paths: c0 
+
+> k
+
+← xτ for k ∈ { 1, . . . , K }. 
+
+> 12:
+
+for lead time l = 1 to Rm do ▷ Autoregressive 1-NFE Rollout  
+
+> 13:
+
+Sample ϵlk ∼ N (0 , I ) and generate ˆxτ +lk ← ϵlk − uθ (ϵlk, 0, 1, c l−1 
+
+> k
+
+). 
+
+> 14:
+
+Update conditioning: clk ← ˆxτ +lk . 
+
+> 15:
+
+end for  
+
+> 16:
+
+Update θ by minimizing empirical LCRPS on terminal states {ˆxτ +Rm 
+
+> k
+
+}. ▷ Eq. 14  
+
+> 17:
+
+end for  
+
+> 18:
+
+end for /* Inference: 1-NFE Ensemble Generation */  
+
+> 19:
+
+Sample K independent Gaussian noises {ϵ1, . . . , ϵ K } ∼ N (0 , I ). 
+
+> 20:
+
+for member k = 1 to K in parallel do  
+
+> 21:
+
+Generate forecast sample: ˆxτ +1  
+
+> k
+
+← ϵk − uθ (ϵk, 0, 1, x τ ). ▷ Eq. 15  
+
+> 22:
+
+end for  
+
+> 23:
+
+return Generated forecast ensemble ˆX = {ˆxτ +1 1 , . . . , ˆxτ +1  
+
+> K
+
+}.18 Figure 7 The details of network architecture. 
+
+B.2 Details of Network Architecture 
+
+The transport field in Eq. equation 9 is parameterized by an isotropic Swin-style transformer that operates on the concatenation of the conditioning field and the noisy target state. In formulation: 
+
+zin = [ c; zt] ∈ R2C×H×W , (21) partition zin into non-overlapping patches of size P × P , and project them into tokens: 
+
+z(0) = Linear   Patchify( zin ) + Pabs , (22) where Pabs is a learned absolute positional embedding that provides fixed geographic context. We encode the source time t and destination time r by sinusoidal embeddings followed by an MLP: 
+
+temb = ft(ϕ(t)) + fr (ϕ(r)) . (23) This temporal embedding modulates each transformer block through adaptive normalization. For the l-th block, we predict scale, shift, and residual gates from temb :
+
+[α(l), β (l), γ (l)] = W (l)mod temb + b(l)mod . (24) The modulated features are: 
+
+M(l)(z) = RMSNorm( z) ⊙ (1 + α(l)) + β(l). (25) To preserve fine-scale meteorological structure, we avoid hierarchical downsampling and keep an isotropic resolution throughout the backbone. Self-attention is restricted to local windows, while consecutive blocks alternate between regular and shifted windows to exchange information across window boundaries. In addition, we apply 2D axial rotary positional embeddings (RoPE) to the query and key tokens inside each window to provide relative spatial awareness for advection and vortex-like motion. The l-th block is written as: 
+
+˜z(l) = ˆ z(l) + γ(l)att ⊙ WAttn RoPE 
+
+ M(l)att (ˆ z(l)), (26) 
+
+z(l) = S−1
+
+˜z(l) + γ(l)ffn ⊙ SwiGLU  M(l)ffn (˜ z(l))
+
+, (27) where S denotes the cyclic shift operator. The residual gates are zero-initialized to stabilize optimization in the early stage of training. After the final block, a lightweight decoder maps the tokens back to the physical grid and outputs the velocity field: 
+
+uθ (zs, s, c, r ) = Unpatchify  Wout z(L). (28) We additionally attach a variance head that predicts a non-negative scale field σθ , which is used for uncertainty modulation during finetuning and inference. 19 C Theoretical Analysis and Proofs 
+
+In this section, we provide the rigorous theoretical foundation for Tyche. We first discuss the inherent limitation of distillation-free one-step generation from the perspective of numerical discretization. We then provide the complete proof of Theorem 1, which bounds the autoregressive error amplification. Finally, we bridge the gap between our theoretical Wasserstein bound and the empirical CRPS objective optimized in Stage II. 
+
+C.1 The Discretization Error Perspective for One-Step Transport 
+
+Standard flow matching models the generation process as an Ordinary Differential Equation (ODE), dzt/dt =
+
+vθ (zt, t, c ). Typically, solving this ODE requires multi-step numerical integration. In Tyche, 1-NFE inference is equivalent to solving the ODE with a single Euler step of maximum size ∆t = 1 . While our Stage I objective accurately parameterizes the average-velocity field on the true probability path, forcing a one-step integration inevitably incurs a significant local truncation error, which scales as O(∆ t2) in classical numerical analysis. Therefore, learning the velocity field via teacher-forced states (Stage I) is necessary but insufficient for autoregressive forecasting. Stage II serves as an amortized correction mechanism : by finetuning the model on its own rollout trajectories, the predicted velocity vector implicitly learns to compensate for the one-step discretization error, preventing the chaotic divergence of weather states over long horizons. We now formalize this intuition. 
+
+C.2 Proof of Theorem 
+
+To perfectly align with our spatial evaluation metrics and the CRPS objective, we define the state space over the global grid with a latitude-weighted L1 norm. Let x ∈ RM , we define ∥x∥1,w := PMi=1 wi|xi|, where wi
+
+are the normalized latitude weights. We restate Theorem 1 for convenience and provide its proof in three sequential steps.  
+
+> Theorem 1 (State-sensitive rollout amplification).
+
+Let W1,w be the Wasserstein-1 distance induced by the latitude-weighted L1 ground cost ∥ · ∥ 1,w . Assume the true transition kernel K⋆(· | c) is state-sensitive, i.e., there exists a sensitivity factor Λ > 0 such that for all c, c ′ ∈ X :
+
+W1,w (K⋆(· | c), K ⋆(· | c′)) ≤ Λ∥c − c′∥1,w . (29) 
+
+Let μθH and μ⋆H denote the model and true rollout marginal distributions after H autoregressive steps, initialized from the same distribution ( μθ 
+
+> 0
+
+= μ⋆
+
+> 0
+
+). Then, for any horizon H ≥ 1,
+
+W1,w 
+
+ μθH , μ ⋆H
+
+ ≤
+
+> H−1
+
+X
+
+> j=0
+
+ΛH−1−j Ec∼μθj [δθ (c)] . (30) 
+
+Proof. The proof proceeds by first bounding the endpoint error of the one-step transport, connecting it to the one-step kernel mismatch under the L1 geometry, and finally propagating this mismatch through the autoregressive Markov chain.  
+
+> Step 1: Residual-to-endpoint identity.
+
+Consider a C1 probability path zs driven by velocity vs = dzs 
+
+> ds
+
+. Fix a destination time r < s . For any differentiable candidate average-velocity field u(zs, r, s, c ), we define the rectification residual as: 
+
+ρu(zs, r, s, c ) := u(zs, r, s, c ) − vs + ( s − r)Dsu(zs, r, s, c ), (31) where the total derivative is given by Dsu(zs, r, s, c ) := ∂su(zs, r, s, c ) + Jz u(zs, r, s, c ) vs. Let the one-step prediction of the destination state be ˆzr (s) := zs − (s − r)u(zs, r, s, c ). Differentiating this with respect to s
+
+yields dds ˆzr (s) = −ρu(zs, r, s, c ). Integrating from r to s gives the exact identity for the endpoint error: 
+
+ˆzr (s) − zr = −
+
+Z sr
+
+ρu(zτ , r, τ, c ) d τ. (32) 20 Applying the triangle inequality for integrals under the ∥ · ∥ 1,w norm, we bound the endpoint error: 
+
+∥ˆzr (s) − zr ∥1,w ≤
+
+Z sr
+
+∥ρu(zτ , r, τ, c )∥1,w dτ. (33)  
+
+> Step 2: From endpoint error to one-step kernel mismatch.
+
+We now specialize the continuous identity to our 1-NFE generative sampler. For a fixed conditioning state c, we sample the true target and the Gaussian noise: x ∼ K⋆(· | c), ϵ ∼ N (0 , I ). Setting r = 0 , s = 1 , and evaluating our learned model u = uθ , the 1-NFE generated sample is ˆx = ϵ − uθ (ϵ, 0, 1, c ). Using Eq. equation 33 with s − r = 1 , the error is bounded by: 
+
+∥ˆx − x∥1,w ≤
+
+Z 10
+
+∥ρθ (zτ , τ, c )∥1,w dτ, (34) where ρθ is the specific instantiation of the rectification residual for the linear probability path. Crucially, the joint distribution of ( ˆx, x ) forms a valid coupling between the model’s 1-NFE kernel Kθ (· | c) and the true kernel K⋆(· | c). By the definition of the Wasserstein-1 metric, it is upper-bounded by the expected cost of any valid coupling. Taking the expectation over the data and noise, we obtain the local kernel gap: 
+
+W1,w (Kθ (· | c), K ⋆(· | c)) ≤ E [∥ˆx − x∥1,w ]
+
+≤
+
+Z 10
+
+Ex∼K⋆(·| c), ϵ [∥ρθ (zτ , τ, c )∥1,w ] d τ
+
+:= δθ (c).
+
+(35)  
+
+> Step 3: Autoregressive rollout amplification.
+
+Let μθh and μ⋆h be the marginal distributions of the generated and true atmospheric states after h autoregressive steps ( μθ 
+
+> 0
+
+= μ⋆
+
+> 0
+
+). The state evolution follows μθh+1 = μθhKθ and 
+
+μ⋆h+1 = μ⋆hK⋆. By invoking the triangle inequality under the W1,w metric: 
+
+W1,w (μθh+1 , μ ⋆h+1 ) ≤ W1,w (μθhKθ , μ θhK⋆) + W1,w (μθhK⋆, μ ⋆hK⋆). (36) The first term represents the local generation error . By coupling each state c ∼ μθh, we use Eq. equation 35 to bound it: 
+
+W1,w (μθhKθ , μ θhK⋆) ≤ Ec∼μθh [δθ (c)] . (37) The second term represents the error amplification due to condition mismatch . Let πh be an optimal coupling between μθh and μ⋆h. Applying the state-sensitive assumption yields: 
+
+W1,w (μθhK⋆, μ ⋆hK⋆) ≤ E(c,c ′)∼πh [W1,w (K⋆(· | c), K ⋆(· | c′))] 
+
+≤ Λ E(c,c ′)∼πh [∥c − c′∥1,w ] = Λ W1,w (μθh, μ ⋆h). (38) Combining these establishes the recursive inequality: 
+
+W1,w (μθh+1 , μ ⋆h+1 ) ≤ ΛW1,w (μθh, μ ⋆h) + Ec∼μθh [δθ (c)] . (39) Since W1,w (μθ
+
+> 0
+
+, μ ⋆
+
+> 0
+
+) = 0 , unrolling the recursion up to horizon H yields Eq. equation 30.  
+
+> Remark on the Sensitivity Factor
+
+Λ: In the highly chaotic weather system, infinitesimal initial condition perturbations amplify exponentially over time ( Λ > 1, butterfly effect). Eq. equation 30 reveals that the local generation error at step j is amplified by a factor of ΛH−1−j . This underscores exactly why Stage I alone is insufficient: to prevent catastrophic error accumulation, it is paramount to drive the local error δθ (c) close to zero specifically on the states actually visited ( on-policy ) during autoregressive generation. 
+
+C.3 Bridging Theory and Practice: The Rationale for Stage II Design 
+
+A critical insight from Theorem 1 is the necessity of minimizing the local defect Ec∼μθj [δθ (c)] on the model’s own rollout trajectories ( on-policy ). This requirement rigorously motivates the two core configurations of our Stage II finetuning. 21 Expected CRPS as the Exact W1,w Surrogate. Directly optimizing the W1,w bound via unrolled JVP-rectification is computationally intractable and destabilized by high-order gradients. To establish a feasible surrogate, we adopt the empirical Continuous Ranked Probability Score (CRPS). A fundamental property in probability forecasting is that the expected 1D CRPS is mathematically equivalent to the 1D Wasserstein-1 distance. Consequently, by minimizing the sum of latitude-weighted marginal CRPS across all grid points (Eq. 20), our Stage II objective is mathematically rigorously equivalent to minimizing the W1,w distance under the latitude-weighted L1 ground metric 
+
+
+
+i.e., E[LCRPS ] ≡ W1,w ( ˆP , P ⋆)
+
+
+
+. It provides an end-to-end differentiable and theoretically exact proxy to implicitly minimize the upper bound derived in Theorem 1.  
+
+> Short Rollouts for Root-cause Correction.
+
+Furthermore, Theorem 1 elucidates our empirical observation that supervising short rollouts ( 1 to 2 steps) is optimal. In chaotic atmospheric dynamics ( Λ > 1), the upper bound P ΛH−1−j E[δθ (c)] indicates that large horizons H yield exponentially amplified loss landscapes. Backpropagating through long trajectories injects extreme variance into gradients and coerces the model into predicting blurry conditional means. Conversely, supervising only the initial steps exposes the model to its slightly drifted marginals ( μθ
+
+> 1
+
+, μ θ
+
+> 2
+
+). This delivers the precise on-policy signal to correct the one-step truncation error at its root, effectively capping recursive error accumulation while evading chaotic gradient pathologies. 
+
+# D Extended Experiments 
+
+D.1 Ecternal ablation study 
+
+To validate the necessity of our proposed two-stage training strategy, we conduct an ablation study isolating the impact of the Stage II curriculum probabilistic calibration. Figure 8 compares the predictive performance of the pretrained base model (Tyche (base) ) against the fully finetuned model (Tyche (fine-tune) ) over a 10-day autoregressive rollout. We report both CRPS and RMSE across representative upper-air kinematic and thermodynamic variables (Q700, U500, U850, V500, V850).     
+
+> Figure 8 Ablation study on the ensemble finetuning. We compare the latitude-weighted CRPS (top) and RMSE (bottom) of the pretrained Tyche (base) versus the fully trained Tyche (fine-tune) across five upper-air variables over a 10-day horizon.
+
+As illustrated in Figure 8, the base model is significantly outperformed by its fine-tuned counterpart, suffering from increasingly severe compounding errors during inference. Conversely, the fine-tuned model effectively constrains this error accumulation. Such a performance gap provides strong empirical corroboration for our theoretical analysis. Specifically, the CRPS-based curriculum fine-tuning functions as an amortized correction mechanism ; it exposes the model to its own autoregressive drift (on-policy), thereby enforcing the temporal self-consistency required for stable long-term probabilistic forecasting. 
+
+D.2 Comparison on more variables 
+
+To comprehensively evaluate predictive skill across diverse meteorological fields, we report the latitude-weighted RMSE for 4 surface and 10 upper-air variables. We evaluate under two distinct settings: single-trajectory 22 deterministic skill (Table 5) and ensemble forecasting capability (Table 6). 
+
+Single-Trajectory Predictive Skill. Table 5 compares the deterministic model GraphCast against a single ensemble member from the probabilistic models (ArchesGen and Tyche). As expected, GraphCast holds a slight advantage in short-term (1-day) forecasts, particularly for wind components. However, a single member of Tycheremains highly competitive early on and excels in thermodynamic variables (e.g., t2m, q7). Notably, at medium-range horizons (3 to 10 days), Tyche’s single trajectory systematically outperforms both GraphCast and ArchesWeatherGen across the vast majority of variables. This demonstrates that Tycheproduces highly realistic and stable individual atmospheric trajectories without suffering from severe autoregressive error accumulation. 
+
+Ensemble Forecasting Capability. Table 6 specifically assesses uncertainty modeling by comparing the RMSE of the 20-member ensemble mean for probabilistic models. Under this rigorous ensemble evaluation, Tycheexhibits absolute superiority, achieving the lowest RMSE across all 14 variables at every evaluated lead time (1 to 10 days). This consistent across-the-board improvement confirms that Tyche’s one-step generative transport not only maintains trajectory diversity but also guarantees a highly accurate and calibrated central predictive tendency for complex global weather fields.  
+
+> Table 5
+
+Extended evaluation of latitude-weighted RMSE for surface and upper-air variables across different forecast lead times. Best results are highlighted in bold .   
+
+> Lead Time Model Surface Variables Upper-Air Variables (Pressure Levels)
+
+u10 v10 t2m mslp z7 z9 q7 q9 t8 t10 U7 U9 V7 V9 1-Day GraphCast 0.96 1.01 1.24 1.09 0.80 0.71 3.23 6.39 0.69 0.98 1.81 1.57 1.92 1.56 
+
+ArchesGen 1.11 1.16 1.25 1.27 1.22 0.95 3.20 6.36 0.77 1.00 2.27 1.88 2.35 1.95 Tyche 1.09 1.12 1.19 0.93 0.83 0.69 2.71 5.17 0.60 0.95 2.13 1.85 2.21 1.86 3-Day GraphCast 2.21 2.36 2.28 2.86 2.73 2.29 5.46 10.23 1.44 1.90 4.12 3.20 4.63 3.38 
+
+ArchesGen 2.15 2.22 1.88 2.71 2.53 1.94 5.30 10.30 1.57 1.78 4.28 3.37 4.69 3.49 Tyche 2.13 2.31 1.68 2.49 2.29 1.85 5.11 9.84 1.39 1.63 4.27 3.32 4.56 3.53 7-Day GraphCast 3.99 3.76 3.62 6.64 6.73 5.34 7.87 15.28 3.15 3.49 7.85 5.84 8.02 6.04 ArchesGen 4.25 4.05 3.35 6.84 7.65 6.08 7.81 14.72 3.85 3.59 8.84 7.06 8.97 6.71 Tyche 3.87 3.52 2.77 6.03 6.02 4.57 7.12 14.24 3.08 3.02 7.48 5.85 7.80 5.73 
+
+10-Day GraphCast 4.94 4.59 4.50 10.28 10.51 8.37 9.22 17.88 3.89 4.24 10.20 7.54 10.09 7.14 ArchesGen 4.71 4.87 4.17 9.91 9.69 7.56 8.62 17.12 4.33 4.33 10.34 7.75 10.23 7.57 Tyche 4.60 4.64 3.74 8.58 8.97 6.94 8.44 16.53 3.87 3.94 9.62 7.31 9.77 7.00  
+
+> Table 6
+
+Comparison of latitude-weighted RMSE between Swift and Tychefor surface and upper-air variables. Best results for each lead time are highlighted in bold .   
+
+> Lead Time Model Surface Variables Upper-Air Variables (Pressure Levels)
+
+u10 v10 t2m mslp z7 z9 q7 q9 t8 t10 U7 U9 V7 V9 1-Day ArchesGen 0.86 0.92 1.06 1.02 0.74 0.65 2.54 4.99 0.62 0.83 1.81 1.48 1.81 1.46 Tyche 0.79 0.83 0.88 0.71 0.58 0.50 2.35 4.69 0.50 0.73 1.57 1.36 1.63 1.35 
+
+3-Day ArchesGen 1.88 1.94 1.70 2.60 2.36 1.81 4.40 8.30 1.42 1.62 3.76 2.91 4.10 3.01 Tyche 1.63 1.71 1.32 2.00 1.83 1.45 3.90 7.68 1.14 1.29 3.29 2.55 3.59 2.67 
+
+7-Day ArchesGen 3.62 3.15 2.68 6.02 6.59 5.09 6.38 12.02 3.24 2.89 6.86 5.22 6.67 5.28 Tyche 3.12 2.77 2.03 5.03 5.00 3.92 5.53 11.12 2.39 2.32 6.13 4.76 6.19 4.61 
+
+10-Day ArchesGen 3.79 3.85 3.37 8.15 8.24 6.32 7.14 14.11 3.62 3.58 7.95 5.93 8.23 5.98 Tyche 3.74 3.68 3.31 7.29 7.58 5.80 6.44 12.53 3.38 3.38 7.67 5.83 7.79 5.73 
+
+D.3 Comparison of Spread skills 
+
+To comprehensively evaluate the spatial reliability of uncertainty estimation, we conducted a comparative visual analysis between the ensemble spread and the absolute error of the ensemble mean ( |mean − truth |). 23 Figure 9 Spatial comparison of ensemble spread (top rows) and absolute mean error (bottom rows) at a 5-day lead time. 
+
+In a well-calibrated forecasting system, the spatial distribution of the spread should tightly align with the forecast error. Figure 9 visualizes this alignment at a 5-day lead time for key surface variables (t2m, mslp, u10, and v10). As illustrated in Figure 9, Tychedemonstrates a precise spatial correlation between its predicted uncertainty and actual errors. It accurately captures the complex variance in dynamically active regions ( e.g. , the Southern Ocean) without suffering from pathological under-dispersion. Compared to multi-step generative baselines like ArchesWeatherGen and ARCI, Tychemaintains highly competitive and physically coherent uncertainty structures. This empirically validates that our CRPS-based fine-tuning effectively calibrates spatial dispersion and achieves robust reliability. 
+
+D.4 Detailed visualizations on more horizons and variables 
+
+To further demonstrate the physical fidelity and temporal stability of our method, the following Figure 10, 11, 12 present comprehensive visualizations of Tyche’s single-member forecasts and absolute errors across nine meteorological variables at 1-day, 3-day, and 7-day lead times. 24 Figure 10 Detailed visualization of 1-day single-member forecasts for nine selected variables. 
+
+25 Figure 11 Detailed visualization of 3-day single-member forecasts for nine selected variables. 
+
+26 Figure 12 Detailed visualization of 7-day single-member forecasts for nine selected variables. 
+
+27

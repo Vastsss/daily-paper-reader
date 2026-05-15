@@ -1,0 +1,1485 @@
+Title: Navigating LLM Valley: From AdamW to Memory-Efficient and Matrix-Based Optimizers
+
+URL Source: https://arxiv.org/pdf/2605.09176v1
+
+Published Time: Tue, 12 May 2026 01:11:45 GMT
+
+Number of Pages: 65
+
+Markdown Content:
+# Navigating LLM Valley: From AdamW to Memory-Efficient and Matrix-Based Optimizers 
+
+Aditya Ranganath ranganath2@llnl.gov 
+
+Center for Applied Scientific Computing Lawrence Livermore National Laboratory Livermore, CA, USA 
+
+# Abstract 
+
+Training large language models requires optimization algorithms that are not only statistically effective, but also computationally and memory efficient at extreme scale. Although AdamW 
+
+remains the dominant optimizer for large-scale language-model pretraining and fine-tuning, recent work has revisited nearly every component of the optimization stack: adaptive moment estimation, decoupled weight decay, memory footprint, curvature approximation, sign-based updates, large-batch stability, low-rank gradient structure, and matrix-wise orthogonalized updates. This survey reviews optimizer design for large language models through a systems-and-optimization lens. We organize the literature into classical first-order optimizers, adaptive optimizers, memory-efficient variants, second-order and curvature-aware methods, sign-based and discovered optimizers, low-rank and projection-based methods, and matrix-based optimizers such as Muon . We also discuss benchmarking methodology, including hyperparameter fairness, scale dependence, wall-clock efficiency, token efficiency, memory overhead, and downstream evaluation. We argue that optimizer research for LLMs is entering a new phase: moving from single-algorithm speedup claims toward rigorous, scale-aware comparisons that jointly evaluate convergence, stability, memory, and implementation complexity. 
+
+Keywords: large language models, optimization, AdamW, memory-efficient training, second-order optimization, low-rank optimization, matrix-based optimizers, Muon 
+
+# 1 Introduction 
+
+Training Large language models (LLMs) requires an optimization process which is efficiently 
+
+scalable to accommodate their size. Modern Transformer-based language models ([ 4; 6; 42 ;43 ; 9; 13 ]) contain billions of parameters, are trained on hundreds of billions or trillions of tokens, and require distributed training systems that combine data parallelism, tensor parallelism, mixed precision and optimizer-state sharding. In this setting, the optimizer is not a minor implementation detail: it directly determines convergence speed, training stability, memory consumption, and ultimately the feasible learning capability of a model under a fixed hardware and compute budget. For most contemporary LLM training pipelines, AdamW remains the reference optimizer. Its popularity follows from the empirical success of adaptive moment methods such as 
+
+Adam [16 ], the regularization benefits of decoupled weight decay [ 20 ], and its strong performance across Transformer architectures [ 44 ; 8 ; 4; 42 ]. Compared with plain stochastic gradient descent, adaptive optimizers can better handle heterogeneous gradient statistics  
+
+> ©2026 Ranganath. License: CC-BY 4.0, see https://creativecommons.org/licenses/by/4.0/ .
+> arXiv:2605.09176v1 [cs.LG] 9 May 2026 Ranganath
+
+across attention projections in a transformer setting (see [ 48 ; 41 ]). This robustness has made 
+
+AdamW the default baseline against which most new LLM optimizers are compared. However, the same features that make AdamW effective also make it expensive. Standard 
+
+AdamW maintains first- and second-moment estimates for every trainable parameter. For a model with billions of parameters, these optimizer states can consume memory comparable to or larger than the model weights themselves. The memory burden is particularly acute for full-parameter fine-tuning, long-context training, and pretraining under limited accelerator memory. Even when optimizer states are sharded across devices, the optimizer still affects communication patterns, checkpoint size, numerical precision requirements, and training throughput. Thus, optimizer design for LLMs must be evaluated not only by validation loss, but also by memory footprint, wall-clock time, implementation complexity, and compatibility with distributed systems. Recent work has therefore reopened the optimizer design space for large-scale language modeling. This work can be distinguished into 4 categories- 1. reduces optimizer-state memory through factorization, quantization, grouping, or fused update rules, as in Adafac-tor [ 36 ], 8-bit optimizers [ 7 ], Adam-mini [ 49 ], and LOMO [ 21 ], 2. alternatives to conven-tional coordinate-wise adaptivity, including sign-based and symbolically discovered optimizers such as Lion [ 5], 3. revisits curvature-aware optimization, including scalable second-order or quasi-second-order methods such as Shampoo [ 12 ; 1 ] and Sophia [ 18 ] and low-rank or matrix structure in Transformer parameters, as in GaLore [50 ] and matrix-based optimizers such as Muon [14 ; 19 ]. Together, these categories suggest that the optimizer for an LLM should not necessarily be viewed as a generic vector update rule; it may instead need to exploit the statistical, architectural, and systems structure of Transformer training. Despite this growing literature, optimizer research for LLMs remains fragmented. General optimization surveys provide broad background on stochastic, adaptive, and second-order methods [ 32 ; 3 ; 38 ], while Transformer-efficiency surveys discuss optimizers as one component among many training-acceleration techniques [ 39 ; 45 ]. However, LLM optimizer papers often differ in model scale, token budget, architecture, dataset, batch size, learning-rate schedule, precision, hardware setup, and hyperparameter tuning effort. These differences make it difficult to determine whether a reported gain reflects a fundamentally better optimizer, a better-tuned baseline, a favorable small-scale regime, or a systems-level implementation advantage. Recent benchmarking studies have emphasized that optimizer comparisons can be highly sensitive to tuning and scale, and that purported gains may shrink under fairer or larger-scale evaluation [51; 34]. This survey focuses specifically on weight-update optimizers for LLM pretraining and full-parameter fine-tuning. We use the term optimizer to mean an algorithm that updates trainable model parameters from gradients or gradient-derived statistics. This scope includes classical first-order methods, adaptive diagonal methods, large-batch optimizers, memory-efficient variants, sign-based and discovered update rules, curvature-aware methods, low-rank projection methods, and matrix-based optimizers. We do not attempt to comprehensively survey parameter-efficient fine-tuning, pruning, quantization for inference, or decoding-time acceleration, except where such methods directly interact with optimizer design or optimizer-state memory. The goal of this survey is to organize the emerging optimizer landscape for LLMs into a coherent taxonomy. In particular, we make the following contributions: 
+
+> 2Navigating LLM Valley
+
+1. We review the role of optimizers in LLM training and identify the LLM-specific constraints that distinguish this setting from conventional small-scale neural-network optimization. 2. We categorize LLM optimizers by update geometry, memory cost, curvature usage, scale behavior, and exploitation of matrix or low-rank structure. 3. We compare the motivations and trade-offs of representative methods, including AdamW ,
+
+Adafactor , LAMB , Lion , Sophia , LOMO , GaLore , Adam-mini, and Muon .4. We discuss methodological challenges in optimizer benchmarking, including hyperpa-rameter fairness, scale dependence, token efficiency versus wall-clock efficiency, memory accounting, and downstream evaluation. 5. We identify open problems for future optimizer research, including optimizer scaling laws, parameter-group-specific update rules, matrix-aware theory, and system-level comparisons under fixed compute and memory budgets. We organize the remainder of the survey as follows. Section 2 introduces notation and reviews the optimization constraints that arise in LLM training. Section 3 presents our taxonomy of optimizer families. Section 4 discusses classical and adaptive first-order optimizers, including SGD , Adam , AdamW , and Adafactor . Section 5 covers large-batch and distributed-training optimizers. Section 6 reviews memory-efficient optimizers. Section 7 discusses sign-based and discovered update rules. Section 8 examines curvature-aware and second-order methods. Section 9 covers low-rank and projection-based optimizers. Section 10 discusses matrix-based and orthogonalized optimizers. Section 11 analyzes evaluation methodology, and Section 12 concludes with open research directions. 
+
+# 2 Background: Optimization in LLM Training 
+
+This section introduces the optimization setting for large language model training. We first formalize next-token prediction as stochastic optimization, then review the update rules underlying common first-order optimizers. We then discuss why LLM training creates dis-tinctive constraints for optimizer design, including optimizer-state memory, mixed precision, distributed training, parameter heterogeneity, and long-horizon stability. 
+
+2.1 Language-Model Training as Stochastic Optimization 
+
+Let θ ∈ Rd denote the trainable parameters of a language model. Given a token sequence 
+
+x1: T , an autoregressive language model factorizes the probability of the sequence as 
+
+pθ(x1: T ) = 
+
+> T
+
+Y
+
+> t=1
+
+pθ(xt | x<t ). (1) Training typically minimizes the empirical next-token negative log-likelihood, 
+
+L(θ) = −Ex1: T ∼D 
+
+" TX
+
+> t=1
+
+log pθ(xt | x<t )
+
+#
+
+, (2) 
+
+> 3Ranganath
+
+where D is the training distribution. In practice, training uses minibatches of token sequences, producing a stochastic loss Lt(θ) and stochastic gradient 
+
+gt = ∇θLt(θt). (3) An optimizer defines an update map 
+
+θt+1 = U(θt, g t, s t; ηt, λ, ϕ ), (4) where st denotes optimizer state, ηt is the learning rate, λ is a weight-decay coefficient, and 
+
+ϕ denotes additional optimizer hyperparameters such as momentum coefficients, numerical stabilizers, clipping thresholds, or preconditioner update frequencies. For LLMs, the optimizer is typically coupled to a learning-rate schedule. A common schedule includes a warmup phase followed by cosine decay or inverse-square-root decay. Warmup is especially important for adaptive optimizers because moment estimates are initially inaccurate and because large Transformer models can be numerically unstable early in training. 
+
+2.2 Stochastic Gradient Descent and Momentum 
+
+The simplest optimizer is stochastic gradient descent: 
+
+θt+1 = θt − ηtgt. (5) Although SGD is memory efficient, it uses a single scalar learning rate for all coordinates and does not adapt to heterogeneous gradient scales. This limitation is significant in LLMs, where different parameter groups can exhibit substantially different gradient statistics. Momentum improves SGD by accumulating a velocity vector: 
+
+vt = βv t−1 + gt, (6) 
+
+θt+1 = θt − ηtvt, (7) where β ∈ [0 , 1) controls the decay of previous gradients. Momentum can reduce oscillation and improve optimization in poorly conditioned landscapes. However, it still does not provide coordinate-wise adaptivity. 
+
+2.3 Adaptive Diagonal Preconditioning 
+
+Adaptive optimizers can be interpreted as diagonal preconditioned gradient methods. Instead of applying the same learning rate to every coordinate, they maintain statistics of past gradients and rescale updates coordinate-wise. AdaGrad accumulates squared gradients, 
+
+Gt = Gt−1 + g2 
+
+> t
+
+, (8) 
+
+θt+1 = θt − ηt
+
+gt
+
+√Gt + ϵ , (9) where operations are element-wise [ 10 ]. RMSProp replaces the cumulative sum with an exponential moving average [40], 
+
+vt = β2vt−1 + (1 − β2)g2 
+
+> t
+
+. (10) 
+
+> 4Navigating LLM Valley
+
+Adam combines momentum and adaptive second-moment scaling [ 16 ]. It maintains first-and second-moment estimates, 
+
+mt = β1mt−1 + (1 − β1)gt, (11) 
+
+vt = β2vt−1 + (1 − β2)g2 
+
+> t
+
+, (12) with bias-corrected moments ˆmt = mt
+
+1 − βt
+
+> 1
+
+, (13) ˆvt = vt
+
+1 − βt
+
+> 2
+
+. (14) The parameter update is 
+
+θt+1 = θt − ηt
+
+ˆmt
+
+√ˆvt + ϵ . (15) The second-moment accumulator vt acts as a diagonal estimate of gradient scale and yields coordinate-wise learning-rate adaptation. 
+
+2.4 AdamW and Decoupled Weight Decay 
+
+Weight decay is often used to regularize neural-network training. In classical SGD , ℓ2
+
+regularization and multiplicative weight decay are closely related. In adaptive optimizers, however, coupling weight decay to the gradient update changes the effective regularization because the penalty term is also rescaled by the adaptive preconditioner. AdamW addresses this issue by decoupling weight decay from the adaptive gradient update [20]. A simplified AdamW update can be written as 
+
+θt+1 = (1 − ηtλ)θt − ηt
+
+ˆmt
+
+√ˆvt + ϵ , (16) where λ is the decoupled weight-decay coefficient. This separation allows the adaptive update and regularization strength to be tuned more independently. In LLM training, 
+
+AdamW is commonly combined with learning-rate warmup, cosine decay, gradient clipping, parameter-specific weight-decay exclusions, and mixed-precision arithmetic. 
+
+2.5 Optimizer-State Memory 
+
+The memory cost of an optimizer is a crucial issue in LLM training. Suppose a model has 
+
+d parameters. Ignoring activation memory, a simple mixed-precision training setup may store model parameters, gradients, master weights, and optimizer states. For AdamW , the optimizer state includes at least two vectors of length d: the first moment mt and the second moment vt.A simplified memory accounting is shown in Table 1. The exact memory footprint depends on precision, framework implementation, parameter sharding, and whether master weights are stored separately. Nevertheless, the qualitative point is robust: adaptive optimizers can require multiple additional copies of the parameter vector. For a billion-parameter model, each fp32 optimizer-state vector requires approximately 4 GB of memory. Thus, the two moment vectors alone require approximately 8 GB before                       
+
+> 5Ranganath
+> Stored quantity Typical precision Approximate cost
+> Model parameters bf16/fp16 2dbytes Gradients bf16/fp16 2dbytes Master parameters fp32 4dbytes First moment mtfp32 4dbytes Second moment vtfp32 4dbytes Total, unsharded AdamW-style training –up to 16 dbytes
+
+Table 1: Simplified memory accounting for mixed-precision AdamW -style training. Actual implementations may differ, but first- and second-moment states are a major source of memory overhead. accounting for parameters, gradients, activations, fragmentation, and distributed-training overhead. This scaling motivates memory-efficient optimizers such as Adafactor [ 36 ], low-bit optimizers [ 7 ], Adam-mini [ 49 ], and full-parameter fine-tuning methods such as 
+
+LOMO [21]. 
+
+2.6 Mixed Precision and Numerical Stability 
+
+LLMs are commonly trained using mixed precision, such as fp16, bf16, or fp8 variants, to reduce the memory footprint and increase throughput. However, this changes the numerical behavior of optimization. Gradients may underflow or overflow, moment estimates may lose precision, and update magnitudes may become unstable if the optimizer is not implemented carefully. In mixed-precision training, gradients may underflow or overflow because fp16 has a limited numerical range; standard remedies include loss scaling and maintaining fp32 master weights [22; 52]. Optimizer states are also precision-sensitive: low-bit Adam-style methods require careful quantization to preserve moment statistics and training stability [ 7 ]. Finally, Adam-style update magnitudes can become unstable at large scale or under low-precision arithmetic if numerical details such as epsilon, clipping, and state precision are not handled carefully [24; 46]. Adaptive optimizers introduce additional numerical considerations. The stabilizer ϵ in 
+
+Adam and AdamW can meaningfully affect training when second-moment estimates are small. Gradient clipping is often used to prevent rare but large updates. Loss scaling is commonly used with fp16 training, while bf16 often reduces the need for explicit scaling because of its larger exponent range. Optimizer comparisons should therefore specify precision, clipping rules, loss scaling, and the exact implementation of moment updates. 
+
+2.7 Distributed Training and Optimizer Sharding 
+
+Large LLMs often require modern GPUs and servers which accelerate the training process significantly. With a huge model footprint, these models require sophisticated data and model parallelism. This data and model parallelism also extend to the optimizer states. 
+
+> 6Navigating LLM Valley
+
+Gradient synchronization. In data-parallel LLM training, each worker computes gradients on a local microbatch, and these gradients must be synchronized before the optimizer step. The standard approach is an all-reduce operation ([ 35 ]) that averages gradients across workers, ensuring that every replica applies the same update. Gradient synchronization can become a major communication bottleneck as model size and worker count increase, especially when gradients are communicated in full precision or when synchronization occurs after every backward pass. Practical systems reduce this cost through gradient accumulation, overlapping communication with backpropagation, bucketed all-reduce, mixed-precision communication, and optimizer-state sharding. Optimizer design interacts with this process because methods with additional statistics, structured pre-conditioners, or matrix-level updates may require extra synchronization beyond ordinary gradient averaging ([ 28 ; 37 ; 29 ]). 
+
+Model sharding. Model sharding partitions model-related tensors across devices so that training is no longer limited by the memory capacity of a single accelerator. In contrast to ordinary data parallelism, which replicates parameters, gradients, and optimizer states on every worker, sharded training distributes some or all of these tensors across workers and reconstructs them only when needed for computation. ZeRO introduced a staged approach to remove redundancy in optimizer states, gradients, and parameters, enabling much larger models while preserving data-parallel training semantics [ 29 ]. PyTorch Fully Sharded Data Parallel (FSDP) brings similar ideas into a native PyTorch implementation, sharding parameters, gradients, and optimizer states while integrating with autograd, CUDA memory management, prefetching, and communication–computation overlap [ 53 ]. In parallel, Megatron-style tensor and pipeline parallelism shard individual layers and sequences across devices, making it possible to train multi-billion- and trillion-parameter Transformer models by combining data, tensor, pipeline, and sequence parallelism [ 37 ; 25 ]. Recent development has moved toward hybrid sharding strategies that combine FSDP/ZeRO-style data-parallel sharding with tensor, pipeline, context, and sequence parallelism. Thus, optimizer designs must now be evaluated together with the distributed layout that stores and synchronizes its states. 
+
+Optimizer sharding. Optimizer sharding partitions the auxiliary state used by the optimizer, such as Adam first- and second-moment tensors, across data-parallel workers. This differs from model sharding, which partitions the model parameters themselves, often through tensor, pipeline, or fully sharded data parallelism. In ordinary data parallelism, every worker stores a full copy of the parameters, gradients, and optimizer states; optimizer sharding removes redundancy in the optimizer states while preserving the semantics of data-parallel training. ZeRO formalizes this distinction through staged partitioning: ZeRO-1 shards optimizer states, ZeRO-2 additionally shards gradients, and ZeRO-3 shards parameters as well [ 29 ]. In practice, optimizer sharding is especially important for Adam-style optimizers because moment estimates can consume memory comparable to or larger than the model weights, while model sharding is needed when the parameters themselves no longer fit on a single accelerator [53; 25]. Even though gradient synchronization and model sharding reduce per-device memory and compute, they introduce communication and implementation complexity. Thus, the cost of an optimizer is not fully captured by its mathematical update rule. An optimizer with fewer states may enable larger batch sizes or longer context lengths. An optimizer with matrix preconditioning may reduce optimization steps but introduce additional communication or 
+
+> 7Ranganath
+
+computation. A fair comparison must include not only validation loss per token, but also wall-clock time, peak memory, communication volume, checkpoint size, and compatibility with existing distributed-training infrastructure. 
+
+2.8 Parameter Heterogeneity in Transformers 
+
+Transformer LLMs contain parameter groups with different shapes and roles. Some of these include token embeddings, positional embedding parameters, projection matrices, and output heads. Standard optimizers usually apply a shared update rule across all parameters with simple exclusions for weight decay. However, different parameter groups may have different gradient scales, curvature, rank structure, and sensitivity to regularization. This heterogeneity motivates several recent optimizer directions. Factorized optimizers exploit matrix-shaped parameters. Low-rank optimizers exploit gradient structure in large dense matrices. Matrix-based optimizers such as Muon treat certain weight tensors as matrices and modify the geometry of their updates [14; 19]. Parameter grouping in Adam-mini similarly reflects the possibility that different parts of the model may not require fully independent coordinate-wise adaptivity [49]. 
+
+2.9 Token Efficiency, Wall-Clock Efficiency, and Final Performance 
+
+An optimizer for LLMs can be evaluated along multiple axes. Token efficiency measures how quickly validation loss decreases as a function of the number of training tokens. Step efficiency measures progress per optimizer step. Wall-clock efficiency measures progress per unit time. Memory efficiency measures the largest model, context length, or batch size that can fit under a fixed memory budget. Final performance measures downstream quality after a fixed training recipe. These metrics can disagree. A curvature-aware optimizer may improve token efficiency but slow each step. A memory-efficient optimizer may allow larger batches or models but require more tokens to reach the same loss. A new optimizer may outperform AdamW 
+
+at small scale but lose its advantage when both methods are carefully tuned at larger scale. Recent empirical studies emphasize the importance of fair hyperparameter tuning, scale-aware evaluation, and cautious interpretation of early training curves [51; 34]. 
+
+2.10 Summary 
+
+LLM optimization is shaped by both algorithmic and systems constraints. The optimizer must produce stable and effective parameter updates, but it must also fit within strict memory budgets, interact well with mixed precision, scale across distributed hardware, and remain robust across heterogeneous Transformer parameter groups. These considerations explain why AdamW remains a strong baseline, and why recent work has explored memory-efficient, curvature-aware, low-rank, and matrix-based alternatives. The next section uses these dimensions to construct a taxonomy of LLM optimizers. 
+
+# 3 A Taxonomy of Optimizers for LLMs 
+
+The optimizer landscape for LLMs is too diverse to be organized by chronology alone. Many recent methods modify different parts of the optimization pipeline: some change the update 
+
+> 8Navigating LLM Valley
+
+direction, some change the preconditioner, some reduce optimizer-state memory, some exploit matrix structure, and others target distributed training or full-parameter fine-tuning under memory constraints. This section introduces a taxonomy that will guide the rest of the survey. The LLM optimizers are organized along five axes: 1. Update geometry: whether the optimizer uses raw gradients, momentum, coordinate-wise adaptive scaling, sign updates, curvature approximations, low-rank projections, or matrix-structured transformations. 2. State memory: how much auxiliary state the optimizer stores relative to the number of trainable parameters. 3. Structural assumptions: whether the method treats parameters as independent coordinates, vectors, matrices, tensors, low-rank objects, or parameter groups. 4. Target regime: whether the optimizer is intended primarily for pretraining, full-parameter fine-tuning, large-batch training, memory-constrained training, or general-purpose use. 5. Evaluation criterion: whether the method aims to improve token efficiency, wall-clock speed, peak memory, numerical stability, final downstream performance, or implementa-tion simplicity. These axes are not independent. For example, a method that reduces memory by compressing optimizer states may change numerical behavior; a curvature-aware optimizer may improve token efficiency but increase per-step compute; and a matrix-based optimizer may exploit Transformer weight structure while requiring specialized kernels or update rules. Therefore, evaluating the best optimizer based on its lowest validation loss might be of significance given many of the other factors taken into consideration. 
+
+3.1 Classical First-Order Methods 
+
+Classical first-order methods update parameters directly from stochastic gradients, optionally with momentum. This family includes SGD , momentum, and Nesterov-style acceleration. Their main advantage is simplicity and low memory overhead: plain SGD requires no per-parameter auxiliary state, and momentum requires only one additional vector. Their main limitation for LLMs is the lack of coordinate-wise adaptivity. Transformer parameters often have heterogeneous gradient scales across layers and parameter types, making a single scalar learning rate difficult to tune. Although SGD remains important as a conceptual and theoretical baseline, it is rarely the default choice for modern LLM pretraining. Recent empirical studies often find that 
+
+SGD performs worse than adaptive methods for autoregressive language modeling when compared under practical training recipes [ 51 ]. Nevertheless, SGD -like memory usage remains attractive, motivating methods that attempt to approach AdamW -level performance with reduced optimizer state. 
+
+> 9Ranganath
+
+3.2 Adaptive Diagonal Methods 
+
+Adaptive diagonal optimizers maintain coordinate-wise statistics of past gradients and use them to rescale updates. This family includes AdaGrad [ 10 ], RMSProp [ 40 ], Adam [16 ], 
+
+AdamW [ 20 ], and Adafactor [ 36 ]. The dominant member of this family in LLM training is AdamW .The strength of adaptive diagonal methods is robustness. By normalizing coordinates according to gradient magnitude, they can tolerate heterogeneous parameter scales and sparse or bursty gradients. Their weakness is memory: AdamW typically stores two full-size moment vectors, which is costly for billion-parameter models. Much of the recent optimizer literature can be understood as an attempt to preserve the benefits of adaptive diagonal scaling while reducing or restructuring its memory cost. 
+
+3.3 Large-Batch and Distributed-Training Optimizers 
+
+Large-batch optimizers aim to maintain stable optimization when increasing batch size to improve hardware utilization. This family includes methods such as LAMB , which introduces layer-wise trust ratios and was used to train BERT with very large batches [ 47 ]. These optimizers are motivated by the observation that naive learning-rate scaling can become unstable as batch size grows. For LLMs, large-batch optimization is intertwined with distributed systems. The relevant question is not only whether an optimizer converges with a large batch, but whether it improves throughput under data parallelism, tensor parallelism, pipeline parallelism, and optimizer-state sharding. Large-batch optimizers are therefore best understood as system-aware optimization methods. 
+
+3.4 Memory-Efficient Optimizers 
+
+Memory-efficient optimizers reduce the cost of optimizer states, gradients, or update computa-tion. This family includes factorized-state methods such as Adafactor [36 ], quantized-state methods such as 8-bit optimizers [ 7 ], reduced-adaptivity methods such as Adam-mini [ 49 ], and fused full-parameter fine-tuning methods such as LOMO [21]. The motivation is straightforward: optimizer state can determine whether a model fits in memory. Reducing optimizer memory may enable larger models, longer contexts, larger batches, or full-parameter fine-tuning on limited hardware. The trade-off is that memory reduction may also reduce update fidelity, require special parameter grouping, introduce quantization error, or complicate implementation. 
+
+3.5 Sign-Based and Discovered Optimizers 
+
+Sign-based optimizers use the sign of a gradient or momentum-like quantity rather than its full magnitude. Examples include signSGD [ 2 ] and Lion , which was discovered through symbolic search over optimizer programs [ 5]. These optimizers are attractive because sign operations are simple and can reduce dependence on precise gradient magnitudes. In LLM training, sign-based methods raise two questions - 1. Can they match the robustness of AdamW across model scales and architectures? 2. do their apparent gains persist under fair hyperparameter tuning and large-scale evaluation? The importance of 
+
+> 10 Navigating LLM Valley
+
+these questions may be attributed to the optimizer’s sensitivity to learning rate, weight decay, and schedule choices. 
+
+3.6 Curvature-Aware and Second-Order Methods 
+
+Curvature-aware optimizers attempt to improve update directions by approximating second-order information. Exact Newton-style optimization is infeasible for LLMs because the Hessian is enormous. If we revisit our one billion parameter model in 2.5 - for a model with d = 10 9 parameters, a dense Hessian would contain 10 18 entries; even storing these entries in fp32 would require roughly 4 × 10 18 bytes, i.e., exabytes of memory. Exact Hessian storage, communication, and inversion are therefore completely infeasible for LLMs. Practical methods therefore use diagonal, block-diagonal, Kronecker-factored, or tensor-structured approximations. This family includes diagonal curvature methods such as Sophia, tensor-structured preconditioners such as Shampoo, and SOAP-like structured methods. Quasi-Newton methods are closely related, but we treat them as a separate subfamily in Section 3 because they estimate inverse-curvature information from parameter and gradient differences rather than directly accumulating Hessian, Fisher, or gradient-covariance statistics. 
+
+3.7 Low-Rank and Projection-Based Optimizers 
+
+Low-rank and projection-based methods exploit the empirical observation that gradients or updates for large neural-network matrices may have low effective rank. GaLore , for example, projects gradients into a low-rank subspace to reduce memory while maintaining full-parameter training [ 50 ]. These methods occupy an intermediate position between optimizer design and memory-efficient training. The key design question is how to choose and update the projection subspace. Aprojection that is too small may lose important update information, while a projection that is too large may provide limited memory savings. These methods are particularly relevant for Transformer layers because attention and feed-forward blocks contain large dense matrices where low-rank structure may be exploitable. 
+
+3.8 Matrix-Based and Orthogonalized Optimizers 
+
+Matrix-based optimizers treat weight matrices as matrices rather than collections of indepen-dent scalar parameters. This distinguishes them from coordinate-wise adaptive optimizers, which apply element-wise transformations. Muon is a representative recent method that applies orthogonalization or matrix-normalization ideas to momentum updates for neural-network weight matrices [14; 19]. This family is motivated by the structure of Transformer architectures. Most parameters in LLMs reside in large matrices: query, key, value, output, and feed-forward projections. Matrix-based optimizers ask whether update geometry should respect this structure. Their potential advantage is better-conditioned updates for matrix parameters. Their challenge is to demonstrate robust gains at LLM scale while keeping computational overhead and implementation complexity manageable. 
+
+> 11 Ranganath
+
+3.9 Quasi-Newton Optimizers 
+
+Quasi-Newton optimizers approximate second-order information without explicitly forming the Hessian. Classical methods such as BFGS construct an approximation to the inverse Hessian from successive parameter differences and gradient differences, while limited-memory variants such as L-BFGS store only a small history of such pairs. This makes quasi-Newton methods conceptually attractive for large models because they can improve conditioning without storing a full curvature matrix[17; 27; 33; 23; 11; 26; 30]. For LLMs, however, quasi-Newton methods face several challenges. Stochastic minibatch gradients can make curvature-pair estimates noisy, line-search procedures are difficult to integrate into large-scale distributed training, and even limited-memory histories can be expensive at billion-parameter scale. Recent work on stochastic and distributed quasi-Newton methods attempts to address these issues through block-wise approximations, momentum stabilization, and distributed memory/computation strategies. Thus, quasi-Newton optimizers occupy an intermediate position between first-order adaptive methods and explicit curvature-aware preconditioners: they use curvature information implicitly through update histories, but must be adapted carefully for stochastic, large-scale, distributed LLM training. 
+
+3.10 Comparison of Optimizer Families 
+
+Table 2 summarizes the main optimizer families discussed in this survey. The table emphasizes that optimizer families differ not only in mathematical update rules, but also in memory cost, structural assumptions, and target use cases. 
+
+3.11 A Systems-Oriented View 
+
+A useful way to compare optimizers is to view them as points in a systems–optimization design space. At one extreme, SGD is simple and memory efficient but often less robust for LLM training. At another extreme, second-order and structured-preconditioning methods may provide better-conditioned updates but add computational and implementation overhead. 
+
+AdamW occupies a strong middle ground: it is robust and well supported, but memory intensive. Many recent optimizers attempt to move away from AdamW along one of three directions: reducing memory while preserving adaptive behavior, improving update geometry while controlling overhead, or exploiting architecture-specific structure. This perspective also clarifies why no single metric is sufficient. Validation loss at a fixed number of tokens measures token efficiency, but not wall-clock efficiency. Wall-clock time measures practical speed, but depends on implementation quality and hardware. Peak memory determines feasible model scale, but may trade off against convergence. Downstream performance measures utility, but can hide training instability or cost. A rigorous comparison must therefore report several metrics simultaneously. 
+
+3.12 Summary 
+
+The optimizer landscape for LLMs can be organized by update geometry, memory cost, structural assumptions, target training regime, and evaluation criterion. This taxonomy frames the rest of the survey. The next section begins with classical and adaptive first-order 
+
+> 12
+
+Navigating LLM Valley 
+
+Family Representative methods State cost Primary motivation 
+
+Classical first-order 
+
+SGD , Momentum, Nesterov None or one vector Simple, low-memory baselines. Adaptive diagonal AdaGrad, RM-SProp, Adam ,
+
+AdamW , Adafac-tor 
+
+One to two vec-tors; factorized for 
+
+Adafactor 
+
+Robust coordinate-wise scal-ing for heterogeneous gradi-ents. Large-batch LAMB , LARS-style methods Usually adaptive-state dependent Stable training at large batch sizes and high hardware uti-lization. Memory-efficient Adafactor , 8-bit Adam, Adam-mini, 
+
+LOMO 
+
+Reduced, com-pressed, grouped, or fused states Fit larger models, longer con-texts, or full fine-tuning under memory limits. Sign-based/discovered signSGD, Lion Typically one or two vectors Simpler update rules and possi-ble speed or memory benefits. Curvature-aware Shampoo, SOAP-like methods, 
+
+Sophia 
+
+Diagonal, block, or structured curva-ture states Better conditioning and im-proved token efficiency. Low-rank/projection 
+
+GaLore ,APOLLO-like methods Low-rank subspace states Reduce training memory by exploiting low-rank gradient structure. Matrix-based Muon and related methods Matrix-specific state or transformations Exploit weight-matrix geom-etry and orthogonalized up-dates. Quasi-Newton methods BFGS, L-BFGS, stochastic L-BFGS, mL-BFGS Limited history of parameter/gradient differences Approximate inverse-Hessian information without full second-order storage. 
+
+Table 2: Taxonomy of optimizer families for LLM training and fine-tuning. State cost is qualitative because actual memory depends on precision, sharding, parameter grouping, and implementation. methods, focusing on why AdamW became the dominant baseline and how alternatives such as Adafactor modify the adaptive-optimization template. 
+
+# 4 Classical and Adaptive First-Order Optimizers 
+
+Classical and adaptive first-order optimizers form the foundation of modern LLM training. Even newer optimizer families—including memory-efficient, low-rank, curvature-aware, and matrix-based methods—are often best understood as modifications of first-order updates. This section reviews the core methods in this family, explains why AdamW became the dominant optimizer for LLMs, and discusses the role of Adafactor as an important memory-reduced adaptive alternative. 
+
+13 Ranganath 
+
+4.1 SGD as the Baseline Update Rule 
+
+Stochastic gradient descent updates parameters in the negative direction of the minibatch gradient: 
+
+θt+1 = θt − ηtgt, (17) where gt = ∇θLt(θt) and ηt is the learning rate. The appeal of SGD is its simplicity. It requires no auxiliary optimizer state, has low memory overhead, and is easy to implement in distributed training systems. In terms of memory, plain SGD is ideal: aside from parameters and gradients, it need not store moment estimates, curvature approximations, or projection matrices. However, this simplicity is also a limitation. SGD applies the same scalar learning rate to all parameters. This can be problematic in LLMs, where parameter groups differ dramatically in scale, frequency of update, gradient variance, and curvature. Token embeddings, attention projections, feed-forward matrices, normalization parameters, and output heads may all require different effective step sizes. A single global learning rate must therefore compromise across heterogeneous parameter groups. Momentum partially addresses this problem by accumulating a velocity vector, 
+
+ut = βu t−1 + gt, (18) 
+
+θt+1 = θt − ηtut, (19) where β is the momentum coefficient. Momentum reduces high-frequency noise in the update direction and can accelerate progress along persistent descent directions. Nevertheless, it still lacks coordinate-wise adaptivity. It stores one additional vector, making it more memory intensive than plain SGD but still less expensive than AdamW .In LLM pretraining, SGD and momentum are useful as conceptual baselines and for understanding the value of adaptivity. Empirical comparisons of optimizers for autoregressive language modeling generally find that SGD is difficult to make competitive with adaptive methods under practical training recipes [ 51 ]. This observation motivates a recurring theme in LLM optimizer research: the goal is often not to return to plain SGD , but to obtain 
+
+SGD -like memory cost while preserving some of the robustness of adaptive methods. 
+
+4.2 Coordinate-Wise Adaptivity 
+
+Adaptive optimizers maintain per-coordinate statistics of gradients and use those statistics to rescale updates. The generic form is 
+
+θt+1 = θt − ηtD−1 
+
+> t
+
+ht, (20) where ht is a gradient-derived direction, often a momentum estimate, and Dt is a diagonal preconditioner derived from past gradients. In this view, adaptivity changes the geometry of the update: coordinates with historically large gradients receive smaller effective learning rates, while coordinates with small gradients receive larger effective learning rates. AdaGrad accumulates squared gradients over time [10]: 
+
+rt = rt−1 + g2 
+
+> t
+
+, (21) 
+
+θt+1 = θt − ηt
+
+gt
+
+√rt + ϵ . (22) 
+
+> 14 Navigating LLM Valley
+
+This update can be effective for sparse features, but the accumulator rt grows monotonically, causing effective learning rates to decay continually. RMSProp replaces the cumulative sum with an exponential moving average [40]: 
+
+rt = β2rt−1 + (1 − β2)g2 
+
+> t
+
+. (23) This makes the preconditioner responsive to recent gradient statistics rather than the full training history. The key advantage of coordinate-wise adaptivity is robustness to heterogeneous gradient scales. This is especially valuable for Transformers, whose parameters play different functional roles and may experience different gradient distributions. The main cost is memory: a diagonal preconditioner requires storing at least one auxiliary value per parameter. Adaptive methods also introduce additional hyperparameters, such as β2 and ϵ, whose effects can be nontrivial in mixed-precision training. 
+
+4.3 Adam 
+
+Adam combines momentum and adaptive second-moment scaling [ 16 ]. It maintains expo-nential moving averages of gradients and squared gradients: 
+
+mt = β1mt−1 + (1 − β1)gt, (24) 
+
+vt = β2vt−1 + (1 − β2)g2 
+
+> t
+
+. (25) The bias-corrected estimates are ˆmt = mt
+
+1 − βt
+
+> 1
+
+, (26) ˆvt = vt
+
+1 − βt
+
+> 2
+
+. (27) The update is 
+
+θt+1 = θt − ηt
+
+ˆmt
+
+√ˆvt + ϵ . (28) The first-moment estimate mt smooths stochastic gradients, while the second-moment estimate vt rescales coordinates. This combination has made Adam effective across a broad range of neural-network architectures. However, Adam also raised theoretical and practical questions. In particular, adaptive methods can fail to converge under some settings, motivating variants such as AMSGrad [ 31 ]. In LLM practice, the more influential modification is not AMSGrad but decoupled weight decay, yielding AdamW .
+
+4.4 AdamW 
+
+AdamW modifies Adam by decoupling weight decay from the adaptive gradient update [ 20 ]. In the coupled formulation, an ℓ2 penalty contributes λθ t to the gradient before adaptive scaling. This means that the regularization term is itself divided by the adaptive denominator √ˆvt + ϵ, producing coordinate-dependent regularization. AdamW instead applies weight decay directly to the parameters: 
+
+θt+1 = (1 − ηtλ)θt − ηt
+
+ˆmt
+
+√ˆvt + ϵ . (29) 
+
+> 15 Ranganath
+
+This decoupling allows the learning rate and weight decay to be tuned more independently. 
+
+AdamW is the standard reference optimizer for Transformer-based LLMs. Its practical success comes from several properties - 1. coordinate-wise adaptivity handles heterogeneous gradient scales, 2. momentum smooths noisy minibatch gradients, 3. decoupled weight decay provides a stable and interpretable regularization mechanism, 4. AdamW is widely implemented, optimized, and integrated into distributed-training frameworks. At the same time, AdamW is memory intensive because it stores full first- and second-moment states, as detailed in Section 2.5. This cost is a central reason that many recent optimizers attempt to reduce, compress, factorize, or restructure moment estimates while retaining AdamW -like behavior. 
+
+4.5 Practical AdamW Design Choices in LLM Training 
+
+The mathematical update rule for AdamW does not fully specify a practical LLM training recipe. Several implementation and tuning choices strongly affect performance. 
+
+Learning-rate schedule. LLM training commonly uses a warmup period followed by cosine decay, linear decay, or inverse-square-root decay. Warmup prevents unstable early updates when moment estimates are poorly calibrated. The optimal schedule interacts with batch size, model scale, dataset size, and training duration. 
+
+Momentum coefficients. Typical AdamW settings use β1 near 0 .9 and β2 between 0 .95 and 0 .999, although the best values vary by model and training regime. Smaller β2 values make the second-moment estimate more responsive to recent gradients, while larger values provide smoother estimates. The choice of β2 can affect both stability and generalization. 
+
+Weight decay and parameter exclusions. In Transformer training, weight decay is often not applied uniformly to all parameters. Biases, normalization parameters, and sometimes embeddings may be excluded from weight decay. These choices matter because such parameters have different scale and regularization behavior than large dense matrices. 
+
+Gradient clipping. Gradient clipping limits the norm of updates and is often used to prevent rare instability. This is particularly important during early training, when gradients can be large, and in mixed-precision settings, where numerical overflow may occur. 
+
+Precision and implementation. The moment estimates in AdamW are often main-tained in fp32 even when model weights and activations use fp16 or bf16. Fused optimizer kernels, optimizer-state sharding, and low-precision variants can significantly affect wall-clock efficiency and memory use. As a result, two implementations of the same mathematical optimizer may have different practical performance. These details imply that optimizer comparisons should not treat AdamW as a single fixed baseline. A weakly tuned AdamW baseline can exaggerate the apparent gains of a new optimizer. Conversely, a carefully tuned AdamW baseline may reduce or eliminate reported advantages. This issue has been emphasized in recent empirical studies of LLM optimizers [51; 34]. 
+
+> 16 Navigating LLM Valley
+
+4.6 Adafactor 
+
+Adafactor was designed to provide adaptive learning rates with sublinear memory cost [ 36 ]. Its key observation is that many neural-network parameters are matrices. For a matrix parameter W ∈ Rm×n, a full second-moment accumulator would require mn entries. Adafac-tor instead approximates the second-moment matrix using row and column statistics. If 
+
+Vt ∈ Rm×n denotes the full second-moment estimate, Adafactor stores vectors 
+
+rt ∈ Rm, (30) 
+
+ct ∈ Rn, (31) corresponding to row-wise and column-wise averages. These are combined to form an approximate factored preconditioner. At a high level, the factored approximation reduces memory from O(mn ) to O(m +
+
+n) for matrix-shaped parameters. This is particularly attractive for Transformer layers, which contain large projection matrices. Adafactor can therefore be understood as a memory-efficient adaptive optimizer that exploits parameter shape without fully abandoning coordinate-wise scaling. 
+
+Adafactor is especially relevant in memory-constrained training and in sequence-to-sequence Transformer models. However, it also changes optimization behavior relative to AdamW . The factored preconditioner is an approximation to the full diagonal second moment, and additional design choices—such as whether to use momentum, relative step sizes, update clipping, and parameter scaling—affect performance. In LLM settings, Adafactor 
+
+is an important baseline for evaluating whether newer memory-efficient optimizers provide benefits beyond classical factored adaptivity. 
+
+4.7 Comparing AdamW and Adafactor 
+
+AdamW and Adafactor represent two different points in the adaptive-optimization design space. AdamW stores full first- and second-moment estimates, giving each coordinate its own adaptive statistics. Adafactor reduces second-moment memory by using factored statistics for matrix parameters. The trade-off is therefore between fidelity and memory. In practice, choosing between AdamW and Adafactor depends on the training regime. If memory is abundant and the goal is a strong, well-understood baseline, AdamW is difficult to displace. If optimizer-state memory is the binding constraint, Adafactor can provide substantial savings. The broader lesson is that LLM optimizer design is often a multi-objective problem: the best optimizer is not necessarily the one with the lowest loss per step, but the one that achieves the best trade-off among loss, memory, stability, and throughput. 
+
+4.8 Limitations of Adaptive Diagonal Optimizers 
+
+Despite their success, adaptive diagonal optimizers have several limitations that motivate the methods surveyed in later sections. 
+
+Memory overhead. Full diagonal adaptivity requires storing per-parameter statistics. For AdamW , first- and second-moment states can dominate memory usage. This motivates memory-efficient optimizers, quantized states, factorized states, and fused update methods.               
+
+> 17 Ranganath
+> Property AdamW Adafactor
+> Primary motivation Robust adaptive optimization with decoupled weight decay Adaptive optimization with re-duced memory Second-moment state Full vector of size dFactored for matrix parameters Memory cost High: typically two moment vec-tors Lower for large matrices Parameter-structure usage Mostly coordinate-wise Exploits matrix shape Common role in LLMs Default baseline for pretraining and fine-tuning Memory-efficient adaptive alter-native Main limitation Optimizer-state memory Approximate preconditioning and tuning sensitivity
+
+Table 3: Qualitative comparison of AdamW and Adafactor as adaptive optimizers for LLMs. 
+
+Coordinate-wise geometry. Adaptive diagonal methods treat each coordinate inde-pendently. They do not directly model correlations between parameters or exploit matrix structure. Curvature-aware, low-rank, and matrix-based optimizers can be viewed as at-tempts to move beyond this coordinate-wise geometry. 
+
+Hyperparameter sensitivity. Adaptive optimizers introduce several important hyperpa-rameters, including learning rate, β1, β2, ϵ, weight decay, clipping thresholds, and schedule parameters. Reported optimizer improvements can depend strongly on how these hyperpa-rameters are tuned. 
+
+Scale dependence. An optimizer that performs well at small scale may not retain its advantage at larger model sizes or longer token budgets. This is particularly important for LLMs, where small-scale experiments are often used to justify methods intended for much larger training runs. 
+
+Implementation dependence. The practical performance of adaptive optimizers depends on fused kernels, sharding strategies, precision choices, and framework support. Mathematical update rules alone do not determine wall-clock efficiency. 
+
+4.9 Summary 
+
+Classical first-order methods provide low-memory baselines, while adaptive diagonal methods provide the robustness needed for large-scale Transformer training. AdamW remains the dominant LLM optimizer because it combines momentum, coordinate-wise adaptivity, and decoupled weight decay in a well-supported and empirically strong package. However, its memory cost and coordinate-wise geometry have motivated a broad range of alternatives. 
+
+Adafactor demonstrates one important direction: retaining adaptive behavior while exploiting matrix shape to reduce memory. The next section turns to large-batch and distributed-training optimizers, where the optimizer is designed around scaling hardware utilization and stabilizing training at large batch sizes. 
+
+> 18 Navigating LLM Valley
+
+# 5 Large-Batch and Distributed-Training Optimizers 
+
+Large-scale language models are trained on distributed accelerator clusters where throughput depends strongly on batch size, communication efficiency, and memory layout. Increasing the batch size can improve hardware utilization by amortizing communication and increasing parallelism, but it also changes the optimization problem. Large batches reduce gradient noise, alter the relationship between learning rate and stability, and can degrade generalization if the optimizer is not adjusted carefully. This section reviews large-batch and distributed-training optimizers, with emphasis on layer-wise adaptive methods such as LAMB and on the systems-level role of optimizers in LLM training. 
+
+5.1 Why Large-Batch Training Matters 
+
+In data-parallel training, each accelerator processes a local minibatch, gradients are aggre-gated across workers, and the optimizer updates a synchronized copy of the model. If the global batch size is too small, hardware may be underutilized and communication overhead may dominate. Increasing the global batch size can improve throughput, but it changes the stochastic gradient estimate 
+
+gt = 1
+
+B
+
+> B
+
+X
+
+> i=1
+
+∇θℓ(xi; θt), (32) where B is the global batch size. Larger B reduces the variance of gt, but it also reduces the implicit noise that can help optimization and generalization. A common heuristic is to increase the learning rate as the batch size grows. However, simple linear scaling can become unstable beyond a critical batch size. The optimizer must then compensate for changes in gradient noise, layer-wise scale, and update magnitude. This motivates large-batch optimizers that normalize or adapt updates at the layer level. For LLMs, batch size is often measured in tokens rather than examples. The effective batch size depends on the number of sequences, sequence length, gradient accumulation steps, and number of data-parallel workers. Long-context training further complicates this relationship because increasing context length changes both memory use and the number of tokens per batch. 
+
+5.2 Gradient Noise Scale and Critical Batch Size 
+
+The benefit of increasing batch size is limited by the gradient noise scale. Below a problem-dependent critical batch size, larger batches can improve throughput with little loss in optimization efficiency. Above that point, additional batch size yields diminishing returns because the optimizer receives a more accurate gradient estimate but does not make proportionally more progress per step. This perspective is important for LLM optimizer comparisons. A method may appear faster because it supports a larger batch size, but the relevant question is whether it improves loss as a function of wall-clock time, tokens, or compute. If the batch size exceeds the efficient regime, token efficiency may degrade even if hardware throughput improves. Conversely, a memory-efficient optimizer may enable larger batches, but that only helps if the resulting batch size remains useful for optimization. 
+
+> 19 Ranganath
+
+Large-batch optimization is therefore inseparable from training economics. The optimal batch size depends on model size, dataset size, sequence length, hardware topology, com-munication bandwidth, and training duration. Optimizer design interacts with all of these variables. 
+
+5.3 Layer-Wise Adaptive Rate Scaling 
+
+Layer-wise adaptive rate scaling (LARS) was introduced to stabilize large-batch training by scaling updates according to the ratio between parameter norms and gradient norms. For a layer or parameter group θ(l), a simplified trust-ratio update has the form 
+
+r(l) 
+
+> t
+
+=
+
+θ(l)
+
+> t
+
+u(l) 
+
+> t
+
++ ϵ, (33) where u(l) 
+
+> t
+
+is the proposed update direction for layer l. The layer update is then scaled by 
+
+r(l) 
+
+> t
+
+:
+
+θ(l) 
+
+> t+1
+
+= θ(l) 
+
+> t
+
+− ηtr(l) 
+
+> t
+
+u(l) 
+
+> t
+
+. (34) The intuition is that each layer should receive an update whose norm is proportional to the norm of its parameters. This prevents layers with unusually large gradients from taking disproportionately large steps and helps maintain stable training at large batch sizes. Although LARS is more commonly associated with convolutional networks and large-batch vision training, its layer-wise normalization principle influenced later optimizers for large-scale Transformer training, especially LAMB .
+
+5.4 LAMB 
+
+LAMB combines Adam-style adaptivity with layer-wise trust ratios [ 47 ]. It was introduced to enable very large-batch training of BERT. The optimizer first computes an Adam-like update direction, 
+
+u(l) 
+
+> t
+
+= ˆm(l)
+
+> t
+
+q
+
+ˆv(l) 
+
+> t
+
++ ϵ
+
++ λθ (l) 
+
+> t
+
+, (35) where λ denotes weight decay. It then computes a trust ratio, 
+
+r(l) 
+
+> t
+
+=
+
+θ(l)
+
+> t
+
+u(l)
+
+> t
+
+, (36) with safeguards for zero norms in practical implementations. The update is 
+
+θ(l) 
+
+> t+1
+
+= θ(l) 
+
+> t
+
+− ηtr(l) 
+
+> t
+
+u(l) 
+
+> t
+
+. (37) The trust ratio makes the effective learning rate layer-dependent. This can stabilize training when very large batches alter gradient statistics. LAMB is therefore not merely an adaptive optimizer; it is an optimizer designed around the interaction between update scale and distributed large-batch training. 
+
+> 20 Navigating LLM Valley
+
+In the context of LLMs, LAMB is important for two reasons. First, it demonstrates that optimizer design can target hardware efficiency by enabling larger stable batches. Second, it highlights a broader design pattern: global scalar learning rates may be insufficient when different layers require different update magnitudes. This idea reappears in parameter-group-specific optimizers and matrix-aware methods. 
+
+5.5 Large-Batch Training in LLM Pretraining 
+
+LLM pretraining differs from earlier large-batch settings in several ways. First, model sizes are much larger, increasing the memory and communication cost of optimizer states. Second, training often uses long token sequences, making activation memory a major constraint. Third, compute budgets are measured in tokens and floating-point operations over long training horizons, so small differences in optimizer efficiency can have large cost implications. The global batch size in LLM training is usually determined by a combination of sequence length, microbatch size, gradient accumulation, and number of data-parallel workers. Increasing any of these quantities may improve throughput but can affect optimization. For example, increasing gradient accumulation increases the effective batch size without increasing communication frequency, while increasing data-parallel workers increases communication demands. Optimizers that support stable large-batch training can therefore improve system utilization, but only if the optimization dynamics remain favorable. 
+
+5.6 Distributed Optimizer State and Sharding 
+
+As summarized in Table 1, adaptive optimizer states can be partitioned across devices using ZeRO-style or fully sharded data-parallel methods. For large-batch optimizers, this matters because the practical cost of the optimizer depends not only on its update rule, but also on how its states, gradients, and parameters are distributed across the training system. This point is especially important when comparing AdamW with proposed alternatives. A new optimizer may reduce per-parameter state in a single-device analysis, but the benefit may shrink when AdamW states are already sharded. Conversely, a memory-efficient optimizer may allow larger models or longer contexts even under sharding. The relevant metric is not only state size, but the end-to-end system configuration enabled by that state size. 
+
+5.7 Communication Costs 
+
+In distributed training, communication can occur at several stages: gradient synchronization, parameter synchronization, optimizer-state sharding, checkpointing, and pipeline or tensor-parallel communication. Optimizers can affect these costs in several ways. First, optimizers that require additional statistics may need extra synchronization. Second, matrix-structured or curvature-aware optimizers may require communication of preconditioners or sufficient statistics. Third, low-bit or compressed optimizer states may reduce memory but not necessarily reduce gradient communication. Fourth, optimizer-state checkpointing can become expensive for long training runs, particularly for AdamW -style methods with large moment vectors. 
+
+> 21 Ranganath
+
+Large-batch training can reduce the frequency of synchronization per token by increasing local computation per communication round. However, increasing batch size can also reduce token efficiency. The best optimizer for a distributed setting is therefore the one that optimizes the joint objective of convergence, memory, and communication. 
+
+5.8 Interaction with Learning-Rate Schedules 
+
+Large-batch training is sensitive to learning-rate schedules. Warmup is often essential because the optimizer initially has poor moment estimates and the model parameters may be in a fragile regime. For very large batches, the learning rate may need to be scaled, but the scaling rule depends on optimizer, model size, and training phase. Layer-wise optimizers such as LAMB introduce an additional scale factor through the trust ratio. This means the effective step size for a layer is 
+
+η(l) 
+
+> t
+
+= ηtr(l) 
+
+> t
+
+. (38) As a result, the global schedule and layer-wise trust ratios interact. This interaction complicates optimizer comparisons because two methods with the same nominal learning rate may produce very different effective update magnitudes. 
+
+5.9 Practical Role of Large-Batch Optimizers in Modern LLM Training 
+
+Although LAMB was influential for large-batch BERT training, many modern LLM pre-training pipelines still rely on carefully tuned AdamW combined with distributed training techniques. This does not mean large-batch optimizers are irrelevant. Rather, their role has shifted. They provide a conceptual and practical framework for understanding how update scale, batch size, and hardware utilization interact. Large-batch methods are most relevant when the training setup is communication-limited or when increasing the batch size substantially improves throughput. They are less compelling if the model already operates near the critical batch size, if optimizer memory rather than synchronization is the main bottleneck, or if larger batches reduce final quality. Therefore, the usefulness of large-batch optimizers depends on the complete training regime. 
+
+5.10 Evaluation Considerations 
+
+Large-batch optimizers should be evaluated with particular attention to the relationship between batch size, throughput, and convergence. In addition to the general benchmarking criteria discussed in Section 11, papers should report global batch size in tokens, micro-batch size, gradient accumulation steps, learning-rate scaling rules, warmup schedule, and distributed-training configuration. Without these details, it is difficult to determine whether an optimizer improves the underlying optimization process or merely benefits from a more favorable systems configuration. 
+
+5.11 Summary 
+
+Large-batch and distributed-training optimizers address the interaction between optimization and hardware efficiency. Methods such as LAMB use layer-wise trust ratios to stabilize large-batch training, while distributed systems reduce the memory cost of adaptive optimizers 
+
+> 22 Navigating LLM Valley
+
+through sharding. For LLMs, the central issue is not simply whether a larger batch can be used, but whether the optimizer improves the trade-off among token efficiency, wall-clock time, memory, communication, and final model quality. The next section turns to memory-efficient optimizers, which target one of the most persistent bottlenecks in LLM training: the cost of storing optimizer states. 
+
+# 6 Memory-Efficient Optimizers 
+
+Memory-efficient optimizers target one of the central bottlenecks in LLM training: optimizer-state memory. For adaptive optimizers such as AdamW , the first- and second-moment estimates can require multiple additional copies of the model parameters. At billion-parameter scale, this overhead directly limits the maximum model size, sequence length, batch size, and feasibility of full-parameter fine-tuning. This section reviews optimizer designs that reduce memory while attempting to preserve the convergence behavior of adaptive methods. 
+
+6.1 Memory as an Optimization Constraint 
+
+The memory footprint of LLM training can be decomposed into several components: 
+
+Mtotal = Mparams + Mgrads + Mopt + Macts + Mmisc , (39) where Mparams stores model parameters, Mgrads stores gradients, Mopt stores optimizer states, Macts stores activations, and Mmisc includes buffers, fragmentation, communication workspaces, and framework overhead. Optimizer design primarily targets Mopt , but re-ducing optimizer memory can indirectly allow larger activations, longer contexts, or larger microbatches. As discussed in Section 2.5, AdamW stores full first- and second-moment states, making optimizer memory a major scaling cost. Memory-efficient optimizers target this term directly by using sublinear, compressed, grouped, fused, or lower-precision state. Memory-efficient optimizers are not merely engineering conveniences. They can change the feasible training regime. A memory reduction may allow full-parameter fine-tuning instead of parameter-efficient fine-tuning, a longer context window instead of shorter sequences, or a larger model under the same hardware budget. Thus, memory-efficient optimization should be evaluated at the system level: the relevant question is not only whether the optimizer matches AdamW at fixed model size, but also what model, context, and batch configurations it makes possible. 
+
+6.2 Design Patterns for Reducing Optimizer Memory 
+
+Memory-efficient optimizers use several recurring design patterns. 
+
+State elimination. The most direct approach is to remove some optimizer states. Plain 
+
+SGD stores no moment vectors, and momentum stores only one. However, eliminating adaptivity can harm convergence for LLMs. Many memory-efficient optimizers therefore seek intermediate points between SGD and AdamW .
+
+> 23 Ranganath
+
+State factorization. For matrix-shaped parameters, a full per-coordinate statistic can be approximated by lower-dimensional row and column statistics. Adafactor is the canonical example [ 36 ]. Factorization reduces memory from O(mn ) to O(m + n) for an m × n matrix. 
+
+State quantization. Moment estimates can be stored in lower precision. 8-bit optimizers use block-wise quantization to reduce optimizer-state memory while preserving enough numerical fidelity for training [7]. 
+
+State grouping. Instead of assigning a distinct adaptive statistic to every parameter, parameters can be grouped so that multiple parameters share learning-rate statistics. Adam-mini follows this direction by reducing the number of distinct learning rates used by Adam-style optimization [49]. 
+
+Fused update and gradient handling. Some methods reduce memory by avoiding the materialization of intermediate tensors or by fusing gradient computation with parameter updates. LOMO is an example designed for memory-efficient full-parameter fine-tuning [ 21 ]. 
+
+Projection and low-rank structure. Gradient projection methods reduce memory by representing updates in a lower-dimensional subspace. Methods such as GaLore are discussed in detail in Section 9, but they are also part of the broader memory-efficiency landscape [50]. 
+
+6.3 Adafactor: Factored Second-Moment Estimation 
+
+Adafactor reduces the memory cost of adaptive learning rates through factored second-moment estimation [ 36 ]. For a matrix parameter W ∈ Rm×n with gradient Gt, a full second-moment accumulator would store an m × n matrix. Adafactor instead stores row and column accumulators. A simplified version computes 
+
+Rt = β2Rt−1 + (1 − β2) 1
+
+n
+
+> n
+
+X
+
+> j=1
+
+G2 
+
+> t, :,j
+
+, (40) 
+
+Ct = β2Ct−1 + (1 − β2) 1
+
+m
+
+> m
+
+X
+
+> i=1
+
+G2
+
+> t,i, :
+
+, (41) where Rt ∈ Rm and Ct ∈ Rn. These statistics are combined to approximate the full second-moment matrix. The memory benefit is substantial for large matrices. Instead of mn second-moment values, Adafactor stores m + n values. Transformer models contain many large projection matrices, making this factorization attractive. However, the approximation is less expressive than a full diagonal accumulator. It assumes that the second-moment structure can be approximated from row and column marginals. 
+
+Adafactor also includes practical design choices such as update clipping, relative step-size schedules, and optional momentum. These details matter. In some settings, Adafactor 
+
+can work well as a drop-in memory-saving replacement, while in others it requires careful tuning. For LLM optimizer surveys, Adafactor is important because it introduced the idea that optimizer state should exploit tensor shape rather than treating every parameter independently. 
+
+> 24 Navigating LLM Valley
+
+6.4 Low-Bit Optimizer States 
+
+Quantizing optimizer states reduces memory by storing moments in fewer bits. 8-bit optimiz-ers use block-wise quantization to represent optimizer states compactly while maintaining training stability [ 7 ]. At a high level, a tensor is divided into blocks, each block is quantized using local scaling statistics, and optimizer updates are computed with dequantized or approximately dequantized values. The appeal of low-bit optimizer states is that they preserve the structure of the original optimizer. Unlike factorization or grouping, quantization does not necessarily change which statistics are tracked; it changes how they are stored. This can make low-bit optimizers easier to interpret as memory-reduced versions of AdamW .The trade-offs are numerical and systems related. Quantization introduces approximation error, and the error distribution can interact with small gradient magnitudes, rare large updates, and mixed-precision arithmetic. Low-bit optimizers may also require specialized kernels to realize wall-clock gains. If quantization reduces memory but adds dequantization overhead, the net benefit depends on the hardware and implementation. 
+
+6.5 Adam-mini: Reducing Redundant Adaptivity 
+
+Adam-mini is motivated by the observation that Adam and AdamW assign an independent adaptive learning-rate statistic to every parameter, even though some of this adaptivity may be redundant in large neural networks [ 49 ]. Instead of storing a full second-moment estimate for every coordinate, Adam-mini reduces the number of distinct learning rates by grouping parameters according to structure. This approach differs from quantization and factorization. Quantization stores the same kind of state in fewer bits. Factorization approximates a full matrix of statistics with row and column summaries. Adam-mini changes the granularity of adaptivity: multiple parameters may share an adaptive statistic. The goal is to preserve the useful part of Adam-style scaling while removing unnecessary per-parameter state. The conceptual contribution of Adam-mini is that memory-efficient optimization need not simply approximate AdamW as closely as possible. Instead, it can ask which parts of AdamW are actually necessary for LLM training. If many parameters do not require independent learning-rate estimates, then grouped adaptivity can reduce memory without severely harming convergence. 
+
+6.6 LOMO: Memory-Efficient Full-Parameter Fine-Tuning 
+
+LOMO targets full-parameter fine-tuning of large language models under limited re-sources [ 21 ]. The key motivation is that standard fine-tuning with AdamW can be prohibitively memory intensive because it requires gradients and optimizer states for all parameters. Parameter-efficient fine-tuning methods avoid this by updating only a small number of parameters, but they do not perform full-parameter adaptation. 
+
+LOMO reduces memory by fusing gradient computation and parameter updates, thereby avoiding the need to store all gradients and optimizer states in the conventional way. Conceptually, this shifts optimization from a state-heavy adaptive update to a memory-frugal update procedure suitable for full-model fine-tuning. 
+
+> 25 Ranganath
+
+The importance of LOMO for this survey is its training-regime focus. It is not primarily designed to outperform AdamW in large-scale pretraining. Instead, it addresses a different question: how can one update all parameters of a large model when hardware memory is limited? This distinction illustrates why optimizer evaluation must specify the target regime. An optimizer can be valuable because it enables a training mode that would otherwise be infeasible. 
+
+6.7 APOLLO-like SGD-Memory Adaptive Methods 
+
+Recent methods such as APOLLO aim to approach AdamW -level performance with memory closer to SGD [54 ]. These approaches are part of a broader trend toward adaptive behavior without full adaptive state. While the precise mechanisms differ across methods, the shared goal is to reduce or eliminate large per-parameter moment tensors while preserving the optimization benefits of adaptive scaling. This direction is important because it challenges the assumption that two full moment vectors are necessary for strong LLM training. If adaptive behavior can be approximated through lower-memory statistics, projection, grouping, or structured updates, then optimizer memory may no longer scale as a fixed multiple of model size. However, such claims require careful validation across model scales, datasets, and tuning budgets. 
+
+6.8 Memory-Efficient Optimizers and Distributed Sharding 
+
+Optimizer-state sharding and memory-efficient optimizers are complementary rather than substitutes. Sharding reduces per-device memory, while memory-efficient optimizers reduce the amount of state that must be stored, communicated, and checkpointed in the first place. Thus, even under ZeRO-style or FSDP-style sharding, reducing optimizer state can enable larger models, longer contexts, larger microbatches, or fewer required devices. 
+
+6.9 Trade-Offs in Memory-Efficient Optimization 
+
+Memory-efficient optimizers involve several trade-offs. 
+
+Memory versus update fidelity. Reducing state may make the optimizer less faithful to full AdamW adaptivity. The question is whether the lost information matters for the target model and training regime. 
+
+Memory versus computation. Some methods reduce memory but add computation. For example, quantization may require extra encode/decode operations, and projection methods may require subspace updates. 
+
+Memory versus implementation complexity. A simple optimizer with high memory may be easier to deploy than a memory-efficient optimizer requiring custom kernels, parameter grouping, or nonstandard distributed support. 
+
+Memory versus convergence. An optimizer that saves memory but requires more tokens to reach the same loss may or may not be preferable. If the memory savings allow a larger model or longer context, the trade-off can still be favorable. 
+
+> 26 Navigating LLM Valley
+
+Pretraining versus fine-tuning. The best memory-efficient optimizer may differ by regime. Pretraining emphasizes long-horizon stability and throughput, while fine-tuning may emphasize feasibility on limited hardware and robustness to small datasets. 
+
+6.10 Evaluation Criteria 
+
+Memory-efficient optimizers require both fixed-model and fixed-resource evaluation. In a fixed-model setting, the question is whether the method matches AdamW on the same architecture and token budget while using less memory. In a fixed-resource setting, the question is whether the saved memory enables a larger model, longer context, or larger batch under the same hardware budget. In addition to the general protocol in Section 11, evaluations should report peak memory, optimizer-state size, checkpoint size, feasible context length, feasible microbatch size, and wall-clock time to a target loss. 
+
+6.11 Summary 
+
+Memory-efficient optimizers reduce one of the most important costs of LLM training: optimizer-state memory. Adafactor reduces memory through factorized second-moment estimates; 8-bit optimizers compress states through quantization; Adam-mini reduces redun-dant adaptivity through grouping; LOMO enables full-parameter fine-tuning with reduced memory; and APOLLO-like methods seek SGD -like memory with AdamW -level perfor-mance. These methods show that optimizer design for LLMs is not only about convergence, but also about what training regimes become feasible. The next section turns to sign-based and discovered optimizers, which modify the update rule itself rather than primarily targeting memory footprint. 
+
+# 7 Sign-Based and Discovered Optimizers 
+
+Sign-based and discovered optimizers modify the update rule itself rather than primarily reducing optimizer-state memory or adding curvature information. The central idea is that the precise magnitude of a gradient coordinate may be less important than its direction or sign, especially when combined with momentum, adaptive schedules, and normalization. This section reviews sign-based optimization, the symbolic discovery of Lion , and the relevance and limitations of such methods for LLM training. 
+
+7.1 Motivation for Sign-Based Updates 
+
+Standard first-order optimizers update parameters using gradient magnitudes. For example, 
+
+SGD applies the update −ηtgt, and AdamW applies a momentum direction rescaled by a second-moment estimate. Sign-based optimizers instead use the sign of a gradient-derived quantity: 
+
+θt+1 = θt − ηt sign( ut), (42) where ut may be the current gradient, a momentum estimate, or a learned combination of past gradients. This update has several appealing properties. First, it is invariant to the magnitude of each coordinate, depending only on direction. Second, it can be viewed as a form of aggressive 
+
+> 27 Ranganath
+
+normalization, where every active coordinate receives an update of equal magnitude. Third, sign updates can be communication efficient in distributed settings because signs are easier to compress than full-precision gradients. Fourth, sign-based rules can reduce sensitivity to outlier gradient magnitudes, although they may introduce sensitivity to learning-rate tuning. For LLM training, sign-based methods are interesting because they challenge the assump-tion that high-quality optimization requires full coordinate-wise second-moment adaptivity. If signs of momentum-like quantities are sufficient for competitive training, then one may obtain simpler update rules with reduced state or improved efficiency. However, this promise must be evaluated carefully at scale. 
+
+7.2 signSGD 
+
+A canonical sign-based method is signSGD [ 2]. In its simplest form, signSGD updates parameters according to 
+
+θt+1 = θt − ηt sign( gt). (43) In distributed settings, signSGD can be combined with majority vote aggregation, where workers send gradient signs and the global update follows the coordinate-wise majority sign. The main advantage of signSGD is communication efficiency. Sending one bit per coordinate can substantially reduce communication compared with transmitting full-precision gradients. This is appealing in distributed optimization settings where communication is a bottleneck. However, signSGD also discards magnitude information, which can be important for ill-conditioned problems or for parameters with very different sensitivities. For LLMs, plain signSGD is mainly a conceptual baseline rather than a standard training method. Modern sign-based optimizers typically combine sign updates with momentum, weight decay, and carefully tuned learning-rate schedules. The lesson from signSGD is that sign information alone can sometimes produce useful descent directions, but practical LLM optimization requires additional mechanisms for stability and scale. 
+
+7.3 Symbolic Discovery of Optimizers 
+
+Optimizer design has traditionally relied on mathematical analysis, intuition, and empirical tuning. Symbolic optimizer discovery offers a different approach: search over a space of possible update rules and select algorithms that perform well on training tasks. Chen et al. [5] use symbolic discovery to identify new optimization algorithms, including Lion , a simple sign-based optimizer. The discovered optimizer is notable because it is compact and interpretable. Rather than producing a large learned optimizer network, the search yields a human-readable update rule. This makes the resulting method easier to analyze, implement, and compare with hand-designed optimizers. Symbolic discovery raises an important methodological question for LLM optimization. If an optimizer is discovered on proxy tasks or smaller models, will it transfer to full-scale LLM training? The answer depends on whether the search tasks capture the optimization geometry, gradient statistics, scale, and systems constraints of the target setting. For this reason, discovered optimizers require especially careful validation across model sizes and training regimes. 
+
+> 28 Navigating LLM Valley
+
+7.4 Lion 
+
+Lion is a sign-based optimizer discovered through symbolic search [ 5 ]. It maintains a momentum-like exponential moving average of gradients, but uses the sign of a linear combination of the current gradient and momentum for the parameter update. A simplified form is 
+
+ut = β1mt−1 + (1 − β1)gt, (44) 
+
+θt+1 = θt − ηt (sign( ut) + λθ t) , (45) 
+
+mt = β2mt−1 + (1 − β2)gt, (46) where mt is the momentum state and λ is a weight-decay coefficient. Different presentations may vary in notation, but the defining feature is that the update direction uses a sign operation applied to a momentum-like quantity. Compared with AdamW , Lion does not maintain a second-moment vector. This can reduce optimizer-state memory from two moment vectors to one. It also changes the update geometry: AdamW scales coordinates by an estimate of gradient variance, whereas Lion 
+
+normalizes update magnitudes through the sign operation. 
+
+Lion is attractive for LLMs for three reasons. First, it is simple. Second, it can reduce optimizer-state memory relative to AdamW . Third, it has shown strong empirical performance across several deep-learning settings. However, its performance can depend strongly on learning-rate and weight-decay tuning. Since sign updates have fixed coordinate-wise magnitudes, the global learning rate plays a particularly important role in determining update scale. 
+
+7.5 Relationship Between Lion and AdamW 
+
+Lion and AdamW can be contrasted through their treatment of gradient magnitude. 
+
+AdamW uses the ratio ˆmt
+
+√ˆvt + ϵ , (47) where the denominator provides coordinate-wise adaptivity. Lion instead uses sign( ut), (48) where ut is a momentum-like direction. Thus, AdamW rescales each coordinate continuously, while Lion maps each coordinate to a discrete direction in {− 1, 0, 1}.This distinction has several consequences. AdamW can take smaller steps in coordinates with large historical gradient variance, while Lion cannot distinguish such coordinates except through the sign of the update direction. On the other hand, Lion avoids storing the second-moment vector and may be less affected by noisy magnitude estimates. In effect, 
+
+Lion trades coordinate-wise adaptive scaling for a simpler sign-normalized update. The practical comparison is therefore empirical and regime dependent. If gradient magnitudes contain essential information, AdamW may be preferable. If signs of momentum provide sufficient information and memory or simplicity matters, Lion may be attractive. This trade-off should be evaluated under matched tuning budgets and realistic LLM training settings. 
+
+> 29 Ranganath
+
+7.6 Learning-Rate and Weight-Decay Sensitivity 
+
+Sign-based optimizers can be sensitive to learning-rate choices. Because each coordinate update has approximately fixed magnitude, the learning rate directly controls the coordinate-wise step size. In AdamW , the adaptive denominator can dampen large-gradient coordinates; in sign-based methods, such damping is absent unless introduced by other mechanisms. Weight decay also interacts differently with sign updates. Decoupled weight decay remains important, but the relative scale of decay and sign updates can differ from AdamW .As a result, hyperparameters that work for AdamW may not transfer directly to Lion . A fair comparison must therefore tune learning rate, weight decay, momentum coefficients, schedule, and clipping separately for each optimizer. This issue is central to evaluating sign-based optimizers for LLMs. A new optimizer may appear better than AdamW if AdamW is under-tuned or if the new optimizer receives a more favorable schedule. Conversely, an optimizer may appear worse if it is evaluated with hyperparameters inherited from AdamW without adjustment. 
+
+7.7 Memory and Communication Considerations 
+
+Sign-based optimizers can reduce optimizer-state memory when they avoid second-moment accumulators. For example, a momentum-based sign optimizer may store only one auxiliary vector rather than the two vectors used by AdamW . This places sign-based methods between momentum SGD and AdamW in memory cost. In distributed settings, sign information can also be compressed more easily than full-precision gradients. However, this potential advantage does not automatically translate into faster LLM training. Modern LLM systems are often bottlenecked by a combination of computation, activation memory, optimizer-state memory, and communication. If gradient synchronization remains full precision or if sign compression is not supported by the training stack, the theoretical communication advantage may not be realized. Thus, sign-based optimizers should be evaluated both algorithmically and systemically. Their memory savings are clearest when compared with full-state AdamW . Their communi-cation benefits depend on whether the implementation actually communicates compressed signs or merely uses signs inside the local update rule. 
+
+7.8 Empirical Evaluation Challenges 
+
+Sign-based and discovered optimizers require especially careful tuning because their effective update scale differs from AdamW . Learning rate, weight decay, momentum coefficients, and schedules should therefore be tuned separately rather than inherited from AdamW .Moreover, optimizers discovered on proxy tasks should be validated across model scales and training horizons before being treated as LLM-scale replacements. We discuss the general benchmarking protocol for optimizer comparisons in Section 11. 
+
+7.9 Role in the Broader Optimizer Landscape 
+
+Sign-based and discovered optimizers occupy an important position in the LLM optimizer landscape. They show that competitive optimization may not require full second-moment 
+
+> 30 Navigating LLM Valley
+
+adaptivity in every setting. This observation supports a broader trend: revisiting which components of AdamW are essential and which can be simplified, compressed, or replaced. At the same time, sign-based methods do not fully address all LLM optimizer challenges. They may reduce memory, but not as aggressively as factorized or low-rank methods. They may simplify updates, but do not explicitly exploit matrix structure. They may improve some empirical results, but require careful tuning and validation. Their main contribution is therefore conceptual as much as practical: they expand the design space beyond coordinate-wise adaptive scaling. 
+
+7.10 Summary 
+
+Sign-based and discovered optimizers replace or simplify magnitude-sensitive updates using sign-normalized directions. signSGD demonstrates the basic principle, while Lion shows how symbolic search can produce a compact momentum-based sign optimizer. These methods can reduce optimizer-state memory and challenge the necessity of full second-moment adaptivity. However, their value for LLM training depends on fair hyperparameter tuning, scale-aware evaluation, and high-quality implementation. The next section considers a different route beyond AdamW : curvature-aware and second-order optimization, which seeks better update geometry by approximating curvature rather than discarding magnitude information. 
+
+# 8 Curvature-Aware and Second-Order Optimizers 
+
+Adaptive first-order optimizers such as AdamW use diagonal statistics of past gradients to rescale coordinates. This diagonal scaling is computationally efficient and robust, but it does not explicitly model interactions among parameters. Curvature-aware optimizers attempt to improve update geometry by incorporating information about the local curvature of the loss. In principle, second-order information can improve conditioning and reduce the number of optimization steps required to reach a target loss. In practice, exact second-order optimization is infeasible for LLMs, so modern methods use diagonal, block-wise, Kronecker-factored, or matrix-structured approximations. This section reviews curvature-aware optimization for LLMs. We first motivate second-order preconditioning, then discuss why exact Newton-style methods are impractical at LLM scale. We then review Shampoo-style matrix preconditioning, Sophia , and SOAP-like structured methods. Finally, we discuss the trade-off between token efficiency and per-step overhead. 
+
+8.1 From Diagonal Adaptivity to Curvature 
+
+Consider minimizing a twice-differentiable loss L(θ). A local quadratic approximation around 
+
+θt is 
+
+L(θt + ∆) ≈ L (θt) + g⊤ 
+
+> t
+
+∆ + 12 ∆⊤Ht∆, (49) where gt = ∇θL(θt) and Ht = ∇2
+
+> θ
+
+L(θt) is the Hessian. If Ht is positive definite, the Newton update is ∆t = −H−1 
+
+> t
+
+gt. (50) This update rescales and rotates the gradient according to the local curvature of the loss. 
+
+> 31 Ranganath
+
+In high-dimensional neural networks, exact Newton updates are impractical. The Hessian has d2 entries for d parameters, and computing, storing, communicating, and inverting it is infeasible for modern LLMs. Nevertheless, the motivation remains important: if the loss is ill-conditioned, a curvature-aware preconditioner may make optimization more efficient than a purely first-order update. Diagonal adaptive methods can be interpreted as crude curvature or scale approxi-mations. AdamW uses the square root of an exponential moving average of squared gradients as a diagonal preconditioner. This captures per-coordinate gradient scale, but not cross-coordinate correlations. Curvature-aware methods seek richer approximations while remaining computationally feasible. 
+
+8.2 General Preconditioned Updates 
+
+Many optimizers can be written as preconditioned gradient methods: 
+
+θt+1 = θt − ηtPtgt, (51) where Pt is a preconditioner. For SGD , Pt = I. For diagonal adaptive methods, Pt is diagonal. For second-order methods, Pt approximates H−1 
+
+> t
+
+or a related curvature inverse. The design of Pt determines the trade-off among conditioning, memory, and computation. A richer preconditioner can better account for parameter interactions, but it may be expensive to store and apply. Curvature-aware LLM optimizers therefore rely on structure: diagonal Hessian estimates, block-wise approximations, Kronecker factors, tensor dimensions, or matrix-specific preconditioners. 
+
+8.3 Shampoo and Tensor Preconditioning 
+
+Shampoo is a preconditioned stochastic optimization method that exploits tensor struc-ture [ 12 ]. For a matrix-shaped parameter W ∈ Rm×n with gradient Gt, Shampoo maintains preconditioner statistics along the matrix dimensions. A simplified version accumulates 
+
+Lt = Lt−1 + GtG⊤ 
+
+> t
+
+, (52) 
+
+Rt = Rt−1 + G⊤ 
+
+> t
+
+Gt, (53) where Lt ∈ Rm×m and Rt ∈ Rn×n. The gradient is then preconditioned using inverse matrix roots: 
+
+eGt = L−1/4 
+
+> t
+
+GtR−1/4 
+
+> t
+
+. (54) The parameter update uses eGt rather than Gt.The key idea is to approximate curvature along tensor dimensions rather than storing a full mn × mn preconditioner. This makes the method more scalable than full second-order optimization while capturing more structure than diagonal adaptivity. Extensions and scalable implementations of Shampoo have explored practical second-order optimization for deep learning [1]. For LLMs, Shampoo-style methods are conceptually attractive because Transformer parameters are dominated by large matrices. However, applying matrix inverse roots can be expensive, especially for large dimensions. Practical implementations often update 
+
+> 32 Navigating LLM Valley
+
+preconditioners less frequently, use numerical approximations, block large matrices, or restrict the method to selected parameter groups. The main question is whether improved conditioning compensates for this overhead at LLM scale. 
+
+8.4 Sophia 
+
+Sophia is a scalable stochastic second-order optimizer designed for language-model pretrain-ing [ 18 ]. Its central idea is to use a lightweight diagonal estimate of curvature to precondition the update. Instead of storing or inverting a full Hessian, Sophia maintains an estimate ht
+
+of diagonal curvature and uses it to scale a momentum-like direction. A simplified form of the update is 
+
+mt = β1mt−1 + (1 − β1)gt, (55) 
+
+ht ≈ diag( Ht), (56) 
+
+θt+1 = θt − ηt · clip 
+
+ mt
+
+ht + ϵ , ρ 
+
+
+
+, (57) where ρ denotes a clipping threshold. The exact estimator and update details vary by variant, but the defining feature is the use of a diagonal Hessian-like quantity rather than only squared-gradient moments. The motivation differs from AdamW . AdamW estimates second moments of stochastic gradients; Sophia aims to estimate curvature more directly. This distinction matters because gradient variance and curvature are related but not identical. A curvature estimate may provide a better preconditioner when the objective is ill-conditioned. 
+
+Sophia is especially important for this survey because it is explicitly designed for language-model pretraining. It represents a practical attempt to bring second-order information into LLM optimization without incurring the cost of full Newton or full-matrix preconditioning. Its reported benefits should nevertheless be interpreted through the same evaluation lens as other optimizers: scale, tuning budget, wall-clock cost, memory overhead, and implementation details. 
+
+8.5 SOAP-like Structured Preconditioning 
+
+SOAP-like methods combine adaptive optimization with structured preconditioning. At a high level, they attempt to retain the practical advantages of Adam-style updates while incorporating richer matrix or tensor geometry. Such methods often use approximate second-order statistics, orthogonal transformations, or preconditioning in a rotated basis. The attraction of SOAP-like methods for LLMs is that they may improve conditioning for large dense matrices without requiring a full Hessian. They sit between diagonal methods such as AdamW and more expensive matrix-preconditioning methods such as full Shampoo. Their practical effectiveness depends on whether the additional structure can be computed and applied efficiently on accelerator hardware. Because the literature on structured preconditioning for LLMs is developing rapidly, these methods should be discussed with particular care. Important questions include whether gains persist under strong AdamW baselines, whether the methods scale to multi-billion-parameter models, and whether the preconditioning overhead is offset by fewer required training tokens or faster wall-clock convergence. 
+
+> 33 Ranganath
+
+8.6 Curvature Estimation Choices 
+
+Curvature-aware methods differ in what quantity they estimate and how they estimate it. 
+
+Squared-gradient statistics. Adaptive optimizers such as AdamW use exponential moving averages of squared gradients. These are not Hessian estimates, but they provide scale information that can function as a diagonal preconditioner. 
+
+Diagonal Hessian estimates. Methods such as Sophia approximate the diagonal of the Hessian or related curvature quantities. This can provide a more direct estimate of local curvature while maintaining linear memory cost. 
+
+Matrix or tensor statistics. Shampoo-style methods accumulate statistics along tensor dimensions, such as GG ⊤ and G⊤G. These capture correlations within matrix rows and columns. 
+
+Block-wise approximations. Large matrices can be split into blocks to reduce the cost of preconditioning. This trades off fidelity and scalability. 
+
+Update frequency. Curvature statistics may be updated less frequently than gradients. Less frequent updates reduce cost but may make the preconditioner stale. Each design choice affects memory, computation, numerical stability, and implementation complexity. 
+
+8.7 Memory and Compute Costs 
+
+Curvature-aware optimizers often require more memory or computation than first-order methods. A diagonal curvature estimate has memory cost comparable to an additional vector. Matrix preconditioners can be substantially more expensive. For a matrix parameter 
+
+W ∈ Rm×n, Shampoo-style statistics require O(m2 + n2) storage rather than O(mn ) storage. This may be efficient for some shapes but expensive for others. The compute cost can also be significant. Matrix inverse roots, eigendecompositions, Newton–Schulz iterations, or preconditioner updates may add overhead. In distributed training, curvature statistics may require synchronization or careful partitioning. These costs must be compared with the potential reduction in the number of training steps or tokens. A curvature-aware optimizer is beneficial when extra cost per step < cost saved by faster convergence , (58) under the relevant training budget. This inequality depends on hardware, implementation, model scale, and target loss. 
+
+8.8 Curvature-Aware Optimization and LLM Scale 
+
+Scaling curvature-aware methods to LLMs introduces several challenges. 
+
+Parameter size. LLMs contain very large matrices, making full matrix preconditioning expensive.                  
+
+> 34 Navigating LLM Valley
+> Property AdamW Curvature-aware methods
+> Preconditioner Diagonal squared-gradient statistics Diagonal Hessian, block, matrix, or tensor curvature approxima-tions Memory cost Two moment vectors Ranges from vector-level to matrix-level states Compute overhead Low to moderate Moderate to high, depending on approximation Main advantage Robust, widely supported baseline Potentially better conditioning and token efficiency Main risk High memory and coordinate-wise limitation Overhead, complexity, and tuning sensitivity
+
+Table 4: Qualitative comparison between AdamW and curvature-aware optimizer families. 
+
+Distributed partitioning. Parameters and optimizer states may be sharded across devices. Structured preconditioners must be compatible with this partitioning. 
+
+Mixed precision. Curvature estimates can be numerically sensitive. Low-precision training may require careful accumulation and stabilization. 
+
+Update frequency. Updating curvature estimates every step may be too expensive. Infrequent updates reduce overhead but may reduce preconditioner quality. 
+
+Hyperparameter complexity. Curvature-aware methods introduce additional hyper-parameters, such as damping, clipping, preconditioner decay, update frequency, and block size. These challenges do not make curvature-aware optimization impractical, but they raise the bar for evaluation. A method must show that improved optimization geometry outweighs additional complexity. 
+
+8.9 Comparison with AdamW 
+
+AdamW can be viewed as a strong diagonal-preconditioning baseline. Curvature-aware methods attempt to improve on it by replacing or augmenting squared-gradient scaling with curvature information. The comparison involves several dimensions: A curvature-aware optimizer should therefore be compared to a well-tuned AdamW 
+
+baseline using both token-based and wall-clock metrics. It is insufficient to report fewer steps to a target loss if each step is much more expensive. Conversely, a method with higher per-step cost may still be valuable if it enables lower total compute or better final quality. 
+
+8.10 Evaluation Guidelines 
+
+Evaluations of curvature-aware optimizers should report: 1. validation loss as a function of tokens; 2. validation loss as a function of wall-clock time; 
+
+> 35 Ranganath
+
+3. per-step compute overhead; 4. peak memory usage, including preconditioner states; 5. preconditioner update frequency; 6. precision used for curvature statistics; 7. sensitivity to damping, clipping, and block size; 8. compatibility with distributed sharding; 9. downstream performance at fixed compute budget. These details are necessary because curvature-aware methods often trade cheaper op-timization trajectories for more expensive steps. Without full accounting, it is difficult to determine whether they improve practical LLM training. 
+
+8.11 Summary 
+
+Curvature-aware optimizers seek better update geometry than diagonal adaptive methods by approximating second-order information. Shampoo-style methods use tensor-structured preconditioners, Sophia uses lightweight diagonal curvature estimates for language-model pretraining, and SOAP-like methods explore structured preconditioning between these extremes. These approaches promise improved conditioning and token efficiency, but they introduce memory, compute, tuning, and implementation costs. The next section turns to low-rank and projection-based optimizers, which exploit another form of structure in LLM training: the low effective rank of gradients and updates. 
+
+# 9 Low-Rank and Projection-Based Optimizers 
+
+Low-rank and projection-based optimizers exploit structure in the gradients or updates of large neural networks. Transformer layers contain large dense matrices, and empirical studies suggest that gradients for such matrices often have low effective rank, at least over finite training windows. Projection-based optimizers use this observation to reduce memory by performing optimization in a lower-dimensional subspace while still updating the full parameter matrix. This section reviews the motivation, mechanics, and trade-offs of low-rank optimizer methods, with emphasis on GaLore and related memory-efficient full-parameter training approaches. 
+
+9.1 Motivation: Low-Rank Structure in Transformer Gradients 
+
+Consider a weight matrix W ∈ Rm×n in a Transformer block, such as an attention projection or feed-forward projection. A standard optimizer stores gradient and optimizer-state tensors with the same shape as W . For AdamW , the first- and second-moment states also have shape m × n. This creates a memory cost proportional to mn for each large matrix. Low-rank methods ask whether the full m × n update is necessary at every step. If the gradient matrix Gt = ∇W Lt(Wt) has low effective rank, then it may be approximated as 
+
+Gt ≈ UtStV ⊤ 
+
+> t
+
+, (59) 
+
+> 36 Navigating LLM Valley
+
+where Ut ∈ Rm×r, St ∈ Rr×r, Vt ∈ Rn×r, and r ≪ min (m, n ). Instead of storing and optimizing in the full space, one can project the gradient into a lower-dimensional subspace, update optimizer states there, and then project the resulting update back to the original parameter space. This idea is attractive for LLMs because the largest memory costs are concentrated in large matrices. If low-rank structure can be exploited without substantially degrading optimization, then full-parameter training may become possible with memory closer to parameter-efficient methods, while still updating all model weights. 
+
+9.2 Projection-Based Optimization 
+
+A generic projection-based optimizer defines a projection matrix Pt and uses it to map a full gradient into a lower-dimensional representation. For a matrix parameter W ∈ Rm×n,one simple form is right projection: 
+
+eGt = GtPt, (60) where Pt ∈ Rn×r and eGt ∈ Rm×r. The optimizer then maintains states for eGt rather than 
+
+Gt. After computing an update in the projected space, the update is mapped back: ∆Wt = e∆tP ⊤ 
+
+> t
+
+. (61) Other variants may use left projection, two-sided projection, dynamic subspaces, or block-wise projections. The memory benefit comes from maintaining optimizer states in the projected space. If r ≪ n, then storing states of shape m × r is much cheaper than storing states of shape 
+
+m × n. The main approximation is that updates are restricted to the subspace defined by 
+
+Pt until the projection is refreshed. Projection-based optimization therefore introduces a new design question: how should the projection subspace be chosen and updated? A fixed random projection is simple but may miss important gradient directions. A data-dependent projection can better capture gradient structure but requires additional computation. A frequently updated projection adapts quickly but increases overhead; an infrequently updated projection is cheaper but may become stale. 
+
+9.3 GaLore 
+
+GaLore is a representative low-rank optimizer for memory-efficient LLM training [ 50 ]. Its central idea is to project gradients into a low-rank subspace, perform optimizer updates in that subspace, and then project the updates back to the original parameter space. Unlike parameter-efficient fine-tuning methods that freeze most parameters, GaLore aims to support full-parameter learning with reduced optimizer memory. At a high level, for a matrix parameter W , GaLore periodically computes a low-rank projection basis from gradient information. The full gradient Gt is projected into a lower-dimensional space, where Adam-style optimizer states can be maintained at reduced cost. If 
+
+r is the projection rank, the optimizer-state memory for that matrix scales with r rather than the full matrix dimension. 
+
+> 37 Ranganath
+
+The distinction between GaLore and low-rank adaptation methods is important. In LoRA-style parameter-efficient fine-tuning, the base weight matrix is frozen and trainable low-rank adapters are added. In GaLore , the full weight matrix is still updated; low-rank structure is used to reduce the memory cost of the optimizer. Thus, GaLore is an optimizer/training-memory method rather than a model-architecture adaptation method. 
+
+9.4 Memory Savings and Approximation Error 
+
+The memory savings of low-rank projection depend on the rank r and the matrix shape. For a parameter matrix W ∈ Rm×n, a full Adam-style second-moment state has mn entries. A projected state may have mr or nr entries, depending on projection direction. The memory reduction is substantial when r ≪ min( m, n ). However, projection introduces approximation error. If important gradient components lie outside the selected subspace, the optimizer cannot represent them until the projection is updated. This can slow convergence or bias the training trajectory. The approximation quality depends on the effective rank of gradients, the projection update frequency, and the stability of gradient subspaces over time. This creates a trade-off: lower rank ⇒ more memory savings but more approximation error , (62) while higher rank ⇒ less approximation error but less memory savings . (63) Choosing the rank is therefore analogous to choosing a compression level. 
+
+9.5 Projection Refresh and Subspace Staleness 
+
+Projection-based methods often refresh the low-rank subspace periodically rather than at every step. Let K denote the projection refresh interval. If K = 1, the projection adapts every step, but the overhead may be high. If K is large, the projection is cheaper but may become stale as the optimization trajectory changes. Subspace staleness is especially relevant in LLM training because gradient statistics can change across phases. Early training, mid-training, and late training may have different dominant directions. Fine-tuning may also produce rapidly changing gradients when the downstream dataset is small or distribution-shifted. Projection refresh policies must therefore balance stability and adaptivity. A useful evaluation should report projection rank, refresh frequency, projection com-putation cost, and how these choices affect both memory and convergence. Without these details, it is difficult to compare low-rank optimizers with full-state baselines. 
+
+9.6 Relationship to Parameter-Efficient Fine-Tuning 
+
+Low-rank optimizers are related to but distinct from parameter-efficient fine-tuning methods. Parameter-efficient methods reduce training memory by freezing most model parameters and training a small set of added or selected parameters. Low-rank optimizers, in contrast, reduce optimizer-state memory while still updating the original parameters. 
+
+> 38 Navigating LLM Valley
+
+This distinction matters for both capability and evaluation. Parameter-efficient fine-tuning may be sufficient for many adaptation tasks, but it may not match full-parameter fine-tuning in all regimes. Low-rank optimizers aim to preserve the expressivity of full-parameter updates while reducing memory. They should therefore be compared not only with AdamW full fine-tuning, but also with parameter-efficient baselines when the target application is adaptation under limited memory. In pretraining, the distinction is even clearer. Parameter-efficient adapters are not usually used to train a base model from scratch, whereas low-rank optimizers can in principle support full-model pretraining. This makes projection-based methods part of the optimizer landscape rather than merely the fine-tuning landscape. 
+
+9.7 APOLLO-like Projection and Low-Memory Adaptivity 
+
+APOLLO-like methods aim to achieve AdamW -level performance with memory closer to 
+
+SGD [ 54 ]. While different methods use different mechanisms, they share the goal of avoiding full per-parameter adaptive state while preserving effective optimization. Some approaches combine projection, structured statistics, or approximate adaptive scaling. These methods highlight a continuum between memory-efficient adaptive optimizers and low-rank projection methods. At one end, Adam-mini reduces redundant coordinate-wise adaptivity through grouping. At another, GaLore explicitly projects gradients into a low-rank subspace. APOLLO-like approaches occupy the broader space of low-memory adaptive training, where the optimizer attempts to retain the useful behavior of AdamW 
+
+without storing all of its state. Because this area is developing quickly, careful reporting is essential. Claims of AdamW -level performance should specify model scale, dataset, token budget, tuning budget, precision, and memory accounting. The central question is whether the method remains competitive under strong baselines and realistic LLM training regimes. 
+
+9.8 Low-Rank Methods and Distributed Training 
+
+Low-rank optimizers interact with distributed training in several ways. On the positive side, reduced optimizer-state memory can lower per-device memory requirements and may reduce checkpoint size. Projection may also reduce the memory footprint of optimizer states under sharding. On the negative side, projection bases must be computed, stored, and sometimes synchro-nized. If the projection depends on global gradient information, distributed implementations must coordinate across workers. If projection is applied independently across shards, the resulting subspaces may differ from those computed on the full matrix. These details can affect both correctness and performance. For tensor-parallel LLM training, large weight matrices may be partitioned across devices. A projection computed for a shard may not capture the same low-rank structure as a projection computed for the full matrix. This raises implementation questions that are not visible in single-device algorithm descriptions. 
+
+> 39 Ranganath
+
+9.9 Evaluation Criteria 
+
+Low-rank and projection-based optimizers should be evaluated using both optimization and compression metrics. Important quantities include: 1. projection rank r;2. projection refresh interval K;3. memory used by optimizer states and projection bases; 4. cost of computing projections; 5. validation loss at fixed token budget; 6. wall-clock time to target loss; 7. downstream task performance; 8. sensitivity to rank and refresh frequency; 9. compatibility with sharding and tensor parallelism. A strong evaluation should include rank-memory-convergence trade-off curves. These curves reveal whether memory savings degrade gracefully or whether performance collapses below a critical rank. They also help distinguish robust low-rank structure from brittle compression. 
+
+9.10 Strengths and Limitations Strengths. Low-rank optimizers can reduce optimizer-state memory while preserving full-parameter updates. They exploit the matrix-heavy structure of Transformers and can be especially useful when large dense matrices dominate memory. They also provide a bridge between adaptive optimization and model-structure-aware training. 
+
+Limitations. The main limitation is approximation error. Projection restricts updates to a subspace, and important directions may be missed. Projection computation introduces overhead, and distributed implementations can be complex. The method also introduces new hyperparameters, such as rank and refresh interval. 
+
+Open empirical question. The key empirical question is whether low-rank gradient structure is stable and strong enough across LLM scales, datasets, and training phases to justify replacing full-state optimizers. Evidence from methods such as GaLore is promising, but broader benchmarking is needed. 
+
+9.11 Summary 
+
+Low-rank and projection-based optimizers reduce memory by exploiting structure in gradient or update matrices. GaLore is a central example: it performs optimization in a low-rank projected space while still updating full model parameters. These methods differ from parameter-efficient fine-tuning because they do not freeze the base model. Their value 
+
+> 40 Navigating LLM Valley
+
+depends on the trade-off among memory savings, projection error, refresh overhead, and distributed-training compatibility. The next section examines matrix-based and orthogonal-ized optimizers, which also exploit matrix structure but modify update geometry through matrix normalization or orthogonalization rather than low-rank projection. 
+
+# 10 Matrix-Based and Orthogonalized Optimizers 
+
+Matrix-based optimizers exploit the fact that most parameters in Transformer language models are not arbitrary vectors, but large matrices with meaningful input–output structure. Attention projections, feed-forward projections, and output layers are all matrix-valued parameters whose geometry may matter for optimization. Standard optimizers such as 
+
+AdamW treat these matrices as collections of independent scalar coordinates. Matrix-based optimizers instead modify the update at the matrix level, often through normalization, orthogonalization, or spectral control. This section reviews the motivation for matrix-aware optimization, with emphasis on Muon and related orthogonalized update methods. 
+
+10.1 Why Matrix Geometry Matters 
+
+A Transformer block is dominated by matrix multiplications. For an input activation matrix 
+
+X, a linear projection computes 
+
+Y = XW, (64) where W ∈ Rdin ×dout is a weight matrix. During training, the optimizer updates W using a gradient matrix Gt = ∇W Lt(Wt). A coordinate-wise optimizer treats Gt as a set of independent entries, while a matrix-aware optimizer treats it as a structured linear map. This distinction matters because the singular values, rank, and orientation of an update matrix can affect how the layer transforms activations. A coordinate-wise step may have undesirable spectral properties even if each individual coordinate update is well scaled. Matrix-based optimizers attempt to control update geometry at the level of the full matrix rather than at the level of individual entries. The matrix perspective is different from the low-rank perspective in Section 9. Low-rank optimizers compress updates into a lower-dimensional subspace to save memory. Matrix-based optimizers may use full-rank updates, but transform them to have desirable matrix-level properties such as approximate orthogonality or controlled spectral norm. 
+
+10.2 From Vector Updates to Matrix Updates 
+
+A standard optimizer can be written as 
+
+Wt+1 = Wt − ηtUt, (65) where Ut is an update matrix derived from gradients and optimizer states. In AdamW , Ut is obtained by applying coordinate-wise scaling to the momentum estimate. In a matrix-based optimizer, Ut may be transformed by a matrix function: 
+
+Wt+1 = Wt − ηtΦ( Ut), (66) where Φ modifies the update according to matrix-level criteria. 
+
+> 41 Ranganath
+
+Examples of matrix-level transformations include normalization by Frobenius norm, normalization by spectral norm, orthogonalization, projection onto a manifold, or approxi-mate whitening. The goal is to produce an update whose action as a linear map is better conditioned than the raw gradient or momentum update. This formulation highlights the central design question: what matrix function Φ improves LLM training while remaining cheap enough for large-scale use? 
+
+10.3 Orthogonalized Updates 
+
+One approach is to orthogonalize the update matrix. For a matrix U ∈ Rm×n, an orthog-onalized version can be obtained from its polar decomposition. If U has singular value decomposition 
+
+U = AΣB⊤, (67) then a matrix with the same singular vectors but unit singular values is orth( U ) = AB ⊤. (68) This transformation preserves the left and right singular directions of U but normalizes its singular values. Computing a full singular value decomposition at every optimizer step is too expensive for LLM training. Practical methods therefore use iterative approximations, such as Newton– Schulz iterations, to approximate orthogonalization. The resulting update controls matrix geometry without requiring exact decompositions. Orthogonalized updates are motivated by the idea that an update matrix with balanced singular values may produce more stable and effective changes to a layer than one dominated by a few large singular directions. This is related to, but distinct from, adaptive diagonal scaling. Diagonal adaptivity equalizes coordinate scales, while orthogonalization equalizes singular-value structure. 
+
+10.4 Muon 
+
+Muon is a recent matrix-based optimizer that applies orthogonalization to momentum updates for neural-network weight matrices [ 14 ]. The name is commonly interpreted as MomentUm Orthogonalized by Newton–Schulz. At a high level, Muon first forms a momentum update and then applies an approximate matrix orthogonalization procedure before updating the parameter matrix. A simplified schematic update is 
+
+Mt = βM t−1 + Gt, (69) 
+
+Ut = NS( Mt), (70) 
+
+Wt+1 = Wt − ηtUt, (71) where Mt is a momentum buffer and NS (·) denotes an approximate Newton–Schulz orthog-onalization operator. This schematic omits implementation details such as normalization, rectangular matrix handling, weight decay, and parameter-group choices, but captures the defining feature: the update is a matrix-normalized momentum direction. 
+
+> 42 Navigating LLM Valley
+
+Muon differs from AdamW in two major ways. First, it does not rely on a coordinate-wise second-moment accumulator. Second, it transforms updates according to matrix geometry. Compared with Lion , which also avoids second moments but uses coordinate-wise signs, Muon uses a matrix-level normalization. Compared with GaLore , which reduces memory through low-rank projection, Muon focuses on the geometry of full matrix updates. Recent work has investigated the scalability of Muon for LLM training [ 19 ]. These studies are important because matrix-based update rules may behave differently at small scale and LLM scale. A method that improves small models may not necessarily retain its advantage when applied to billion-parameter Transformers under realistic training budgets. 
+
+10.5 Newton–Schulz Orthogonalization 
+
+Newton–Schulz iteration is an iterative method that can approximate matrix inverse roots or polar factors. For optimizer purposes, the goal is to transform an update matrix into a more orthogonal or spectrally normalized form without computing a full singular value decomposition. A simplified Newton–Schulz-style iteration for polar decomposition starts with a normal-ized matrix X0 and repeatedly applies a polynomial iteration such as 
+
+Xk+1 = aX k + bX kX⊤ 
+
+> k
+
+Xk + cX kX⊤ 
+
+> k
+
+XkX⊤ 
+
+> k
+
+Xk, (72) with coefficients chosen to drive the singular values toward one. Practical implementations vary in the exact polynomial, normalization, number of iterations, and numerical precision. The key advantage of Newton–Schulz-style orthogonalization is that it uses matrix multiplications, which are efficient on modern accelerators. The key cost is additional matrix multiplication per optimizer step. For LLMs, this overhead must be compared against potential reductions in training tokens or improvements in stability. 
+
+10.6 Which Parameters Should Use Matrix-Based Updates? 
+
+Not all parameters in an LLM are equally suitable for matrix-based optimization. Large dense matrices are natural candidates, including: 1. attention query, key, value, and output projections; 2. feed-forward up-projection, down-projection, and gated projection matrices; 3. large output or embedding matrices, depending on implementation; 4. other dense linear layers in multimodal or mixture-of-experts variants. Biases, normalization parameters, scalar parameters, and small tensors may not benefit from matrix orthogonalization. Practical matrix-based optimizers therefore often use hybrid parameter grouping: matrix parameters receive matrix-based updates, while other parameters use AdamW , SGD , or another simpler optimizer. This hybrid nature complicates evaluation. A reported result may depend not only on the matrix optimizer itself, but also on which parameters are assigned to it and which optimizer is used for the remaining parameters. Therefore, papers should report parameter-group rules explicitly. 
+
+> 43 Ranganath
+
+10.7 Relationship to AdamW, Lion, and GaLore 
+
+Matrix-based optimizers are best understood by contrasting them with nearby families. 
+
+Compared with AdamW. AdamW uses coordinate-wise first- and second-moment estimates. It adapts each scalar parameter independently. Matrix-based optimizers instead normalize or transform an entire update matrix. This can exploit correlations among coordinates but may lose the fine-grained coordinate-wise scaling of AdamW .
+
+Compared with Lion. Lion applies a sign operation to a momentum-like vector. This is a coordinate-wise normalization. Muon applies matrix-level orthogonalization to a momentum-like matrix. Both simplify or replace second-moment adaptivity, but they impose different geometries. 
+
+Compared with GaLore. GaLore uses low-rank projection to reduce optimizer-state memory while retaining full-parameter updates. Muon changes the shape of the update through orthogonalization. The former is primarily a memory-reduction strategy; the latter is primarily an update-geometry strategy, although it may also reduce state relative to 
+
+AdamW by avoiding second moments. 
+
+Compared with Shampoo. Shampoo-style methods use matrix or tensor preconditioners derived from gradient covariance statistics. Muon uses matrix normalization or orthogonal-ization of the update itself. Both are matrix-aware, but Shampoo is closer to curvature-aware preconditioning, while Muon is closer to normalized momentum. 
+
+10.8 Memory, Compute, and Implementation Trade-Offs 
+
+Matrix-based optimizers have a distinctive trade-off profile. 
+
+Memory. If a matrix-based optimizer stores only momentum and avoids second moments, it can reduce optimizer-state memory relative to AdamW . However, it may require temporary buffers for orthogonalization. The net memory benefit depends on implementation. 
+
+Compute. Orthogonalization requires additional matrix operations. Newton–Schulz iterations can be efficient on accelerators, but they still add work relative to simple element-wise updates. The relevant metric is whether the improved update geometry reduces the number of tokens or wall-clock time needed to reach a target loss. 
+
+Numerical stability. Matrix normalization can be sensitive to scaling, precision, and singular-value distributions. Practical implementations must normalize inputs to the iteration and choose iteration counts carefully. 
+
+Parameter grouping. Hybrid optimization rules introduce additional design choices. Which matrices should use Muon ? Which parameters should use AdamW ? Should embed-dings and output heads be treated differently? These choices affect results and should be reported. 
+
+Distributed training. When matrices are partitioned across tensor-parallel devices, orthogonalizing a shard may differ from orthogonalizing the full matrix. Distributed imple-mentations must decide whether to operate locally on shards or globally across partitions. This can affect both efficiency and update geometry. 
+
+> 44 Navigating LLM Valley
+
+10.9 Theoretical Questions 
+
+Matrix-based optimizers raise theoretical questions that are not fully answered. 
+
+What objective geometry is being approximated? Diagonal adaptive methods can be interpreted as coordinate-wise preconditioners, while Newton-style methods approximate curvature. The theoretical interpretation of orthogonalized momentum updates is less settled. One question is whether they approximate steepest descent under a matrix norm or impose beneficial spectral regularization on updates. 
+
+Why should singular-value normalization help? Orthogonalized updates equalize singular values of the update matrix. This may prevent updates from being dominated by a small number of directions, but it may also discard useful magnitude information. Understanding when this helps is an open problem. 
+
+How does matrix geometry interact with Transformer training dynamics? At-tention and MLP matrices play different roles in the model. Matrix-based updates may affect representation learning, feature rotation, and layer conditioning differently across these components. 
+
+How should rectangular matrices be handled? Transformer matrices are often rectangular, especially in feed-forward layers. Orthogonalization behavior can depend on whether the matrix is tall or wide and whether the update is normalized along input or output dimensions. Recent theoretical work has begun to analyze convergence properties of Muon -style Newton–Schulz updates [ 15 ], but a complete theory of matrix-based optimization for LLMs remains open. 
+
+10.10 Evaluation Guidelines 
+
+Matrix-based optimizers should be evaluated with implementation details that are usually irrelevant for purely element-wise optimizers. In addition to the general protocol in Section 11, papers should report which parameter groups use matrix-based updates, which optimizer is used for non-matrix parameters, the number of Newton–Schulz or orthogonalization iterations, normalization rules, temporary-buffer memory, additional matrix-multiplication cost, and behavior under tensor parallelism or sharding. 
+
+10.11 Summary 
+
+Matrix-based optimizers exploit the fact that Transformer parameters are dominated by large matrices. Rather than treating each coordinate independently, they transform updates according to matrix-level geometry. Muon is a representative method that orthogonalizes momentum updates using Newton–Schulz-style iterations, aiming to produce well-conditioned matrix updates without full second-moment adaptivity. This family is conceptually distinct from AdamW , Lion , GaLore , and Shampoo: it replaces coordinate-wise or low-rank structure with matrix-level update normalization. Its promise lies in better exploiting Transformer architecture, while its challenges include computational overhead, parameter grouping, distributed implementation, and theoretical understanding. The next section turns 
+
+> 45 Ranganath
+
+from optimizer families to benchmarking methodology, asking how such diverse optimizers should be compared fairly. 
+
+# 11 Benchmarking Optimizers for LLMs 
+
+Optimizer benchmarking for LLMs is difficult because optimizers are embedded in complex training systems. A reported improvement may arise from a better update rule, a better-tuned baseline, a more favorable learning-rate schedule, a different batch size, a faster implementation, or a scale regime where one method happens to be advantaged. This section discusses how LLM optimizers should be compared and what information is needed to interpret empirical claims. 
+
+11.1 What Does It Mean for an Optimizer to Be Better? 
+
+There is no single universal criterion for optimizer quality. An optimizer may be better according to one metric and worse according to another. For LLM training, the most important criteria include: 1. Token efficiency: validation loss or downstream performance as a function of training tokens. 2. Step efficiency: progress per optimizer step. 3. Wall-clock efficiency: time to reach a target validation loss. 4. Memory efficiency: peak memory usage and optimizer-state size. 5. Compute efficiency: floating-point operations or accelerator hours required to reach a target loss. 6. Stability: robustness to seeds, learning rates, batch sizes, and precision settings. 7. Scalability: whether gains persist as model size, data size, context length, and batch size increase. 8. Implementation complexity: compatibility with fused kernels, sharding, checkpointing, and distributed training systems. These criteria can conflict. A curvature-aware optimizer may improve token efficiency but increase per-step cost. A memory-efficient optimizer may slightly reduce convergence speed but allow a larger model under the same hardware budget. A sign-based optimizer may be simple and memory efficient but require careful learning-rate tuning. Thus, optimizer benchmarking should be treated as a multi-objective evaluation problem rather than a single leaderboard. 
+
+11.2 Fixed-Model Versus Fixed-Resource Evaluation 
+
+Two evaluation regimes are especially important. 
+
+> 46 Navigating LLM Valley
+
+Fixed-model evaluation. In fixed-model evaluation, all optimizers train the same model architecture with the same dataset, token budget, batch size, precision, and hardware. This isolates the optimizer as much as possible. It answers the question: given this exact training setup, which optimizer performs best? 
+
+Fixed-resource evaluation. In fixed-resource evaluation, all optimizers are given the same hardware, memory budget, wall-clock budget, or compute budget, but may use different feasible configurations. This answers a different question: given the same resources, which optimizer enables the best final model? 
+
+Both regimes are necessary. Fixed-model comparisons are cleaner scientifically, but fixed-resource comparisons may be more relevant practically. For example, a memory-efficient optimizer may not outperform AdamW on the same model, but may enable a larger model or longer context that achieves better final performance under the same memory budget. 
+
+11.3 The Baseline Problem 
+
+Most new LLM optimizers compare against AdamW . This is appropriate because AdamW is the dominant practical baseline. However, the comparison is only meaningful if the AdamW 
+
+baseline is strong. A weak baseline can make a new optimizer appear better than it is. A strong AdamW baseline should include appropriate tuning of: 1. learning rate; 2. warmup length; 3. decay schedule; 4. β1 and β2;5. weight decay; 6. gradient clipping; 7. batch size and gradient accumulation; 8. parameter-specific weight-decay exclusions; 9. precision and loss-scaling settings. The tuning budget should be comparable across optimizers. If a new optimizer receives extensive tuning but AdamW uses default hyperparameters, the comparison is biased. Conversely, applying AdamW hyperparameters to a new optimizer may unfairly disadvantage the new method. Recent empirical studies emphasize that optimizer conclusions can change substantially under fairer tuning protocols [51; 34]. 
+
+11.4 Hyperparameter Search and Reporting 
+
+Optimizer papers should report the hyperparameter search space and selection procedure. At minimum, they should specify: 1. values tried for learning rate and weight decay; 
+
+> 47 Ranganath
+
+2. schedule type and warmup fraction; 3. momentum or decay coefficients; 4. optimizer-specific hyperparameters; 5. number of trials per optimizer; 6. selection criterion used to choose the final configuration; 7. whether hyperparameters were tuned on validation loss, downstream tasks, or training loss; 8. whether the same tuning budget was used for all baselines. Reporting only the best result without search details makes it difficult to determine whether improvements are robust. For expensive LLM pretraining, exhaustive tuning may be infeasible, but limited tuning should be stated clearly. A useful practice is to report sensitivity curves for the most important hyperparameters, especially learning rate and weight decay. 
+
+11.5 Scale Dependence 
+
+Optimizer behavior can change with scale. A method that improves a 100-million-parameter model may not improve a 7-billion-parameter model. Similarly, a method that helps during the first few billion tokens may not improve final loss after hundreds of billions of tokens. Scale dependence arises from several sources: 1. larger models may have different gradient noise scales; 2. deeper networks may be more sensitive to update geometry; 3. larger datasets change the relative importance of early and late training; 4. larger batch sizes change gradient variance; 5. distributed systems change the cost of optimizer states and communication; 6. longer context lengths change memory pressure and activation costs. Therefore, optimizer evaluations should include multiple model scales when possible. If large-scale experiments are infeasible, papers should avoid overclaiming from small-scale results. Scaling trends are often more informative than a single endpoint. 
+
+11.6 Early-Training Curves and Final Performance 
+
+Early training curves can be misleading. An optimizer may reduce loss quickly in the initial phase but converge to a worse final loss. Another optimizer may appear slower early but achieve better final performance after a longer schedule. This is especially important for methods with different implicit regularization or update geometry. A robust evaluation should report: 
+
+> 48 Navigating LLM Valley
+
+1. early validation curves; 2. final validation loss after the full token budget; 3. downstream task performance at final checkpoint; 4. intermediate checkpoints if the optimizer is claimed to improve sample efficiency; 5. whether learning-rate schedules were adjusted for the full training horizon. Claims about speedup should specify the target loss and the training interval over which the speedup is measured. A method that reaches an intermediate loss faster does not necessarily reduce total training cost if the advantage disappears later. 
+
+11.7 Token Efficiency Versus Wall-Clock Efficiency 
+
+Token efficiency measures progress as a function of the number of training tokens. Wall-clock efficiency measures progress as a function of time. Both are important, and they can disagree. Curvature-aware methods may improve token efficiency but have higher per-step cost. Low-rank projection methods may reduce memory but require projection updates. Matrix-based optimizers may use additional matrix multiplications for orthogonalization. Quantized optimizers may reduce memory but introduce quantization and dequantization overhead. In each case, validation loss versus tokens is insufficient. A complete benchmark should report validation loss as a function of both tokens and wall-clock time. When wall-clock measurements are unavailable, papers should report per-step overhead, additional FLOPs, memory bandwidth costs, and implementation details that allow approximate comparison. 
+
+11.8 Memory Accounting 
+
+Memory accounting is central for LLM optimizer evaluation. Papers should distinguish among: 1. model parameter memory; 2. gradient memory; 3. optimizer-state memory; 4. activation memory; 5. temporary buffers; 6. communication buffers; 7. checkpoint memory; 8. memory after sharding or partitioning. 
+
+> 49 Ranganath
+
+Optimizer-state memory alone can be misleading. For example, an optimizer may reduce moment-state memory but increase temporary buffer memory. Another may reduce per-device memory only when combined with sharding. Memory should therefore be reported as both theoretical state size and measured peak memory in a concrete training run. For memory-efficient optimizers, two comparisons are useful. The first is fixed-model memory reduction: how much memory is saved on the same model? The second is fixed-resource improvement: what larger model, longer context, or larger batch becomes feasible under the same hardware budget? 
+
+11.9 Precision, Numerics, and Stability 
+
+LLM training commonly uses mixed precision. Optimizer comparisons should report the precision used for: 1. model weights; 2. gradients; 3. optimizer states; 4. master weights; 5. preconditioners or curvature estimates; 6. matrix orthogonalization or projection computations. Precision choices can strongly affect stability. For example, curvature estimates may require higher precision than model weights. Quantized optimizer states may behave differently across hardware. Matrix orthogonalization may be sensitive to normalization and numerical range. Gradient clipping, loss scaling, and epsilon values should also be reported. Stability should be evaluated across random seeds when feasible. At minimum, papers should report whether any runs diverged, whether gradient clipping was necessary, and whether the optimizer was sensitive to small hyperparameter changes. 
+
+11.10 Downstream Evaluation 
+
+Validation loss is the primary metric for pretraining optimization, but downstream perfor-mance is also important. Two optimizers may reach similar validation loss while producing models with different downstream behavior. This can occur because optimizers may have different implicit regularization effects or may traverse different training trajectories. Downstream evaluation should be interpreted carefully. Benchmark variance, prompt formatting, evaluation contamination, and decoding settings can all affect results. For opti-mizer comparisons, downstream tasks should supplement validation loss rather than replace it. A good evaluation reports both language-modeling loss and downstream performance under standardized evaluation settings. 
+
+> 50 Navigating LLM Valley
+
+11.11 Implementation Effects 
+
+The practical speed of an optimizer depends heavily on implementation. AdamW benefits from highly optimized fused kernels and mature distributed support. New optimizers may be slower simply because their implementations are less optimized, or faster because they use specialized kernels not available to baselines. Implementation details to report include: 1. framework and version; 2. accelerator type; 3. fused or unfused optimizer kernels; 4. distributed-training strategy; 5. sharding configuration; 6. checkpointing strategy; 7. whether custom kernels are used; 8. measured tokens per second. A mathematically superior optimizer may fail to improve wall-clock time if implemen-tation overhead is high. Conversely, a well-engineered implementation can make a modest algorithmic improvement practically valuable. 
+
+11.12 Recommended Benchmark Protocol 
+
+Based on the preceding discussion, we recommend that LLM optimizer papers report results under a protocol with the following components. 
+
+Model and data. Specify architecture, parameter count, tokenizer, dataset, sequence length, and number of training tokens. 
+
+Training setup. Specify global batch size in tokens, microbatch size, gradient accumula-tion, precision, hardware, and distributed configuration. 
+
+Optimizer configuration. Specify update equations, state precision, hyperparameters, learning-rate schedule, warmup, weight decay, clipping, and parameter-group rules. 
+
+Tuning protocol. Report search spaces, tuning budgets, selection criteria, and whether baselines received comparable tuning. 
+
+Metrics. Report validation loss versus tokens, validation loss versus wall-clock time, peak memory, tokens per second, downstream performance, and run stability. 
+
+Ablations. Include ablations for optimizer-specific components, such as projection rank, curvature update frequency, quantization precision, or orthogonalization iterations. 
+
+Scale. Evaluate at multiple model sizes or token budgets when possible. If only small-scale experiments are feasible, state the limitation explicitly. 
+
+> 51 Ranganath
+
+11.13 Common Pitfalls 
+
+Several pitfalls recur in optimizer benchmarking. 
+
+Under-tuned baselines. Comparing against default AdamW settings can exaggerate improvements. 
+
+Unequal tuning budgets. Giving the proposed optimizer more search effort than baselines biases results. 
+
+Early-curve overclaiming. Reporting speedups only during early training can be mis-leading if gains vanish later. 
+
+Ignoring wall-clock cost. Token-efficiency improvements may not matter if per-step overhead is too large. 
+
+Incomplete memory reporting. Reporting only optimizer-state memory can hide activation, temporary-buffer, or sharding effects. 
+
+Small-scale extrapolation. Results on small models may not predict behavior at LLM scale. 
+
+Implementation confounding. Differences in kernel quality, sharding support, or frame-work integration can dominate algorithmic differences. 
+
+11.14 Summary 
+
+Benchmarking LLM optimizers requires a multi-objective view. The relevant question is not simply which optimizer achieves the lowest validation loss in a single experiment, but which optimizer provides the best trade-off among token efficiency, wall-clock time, memory, stability, scalability, and implementation complexity. Fair comparison requires strong baselines, transparent tuning, careful memory accounting, and scale-aware evaluation. The next section turns from evaluation methodology to open problems, highlighting directions where optimizer research for LLMs remains incomplete. 
+
+# 12 Open Problems and Future Directions 
+
+Optimizer research for LLMs is moving quickly, but many fundamental questions remain unresolved. The field lacks reliable scaling laws for optimizer behavior, standardized evaluation protocols, strong theory for matrix-based updates, and clear guidance on when memory-efficient or curvature-aware methods improve end-to-end training. This section summarizes open problems that are especially important for future work. 
+
+12.1 Scaling Laws for Optimizers 
+
+LLM scaling laws have clarified how model size, dataset size, and compute budget affect loss, but comparable scaling laws for optimizers remain underdeveloped. In practice, optimizers can behave differently across model sizes, token budgets, and batch sizes. An optimizer that appears superior at small scale may lose its advantage at larger scale, while another may require large models or long training horizons before its benefits appear. 
+
+> 52 Navigating LLM Valley
+
+A useful optimizer scaling law would answer questions such as: 1. How does the optimal learning rate vary with model size, batch size, and token budget for each optimizer? 2. Do memory-efficient optimizers preserve their convergence behavior as model size in-creases? 3. Do curvature-aware or matrix-based optimizers become more or less useful at larger scale? 4. How does the critical batch size depend on the optimizer? 5. Can small-scale experiments reliably predict large-scale optimizer rankings? Recent benchmarking studies suggest that optimizer conclusions can be sensitive to scale and tuning [ 51 ; 34 ]. Developing predictive scaling rules would make optimizer research less dependent on expensive full-scale training runs. 
+
+12.2 Fair and Reproducible Optimizer Benchmarks 
+
+The field needs standardized optimizer benchmarks for LLM training. Existing comparisons often differ in architecture, dataset, hyperparameter budget, implementation quality, and reporting detail. This makes it difficult to determine whether a method improves optimization or merely benefits from a favorable experimental setup. A strong benchmark suite should include: 1. multiple model sizes, from small proxies to billion-parameter models; 2. standardized datasets and token budgets; 3. fixed-model and fixed-resource evaluation tracks; 4. transparent hyperparameter search spaces; 5. wall-clock, memory, and validation-loss reporting; 6. downstream evaluation under standardized settings; 7. reproducible training code and optimizer implementations. Such benchmarks should also include strong AdamW baselines. Since AdamW is highly optimized and widely tuned, new methods should be compared against competitive implementations rather than default settings. Benchmarking should also separate algorithmic gains from systems gains whenever possible. 
+
+12.3 Memory–Compute–Convergence Trade-Offs 
+
+Many new optimizers improve one resource at the expense of another. Memory-efficient optimizers reduce state size but may require more training tokens. Curvature-aware opti-mizers can reduce the number of steps but increase per-step computation. Matrix-based 
+
+> 53 Ranganath
+
+optimizers may improve update geometry but add orthogonalization overhead. Low-rank methods reduce state memory but introduce projection error and refresh costs. The open problem is to characterize these trade-offs quantitatively. A useful comparison should answer: Which optimizer minimizes final loss under a fixed hardware, memory, and time budget? (73) This is different from asking which optimizer has the best loss per token or the smallest state size in isolation. Future work should evaluate optimizers using joint resource frontiers. For example, one can plot final validation loss against peak memory, wall-clock time, or total accelerator hours. Such Pareto frontiers would make trade-offs explicit and help practitioners choose optimizers for different regimes. 
+
+12.4 Optimizer-State Memory Beyond AdamW 
+
+A central question is how much optimizer state is truly necessary for LLM training. AdamW 
+
+stores two full moment vectors, but methods such as Adafactor , Adam-mini, LOMO ,
+
+GaLore , and APOLLO-like approaches suggest that full per-coordinate adaptivity may not always be required [36; 49; 21; 50; 54]. Several questions remain open: 1. Which parameters actually benefit from full second-moment adaptivity? 2. Can different layers or parameter groups use different levels of optimizer state? 3. Is second-moment memory more important early or late in training? 4. Can optimizer states be compressed dynamically as training progresses? 5. How do memory-efficient states interact with sharding, checkpointing, and mixed preci-sion? A promising direction is adaptive state allocation: use rich optimizer states only where they matter most, and cheaper updates elsewhere. This would treat optimizer memory as a budget to allocate across the model rather than a fixed multiple of parameter count. 
+
+12.5 Parameter-Group-Specific Optimizers 
+
+Modern LLMs contain heterogeneous parameter groups. Attention projections, feed-forward matrices, embeddings, normalization parameters, and output heads may have different gradient statistics and optimization needs. Yet most training recipes apply a single optimizer to nearly all parameters, with limited exceptions such as excluding normalization parameters from weight decay. Future optimizers may be hybrid by design. For example, one could use a matrix-based optimizer for large dense matrices, AdamW or Adam-mini for embeddings, SGD or momentum for normalization parameters, and low-rank projection for selected feed-forward layers. The challenge is to design such hybrids systematically rather than through ad hoc parameter grouping. Open questions include: 
+
+> 54 Navigating LLM Valley
+
+1. Which parameter groups require coordinate-wise adaptivity? 2. Which matrices benefit from orthogonalized or matrix-normalized updates? 3. Should embeddings and output heads use different optimizers from internal layers? 4. Can optimizer assignment be learned or adapted during training? 5. How should weight decay and learning-rate schedules vary by parameter group? This direction connects optimizer design with architecture-aware training. It may be especially important for mixture-of-experts models, multimodal LLMs, and long-context architectures. 
+
+12.6 Theory for Matrix-Based Optimizers 
+
+Matrix-based optimizers such as Muon raise theoretical questions that are not fully addressed by existing analyses of diagonal adaptive methods or classical second-order optimization [ 14 ;19 ; 15 ]. These methods transform update matrices using orthogonalization or matrix normalization, but the precise optimization principle behind these transformations remains an active area of study. Important theoretical questions include: 1. Under what norm or geometry is an orthogonalized update a natural descent direction? 2. When does singular-value normalization improve conditioning, and when does it discard useful magnitude information? 3. How do matrix-normalized updates interact with Transformer activations and residual connections? 4. What convergence guarantees are possible for Newton–Schulz-style optimizer updates? 5. How should rectangular matrices and tensor-parallel shards be treated theoretically? A stronger theory would help distinguish principled matrix-aware optimization from empirical update normalization. It could also guide which parameter groups should receive matrix-based updates. 
+
+12.7 Curvature Without Prohibitive Overhead 
+
+Second-order information is attractive because it can improve conditioning, but exact curvature is impossible at LLM scale. Methods such as Shampoo and Sophia approximate curvature using tensor-structured or diagonal estimates [ 12 ; 1 ; 18 ]. The open problem is how to obtain useful curvature information cheaply enough to improve end-to-end training. Future work should explore: 1. adaptive curvature update schedules; 2. selective curvature estimation for only some layers; 
+
+> 55 Ranganath
+
+3. low-precision curvature statistics; 4. sharding-friendly preconditioners; 5. curvature estimates that reuse information already computed during backpropagation; 6. combinations of curvature estimation with low-rank or matrix-based updates. The practical test is whether curvature-aware methods improve wall-clock time or final performance under fixed compute, not merely whether they reduce the number of optimization steps. 
+
+12.8 Optimizer Design for Long-Context Training 
+
+Long-context LLM training changes the optimization and systems environment. Longer sequences increase activation memory, alter token correlations within a batch, and may require different learning-rate schedules or gradient accumulation strategies. Optimizer memory competes directly with activation memory, making memory-efficient optimizers more valuable. Open questions include: 1. Do optimizers tuned for short-context pretraining remain optimal for long-context train-ing? 2. Does gradient noise behave differently as sequence length increases? 3. Can memory-efficient optimizers enable longer contexts without sacrificing convergence? 4. Should attention and feed-forward parameters use different update rules during long-context adaptation? 5. How do optimizers interact with activation checkpointing and sequence parallelism? As context windows grow, optimizer design may become increasingly tied to memory management and sequence-level training dynamics. 
+
+12.9 Fine-Tuning Versus Pretraining 
+
+Pretraining and fine-tuning impose different optimizer requirements. Pretraining emphasizes long-horizon stability, throughput, and scaling behavior across massive token budgets. Fine-tuning often emphasizes memory feasibility, robustness to small datasets, and avoiding catastrophic forgetting. An optimizer that is excellent for pretraining may not be ideal for full-parameter fine-tuning, and vice versa. LOMO , for example, is motivated by full-parameter fine-tuning under limited memory rather than large-scale pretraining [ 21 ]. Low-rank and memory-efficient optimizers may also have different value depending on whether the goal is training from scratch or adapting a pretrained model. Future work should avoid treating LLM optimization as a single regime. Instead, optimizer recommendations should distinguish at least: 
+
+> 56 Navigating LLM Valley
+
+1. pretraining from scratch; 2. continued pretraining; 3. long-context adaptation; 4. supervised fine-tuning; 5. preference optimization and RL-style post-training; 6. domain adaptation under limited hardware. Each regime may have different optimal trade-offs among memory, stability, and conver-gence. 
+
+12.10 Optimizer Interaction with Post-Training 
+
+Most optimizer discussions focus on next-token pretraining or supervised fine-tuning, but modern LLM development includes preference optimization, reinforcement learning, and other post-training stages. These stages often use smaller datasets, different losses, and more fragile training dynamics than pretraining. Open questions include: 1. Are AdamW-style optimizers still optimal for preference optimization and RL fine-tuning? 2. Do memory-efficient optimizers behave differently when gradients are high variance or reward-derived? 3. Should post-training use different optimizer states from pretraining? 4. Can curvature-aware or trust-region-like optimizers improve stability in alignment train-ing? 5. How do optimizer choices affect reward hacking, overoptimization, or loss of pretrained capabilities? This is an important direction because post-training often determines the behavior of deployed LLMs, yet optimizer choices in this stage are less systematically studied than pretraining optimizers. 
+
+12.11 Hardware–Optimizer Co-Design 
+
+Optimizer performance depends strongly on hardware. A method that is mathematically attractive may be impractical if it requires operations that are inefficient on accelerators. Conversely, an optimizer that maps well to matrix-multiply units or low-precision hardware may be highly effective in practice. Future optimizer research should consider hardware co-design. Important questions include: 1. Which optimizer operations map efficiently to GPUs, TPUs, or future AI accelerators? 
+
+> 57 Ranganath
+
+2. Can matrix-based optimizers exploit high-throughput matrix multiplication units? 3. Can optimizer states be stored or updated efficiently in low precision? 4. How should optimizers be designed for memory-bandwidth-limited training? 5. Can sharding, checkpointing, and optimizer updates be co-designed rather than layered independently? This perspective is especially relevant for matrix-based methods such as Muon , low-bit optimizers, and structured preconditioners. Their practical value depends on whether the hardware can execute their additional operations efficiently. 
+
+12.12 Toward Adaptive and Learned Optimizer Selection 
+
+Most training recipes choose a single optimizer before training begins. However, the best optimizer may change over time. Early training may require stability and adaptivity, while late training may benefit from different regularization or lower-noise updates. Different layers may also benefit from different update rules. A future direction is adaptive optimizer selection. Instead of using one optimizer globally, the training system could select update rules based on gradient statistics, layer type, training phase, or memory pressure. This could include switching from AdamW 
+
+to a lower-memory method after a warmup phase, using curvature-aware updates only intermittently, or allocating richer optimizer states to layers with high sensitivity. The challenge is to make such adaptation reliable. Learned or adaptive optimizer selection introduces additional complexity and risk. It also requires evaluation protocols that distinguish genuine improvements from overfitting to benchmark settings. 
+
+12.13 Summary 
+
+The next generation of LLM optimizers will likely be shaped by several intertwined goals: reducing memory, improving update geometry, exploiting matrix and low-rank structure, scaling reliably, and integrating with distributed hardware. The most important open problems are not only algorithmic but also methodological and systems-oriented. The field needs fair benchmarks, optimizer scaling laws, stronger theory for matrix-based methods, and practical guidance for choosing optimizers under fixed resource budgets. These challenges motivate the concluding perspective of this survey: LLM optimizer research should be evaluated as a joint problem in optimization, architecture, and systems design. 
+
+# 13 Conclusion 
+
+Optimizers are a central component of large language model training. They determine not only how quickly a model descends the training loss, but also which model sizes, context lengths, batch sizes, and fine-tuning regimes are feasible under a fixed hardware budget. For this reason, optimizer design for LLMs cannot be evaluated purely as an abstract mathematical update rule. It must be understood as a joint problem in optimization, architecture, memory, numerics, and distributed systems. 
+
+> 58 Navigating LLM Valley
+
+This survey organized the optimizer landscape for LLMs around the metaphor of LLM Valley : a rugged optimization landscape in which different methods navigate different trade-offs. AdamW remains the main trail through this valley. It is robust, well understood, widely implemented, and difficult to beat under strong tuning. Its combination of momentum, coordinate-wise adaptivity, and decoupled weight decay has made it the reference optimizer for Transformer-based language models. At the same time, its full first- and second-moment states impose substantial memory costs, and its coordinate-wise update geometry does not explicitly exploit the matrix structure of Transformer parameters. The recent literature can be viewed as a set of attempts to move beyond this baseline along several directions. Memory-efficient optimizers such as Adafactor , 8-bit optimizers, Adam-mini, LOMO , GaLore , and APOLLO-like methods aim to reduce the optimizer-state burden that makes full-parameter training expensive. Sign-based and discovered optimizers such as signSGD and Lion challenge the assumption that full gradient magnitudes and second-moment estimates are always necessary. Curvature-aware methods such as Shampoo and Sophia revisit second-order information in scalable forms. Low-rank and projection-based methods exploit structure in gradients and updates. Matrix-based optimizers such as 
+
+Muon treat Transformer weights as matrices rather than independent coordinates, opening a new direction based on update geometry and orthogonalization. A recurring theme is that no optimizer is universally best. The right choice depends on the training regime. Large-scale pretraining rewards long-horizon stability, throughput, and strong scaling. Full-parameter fine-tuning under limited memory rewards reduced optimizer state and low activation overhead. Long-context training places optimizer memory in direct competition with activation memory. Curvature-aware methods may be attractive when token efficiency dominates, while memory-efficient methods may be preferable when model size or sequence length is memory-bound. Matrix-based methods may offer benefits when update geometry matters, but require careful implementation and theoretical understanding. This survey also emphasized that optimizer evaluation must be multi-objective. Validation loss as a function of tokens is important, but insufficient. Practical comparisons must also account for wall-clock time, peak memory, total optimizer-state size, checkpoint size, communication overhead, implementation quality, numerical precision, tuning effort, and downstream performance. In particular, comparisons against AdamW should use strong baselines and comparable hyperparameter search budgets. Otherwise, reported gains may reflect under-tuned baselines, small-scale artifacts, or implementation differences rather than genuine optimizer improvements. Looking forward, several directions appear especially important. First, the field needs optimizer scaling laws that predict how methods behave as model size, batch size, data size, and context length increase. Second, more standardized benchmarks are needed to compare optimizers under fixed-model and fixed-resource regimes. Third, memory should be treated as an allocatable optimization resource: different parameters may warrant different levels of optimizer state. Fourth, matrix-based and orthogonalized optimizers require stronger theory connecting update geometry to Transformer training dynamics. Finally, optimizer research should be increasingly co-designed with hardware and distributed systems, since practical performance depends on the operations that accelerators can execute efficiently. The emerging picture is not that AdamW will be replaced by a single universal successor. Rather, the optimizer landscape is becoming more specialized and architecture-aware. Future 
+
+> 59 Ranganath
+
+LLM training systems may combine multiple update rules: adaptive methods for some parameters, matrix-based updates for large projections, low-rank or memory-efficient updates where state is costly, and curvature-aware updates when better conditioning is worth the overhead. Navigating LLM Valley will therefore require not just new optimizers, but a deeper understanding of when, where, and why each optimizer works. In summary, optimizers for LLMs are evolving from generic first-order update rules into system-aware, structure-aware training algorithms. The most promising methods will be those that improve the full training frontier: better loss, lower memory, faster wall-clock convergence, greater stability, and compatibility with the distributed infrastructure required for modern language models. A mature science of LLM optimization will need to integrate empirical benchmarking, theoretical analysis, and systems design into a unified framework. 
+
+# References 
+
+[1] Rohan Anil, Vineet Gupta, Tomer Koren, Kevin Regan, and Yoram Singer. Scalable second order optimization for deep learning. arXiv preprint arXiv:2002.09018 , 2021. URL https://arxiv.org/abs/2002.09018 .[2] Jeremy Bernstein, Yu-Xiang Wang, Kamyar Azizzadenesheli, and Anima Anandkumar. signsgd: Compressed optimisation for non-convex problems. In Proceedings of the 35th International Conference on Machine Learning , volume 80 of Proceedings of Machine Learning Research , pages 560–569. PMLR, 2018. URL https://proceedings.mlr. press/v80/bernstein18a.html .[3] L´ eon Bottou, Frank E. Curtis, and Jorge Nocedal. Optimization methods for large-scale machine learning. SIAM Review , 60(2):223–311, 2018. doi: 10.1137/16M1080173. URL 
+
+https://doi.org/10.1137/16M1080173 .[4] Tom B. Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared Kaplan, Prafulla Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, et al. Language models are few-shot learners. In Advances in Neural Information Processing Systems , volume 33, pages 1877–1901, 2020. URL https://arxiv.org/abs/2005. 14165 .[5] Xiangning Chen, Chen Liang, Da Huang, Esteban Real, Kaiyuan Wang, Yao Liu, Hieu Pham, Xuanyi Dong, Thang Luong, Cho-Jui Hsieh, Yifeng Lu, and Quoc V. Le. Symbolic discovery of optimization algorithms. In Advances in Neural Information Processing Systems , 2023. URL https://arxiv.org/abs/2302.06675 .[6] Aakanksha Chowdhery, Sharan Narang, Jacob Devlin, Maarten Bosma, Gaurav Mishra, Adam Roberts, Paul Barham, Hyung Won Chung, Charles Sutton, Sebastian Gehrmann, et al. PaLM: Scaling language modeling with pathways. Journal of Machine Learning Research , 24(240):1–113, 2023. URL https://jmlr.org/papers/v24/22-1144.html .[7] Tim Dettmers, Mike Lewis, Younes Belkada, and Luke Zettlemoyer. 8-bit optimizers via block-wise quantization. In International Conference on Learning Representations ,2022. URL https://openreview.net/forum?id=shpkpVXzo3h .
+
+> 60 Navigating LLM Valley
+
+[8] Jacob Devlin, Ming-Wei Chang, Kenton Lee, and Kristina Toutanova. BERT: Pre-training of deep bidirectional transformers for language understanding. In Proceedings of the 2019 Conference of the North American Chapter of the Association for Com-putational Linguistics , pages 4171–4186, 2019. URL https://aclanthology.org/ N19-1423/ .[9] Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Amy Yang, Angela Fan, et al. The Llama 3 herd of models. arXiv preprint arXiv:2407.21783 , 2024. URL 
+
+https://arxiv.org/abs/2407.21783 .[10] John Duchi, Elad Hazan, and Yoram Singer. Adaptive subgradient methods for online learning and stochastic optimization. Journal of Machine Learning Research , 12: 2121–2159, 2011. URL https://jmlr.org/papers/v12/duchi11a.html .[11] Donald Goldfarb, Yi Ren, and Achraf Bahamou. Practical quasi-newton methods for training deep neural networks. arXiv preprint arXiv:2006.08877 , 2020. URL 
+
+https://arxiv.org/abs/2006.08877 .[12] Vineet Gupta, Tomer Koren, and Yoram Singer. Shampoo: Preconditioned stochastic tensor optimization. In Proceedings of the 35th International Conference on Machine Learning , volume 80 of Proceedings of Machine Learning Research , pages 1842–1850. PMLR, 2018. URL https://proceedings.mlr.press/v80/gupta18a.html .[13] Albert Q. Jiang, Alexandre Sablayrolles, Arthur Mensch, Chris Bamford, Deven-dra Singh Chaplot, Diego de las Casas, Florian Bressand, Gianna Lengyel, Guillaume Lample, Lucile Saulnier, et al. Mistral 7B. arXiv preprint arXiv:2310.06825 , 2023. URL https://arxiv.org/abs/2310.06825 .[14] Keller Jordan. Muon: An optimizer for hidden layers in neural networks. Blog post and software repository, 2024. URL https://kellerjordan.github.io/posts/muon/ .Introduces MomentUm Orthogonalized by Newton–Schulz. [15] Gyu Yeol Kim and Min-hwan Oh. Convergence of Muon with newton–schulz. arXiv preprint arXiv:2601.19156 , 2026. URL https://arxiv.org/abs/2601.19156 .[16] Diederik P. Kingma and Jimmy Ba. Adam: A method for stochastic optimization. In 
+
+International Conference on Learning Representations , 2015. URL https://arxiv. org/abs/1412.6980 .[17] Dong C. Liu and Jorge Nocedal. On the limited memory method for large scale opti-mization. Mathematical Programming , 45(1):503–528, 1989. doi: 10.1007/BF01589116. [18] Hong Liu, Zhiyuan Li, David Hall, Percy Liang, and Tengyu Ma. Sophia: A scalable stochastic second-order optimizer for language model pre-training. In International Conference on Learning Representations , 2024. URL https://openreview.net/forum? id=3xHDeA8Noi .
+
+> 61 Ranganath
+
+[19] Jingyuan Liu, Jianlin Su, Xingcheng Yao, Zhejun Jiang, Guokun Lai, Yulun Du, Yidao Qin, Weixin Xu, Enzhe Lu, Junjie Yan, Yanru Chen, Huabin Zheng, Yibo Liu, Shaowei Liu, Bohong Yin, Weiran He, Han Zhu, Yuzhi Wang, Jianzhou Wang, Mengnan Dong, Zheng Zhang, Yongsheng Kang, Hao Zhang, Xinran Xu, Yutao Zhang, Yuxin Wu, Xinyu Zhou, and Zhilin Yang. Muon is scalable for LLM training. arXiv preprint arXiv:2502.16982 , 2025. URL https://arxiv.org/abs/2502.16982 .[20] Ilya Loshchilov and Frank Hutter. Decoupled weight decay regularization. In Inter-national Conference on Learning Representations , 2019. URL https://openreview. net/forum?id=Bkg6RiCqY7 .[21] Kai Lv, Yuqing Yang, Tengxiao Liu, Qinghui Gao, Qipeng Guo, and Xipeng Qiu. Full parameter fine-tuning for large language models with limited resources. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics , 2024. URL https://aclanthology.org/2024.acl-long.445/ .[22] Paulius Micikevicius, Sharan Narang, Jonah Alben, Gregory Diamos, Erich Elsen, David Garcia, Boris Ginsburg, Michael Houston, Oleksii Kuchaiev, Ganesh Venkatesh, and Hao Wu. Mixed precision training. In International Conference on Learning Representations , 2018. URL https://openreview.net/forum?id=r1gs9JgRZ .[23] Aryan Mokhtari and Alejandro Ribeiro. Global convergence of online limited memory bfgs. Journal of Machine Learning Research , 16:3151–3181, 2015. URL https://jmlr. org/papers/v16/mokhtari15a.html .[24] Igor Molybog, Peter Albert, Moya Chen, Zachary DeVito, David Esiobu, Naman Goyal, Punit Singh Koura, Sharan Narang, Andrew Poulton, Ruan Silva, Binh Tang, Diana Liskovich, Puxin Xu, Yuchen Zhang, Melanie Kambadur, Stephen Roller, and Susan Zhang. A theory on adam instability in large-scale machine learning. arXiv preprint arXiv:2304.09871 , 2023. URL https://arxiv.org/abs/2304.09871 .[25] Deepak Narayanan, Mohammad Shoeybi, Jared Casper, Patrick LeGresley, Mostofa Patwary, Vijay Korthikanti, Dmitri Vainbrand, Prethvi Kashinkunti, Julie Bernauer, Bryan Catanzaro, Amar Phanishayee, and Matei Zaharia. Efficient large-scale language model training on GPU clusters using Megatron-LM. In Proceedings of the International Conference for High Performance Computing, Networking, Storage and Analysis , 2021. URL https://arxiv.org/abs/2104.04473 .[26] Yue Niu, Zalan Fabian, Sunwoo Lee, Mahdi Soltanolkotabi, and Salman Avestimehr. mL-BFGS: A momentum-based l-bfgs for distributed large-scale neural network optimization. 
+
+arXiv preprint arXiv:2307.13744 , 2023. URL https://arxiv.org/abs/2307.13744 .[27] Jorge Nocedal and Stephen J. Wright. Numerical Optimization . Springer, 2 edition, 2006. doi: 10.1007/978-0-387-40065-5. [28] PyTorch Contributors. PyTorch DistributedDataParallel design note. https://docs. pytorch.org/docs/stable/notes/ddp.html , 2024. Accessed 2026-05-09. 
+
+> 62 Navigating LLM Valley
+
+[29] Samyam Rajbhandari, Jeff Rasley, Olatunji Ruwase, and Yuxiong He. ZeRO: Memory optimizations toward training trillion parameter models. In Proceedings of the Interna-tional Conference for High Performance Computing, Networking, Storage and Analysis ,2020. URL https://arxiv.org/abs/1910.02054 .[30] Aditya Ranganath, Mukesh Singhal, and Roummel Marcia. Symmetric rank-one quasi-newton methods for deep learning using cubic regularization. arXiv preprint arXiv:2502.12298 , 2025. URL https://arxiv.org/abs/2502.12298 .[31] Sashank J. Reddi, Satyen Kale, and Sanjiv Kumar. On the convergence of adam and beyond. In International Conference on Learning Representations , 2018. URL 
+
+https://openreview.net/forum?id=ryQu7f-RZ .[32] Sebastian Ruder. An overview of gradient descent optimization algorithms. arXiv preprint arXiv:1609.04747 , 2016. URL https://arxiv.org/abs/1609.04747 .[33] Nicol N. Schraudolph, Jin Yu, and Simon G¨ unter. A stochastic quasi-newton method for online convex optimization. In Proceedings of the Eleventh International Conference on Artificial Intelligence and Statistics , 2007. URL https://proceedings.mlr.press/ v2/schraudolph07a.html .[34] Andrei Semenov, Matteo Pagliardini, and Martin Jaggi. Benchmarking optimizers for large language model pretraining. arXiv preprint arXiv:2509.01440 , 2025. URL 
+
+https://arxiv.org/abs/2509.01440 .[35] Alexander Sergeev and Mike Del Balso. Horovod: Fast and easy distributed deep learning in tensorflow. arXiv preprint arXiv:1802.05799 , 2018. URL https://arxiv. org/abs/1802.05799 .[36] Noam Shazeer and Mitchell Stern. Adafactor: Adaptive learning rates with sublinear memory cost. In Proceedings of the 35th International Conference on Machine Learning ,volume 80 of Proceedings of Machine Learning Research , pages 4596–4604. PMLR, 2018. URL https://proceedings.mlr.press/v80/shazeer18a.html .[37] Mohammad Shoeybi, Mostofa Patwary, Raul Puri, Patrick LeGresley, Jared Casper, and Bryan Catanzaro. Megatron-LM: Training multi-billion parameter language models using model parallelism. arXiv preprint arXiv:1909.08053 , 2019. URL https://arxiv. org/abs/1909.08053 .[38] Shiliang Sun, Zehui Cao, Han Zhu, and Jing Zhao. A survey of optimization methods from a machine learning perspective. IEEE Transactions on Cybernetics , 50(8):3668– 3681, 2020. doi: 10.1109/TCYB.2019.2950779. URL https://arxiv.org/abs/1906. 06821 .[39] Yi Tay, Mostafa Dehghani, Dara Bahri, and Donald Metzler. Efficient transformers: A survey. ACM Computing Surveys , 55(6):1–28, 2023. doi: 10.1145/3530811. [40] Tijmen Tieleman and Geoffrey Hinton. Lecture 6.5—rmsprop: Divide the gradient by a running average of its recent magnitude. COURSERA: Neural Networks for Machine Learning, 2012. 
+
+> 63 Ranganath
+
+[41] Akiyoshi Tomihari and Issei Sato. Understanding why adam outperforms sgd: Gradient heterogeneity in transformers. arXiv preprint arXiv:2502.00213 , 2025. URL https: //arxiv.org/abs/2502.00213 .[42] Hugo Touvron, Thibaut Lavril, Gautier Izacard, Xavier Martinet, Marie-Anne Lachaux, Timoth´ ee Lacroix, Baptiste Rozi` ere, Naman Goyal, Eric Hambro, Faisal Azhar, et al. LLaMA: Open and efficient foundation language models. arXiv preprint arXiv:2302.13971 , 2023. URL https://arxiv.org/abs/2302.13971 .[43] Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amjad Almahairi, Yasmine Babaei, Nikolay Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti Bhosale, et al. Llama 2: Open foundation and fine-tuned chat models. arXiv preprint arXiv:2307.09288 ,2023. URL https://arxiv.org/abs/2307.09288 .[44] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N. Gomez, Lukasz Kaiser, and Illia Polosukhin. Attention is all you need. In Advances in Neural Information Processing Systems , 2017. URL https://arxiv.org/abs/1706. 03762 .[45] Zhongwei Wan, Xin Wang, Che Liu, Samiul Alam, Yu Zheng, Jiachen Liu, Zhuoran Qu, Shen Yan, Yi Zhu, Quanlu Zhang, et al. A survey on efficient training of transformers. 
+
+arXiv preprint arXiv:2302.01107 , 2023. URL https://arxiv.org/abs/2302.01107 .[46] Yifei Wang et al. Stable adam optimization for 16-bit neural networks training. arXiv preprint arXiv:2307.16189 , 2023. URL https://arxiv.org/abs/2307.16189 . Author metadata should be verified before final submission. [47] Yang You, Jing Li, Sashank Reddi, Jonathan Hseu, Sanjiv Kumar, Srinadh Bhojana-palli, Xiaodan Song, James Demmel, Kurt Keutzer, and Cho-Jui Hsieh. Large batch optimization for deep learning: Training BERT in 76 minutes. In International Confer-ence on Learning Representations , 2020. URL https://openreview.net/forum?id= Syx4wnEtvH .[48] Yushun Zhang, Congliang Chen, Ziniu Li, Tian Ding, Chenwei Wu, Yinyu Ye, Zhi-Quan Luo, and Ruoyu Sun. Why transformers need adam: Ahessian perspective. In Advances in Neural Information Processing Systems ,2024. URL https://proceedings.neurips.cc/paper_files/paper/2024/hash/ ee0e45ff4de76cbfdf07015a7839f339-Abstract-Conference.html .[49] Yushun Zhang, Congliang Chen, Ziniu Li, Tian Ding, Chenwei Wu, Diederik P. Kingma, Yinyu Ye, Zhi-Quan Luo, and Ruoyu Sun. Adam-mini: Use fewer learning rates to gain more. In International Conference on Learning Representations , 2025. URL 
+
+https://openreview.net/forum?id=iBExhaU3Lc .[50] Jiawei Zhao, Zhenyu Zhang, Beidi Chen, Zhangyang Wang, Anima Anandkumar, and Yuandong Tian. GaLore: Memory-efficient LLM training by gradient low-rank projection. In Proceedings of the 41st International Conference on Machine Learning ,Proceedings of Machine Learning Research. PMLR, 2024. URL https://proceedings. mlr.press/v235/zhao24s.html .
+
+> 64 Navigating LLM Valley
+
+[51] Rosie Zhao, Depen Morwani, David Brandfonbrener, Nikhil Vyas, and Sham Kakade. Deconstructing what makes a good optimizer for autoregressive language mod-els. In International Conference on Learning Representations , 2025. URL https: //openreview.net/forum?id=0J9gL2DVO4 .[52] Ruizhe Zhao, Brian Vogel, and Tanvir Ahmed. Adaptive loss scaling for mixed precision training. arXiv preprint arXiv:1910.12385 , 2019. URL https://arxiv.org/abs/1910. 12385 .[53] Yanli Zhao, Andrew Gu, Rohan Varma, Liang Luo, Chien-Chin Huang, Min Xu, Less Wright, Hamid Shojanazeri, Myle Ott, Sam Shleifer, Alban Desmaison, Can Balioglu, Bernard Nguyen, Geeta Chauhan, Yuchen Hao, and Shen Li. PyTorch FSDP: Experiences on scaling fully sharded data parallel. Proceedings of the VLDB Endowment ,16(12):3848–3860, 2023. URL https://arxiv.org/abs/2304.11277 .[54] Hanqing Zhu, Zhenyu Zhang, Wenyan Cong, Xi Liu, Sem Park, Vikas Chandra, Bo Long, David Z. Pan, Zhangyang Wang, and Jinwon Lee. APOLLO: SGD-like memory, AdamW-level performance. arXiv preprint arXiv:2412.05270 , 2024. URL https: //arxiv.org/abs/2412.05270 .

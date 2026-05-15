@@ -6,91 +6,89 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-05-14
-- 运行时间：2026-05-14 20:45:06 UTC
+- 最新运行日期：2026-05-15
+- 运行时间：2026-05-15 21:36:25 UTC
 - 运行状态：成功
 - 本次总论文数：23
 - 精读区：9
 - 速读区：14
 
 ### 今日简报（AI）
-今日深度研读 23 篇论文，重点聚焦工业时间序列基座模型与 LLM 驱动的电网仿真技术。
-满分力荐 FactoryNet 工业大数据集及 Grid-Orch 智能编排器，揭示了大模型重构工业分析的新趋势。
-建议优先关注时间序列与大语言模型的跨界融合，并同步留意因果发现与隐私推理的落地应用。
-- 详情：[/202605/14/README](/202605/14/README)
+今日深度解析 23 篇 AI 论文，重点聚焦获满分评价的时序预测智能体框架 Nexus 及 TabPFN-
+- 详情：[/202605/15/README](/202605/15/README)
 
 ### 精读区论文标签
-1. [FactoryNet: A Large-Scale Dataset toward Industrial Time-Series Foundation Models](/202605/14/2605.09081v2-factorynet-a-large-scale-dataset-toward-industrial-time-series-foundation-models)  
-   标签：评分：10.0/10、query:ts-fm
-   evidence：工业时间序列基础模型的通用预训练语料库
-2. [Grid-Orch: An LLM-Powered Orchestrator for Distribution Grid Simulation and Analytics](/202605/14/2605.12728v1-grid-orch-an-llm-powered-orchestrator-for-distribution-grid-simulation-and-analytics)  
-   标签：评分：10.0/10、query:llm
-   evidence：基于LLM的配电网仿真与准静态时序分析编排器
-3. [MILM: Large Language Models for Multimodal Irregular Time Series with Informative Sampling](/202605/14/2605.13711v1-milm-large-language-models-for-multimodal-irregular-time-series-with-informative-sampling)  
+1. [Nexus : An Agentic Framework for Time Series Forecasting](/202605/15/2605.14389v1-nexus--an-agentic-framework-for-time-series-forecasting)  
    标签：评分：10.0/10、query:llm-ts
-   evidence：针对多模态不规则时间序列微调大语言模型
-4. [Rolling-Origin Conformal Prediction under Local Stationarity and Weak Dependence](/202605/14/2605.08422v1-rolling-origin-conformal-prediction-under-local-stationarity-and-weak-dependence)  
-   标签：评分：9.0/10、query:llm-ts
-   evidence：时间序列预测的滚动原点符合预测
-5. [HEPA: A Self-Supervised Horizon-Conditioned Event Predictive Architecture for Time Series](/202605/14/2605.11130v2-hepa-a-self-supervised-horizon-conditioned-event-predictive-architecture-for-time-series)  
+   evidence：结合大语言模型与时间序列基础模型的智能体框架
+2. [TabPFN-3: Technical Report](/202605/15/2605.13986v1-tabpfn-3-technical-report)  
    标签：评分：9.0/10、query:ts-fm
-   evidence：时间序列事件预测的自监督预训练
-6. [What Do EEG Foundation Models Capture from Human Brain Signals?](/202605/14/2605.11410v1-what-do-eeg-foundation-models-capture-from-human-brain-signals)  
+   evidence：时间序列基础模型
+3. [WirelessSenseLLM: Zero-Shot Human Activity Understanding by Bridging Wireless Signals and Human Language](/202605/15/2605.14070v1-wirelesssensellm-zero-shot-human-activity-understanding-by-bridging-wireless-signals-and-human-language)  
+   标签：评分：9.0/10、query:llm-ts
+   evidence：利用LLM桥接时序无线信号与人类语言
+4. [What if Tomorrow is the World Cup Final? Counterfactual Time Series Forecasting with Textual Conditions](/202605/15/2605.14422v1-what-if-tomorrow-is-the-world-cup-final-counterfactual-time-series-forecasting-with-textual-conditions)  
+   标签：评分：9.0/10、query:llm-ts
+   evidence：基于文本条件的时间序列预测
+5. [SeesawNet: Towards Non-stationary Time Series Forecasting with Balanced Modeling of Common and Specific Dependencies](/202605/15/2605.14551v1-seesawnet-towards-non-stationary-time-series-forecasting-with-balanced-modeling-of-common-and-specific-dependencies)  
+   标签：评分：9.0/10、query:llm-ts
+   evidence：非平稳时间序列预测架构
+6. [COTCAgent: Preventive Consultation via Probabilistic Chain-of-Thought Completion](/202605/15/2605.15016v1-cotcagent-preventive-consultation-via-probabilistic-chain-of-thought-completion)  
+   标签：评分：9.0/10、query:llm-ts
+   evidence：针对纵向时间电子健康档案数据微调大语言模型
+7. [TopoPrimer: The Missing Topological Context in Forecasting Models](/202605/15/2605.15035v1-topoprimer-the-missing-topological-context-in-forecasting-models)  
    标签：评分：9.0/10、query:ts-fm
-   evidence：脑电图基础模型与自监督预训练
-7. [SSDA: Bridging Spectral and Structural Gaps via Dual Adaptation for Vision-Based Time Series Forecasting](/202605/14/2605.12550v1-ssda-bridging-spectral-and-structural-gaps-via-dual-adaptation-for-vision-based-time-series-forecasting)  
-   标签：评分：9.0/10、query:llm-ts
-   evidence：用于时间序列预测的大型视觉模型
-8. [Compact Latent Manifold Translation: A Parameter-Efficient Foundation Model for Cross-Modal and Cross-Frequency Physiological Signal Synthesis](/202605/14/2605.13248v1-compact-latent-manifold-translation-a-parameter-efficient-foundation-model-for-cross-modal-and-cross-frequency-physiological-signal-synthesis)  
-   标签：评分：9.0/10、query:llm-ts
-   evidence：生理时间序列的高效参数基础模型
-9. [Three-Stage Learning Unlocks Strong Performance in Simple Models for Long-Term Time Series Forecasting](/202605/14/2605.13678v1-three-stage-learning-unlocks-strong-performance-in-simple-models-for-long-term-time-series-forecasting)  
-   标签：评分：9.0/10、query:llm-ts
-   evidence：使用简单时间映射进行长期时间序列预测
+   evidence：针对TimesFM等预训练时序骨干模型的拓扑上下文适配器
+8. [WARP: A Benchmark for Primal-Dual Warm-Starting of Interior-Point Solvers](/202605/15/2605.05728v1-warp-a-benchmark-for-primal-dual-warm-starting-of-interior-point-solvers)  
+   标签：评分：8.0/10、query:llm
+   evidence：交流最优潮流与机器学习预热启动
+9. [A Market-Rule-Informed Neural Network for Efficient Imbalance Electricity Price Forecasting](/202605/15/2605.09061v1-a-market-rule-informed-neural-network-for-efficient-imbalance-electricity-price-forecasting)  
+   标签：评分：8.0/10、query:llm
+   evidence：智能电网运行中的电价预测
 
 ### 速读区论文标签
-1. [Mask2Cause: Causal Discovery via Adjacency Constrained Causal Attention](/202605/14/2605.07280v1-mask2cause-causal-discovery-via-adjacency-constrained-causal-attention)  
+1. [Hedging Memory Horizons for Non-Stationary Prediction via Online Aggregation](/202605/15/2605.06541v1-hedging-memory-horizons-for-non-stationary-prediction-via-online-aggregation)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：预测过程中的时间序列因果发现
-2. [Fortifying Time Series: DTW-Certified Robust Anomaly Detection](/202605/14/2605.07690v1-fortifying-time-series-dtw-certified-robust-anomaly-detection)  
+   evidence：分布偏移下的时间序列在线预测
+2. [Spatiotemporal dynamics of wind-speed volatility](/202605/15/2605.07225v1-spatiotemporal-dynamics-of-wind-speed-volatility)  
+   标签：评分：8.0/10、query:llm-wd
+   evidence：风速波动的时空动态研究
+3. [Navigating LLM Valley: From AdamW to Memory-Efficient and Matrix-Based Optimizers](/202605/15/2605.09176v1-navigating-llm-valley-from-adamw-to-memory-efficient-and-matrix-based-optimizers)  
+   标签：评分：8.0/10、query:llm-ts
+   evidence：大语言模型优化器设计综述
+4. [dFlowGRPO: Rate-Aware Policy Optimization for Discrete Flow Models](/202605/15/2605.09291v1-dflowgrpo-rate-aware-policy-optimization-for-discrete-flow-models)  
+   标签：评分：8.0/10、query:llm-ts
+   evidence：扩散大语言模型的强化学习
+5. [Spectral Transformer Neural Processes](/202605/15/2605.09498v1-spectral-transformer-neural-processes)  
    标签：评分：8.0/10、query:ts-fm
-   evidence：时间序列的鲁棒异常检测
-3. [Private Vertical Federated Inference for Time-Series](/202605/14/2605.08343v1-private-vertical-federated-inference-for-time-series)  
-   标签：评分：8.0/10、query:llm-ts
-   evidence：使用 Transformer 架构对时间序列数据进行协作推理
-4. [PnP-Corrector: A Universal Correction Framework for Coupled Spatiotemporal Forecasting](/202605/14/2605.08935v1-pnp-corrector-a-universal-correction-framework-for-coupled-spatiotemporal-forecasting)  
-   标签：评分：8.0/10、query:llm-ts
-   evidence：时空预测的通用修正框架
-5. [Large Language Models for Sequential Decision-Making: Improving In-Context Learning via Supervised Fine-Tuning](/202605/14/2605.09009v1-large-language-models-for-sequential-decision-making-improving-in-context-learning-via-supervised-fine-tuning)  
-   标签：评分：8.0/10、query:llm-ts
-   evidence：微调预训练大语言模型用于序列决策
-6. [RLearner-LLM: Balancing Logical Grounding and Fluency in Large Language Models via Hybrid Direct Preference Optimization](/202605/14/2605.04539v3-rlearner-llm-balancing-logical-grounding-and-fluency-in-large-language-models-via-hybrid-direct-preference-optimization)  
+   evidence：针对时间序列的频率感知Transformer神经过程扩展
+6. [BoostLLM: Boosting-inspired LLM Fine-tuning for Few-shot Tabular Classification](/202605/15/2605.06117v1-boostllm-boosting-inspired-llm-fine-tuning-for-few-shot-tabular-classification)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：大语言模型的混合直接偏好优化
-7. [Distributed Energy System Design including Unbalanced AC Power Flow for Large LV Networks with ADMM](/202605/14/2605.04746v2-distributed-energy-system-design-including-unbalanced-ac-power-flow-for-large-lv-networks-with-admm)  
+   evidence：针对结构化表格数据微调大语言模型
+7. [BoostLLM: Boosting-inspired LLM Fine-tuning for Few-shot Tabular Classification](/202605/15/2605.06117v2-boostllm-boosting-inspired-llm-fine-tuning-for-few-shot-tabular-classification)  
+   标签：评分：7.0/10、query:llm-ts
+   evidence：针对结构化数据的 LLM 微调
+8. [Scalable model selection for count time series with structural breaks: application to solid-organ transplantation during and after COVID-19 in the USA and Italy](/202605/15/2605.06168v1-scalable-model-selection-for-count-time-series-with-structural-breaks-application-to-solid-organ-transplantation-during-and-after-covid-19-in-the-usa-and-italy)  
+   标签：评分：7.0/10、query:llm-ts
+   evidence：具有时间依赖性的计数时间序列模型
+9. [Probabilistic Assessment of Rare Transient Instability Events via Kriging-based Active Learning Framework](/202605/15/2605.06442v1-probabilistic-assessment-of-rare-transient-instability-events-via-kriging-based-active-learning-framework)  
    标签：评分：7.0/10、query:llm
-   evidence：大型网络的分布式能源系统设计与调度
-8. [OpenWatch: A Multimodal Benchmark for Hand Gesture Recognition on Smartwatches](/202605/14/2605.04791v1-openwatch-a-multimodal-benchmark-for-hand-gesture-recognition-on-smartwatches)  
+   evidence：人工智能用于电力系统稳定性与不确定性分析
+10. [Tyche: One Step Flow for Efficient Probabilistic Weather Forecasting](/202605/15/2605.06916v1-tyche-one-step-flow-for-efficient-probabilistic-weather-forecasting)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：时间序列分类的深度学习方法
-9. [AegisTS: A Hierarchical Agent System with Reinforcement Learning for Multivariate Time Series Data Cleaning](/202605/14/2605.04902v2-aegists-a-hierarchical-agent-system-with-reinforcement-learning-for-multivariate-time-series-data-cleaning)  
-   标签：评分：7.0/10、query:llm-ts
-   evidence：多变量时间序列数据清洗
-10. [A Scalable Digital Twin Framework for Energy Optimization in Data Centers](/202605/14/2605.05581v1-a-scalable-digital-twin-framework-for-energy-optimization-in-data-centers)  
-   标签：评分：7.0/10、query:llm-ts
-   evidence：使用LSTM模型进行能源需求预测
-11. [Computational acceleration strategies for large-scale energy system optimization: a comparative study of GPU-accelerated and distributed-memory solvers](/202605/14/2605.04605v1-computational-acceleration-strategies-for-large-scale-energy-system-optimization-a-comparative-study-of-gpu-accelerated-and-distributed-memory-solvers)  
+   evidence：概率天气预报与时间序列建模
+11. [Active Learning for Communication Structure Optimization in LLM-Based Multi-Agent Systems](/202605/15/2605.05703v1-active-learning-for-communication-structure-optimization-in-llm-based-multi-agent-systems)  
    标签：评分：6.0/10、query:llm
-   evidence：能源系统优化与求解器
-12. [A Biased Nonnegative Block Term Tensor Decomposition Model for Dynamic QoS Prediction](/202605/14/2605.04813v1-a-biased-nonnegative-block-term-tensor-decomposition-model-for-dynamic-qos-prediction)  
+   evidence：基于大语言模型的多智能体系统通信结构优化
+12. [Active Learning for Communication Structure Optimization in LLM-Based Multi-Agent Systems](/202605/15/2605.05703v2-active-learning-for-communication-structure-optimization-in-llm-based-multi-agent-systems)  
+   标签：评分：6.0/10、query:llm
+   evidence：基于LLM的多智能体系统通信优化
+13. [CRAFT: Forgetting-Aware Intervention-Based Adaptation for Continual Learning](/202605/15/2605.05732v2-craft-forgetting-aware-intervention-based-adaptation-for-continual-learning)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：动态QoS预测与多维数据建模
-13. [Jacobian-Velocity Bounds for Deployment Risk Under Covariate Drift](/202605/14/2605.04932v1-jacobian-velocity-bounds-for-deployment-risk-under-covariate-drift)  
+   evidence：微调LLM以获取新能力并避免灾难性遗忘
+14. [From Drops to Grid: Noise-Aware Spatio-Temporal Neural Process for Rainfall Estimation](/202605/15/2605.05912v1-from-drops-to-grid-noise-aware-spatio-temporal-neural-process-for-rainfall-estimation)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：时域中的时间风险波动和协变量偏移
-14. [Low-Rank Adaptation of Geospatial Foundation Models for Wildfire Mapping Using Sentinel-2 Data](/202605/14/2605.04989v1-low-rank-adaptation-of-geospatial-foundation-models-for-wildfire-mapping-using-sentinel-2-data)  
-   标签：评分：6.0/10、query:ts-fm
-   evidence：时间域偏移下的地理空间基础模型
+   evidence：用于降雨估计的时空神经过程
 
 
 <div class="dpr-home-promo-card">

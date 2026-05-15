@@ -1,0 +1,635 @@
+Title: BoostLLM: Boosting-inspired LLM Fine-tuning for Few-shot Tabular Classification
+
+URL Source: https://arxiv.org/pdf/2605.06117v1
+
+Published Time: Fri, 08 May 2026 01:23:39 GMT
+
+Number of Pages: 19
+
+Markdown Content:
+# BoostLLM: Boosting-inspired LLM Fine-tuning for Few-shot Tabular Classification 
+
+Yi-Siang Wang 1∗ Kuan-Yu Chen 1 Yu-Chen Den 1 Darby Tien-Hao Chang 11SinoPac Holdings 
+
+{richardwang,lavamore,abnerden,darby}@sinopac.com 
+
+Abstract 
+
+Large language models (LLMs) have recently been adapted to tabular prediction by serializing structured features into natural language, but their performance in low-data regimes remains limited compared to gradient-boosted decision trees (GBDTs). In this work, we revisit the boosting paradigm, traditionally associated with tree ensembles, and ask whether it can be applied as a general training principle for LLM fine-tuning. We propose BoostLLM, a framework that transforms parameter-efficient fine-tuning into a multi-round residual optimization process by training sequential PEFT adapters as weak learners. To incorporate tabular inductive bias, BoostLLM integrates decision-tree paths as a second input view alongside raw features; analysis reveals that the path view acts as a structured teacher in early training steps before the model shifts toward feature-driven representations. Empirically, BoostLLM achieves consistent improvements over standard fine-tuning across multiple LLM backbones and datasets, matching or surpassing XGBoost across a wide range of shot counts and outperforming GPT-4o-based methods with a 4B model. We further show that the framework scales: pairing with stronger tree models and extended boosting horizons yields additional gains under appropriate stabilization. These results suggest that boosting can serve as a general training principle for LLM fine-tuning, particularly in low-data regimes for structured data. 
+
+1 Introduction 
+
+Tabular data serves as a primary engine for real-world decision making across domains such as finance, healthcare, and e-commerce [ 27 , 39 ]. Despite its ubiquity, many impactful applications operate in strictly data-constrained environments where labeled examples are scarce, expensive to obtain, or subject to rapid distribution shifts like detecting fraud, diagnosing rare diseases from limited patient records, or forecasting demand for emerging product categories. In such scenarios, accurate predictions must be learned from only a small number of labeled instances, making data-efficient learning a central challenge in tabular prediction [39, 32, 26, 36]. Recent works have explored Large Language Models (LLMs) for tabular prediction. Pretrained on large-scale corpora, LLMs encode rich semantic knowledge and reasoning capabilities that can complement limited supervision in downstream tasks. A prominent line of work leverages LLMs for direct label prediction and feature engineering without parameter updates, relying on prompt-based inference and In-Context Learning (ICL) [ 53 , 30 , 14 , 50 ]—an approach made increasingly viable as frontier models grow in capability. However, fine-tuning provides a more direct adaptation pathway and has been shown to substantially outperform ICL in few-shot settings [ 15 , 25 , 6]. In practice, fine-tuning is commonly performed via Parameter-Efficient Fine-Tuning (PEFT) techniques [ 25 , 17 , 24 ], which introduce lightweight trainable modules while keeping most pretrained parameters fixed. Despite their efficiency, such adaptation can be unstable and prone to overfitting when supervision is scarce [48, 10, 23], highlighting the need for more data-efficient and robust fine-tuning strategies. 
+
+> Preprint.
+> arXiv:2605.06117v1 [cs.LG] 7 May 2026
+
+Interestingly, the tabular learning community has long relied on a different paradigm to address similar challenges: gradient boosting. Systems such as XGBoost [ 5], LightGBM [ 20 ], and CatBoost [ 35 ]consistently achieve strong performance across a wide range of tabular tasks and are known to be particularly robust in data-limited settings [ 12 , 13 , 49 , 8, 36 ]. Boosting constructs models in a stage-wise manner, where learners are added sequentially to correct the residual errors of previous ones. This additive training strategy encourages models to focus on informative residual errors while controlling overfitting, resulting in strong sample efficiency. Although typically associated with tree-based models, boosting is a general paradigm that can be extended to other function classes [ 41 , 33 , 45 ]. This observation raises a natural question: Can boosting serve as a general training principle for LLM fine-tuning, particularly in low-data tabular settings? 
+
+In this paper, we propose BoostLLM , a framework that instantiates boosting as a training principle for LLM fine-tuning in tabular prediction. BoostLLM trains a sequence of weak learners implemented as PEFT-adapted LLMs in a stage-wise manner, where each learner focuses on correcting the residual errors of the ensemble prediction formed by previous ones. Each learner is trained for only a small number of epochs, limiting overfitting to the scarce supervision while encouraging each stage to capture complementary residual patterns. This controlled optimization preserves a training cost comparable to standard PEFT fine-tuning while improving performance in low-data regimes. To further stabilize and enrich the boosting process, we introduce a decision-path integration strategy that incorporates structural priors from a trained gradient boosting tree. Rather than simply concatenating decision-path descriptions with the serialized tabular input, we treat tree-derived signals as an auxiliary view of the data. At each round, the LLM processes both a feature-only view and a path-informed view of the same sample, and their hidden states are fused before computing the class logit. This paired-view fusion integrates structural guidance from tree-based models while allowing the LLM to progressively reduce its reliance on the tree signal as it learns. Our contributions are as follows: • We view boosting as a training principle for LLM fine-tuning in few-shot tabular prediction, and propose BoostLLM to realize this idea. BoostLLM trains sequential PEFT adapters as weak learners that correct residual errors stage-wise, and introduces a paired-view ensemble that fuses feature-only and path-informed hidden states to integrate decision-path knowledge at each boosting round. • We conduct extensive experiments on nine tabular classification benchmarks with four LLM backbones. BoostLLM consistently outperforms TabLLM, matches or surpasses XGBoost across a wide range of shot counts, and exceeds state-of-the-art LLM-based methods relying on GPT-4o while using only a 4B open-source model, demonstrating that boosting-based fine-tuning is both sample-efficient and architecture-agnostic. • Through ablation and analyses, we confirm that BoostLLM’s gains stem from the boosting mechanism rather than parameter count, and that the method is robust to hyperparameter choices. Behavioral analysis shows that boosting provides consistent corrections across rounds, and that the path view serves as an early-stage teacher whose influence diminishes as the LLM matures. We also show that the framework scales with stronger tree models, yielding additional gains. 
+
+2 Preliminary 
+
+Task Formulation. Let D = {(xi, y i)}ni=1 denote a tabular classification dataset with n samples, where xi = [ xi1, . . . , x iK ]⊤ ∈ RK is a feature vector with K attributes, and yi ∈ C = {1, . . . , C } is the class label among C classes. The goal is to learn a model that accurately predicts the label yi
+
+given input xi.
+
+Gradient Boosting. Gradient boosting constructs additive predictors in a stage-wise manner: 
+
+FR(xi) = 
+
+> R
+
+X
+
+> r=1
+
+η f r (xi), (1) where fr is the weak learner trained at round r and η is the boosting learning rate. Each fr is fitted to the residual between the target and the current ensemble prediction Fr−1(xi), such that successive rounds iteratively correct the errors of previous ones. 2The Age is 25, The Job is teacher, The Balance = 50K …              
+
+> Does this client subscribe to a term deposit?
+> Answer Yes or No. Answer:
+> [25, teacher, 50000, …]
+> Considering:
+> 20 < Age <= 40
+> Considering:
+> 0 < Balance <= 60K
+> Considering:
+> Job is not engineer
+> Serialize Extract Decision Paths
+> Round 1 Round 2 Round 3
+> (1) Feature Description (3) Task Instruction (2) Condense M Decision Path Information into R rounds
+> Trained XGBoost with M trees
+> Feature-only view
+> (b) Construct per-sample Paired-view Input
+> r
+> Round-r Path-Informed view
+> (a) Serialize Tabular Data into Natural Language Template and inject Decision Path Information
+> 1
+> 2
+> 3
+> #1 LLM Backbone #1 LM Head Round #1 Logit
+> Round #2 Logit
+> Round #3 Logit
+> Target
+> #2 LLM Backbone #2 LM Head
+> #3 LLM Backbone #3 LM Head
+> Per-round loss calc.
+> (c) Sequentially Fit R LLM weak learners to correct preceeding accumulated residuals w/ Paired-view Fusion
+> Final Pred.
+> ×
+> ×
+
+Figure 1: Overview of BoostLLM. (a) Tabular features xi are serialized into a natural language template. An XGBoost model’s M decision paths are condensed into R round-specific descriptions via constraint intersection (Equation (4)). (b) Each sample is presented as a feature-only and a path-informed prompt (Equations (2) and (5)). (c) R LLM weak learners with round-specific parameters 
+
+θr are trained sequentially. Both views are forwarded through backbone ϕθr and their hidden states are averaged to produce per-round logit fr (Equations (6) and (7)); each learner corrects the residual of the preceding accumulated logit Fr−1, which accumulates stagewise into Fr (Equation (8)). When instantiated with decision trees, each fr produces predictions via a root-to-leaf path, which can be interpreted as a conjunction of feature conditions (e.g., (age > 30) ∧ (income ≤ 50K) ). This stage-wise, error-correcting inductive bias has proven highly effective for tabular data [ 5, 20 , 35 ]. However, it has not been systematically incorporated into LLM-based tabular classifiers, which BoostLLM aims to address. 
+
+LLM-based Tabular Classification. To enable Large Language Models (LLMs) to process tabular inputs, each sample xi is converted into a natural-language sequence. Following TabLLM [ 15 ], we serialize xi using a fixed template T , referred to as the feature-only prompt :
+
+T (xi) = The e1 is xi1. · · · The eK is xiK .
+
+| {z }
+
+serialized features 
+
+<Task Description> 
+
+| {z }
+
+prediction objective 
+
+Answer: , (2) where ek denotes the column name of the k-th feature, and <Task Description> is a dataset-specific natural-language prompt that specifies the prediction objective—for example, “Does this client subscribe to a term deposit? Answer Yes or No.” 
+
+Following T-Few [ 25 ], we score a set of verbalized class labels to obtain class predictions. Concretely, let sc = ( sc, 1, . . . , s c,L c ) denote the token sequence corresponding to the verbalized label for class 
+
+c ∈ C , where Lc is its token length. For example, for class c = positive , sc is the tokenized sequence under the model’s tokenizer. Given the serialized input, the choice logit for class c is computed as the length-normalized log-likelihood: 
+
+z(c | xi) = 1
+
+LcLcX
+
+t=1 
+
+log pθ (sc,t | T (xi), sc,<t ) , (3) where pθ denotes the token probability output of the LLM parameterized by θ, and sc,<t =(sc, 1, . . . , s c,t −1) is the prefix of the verbalized label. The predicted class and class probabilities are derived directly from the logits z(c | xi) across c ∈ C .In this paper, we retain the prediction formulation in Equation (3). The key contribution of BoostLLM lies in how the per-round logits are produced and accumulated , following the stage-wise residual fitting paradigm in Equation (1). The full procedure is described in Section 3. 33 Methodology 
+
+BoostLLM instantiates the gradient boosting framework of Equation (1) in logit space, using LLMs as weak learners (see Figure 1). Section 3.1 extracts and compresses XGBoost decision paths into round-specific natural-language descriptions; Section 3.2 describes how each round trains a parameter-efficient adapter on paired views of each sample and accumulates the resulting logit corrections stagewise; Section 3.3 presents the training objective and inference procedure. 
+
+3.1 Decision-Path Extraction and Compression 
+
+We first train an XGBoost model with M trees on the same training split used for BoostLLM. For each sample xi, we extract the root-to-leaf decision path from each of the M trees as a set of feature constraints, yielding {πm(xi)}Mm=1 .Since fine-tuning an LLM for each of the M trees is computationally prohibitive, we compress them into R round-specific descriptions where R ≪ M . Concretely, we partition the M paths in their original boosting order into R consecutive groups of approximately equal size, and let Gr denote the indices of trees assigned to round r. For each round r, we merge the paths in Gr by intersecting their constraints, yielding a condensed path π∗ 
+
+> r
+
+(xi):
+
+π∗ 
+
+> r
+
+(xi) = ^
+
+> m∈G r
+
+πm(xi). (4) A worked example is provided in Appendix A. Applying this procedure across all R rounds yields 
+
+{π∗ 
+
+> r
+
+(xi)}Rr=1 , providing one condensed decision path per round. This compression keeps prompt length manageable while preserving key feature constraints learned by the trees. 
+
+3.2 Stage-wise Boosting of LLM Weak Learners 
+
+BoostLLM sequentially trains R weak learners {fr }Rr=1 , each sharing a pretrained LLM backbone but equipped with a round-specific RoAd adapter [ 24 ]; we denote the combined parameters at round 
+
+r by θr . At each round r, all previous models {fr′ }r′<r are frozen , while only fr is optimized to correct the residual of the accumulated logits Fr−1(xi), following Equation (1). 
+
+Paired-view inputs. At each round r, every sample is presented under two views. The first is the feature-only prompt T (xi) from Equation (2), and the second is the path-informed prompt eTr (xi),constructed by converting the condensed path π∗ 
+
+> r
+
+(xi) into a natural language string and inserting it between the serialized features and the task description: 
+
+eTr (xi) = The h1 is xi1. · · · The hF is xiF . Considering π∗ 
+
+> r
+
+(xi). <Task Description> Answer: (5) 
+
+Class logit computation. For each view and each class c, we obtain hidden states at each class token position t ∈ { 1, . . . , L c} from the round-r LLM backbone ϕθr . We then compute a fused hidden state by averaging: 
+
+hr,c,t (xi) = 12
+
+
+
+ϕθr
+
+ T (xi)∥sc,<t 
+
+ + ϕθr
+
+  eTr (xi)∥sc,<t 
+
+
+
+, (6) where ∥ denotes concatenation. The round-r class logit is then computed as the length-normalized log-likelihood over the fused hidden states following Equation (3): 
+
+fr (c | xi) = 1
+
+LcLcX
+
+> t=1
+
+log pθr (sc,t | hr,c,t (xi)) . (7) 
+
+Boosting accumulation. With the per-round logit fr (c | xi) computed, we update the accumulated logit Fr (c | xi) following Equation (1) with boosting learning rate η:
+
+Fr (c | xi) = 
+
+0 r = 0 ,Fr−1(c | xi) + η f r (c | xi) r ≥ 1. (8) 43.3 Training Objective and Inference 
+
+At round r, learner fr is trained with the same three-term objective as T-Few [ 25 ]: L = LLM + LUL +
+
+LCLS . The key difference is that LCLS is applied to the accumulated logits Fr (· | xi) rather than the logits of a standalone model, so each learner explicitly corrects the residuals of previous rounds. For binary classification, LCLS is binary cross-entropy on Fr (y+ | xi), where y+ ∈ C denotes the positive class; for multiclass classification, it is cross-entropy over Fr (· | xi) ∈ R|C| . At test time, inference follows the procedure of Equation (8). The final prediction is σ(FR(y+ | xi)) for binary classification and softmax( FR(· | xi)) for multiclass classification. 
+
+4 Experiments 
+
+4.1 Experimental Setup Datasets. For most experiments, we follow TabLLM [ 15 ] and evaluate on nine datasets: Bank [ 29 ], Blood [ 51 ], California [ 13 ], Car [ 4], Credit-g [ 16 ], Diabetes [ 37 ], Heart [ 18 ], Income [ 22 ], and Jungle [ 40 ]. For comparison in Section 4.2, we follow DeLTa [ 50 ] and evaluate on Blood, Car, Credit-g, Diabetes, Heart, and Jannis [13]. Dataset statistics are in Appendix B. 
+
+Baselines. We compare BoostLLM against: (1) Gradient boosting trees : XGBoost [ 5], with hyperparameters tuned via Optuna [ 2] on validation performance (search space in Appendix D); (2) LLM-based methods : TabLLM [ 15 ] is re-evaluated under our protocol using the same hyperpa-rameter settings as BoostLLM, except in Section 4.2, where results for TabLLM along with LIFT [ 6], LIFT-ICL [ 6], TP-BERTa [ 46 ], GTL [ 43 ], P2T [ 31 ], FeatLLM [ 14 ], and DeLTa are taken directly from Ye et al. [50]. 
+
+Backbone LLMs. BoostLLM is applied to two LLM families—T5Gemma2 (encoder–decoder) [ 52 ]and Qwen3 (decoder-only) [ 47 ]—each at 4B and 8B parameters. Following TabLLM, all models are trained with a fixed set of hyperparameters without per-dataset tuning. Full hyperparameter settings and training details are provided in Appendix C. 
+
+Evaluation Protocol. All models are evaluated using 5-fold stratified cross-validation, with shot counts (i.e., the number of training samples) varying by experiment: comparison with state-of-the-art LLM-based methods (Section 4.2) follows DeLTa with 64, 256, and full shots; GBDT and fine-tuning comparison (Section 4.3) uses from 4 shots to the full training set; analysis experiments (Sections 4.4, 5 and 6) use 128 shots. The primary metric is average precision (AP), with macro average applied for multi-class tasks. When accuracy is reported (Section 4.2), the decision threshold is calibrated on the training set to account for logit scale variation. Scores in the main text are averaged across datasets; per-dataset results with standard deviations are provided in the appendix. 
+
+4.2 Comparison with State-of-the-Art LLM-based Methods 
+
+A natural question is whether a fine-tuned open-source model can match or surpass the state-of-the-art LLM-based methods. As shown in Table 1, BoostLLM (Qwen3-4B) achieves the highest average accuracy in all three settings, outperforming DeLTa (GPT-4o)—the current state-of-the-art training-free method—by 6.1, 6.6, and 3.0 points at 64, 256, and all shots, respectively—indicating that boosting-based fine-tuning of a 4B open-source model can surpass approaches relying on larger proprietary models. Per-dataset results are in Appendix E. 
+
+4.3 Comparison with GBDT and Vanilla Fine-tuning 
+
+Beyond comparing individual methods, we examine two questions: (1) whether BoostLLM closes the gap with GBDT methods in the moderate-to-large data regime, and (2) whether boosting-based fine-tuning provides consistent gains over vanilla LLM fine-tuning across architectures. Table 2 reports AP across shot counts from 4 to all shots. BoostLLM consistently outperforms TabLLM across all backbones and data regimes, confirming that the boosting paradigm provides reliable gains over standard fine-tuning regardless of model family. For at least one backbone, BoostLLM matches or exceeds XGBoost at every shot count, with gains consistent across both encoder–decoder and decoder-only families. Per-dataset results are in Appendix F. 5Table 1: Average test accuracy comparison with state-of-the-art LLM-based tabular classification methods. All baselines are from DeLTa [ 50 ]. GTL, LIFT-ICL, and P2T are omitted from 256- and All-shot as these results are not reported in the corresponding papers. Bold : best per row; Underline :second best per row. ∗All-shots excludes Bank, Income, and Jannis due to large training set sizes.                                              
+
+> Method TabLLM LIFT TP-BERTa GTL LIFT-ICL P2T FeatLLM DeLTa BoostLLM LLM Used T0 GPT-3.5 RoBERTa LLaMA2 GPT-4o GPT-4o GPT-4o GPT-4o Qwen3-4B 64-shot 49.3 61.5 62.1 60.8 42.4 44.8 62.8 66.0 72.1
+> 256-shot 57.5 61.0 64.9 ---63.9 70.0 76.6
+> ∗All-shot 78.1 70.3 77.2 ---68.6 81.6 84.6
+
+Table 2: Average Precision (AP) across varying shot counts. Bold and underline denote the best and second-best performance across all methods for each shot setting, respectively. Shaded cells indicate the better method between TabLLM and BoostLLM under the same LLM backbone. ∗All-shots excludes Income, California, and Jungle due to large training set sizes.                                                                                                  
+
+> LLM used Method Number of Shots ( N)4816 32 64 128 256 512 *All
+> –XGBoost 57.9 59.9 65.5 70.4 75.4 78.5 81.3 83.0 83.0 T5Gemma2-2B TabLLM 57.6 61.2 64.3 68.8 71.0 74.2 76.6 77.3 76.9
+> BoostLLM 59.6 60.8 66.3 70.1 75.4 79.1 81.7 83.5 83.3
+> T5Gemma2-8B TabLLM 59.4 60.4 64.3 67.8 71.9 74.6 77.2 77.6 77.4
+> BoostLLM 60.0 61.9 66.5 71.0 76.4 79.1 81.6 83.3 83.0 Qwen3-4B TabLLM 60.0 62.1 63.2 67.0 71.7 74.8 75.7 78.4 77.6
+> BoostLLM 59.9 63.0 68.2 72.8 77.0 79.7 82.2 83.4 83.0 Qwen3-8B TabLLM 58.5 61.1 63.3 67.3 70.1 73.0 75.2 77.7 78.0
+> BoostLLM 62.4 64.1 68.5 72.8 76.9 79.2 81.5 82.3 82.6
+
+4.4 Ablation Study 
+
+We conduct two ablations to verify that BoostLLM’s gains stem from its design rather than confound-ing factors. All experiments use Qwen3-4B with 128-shot training data. 
+
+Component Ablation. We progressively transform TabLLM into BoostLLM by adding one com-ponent at a time. As shown in Table 3, introducing boosting yields the largest gain, improving AP by 4.0 points (74.8 → 78.8), already surpassing XGBoost (78.5). Concatenating decision paths provides only a modest improvement to 79.1 (+0.3). In contrast, combining the two views via hidden-state fusion (Equation (6)) achieves the best performance of 79.7 (+0.9 over 78.8). 
+
+Parameter Efficiency. To isolate the effect of the boosting mechanism from increased parameter count, we compare BoostLLM against a parameter-matched TabLLM ensemble with five indepen-dently trained PEFT adapters. This ensemble averages the outputs of the five models and yields only a marginal improvement over a single TabLLM (76.1 vs. 74.8 AP). In contrast, introducing boosting achieves 78.8 AP, and the final BoostLLM further reaches 79.7 AP, suggesting that the gains arise from the boosting mechanism rather than parameter count alone. 
+
+5 Analysis 
+
+We analyze BoostLLM from two angles: whether its performance is robust to hyperparameter choices, and what mechanisms govern its internal behavior. All experiments use Qwen3-4B with 128-shot training data. 
+
+5.1 Hyperparameter Sensitivity Round–Epoch Allocation. We study how to allocate a fixed total budget of 30 epochs between boosting rounds and epochs per round ( R × E = 30 ). As shown in Table 4a, only the extreme settings exhibit a noticeable drop in AP: a single round (74.6, equivalent to standard fine-tuning) and 30 rounds with one epoch each (77.9). For all other splits between 3 and 15 rounds, AP remains 6Table 3: Ablation study. Lower rows progressively add components; TabLLM (ensemble) is a parameter-matched baseline that independently trains 5 models and averages predictions. Bold and underline denote the best and second-best results, respectively. It is worth noting that all BoostLLM variants outperform XGBoost.                            
+
+> Model Boosting Feature-only View Path-informed View Params Avg. AP
+> XGBoost ————78.5 TabLLM ✓1×74.8 TabLLM (ensemble) ✓5×76.1 BoostLLM ✓✓5×78.8
+> ✓✓5×79.1
+> ✓✓✓5×79.7
+
+Table 4: Hyperparameter sensitivity analysis. (a) Round–epoch allocation under a fixed budget of 30 epochs. (b) Sensitivity to boosting learning rate η. Bold : best; underline: second best. 
+
+(a) Round–epoch allocation ( R × E = 30 ).                         
+
+> # Rounds 1235 (default) 610 15 30
+> # Epochs 30 15 10 6 (default) 5321
+> Avg. AP 74.6 76.9 78.7 79.7 79.9 79.7 79.5 77.9
+
+(b) Boosting learning rate η.            
+
+> η0.1 0.3 (default) 0.5 0.7 0.9 1.0
+> Avg. AP 79.1 79.7 79.5 79.6 79.1 78.8
+
+within a narrow range of 1.2 points (78.7–79.9), suggesting that the round–epoch allocation does not require careful per-dataset tuning. Full per-dataset breakdowns are provided in Appendix G. 
+
+Boosting Learning Rate. The boosting learning rate η controls how aggressively each learner’s logits are added to the accumulated logits (Equation (1)). By default, BoostLLM uses η = 0 .3,following the default setting of XGBoost. As shown in Table 4b, average AP varies by less than 1 point across η ∈ [0 .1, 1.0] , indicating that BoostLLM is not sensitive to this hyperparameter. Full per-dataset results are also provided in Appendix G. 
+
+5.2 Behavioral Analysis 
+
+We examine two aspects of BoostLLM’s internal behavior: how boosting corrections evolve across rounds, and how the relative contribution of the two input views shifts during training. 
+
+Boosting Dynamics. Figure 2a shows per-boosting round AP with feature-only view, path-informed view, and paired-view fusion. AP increases steadily across rounds in all settings, confirming that boosting provides meaningful corrections at each stage. The solid line (paired-view fusion) invariably track above others across rounds, confirming that view fusion provides an additive gain throughout training. Per-dataset trajectories are in Appendix H. 
+
+View Contribution Dynamics. To quantify the relative influence of each view on the fused hidden state (Equation (6)), we define the view contribution ratio at round r as: 
+
+ρr = ∥ϕθr (T (x)∥s)∥ / ∥ϕθr ( eTr (x)∥s)∥. (9) Since the fused state is the arithmetic mean of the two view vectors, the ratio determines each view’s angular contribution to the ensemble direction: a lower ρr indicates stronger path-view influence, while a higher ρr indicates stronger feature-view influence. Figure 2b plots the mean ratio across nine datasets over training steps for each boosting round. In early training of each round, ρ decreases, indicating that the model initially learn knowledge from the decision-path view—the structured signal from XGBoost acts as a teacher guiding the LLM’s representations. As training continues, ρ steadily increases, suggesting that, having internalized the tree-based guidance, the LLM shifts toward its own feature-driven representations with diminishing reliance on the external teacher. Per-dataset trajectories (Appendix I) confirm that, although absolute ratio magnitudes vary across datasets, most follow this dip-then-rise pattern. 71 2 3 4 5        
+
+> Round
+> 0.75
+> 0.76
+> 0.77
+> 0.78
+> 0.79
+> 0.80
+> Average Precision
+> Feature-only View
+> Path-informed View
+> Paired-view Fusion 025 50 75 100 125 150 175 200
+> Training Steps Across Rounds
+> 0.98
+> 0.99
+> 1.00
+> 1.01
+> Contribution Ratio  Round 0
+> Round 1
+> Round 2
+> Round 3
+> Round 4
+
+Figure 2: Behavioral analysis of BoostLLM. (a) Left: Per-round AP during boosting; dot/dashed lines denotes different views, while solid line denotes the fusion of both views. (b) Right: Per-round view contribution ratio ρr over training steps, averaged over nine datasets; Smaller ρr indicates stronger path-view influence, while larger ρr indicates stronger feature-view influence. Table 5: Scaling BoostLLM with XGBoost Large ( n_estimators up to 2000, 20 × the default). Logit decay α is applied to stabilize accumulation when boosting for 30 rounds. Bold : best. 
+
+Model Rounds Decay α Avg. AP 
+
+XGBoost – – 78.5 XGBoost Large – – 79.5 BoostLLM (XGBoost) 5 – 79.7 BoostLLM (XGBoost) 5 0.9 78.1 BoostLLM (XGBoost Large) 5 – 79.0 BoostLLM (XGBoost Large) 30 – 79.1 BoostLLM (XGBoost Large) 30 0.9 80.3 
+
+6 Generalization to Stronger Tree Models 
+
+A natural question is whether BoostLLM remains effective when paired with a stronger tree model. We investigate this using Qwen3-4B with 128-shot training data, replacing the default XGBoost (capped at 100 estimators) with XGBoost-Large (2000 estimators, 20 × more trees), which achieves 79.5 AP as a standalone classifier. However, directly substituting XGBoost-Large into BoostLLM for 5 rounds yields only 79.0 AP, below the default BoostLLM (79.7 AP). One possible explanation is that merging a larger number of decision paths into a single path may lose fine-grained splitting patterns, while the resulting longer context may distract the LLM from the tabular features. Although this hypothesis requires systematic validation, which we leave to future work, it suggests that more boosting rounds may be needed to effectively leverage XGBoost-Large. 
+
+More rounds with logit decay. To match the 20 × estimator ratio, we scale the number of boosting rounds from 5 to 100 while keeping 6 epochs per round, and train up to 30 rounds due to computational constraints. At this scale, however, logit accumulation becomes a practical issue: the magnitude of the accumulated logit Fr (Equation (8)) grows unboundedly across rounds, producing overconfident predictions that resist correction in later rounds [ 9, 28 ]. Hence, we apply logit decay with a fixed factor α < 1: Fr = α · Fr−1 + η · fr . This bounds the effective window to ∼ 1/(1 − α) rounds. We set α = 0 .9 as a conservative starting point, corresponding to an effective window of ∼10 rounds; finer tuning of α remains an open direction. 
+
+Results. Table 5 summarizes the results. BoostLLM with XGBoost-Large, logit decay, and 30 rounds achieves 80.3 AP, surpassing both standalone XGBoost-Large (79.5 AP) and the default Boost-LLM (79.7 AP). Applying the same decay in the 5-round setting, however, degrades performance (78.1 vs. 79.7 AP), confirming that logit decay is beneficial specifically for large boosting horizons. These results indicate BoostLLM generalizes to stronger tree models: pairing with XGBoost-Large and logit decay surpasses both the standalone XGBoost-Large and the default BoostLLM, with larger boosting horizons being key to unlocking the full benefit—a direction we leave for future work. 87 Related Work 
+
+LLMs for few-shot tabular prediction. Recent work adapts LLMs to tabular prediction by serializ-ing features into natural language, using either parameter-efficient fine-tuning (PEFT) or prompt-based inference. Fine-tuning approaches include TabLLM [ 15 ], which shows that careful table-to-text serialization enables competitive performance in the low-data regime, as well as UniPredict [ 42 ]and TabuLa-8B [ 11 ], which demonstrate strong cross-dataset generalization under limited labels. Prompt-based methods instead leverage LLM reasoning without task-specific training: LIFT [ 6]treats tabular prediction as a language task, while FeatLLM [ 14 ] uses LLMs to automate feature engineering. Prompt-to-Transfer (P2T) [ 31 ] enables transfer across heterogeneous tabular datasets by constructing pseudo-demonstrations for in-context learning. DeLTa [ 50 ] integrates LLMs with decision tree rules as intermediaries. Despite this progress, gradient-boosted tree priors have not been explicitly incorporated into LLM training; BoostLLM bridges this gap. 
+
+Boosting for tabular prediction. XGBoost, LightGBM, and CatBoost [ 5, 20 , 35 ] have long been state-of-the-art for tabular data. However, their non-differentiable tree ensembles cannot directly leverage the semantic richness of unstructured text or transfer knowledge across domains. GrowNet [ 3 ] trains shallow networks stage-wise with residual fitting, and subsequent work extends boosting to CNNs and deep architectures [ 7]. AdaBoost-style reweighting has also been adapted to deep learning [ 38 ]. In contrast, BoostLLM applies boosting directly to few-shot LLM fine-tuning and integrates tree-derived decision paths as a second input view. 
+
+Hybrid methods combining trees and LLMs. One paradigm uses LLMs to enhance tree-based predictors : LLM assists feature engineering [ 14 , 21 , 30 , 1] or produces contextual embeddings [ 19 ], which are then fed into a downstream tree ensemble. Another paradigm uses trees to enhance LLM-based predictors : Pattisapu et al. [34] injects signals from tree ensembles into representation learning, DeLTa [ 50 ] refines decision-tree rules and calibrates predictions with LLM-based corrections, and ReSS [ 44 ] transforms decision paths into reasoning dataset for LLM fine-tuning. BoostLLM falls into the second paradigm but differs in two key aspects: it integrates compressed decision paths directly into LLM fine-tuning, and it does so within a boosting framework where both views jointly contribute to residual correction at each round. 
+
+8 Conclusion 
+
+We presented BoostLLM, a framework that integrates the boosting paradigm into parameter-efficient LLM fine-tuning for few-shot tabular classification. By training sequential PEFT adapters as residual-correcting learners on fusion of paired feature and decision-path-informed views, BoostLLM reframes standard fine-tuning as structured multi-round optimization while preserving the total optimization steps. Our analysis shows that boosting provides consistent corrections across rounds, and that the path-informed view acts as an early-stage teacher whose influence diminishes as the LLM shifts toward feature-driven representations. Empirically, BoostLLM achieves robust gains over standard fine-tuning across backbones and datasets, matches or surpasses XGBoost across shot regimes and outperforms state-of-the-art GPT-4o-based methods with a 4B model. We further demonstrate that the framework scales: pairing with stronger tree models and extended boosting horizons yields additional gains. Overall, these results suggest that boosting can serve as a general training principle for LLM fine-tuning, particularly in low-data regimes for structured data. 
+
+Limitations 
+
+BoostLLM has several limitations. First, the multi-round boosting procedure increases inference cost relative to a single-pass model (detailed in Appendix J). Second, while it can optionally leverage a pre-fitted gradient boosting tree for decision paths, this introduces preprocessing overhead and partial dependence on the auxiliary model. Third, decision-path compression is heuristic and may lose fine-grained structure as the tree ensemble grows. Fourth, at long boosting horizons, logit magnitudes grow under additive accumulation, requiring decay for stability; designing principled or adaptive decay schemes remains an open research direction. Finally, our evaluation focuses on classic tabular classification benchmarks, which may overlap with LLM pretraining corpora; generalization to regression, large-scale settings, and memorization validation remains open. 9References 
+
+[1] Nikhil Abhyankar, Parshin Shojaee, and Chandan K Reddy. Llm-fe: Automated feature engi-neering for tabular data with llms as evolutionary optimizers. arXiv preprint arXiv:2503.14434 ,2025. [2] Takuya Akiba, Shotaro Sano, Toshihiko Yanase, Takeru Ohta, and Masanori Koyama. Optuna: A next-generation hyperparameter optimization framework. In Proceedings of the 25th ACM SIGKDD International Conference on Knowledge Discovery & Data Mining , pages 2623–2631, 2019. [3] Sarkis Badirli, Tianyu Liu, Gérard Biau, and V. Y. F. Tan. Grownet: Improving deep neural networks with gradient boosting. In Advances in Neural Information Processing Systems (NeurIPS) , 2020. [4] Marko Bohanec and Vladislav Rajkovic. Knowledge acquisition and explanation for multiat-tribute decision making. In 8th International Workshop on Expert Systems and their Applications ,pages 59–78, Avignon, France, 1988. [5] Tianqi Chen and Carlos Guestrin. Xgboost: A scalable tree boosting system. In Proceedings of the 22nd acm sigkdd international conference on knowledge discovery and data mining , pages 785–794, 2016. [6] Tuan Dinh, Yuchen Zeng, Ruisu Zhang, Ziqian Lin, Michael Gira, Shashank Rajput, Jy-yong Sohn, Dimitris Papailiopoulos, and Kangwook Lee. Lift: Language-interfaced fine-tuning for non-language machine learning tasks. Advances in Neural Information Processing Systems , 35: 11763–11784, 2022. [7] Seyedsaman Emami and Gonzalo Martínez-Muñoz. A gradient boosting approach for training convolutional and deep neural networks. IEEE Open Journal of Signal Processing , 4:313–321, 2023. doi: 10.1109/OJSP.2023.3279011. [8] Nick Erickson, Lennart Purucker, Andrej Tschalzev, David Holzmüller, et al. Tabarena: A living benchmark for machine learning on tabular data. arXiv preprint arXiv:2506.16791 , 2025. [9] Jerome Friedman, Trevor Hastie, and Robert Tibshirani. Additive logistic regression: A statistical view of boosting (with discussion and a rejoinder by the authors). The Annals of Statistics , 28(2):337–407, 2000. [10] Boyan Gao, Xin Wang, Yibo Yang, and David Clifton. Optimization-inspired few-shot adapta-tion for large language models. arXiv preprint arXiv:2505.19107 , 2025. [11] Josh Gardner, Juan C Perdomo, and Ludwig Schmidt. Large scale transfer learning for tabular data via language modeling. Advances in Neural Information Processing Systems , 37:45155– 45205, 2024. [12] Yury Gorishniy, Ivan Rubachev, Valentin Khrulkov, and Artem Babenko. Revisiting deep learning models for tabular data. In Advances in Neural Information Processing Systems (NeurIPS) , 2021. [13] Léo Grinsztajn, Edouard Oyallon, and Gaël Varoquaux. Why do tree-based models still outperform deep learning on typical tabular data? In Advances in Neural Information Processing Systems (NeurIPS Datasets and Benchmarks) , 2022. [14] Sungwon Han, Jinsung Yoon, Sercan O Arik, and Tomas Pfister. Large language models can automatically engineer features for few-shot tabular learning. In International Conference on Machine Learning , pages 17454–17479. PMLR, 2024. [15] Stefan Hegselmann, Alejandro Buendia, Hunter Lang, Monica Agrawal, Xiaoyi Jiang, and David Sontag. Tabllm: Few-shot classification of tabular data with large language models. In 
+
+International Conference on Artificial Intelligence and Statistics (AISTATS) , 2023. [16] Hans Hofmann. Statlog (german credit data). UCI Machine Learning Repository, 1994. URL 
+
+https://doi.org/10.24432/C5NC77 .[17] Edward J Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean Wang, Lu Wang, and Weizhu Chen. Lora: Low-rank adaptation of large language models. In 
+
+International Conference on Learning Representations (ICLR) , 2022. [18] Andras Janosi, William Steinbrunn, Matthias Pfisterer, and Robert Detrano. Heart disease. uci machine learning repository. UCI Machine Learning Repository , 1988. 10 [19] Gjergji Kasneci and Enkelejda Kasneci. Enriching tabular data with contextual llm embeddings: A comprehensive ablation study for ensemble classifiers. arXiv preprint arXiv:2411.01645 ,2024. [20] Guolin Ke, Qi Meng, Thomas Finley, Taifeng Wang, Wei Chen, Weidong Ma, Qiwei Ye, and Tie-Yan Liu. Lightgbm: A highly efficient gradient boosting decision tree. Advances in neural information processing systems , 30, 2017. [21] Jeonghyun Ko, Gyeongyun Park, Donghoon Lee, and Kyunam Lee. Ferg-llm: Feature en-gineering by reason generation large language models. In Findings of the Association for Computational Linguistics: NAACL 2025 , pages 4211–4228, 2025. [22] Ron Kohavi. Scaling up the accuracy of naive-bayes classifiers: A decision-tree hybrid. In 
+
+Proceedings of the Second International Conference on Knowledge Discovery and Data Mining (KDD) , pages 202–207, 1996. [23] Wen Lai, Alexander Fraser, and Ivan Titov. Joint localization and activation editing for low-resource fine-tuning. arXiv preprint arXiv:2502.01179 , 2025. [24] Baohao Liao and Christof Monz. 3-in-1: 2d rotary adaptation for efficient finetuning, efficient batching and composability. Advances in Neural Information Processing Systems , 37:35018– 35048, 2024. [25] Haokun Liu, Derek Tam, Mohammed Muqeeth, Jay Mohta, Tenghao Huang, Mohit Bansal, and Colin Raffel. Few-shot parameter-efficient fine-tuning is better and cheaper than in-context learning. In Advances in Neural Information Processing Systems (NeurIPS) , 2022. [26] Ruoxue Liu, Linjiajie Fang, Wenjia Wang, and Bing-Yi Jing. D2r2: Diffusion-based repre-sentation with random distance matching for tabular few-shot learning. Advances in Neural Information Processing Systems , 37:36890–36913, 2024. [27] X. Ma et al. Tabdpt: Scaling tabular foundation models on real data. In Advances in Neural Information Processing Systems (NeurIPS) , 2025. [28] David Mease and Abraham Wyner. Evidence contrary to the statistical view of boosting. Journal of Machine Learning Research , 9:131–156, 2008. [29] Sérgio Moro, Paulo Cortez, and Paulo Rita. A data-driven approach to predict the success of bank telemarketing. Decision Support Systems , 62:22–31, 2014. [30] Jaehyun Nam, Kyuyoung Kim, Seunghyuk Oh, Jihoon Tack, Jaehyung Kim, and Jinwoo Shin. Optimized feature generation for tabular data via llms with decision tree reasoning. Advances in neural information processing systems , 37:92352–92380, 2024. [31] Jaehyun Nam, Woomin Song, Seong Hyeon Park, Jihoon Tack, Sukmin Yun, Jaehyung Kim, Kyu Hwan Oh, and Jinwoo Shin. Tabular transfer learning via prompting llms. In Conference on Language Modeling (COLM) , 2024. [32] Joonseok Nam et al. Stunt: Few-shot tabular learning with self-generated tasks. In International Conference on Learning Representations (ICLR) , 2023. [33] Anri Patron, Ayush Prasad, Hoang Phuc Hau Luu, and Kai PuolamÃ ¯Iki. Gradient boosting mapping for dimensionality reduction and feature extraction. arXiv preprint arXiv:2405.08486 ,2024. [34] Nikhil Pattisapu, Siva Rajesh Kasa, Sumegh Roychowdhury, Karan Gupta, Anish Bhanushali, and Prasanna Srinivasa Murthy. Leveraging structural information in tree ensembles for table representation learning. In Companion Proceedings of the ACM on Web Conference 2025 , pages 1244–1248, 2025. [35] Liudmila Prokhorenkova, Gleb Gusev, Aleksandr Vorobev, Anna Veronika Dorogush, and Andrey Gulin. Catboost: unbiased boosting with categorical features. Advances in neural information processing systems , 31, 2018. [36] Ivan Rubachev et al. Tabred: Analyzing pitfalls and filling the gaps in tabular deep learning benchmarks. In International Conference on Learning Representations (ICLR) , 2025. [37] Jack W Smith, James E Everhart, William C Dickson, William C Knowler, and Robert Scott Johannes. Using the adap learning algorithm to forecast the onset of diabetes mellitus. In 
+
+Proceedings of the annual symposium on computer application in medical care , page 261, 1988. 11 [38] Aboozar Taherkhani, Georgina Cosma, and T. M. McGinnity. AdaBoost-CNN: An adaptive boosting algorithm for convolutional neural networks to classify multi-class imbalanced datasets using transfer learning. Neurocomputing , 404:351–366, 2020. doi: 10.1016/j.neucom.2020.03. 064. [39] Anton Tschalzev et al. A data-centric perspective on evaluating machine learning models for tabular data. In Advances in Neural Information Processing Systems (NeurIPS Datasets and Benchmarks) , 2024. [40] Jan N van Rijn and Jonathan K Vis. Endgame analysis of dou shou qi. ICGA journal , 37(2): 120–124, 2014. [41] Chu Wang, Yingfei Wang, Robert Schapire, et al. Functional frank-wolfe boosting for general loss functions. arXiv preprint arXiv:1510.02558 , 2015. [42] Ruiyu Wang, Zifeng Wang, and Jimeng Sun. Unipredict: Large language models are universal tabular classifiers. arXiv preprint arXiv:2310.03266 , 2023. [43] Xumeng Wen, Han Zhang, Shun Zheng, Wei Xu, and Jiang Bian. From supervised to generative: A novel paradigm for tabular deep learning with large language models. In Proceedings of the 30th ACM SIGKDD Conference on Knowledge Discovery and Data Mining , pages 3323–3333, 2024. [44] Herun Xia et al. Ress: Learning reasoning models for tabular data prediction via symbolic scaffold. arXiv preprint arXiv:2505.00562 , 2025. [45] Jun Xu and Hang Li. Adarank: a boosting algorithm for information retrieval. In Proceedings of the 30th annual international ACM SIGIR conference on Research and development in information retrieval , pages 391–398, 2007. [46] Jiahuan Yan, Bo Zheng, Hongxia Xu, Yiheng Zhu, Danny Z Chen, Jimeng Sun, Jian Wu, and Jintai Chen. Making pre-trained language models great on tabular prediction. In International Conference on Learning Representations (ICLR) , 2024. [47] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, et al. Qwen3 technical report. arXiv preprint arXiv:2505.09388 , 2025. [48] Can Yaras, Peng Wang, Laura Balzano, and Qing Qu. Compressible dynamics in deep overpa-rameterized low-rank learning & adaptation. arXiv preprint arXiv:2406.04112 , 2024. [49] Han-Jia Ye, Si-Yang Liu, Hao-Run Cai, Qi-Le Zhou, and De-Chuan Zhan. A closer look at deep learning methods on tabular datasets. arXiv preprint arXiv:2407.00956 , 2024. [50] Hangting Ye, Jinmeng Li, He Zhao, Dandan Guo, and Yi Chang. Llm meeting decision trees on tabular data. arXiv preprint arXiv:2505.17918 , 2025. [51] I-Cheng Yeh. Blood transfusion service center. UCI Machine Learning Repository, 2008. URL 
+
+https://doi.org/10.24432/C5GS39 .[52] Biao Zhang, Paul Suganthan, Gaël Liu, Ilya Philippov, Sahil Dua, Ben Hora, Kat Black, Gus Martins, Omar Sanseviero, Shreya Pathak, et al. T5gemma 2: Seeing, reading, and understanding longer. arXiv preprint arXiv:2512.14856 , 2025. [53] J. Zhang et al. One LLM is not enough: Harnessing the power of ensemble learning for medical question answering. medRxiv , 2023. URL https://www.medrxiv.org/content/10.1101/ 2023.12.21.23300380v1 .[54] Bingchen Zhao, Haoqin Tu, Chen Wei, Jieru Mei, and Cihang Xie. Tuning layernorm in attention: Towards efficient multi-modal LLM finetuning. In The Twelfth International Conference on Learning Representations , 2024. URL https://openreview.net/forum?id=YR3ETaElNK .12 A Decision-Path Compression Example 
+
+We provide a concrete example of the decision-path compression process. Given two paths πa, π b
+
+assigned to the same round group Gr , the condensed path π∗ 
+
+> r
+
+(xi) is obtained by intersecting constraints on overlapping features: 
+
+πa(xi) : (18 < age ≤ 40) ∧ (job = engineer )
+
+πb(xi) : (30 < age ≤ 50) ∧ (balance > 0) ∧ (job ̸ = teacher )
+
+π∗ 
+
+> r
+
+(xi) : (30 < age ≤ 40) ∧ (balance > 0) ∧ (job = engineer )
+
+Constraint merging rules. Since every decision path in a round group corresponds to the same sample xi, all paths are guaranteed to be merge-compatible: the sample’s own feature values always lie within the intersection of any two constraints from different trees. The merging rules for each constraint type are: • Numerical ∩ Numerical : take the tighter range, i.e., [max( ℓ1, ℓ 2), min( u1, u 2)) .• Categorical positive ∩ Categorical positive : both must assert the same category (guaran-teed for the same sample); keep the shared assertion. • Categorical positive ∩ Categorical negation : the positive assertion dominates (since the sample has that value, it cannot be excluded); keep the positive assertion. • Categorical negation ∩ Categorical negation : take the union of excluded categories. The above example illustrates the numerical and categorical positive ∩ negation cases: the age 
+
+ranges are intersected to (30 , 40] , while the positive assertion job = engineer absorbs the negation 
+
+job ̸ = teacher .
+
+B Dataset Details 
+
+Table 6 summarizes ten tabular classification benchmarks used in our experiments. Nine datasets are binary classification tasks, and the tenth dataset: Car is a four-class multi-task classifi-cation task. All datasets exclude Jannis are sourced from the official TabLLM repository (https://github.com/clinicalml/TabLLM), while Jannis is additionally included for comparison with DeLTa [ 50 ] and sourced from OpenML (https://www.openml.org/search?type=data&id=44079). For evaluation, we use 5-fold stratified cross-validation with nested train/validation/test splits. Table 6: Summary statistics of the ten tabular classification benchmarks. “Num.” and “Cat.” denote the number of numerical and categorical features, respectively. “Majority %” is the percentage of the most frequent class. 
+
+Dataset Samples Features Num. Cat. # Classes Majority % 
+
+Bank 45,211 16 6 10 2 88.3 Blood 748 4 4 0 2 76.2 California 20,640 8 8 0 2 50.0 Car 1,728 6 0 6 4 70.0 Credit-g 1,000 20 7 13 2 70.0 Diabetes 768 8 8 0 2 65.1 Heart 918 11 5 6 2 55.3 Income 48,842 12 4 8 2 76.1 Jannis 57,580 54 54 0 2 50.0 Jungle 44,819 6 6 0 2 51.5 
+
+C Hyperparameter Settings and Training Details 
+
+We detail the hyperparameter configurations employed in our experiments below. 13 Unless stated otherwise, we follow the TabLLM [ 15 ] configuration as our default setting and do not perform additional per-dataset hyperparameter tuning. Table 7 outlines the primary hyperparameters used for all LLM fine-tuning tasks, which are kept consistent across all datasets. Table 7: LLM fine-tuning hyperparameters 
+
+Hyperparameter Value 
+
+Learning Rate 3 × 10 −3
+
+Weight Decay 0.0 Optimizer AdamW Warmup Ratio 0.06 Total Epochs 30 For all LLM fine-tuning, we adopt RoAd [ 24 ] as the parameter-efficient fine-tuning method for its strong performance with low memory usage, and additionally make all layer normalization parameters trainable, following Zhao et al. [54]. For BoostLLM, the boosting learning rate is set to η = 0 .3, matching the default value of XGBoost (see Appendix 4.4). To ensure a fair comparison and isolated assessment of the boosting mechanism, we constrain the total budget of epochs across all rounds to be identical to standard TabLLM. Specifically, the total budget of epochs is 30 epochs, which is split evenly across 5 boosting rounds (i.e., exactly 6 epochs per round for BoostLLM, instead of 30 epochs per round). This guarantees that BoostLLM uses the identically bounded compute as the standard one-round TabLLM baseline (see Appendix 4.4 and Appendix G for further details). 
+
+D XGBoost Training Procedure 
+
+For the XGBoost baseline, we perform hyperparameter optimization using Optuna [ 2 ] with the TPE sampler and 100 trials per test fold, and the search space is adapted from Gorishniy et al. [12] which we provide in Table 8. For XGBoost Large (Section 6), the search space is identical except that n_estimators is expanded to UniformInt [10 , 2000] .We use a nested cross-validation procedure: for each of the 5 test folds, the remaining data is further split into 4 validation folds. Optuna optimizes average precision on the sliced validation folds. After identifying the best hyperparameters, we retrain the model on the full training set of the test fold and evaluate on the held-out test set. This nested design prevents information leakage from validation into test evaluation. Table 8: XGBoost hyperparameter space 
+
+Parameter Distribution 
+
+n_estimators UniformInt [10 , 100] 
+
+max_depth UniformInt [3 , 10] 
+
+learning_rate LogUniform [10 −5, 1] 
+
+reg_alpha LogUniform [10 −8, 10 2]
+
+reg_lambda LogUniform [10 −8, 10 2]
+
+gamma LogUniform [10 −8, 10 2]
+
+min_child_weight LogUniform [10 −8, 10 5]
+
+subsample Uniform [0 .5, 1] 
+
+colsample_bylevel Uniform [0 .5, 1] 
+
+colsample_bytree Uniform [0 .5, 1] 
+
+14 E Per-Dataset Results for Comparison with LLM-based Few-shot Methods 
+
+Table 1 reports per-dataset accuracy of BoostLLM alongside other LLM-based few-shot methods at 64-shot, 256-shot, and all-shot settings. All baseline numbers are from DeLTa [ 50 ]. Bank, Income, and Jannis are excluded from the all-shots setting due to computational cost; GTL, LIFT-ICL, and P2T are omitted from 256-shot and all-shots as these results are not reported in the corresponding papers. BoostLLM achieves the highest average accuracy across all three settings and obtains the best or second-best score on the majority of individual datasets, confirming that the gains reported in the main text are not driven by a small subset of benchmarks. Table 9: Test accuracy comparison with off-the-shelf LLM-based few-shot tabular methods. All baseline numbers are from DeLTa [ 50 ]. GTL, LIFT-ICL, and P2T are omitted from 256-shot as these results are not reported in the corresponding papers. Bold : best; underline: second best.                                                                                                                                                                                    
+
+> # Shots Method (LLM used) Datasets Bank Blood Car Credit-g Income Jannis Avg.
+> 64 TabLLM (T0) 60.2 24.5 38.6 67.3 78.5 26.8 49.3 64 LIFT (GPT-3.5) 72.8 64.3 50.0 64.3 74.8 43.0 61.5 64 TP-BERTa (RoBERTa) 84.0 64.8 41.9 64.6 76.1 41.4 62.1 64 GTL (LLaMA2) 71.9 61.3 51.2 63.8 75.0 41.4 60.8 64 LIFT-ICL (GPT-4o) 46.9 34.8 32.6 53.8 61.3 25.1 42.4 64 P2T (GPT-4o) 56.9 36.8 33.4 54.2 63.4 24.3 44.8 64 FeatLLM (GPT-4o) 72.3 69.7 50.8 64.3 74.9 45.0 62.8 64 DeLTa (GPT-4o) 73.3 73.2 61.5 66.3 75.8 45.7 66.0 64 BoostLLM (Qwen3-4B) 77.2 62.2 86.8 67.3 74.8 64.0 72.1
+> 256 TabLLM (T0) 78.5 34.4 47.1 69.0 78.7 37.3 57.5 256 LIFT (GPT-3.5) 72.4 65.1 43.1 68.2 77.3 39.8 61.0 256 TP-BERTa (RoBERTa) 85.3 72.1 40.8 67.7 77.2 46.4 64.9 256 FeatLLM (GPT-4o) 74.0 72.9 45.9 65.8 77.2 47.3 63.9 256 DeLTa (GPT-4o) 76.7 73.2 73.6 71.3 77.8 47.6 70.0 256 BoostLLM (Qwen3-4B) 81.3 68.6 95.1 66.7 78.9 69.1 76.6
+> All TabLLM (T0) -76.1 84.5 73.7 --78.1 All LIFT (GPT-3.5) -68.9 72.9 69.1 --70.3 All TP-BERTa (RoBERTa) -76.1 82.6 73.0 --77.2 All FeatLLM (GPT-4o) -76.8 58.9 70.1 --68.6 All DeLTa (GPT-4o) -82.9 83.6 78.3 --81.6 All BoostLLM (Qwen3-4B) -78.7 99.8 75.4 --84.6
+
+F Few-shot tabular prediction results 
+
+Tables 10 and 11 expand upon the aggregated few-shot results presented in the main text by providing per-dataset breakdowns across all shot configurations. For almost every individual dataset and backbone combination, BoostLLM maintains a consistent lead over the standard baseline. The uniformity of these gains confirms the main conclusion that the proposed boosting strategy generalizes effectively and provides a reliable enhancement without relying on dataset-specific conditions. 15 Table 10: Few-shot tabular prediction results (4, 8, 16, 32, 64 shots). 
+
+4 shots Model Method Avg. bank blood calhousing Car credit-g diabetes heart income jungle 
+
+XGBoost 57.9 54.1 ± 1.4 53.4 ± 6.9 63.1 ± 9.3 35.4 ± 5.2 55.5 ± 5.4 54.5 ± 6.7 78.7 ± 7.4 64.2 ± 3.7 62.1 ± 2.7 Qwen3-4B TabLLM 60.0 54.6 ± 3.7 53.2 ± 6.0 61.6 ± 5.2 43.8 ± 6.3 58.6 ± 7.2 61.4 ± 7.4 78.1 ± 5.4 66.9 ± 7.1 61.4 ± 5.1 BoostLLM 59.9 58.0 ± 3.8 53.6 ± 6.6 66.2 ± 11.0 45.7 ± 8.7 55.3 ± 10.2 72.3 ± 4.4 67.6 ± 11.6 69.4 ± 5.4 51.4 ± 6.6 Qwen3-8B TabLLM 58.5 54.1 ± 1.9 54.6 ± 5.9 58.0 ± 8.3 39.9 ± 2.9 57.7 ± 7.8 60.9 ± 10.9 76.6 ± 4.9 65.9 ± 5.7 58.3 ± 4.4 BoostLLM 62.4 56.4 ± 3.4 55.7 ± 8.5 61.5 ± 8.4 49.8 ± 9.4 58.4 ± 7.7 60.6 ± 9.2 82.1 ± 7.9 69.2 ± 9.2 67.4 ± 4.4 T5Gemma2-2b TabLLM 57.6 54.4 ± 2.2 50.5 ± 5.1 54.6 ± 5.4 49.1 ± 7.4 54.4 ± 3.0 57.4 ± 5.6 77.9 ± 8.4 66.2 ± 5.1 54.2 ± 7.0 BoostLLM 59.6 57.2 ± 1.1 53.2 ± 5.5 63.9 ± 7.6 53.0 ± 6.0 57.3 ± 6.6 59.8 ± 7.9 76.9 ± 11.1 61.0 ± 5.2 54.0 ± 4.3 T5Gemma2-8b TabLLM 59.4 54.1 ± 2.8 51.2 ± 2.5 62.6 ± 7.0 52.7 ± 8.4 53.3 ± 3.3 57.1 ± 6.0 78.6 ± 5.9 67.1 ± 3.2 58.1 ± 5.9 BoostLLM 60.0 55.2 ± 1.9 53.1 ± 6.3 55.5 ± 5.4 54.1 ± 3.4 58.9 ± 4.5 64.5 ± 11.2 78.3 ± 5.2 65.4 ± 4.4 55.2 ± 5.5 
+
+8 shots Model Method Avg. bank blood calhousing Car credit-g diabetes heart income jungle 
+
+XGBoost 59.9 58.6 ± 3.8 56.9 ± 7.2 65.0 ± 7.7 39.5 ± 4.9 58.2 ± 2.2 53.0 ± 13.4 80.3 ± 14.1 68.4 ± 3.4 59.3 ± 6.9 Qwen3-4B TabLLM 62.1 54.6 ± 2.5 57.7 ± 2.8 64.1 ± 6.5 47.9 ± 7.1 61.1 ± 5.2 62.8 ± 5.6 80.4 ± 11.6 67.4 ± 3.5 63.3 ± 3.7 BoostLLM 63.0 58.2 ± 6.4 55.3 ± 5.5 65.6 ± 5.2 46.2 ± 3.6 61.9 ± 4.7 63.7 ± 10.4 80.7 ± 10.7 77.5 ± 3.1 57.6 ± 6.9 Qwen3-8B TabLLM 61.1 56.1 ± 5.3 55.1 ± 5.2 64.2 ± 6.1 44.2 ± 13.1 58.8 ± 9.5 63.7 ± 4.7 81.2 ± 6.4 68.6 ± 5.2 58.0 ± 5.3 BoostLLM 64.1 62.6 ± 6.8 60.7 ± 8.3 62.1 ± 2.5 50.4 ± 3.8 60.4 ± 4.9 57.8 ± 12.3 86.3 ± 5.9 75.7 ± 4.5 61.3 ± 5.7 T5Gemma2-2b TabLLM 61.2 55.8 ± 1.5 53.5 ± 7.3 61.3 ± 9.7 55.7 ± 9.4 61.3 ± 4.8 54.9 ± 8.3 78.5 ± 8.4 71.4 ± 5.3 58.3 ± 5.2 BoostLLM 60.8 58.8 ± 4.0 54.8 ± 3.5 64.5 ± 4.9 54.6 ± 9.6 60.0 ± 4.6 55.5 ± 13.7 80.8 ± 11.4 63.1 ± 8.4 55.1 ± 8.7 T5Gemma2-8b TabLLM 60.4 56.0 ± 1.4 57.6 ± 4.5 60.7 ± 3.8 52.2 ± 9.2 60.8 ± 3.7 58.0 ± 4.0 76.3 ± 6.9 65.4 ± 4.1 56.5 ± 5.8 BoostLLM 61.9 56.9 ± 2.0 56.8 ± 8.1 60.2 ± 3.2 56.8 ± 5.2 61.5 ± 3.5 58.4 ± 15.9 82.2 ± 7.8 71.2 ± 5.9 53.4 ± 3.9 
+
+16 shots Model Method Avg. bank blood calhousing Car credit-g diabetes heart income jungle 
+
+XGBoost 65.5 60.9 ± 1.7 57.4 ± 5.2 70.9 ± 5.6 42.9 ± 1.8 60.2 ± 4.6 70.4 ± 3.6 87.0 ± 2.2 71.8 ± 2.2 68.4 ± 4.3 Qwen3-4B TabLLM 63.2 54.1 ± 1.9 56.9 ± 5.5 63.3 ± 3.6 55.9 ± 11.7 59.0 ± 7.5 63.0 ± 6.6 81.2 ± 6.0 70.0 ± 2.9 64.9 ± 4.8 BoostLLM 68.2 60.7 ± 2.1 57.3 ± 7.2 75.3 ± 6.6 57.0 ± 8.1 61.0 ± 8.0 72.3 ± 5.1 85.6 ± 2.0 78.5 ± 3.0 66.4 ± 3.5 Qwen3-8B TabLLM 63.3 57.3 ± 3.6 57.4 ± 4.4 61.2 ± 7.3 57.8 ± 7.5 56.6 ± 6.4 64.9 ± 7.8 79.1 ± 4.9 70.3 ± 4.6 64.8 ± 6.6 BoostLLM 68.5 63.7 ± 1.2 56.6 ± 4.6 70.5 ± 3.1 59.3 ± 10.1 62.5 ± 7.5 71.5 ± 7.5 87.5 ± 1.3 75.0 ± 3.1 69.9 ± 1.8 T5Gemma2-2B TabLLM 64.3 55.5 ± 2.4 56.8 ± 4.5 62.9 ± 7.7 63.4 ± 5.7 59.0 ± 6.6 62.8 ± 8.5 78.9 ± 5.7 74.5 ± 2.6 64.7 ± 4.8 BoostLLM 66.3 60.7 ± 3.8 57.8 ± 5.2 67.3 ± 8.2 59.4 ± 6.1 59.3 ± 7.1 70.0 ± 6.2 87.3 ± 3.4 73.9 ± 1.0 61.5 ± 5.1 T5Gemma2-8B TabLLM 64.3 54.8 ± 2.4 58.1 ± 3.6 66.4 ± 7.5 62.3 ± 6.4 57.9 ± 7.6 64.0 ± 2.5 81.0 ± 5.1 72.2 ± 2.7 61.9 ± 3.6 BoostLLM 66.5 60.8 ± 3.8 54.0 ± 7.2 67.3 ± 5.7 59.2 ± 8.0 60.0 ± 6.2 72.5 ± 4.4 87.4 ± 0.9 77.9 ± 2.6 59.4 ± 6.2 
+
+32 shots Model Method Avg. bank blood calhousing Car credit-g diabetes heart income jungle 
+
+XGBoost 70.4 65.3 ± 1.0 61.1 ± 6.5 74.2 ± 5.2 59.3 ± 7.0 63.3 ± 5.3 76.9 ± 5.2 82.8 ± 3.5 74.1 ± 2.6 77.0 ± 2.8 Qwen3-4B TabLLM 67.0 54.8 ± 2.2 60.3 ± 6.3 68.6 ± 1.7 72.1 ± 11.1 59.1 ± 3.1 67.3 ± 9.3 78.4 ± 3.0 72.3 ± 1.3 69.8 ± 2.9 BoostLLM 72.8 62.8 ± 4.9 63.5 ± 5.0 75.6 ± 4.0 72.3 ± 5.7 62.6 ± 4.6 77.8 ± 4.3 86.2 ± 1.6 77.5 ± 0.7 76.6 ± 1.9 Qwen3-8B TabLLM 67.3 57.6 ± 4.5 59.5 ± 5.2 61.8 ± 6.7 74.5 ± 9.7 61.4 ± 4.5 70.5 ± 5.5 78.6 ± 5.1 71.9 ± 1.9 69.5 ± 3.7 BoostLLM 72.8 65.6 ± 1.2 64.4 ± 6.3 72.2 ± 5.9 77.1 ± 5.4 61.2 ± 3.8 78.2 ± 4.3 84.0 ± 4.7 76.2 ± 2.3 76.4 ± 2.4 T5Gemma2-2B TabLLM 68.8 58.5 ± 2.5 60.6 ± 8.4 63.0 ± 8.5 75.1 ± 7.0 60.6 ± 3.7 73.9 ± 5.1 81.1 ± 6.4 73.8 ± 0.8 72.5 ± 3.9 BoostLLM 70.1 64.9 ± 2.1 59.9 ± 5.8 67.9 ± 6.3 69.4 ± 9.7 62.1 ± 4.5 78.6 ± 5.7 83.8 ± 8.1 76.1 ± 2.0 68.0 ± 5.6 T5Gemma2-8B TabLLM 67.8 56.3 ± 2.8 59.7 ± 5.3 66.3 ± 11.2 73.3 ± 6.2 58.7 ± 2.7 70.5 ± 4.3 81.5 ± 7.9 73.5 ± 3.7 70.4 ± 3.7 BoostLLM 71.0 62.7 ± 1.4 61.5 ± 6.6 70.2 ± 6.2 70.5 ± 5.6 61.8 ± 4.8 77.8 ± 6.5 84.9 ± 6.2 78.8 ± 1.6 70.4 ± 6.4 
+
+64 shots Model Method Avg. bank blood calhousing Car credit-g diabetes heart income jungle 
+
+XGBoost 75.4 66.8 ± 0.9 68.6 ± 5.1 80.2 ± 1.6 72.5 ± 9.3 66.8 ± 5.8 74.1 ± 1.3 89.2 ± 4.1 78.5 ± 1.8 82.0 ± 1.0 Qwen3-4B TabLLM 71.7 61.5 ± 3.9 60.6 ± 4.2 76.9 ± 4.4 80.1 ± 6.5 60.6 ± 5.4 70.5 ± 5.3 87.1 ± 4.9 75.5 ± 2.5 72.8 ± 2.4 BoostLLM 77.0 67.9 ± 1.5 68.2 ± 5.1 80.7 ± 2.3 85.4 ± 2.6 66.2 ± 3.5 75.4 ± 2.8 89.7 ± 2.5 79.8 ± 2.9 80.2 ± 1.8 Qwen3-8B TabLLM 70.1 62.3 ± 5.9 62.8 ± 2.9 70.1 ± 9.0 78.1 ± 9.6 60.3 ± 3.7 69.8 ± 3.8 85.8 ± 4.7 73.8 ± 4.8 67.9 ± 10.5 BoostLLM 76.9 69.5 ± 0.7 68.6 ± 6.3 77.9 ± 1.8 84.9 ± 4.3 65.6 ± 4.1 75.8 ± 2.4 89.5 ± 3.1 80.1 ± 2.5 80.1 ± 2.2 T5Gemma2-2B TabLLM 71.0 61.1 ± 2.7 62.3 ± 5.3 73.4 ± 2.1 82.3 ± 4.1 62.4 ± 2.8 62.6 ± 4.8 86.0 ± 4.1 74.4 ± 2.7 74.7 ± 4.3 BoostLLM 75.4 67.6 ± 1.3 67.5 ± 4.7 76.5 ± 2.0 81.7 ± 6.5 64.2 ± 4.0 76.3 ± 2.9 90.7 ± 2.9 78.9 ± 2.8 75.3 ± 1.1 T5Gemma2-8B TabLLM 71.9 62.6 ± 2.2 61.9 ± 5.5 74.4 ± 1.4 80.9 ± 7.2 61.9 ± 4.0 71.7 ± 6.0 85.9 ± 4.8 74.2 ± 4.2 73.6 ± 2.4 BoostLLM 76.4 67.1 ± 1.4 67.9 ± 4.6 76.6 ± 3.7 86.1 ± 1.7 63.8 ± 4.7 76.3 ± 3.3 90.3 ± 2.4 80.5 ± 1.7 79.0 ± 0.9 16 Table 11: Few-shot tabular prediction results (128, 256, 512, ALL shots). 
+
+128 shots Model Method Avg. bank blood calhousing Car credit-g diabetes heart income jungle 
+
+XGBoost 78.5 70.3 ± 3.4 66.1 ± 2.4 82.8 ± 1.6 85.9 ± 5.8 71.1 ± 0.7 76.6 ± 4.1 91.0 ± 2.6 78.9 ± 1.5 83.6 ± 1.8 Qwen3-4B TabLLM 74.8 65.9 ± 4.0 58.6 ± 6.1 75.7 ± 7.1 90.5 ± 10.4 68.4 ± 2.9 72.7 ± 3.2 87.5 ± 3.6 75.4 ± 2.5 78.9 ± 3.7 BoostLLM 79.7 71.3 ± 2.2 65.8 ± 2.8 84.7 ± 1.6 91.4 ± 5.6 71.3 ± 1.0 78.3 ± 2.8 91.3 ± 2.4 82.1 ± 1.4 81.2 ± 1.6 Qwen3-8B TabLLM 73.0 65.4 ± 2.0 62.4 ± 6.8 70.0 ± 5.0 89.0 ± 4.8 61.4 ± 1.5 71.0 ± 3.6 85.8 ± 3.7 77.2 ± 3.1 74.3 ± 5.0 BoostLLM 79.2 72.5 ± 1.9 65.3 ± 4.4 81.0 ± 3.1 90.4 ± 6.3 70.4 ± 0.6 78.9 ± 2.6 91.7 ± 1.8 81.8 ± 1.0 81.0 ± 1.3 T5Gemma2-2B TabLLM 74.2 66.8 ± 2.9 58.9 ± 6.1 72.8 ± 5.4 89.5 ± 8.2 67.9 ± 3.7 72.2 ± 2.4 86.7 ± 2.9 75.7 ± 3.5 77.4 ± 2.7 BoostLLM 79.1 70.5 ± 2.9 66.7 ± 4.3 81.9 ± 1.2 89.8 ± 7.8 70.6 ± 1.6 78.9 ± 3.7 91.5 ± 2.0 81.2 ± 1.6 80.5 ± 1.4 T5Gemma2-8B TabLLM 74.6 67.0 ± 2.4 59.3 ± 3.0 77.5 ± 4.2 90.0 ± 10.8 65.0 ± 4.4 73.1 ± 4.0 86.6 ± 3.7 75.6 ± 2.8 77.4 ± 1.8 BoostLLM 79.1 71.4 ± 2.0 65.3 ± 4.6 82.4 ± 2.6 90.9 ± 6.5 70.1 ± 1.3 77.8 ± 3.0 91.2 ± 1.6 81.3 ± 1.3 81.3 ± 1.5 
+
+256 shots Model Method Avg. bank blood calhousing Car credit-g diabetes heart income jungle 
+
+XGBoost 81.3 73.3 ± 2.3 67.9 ± 5.8 85.8 ± 1.4 91.2 ± 3.2 74.3 ± 2.3 78.0 ± 5.4 91.1 ± 2.2 83.3 ± 0.8 86.9 ± 1.0 Qwen3-4B TabLLM 75.7 65.2 ± 1.7 62.4 ± 6.4 81.2 ± 4.1 97.9 ± 1.0 66.4 ± 4.5 68.7 ± 11.4 85.7 ± 1.3 77.3 ± 2.0 76.5 ± 14.3 BoostLLM 82.2 74.2 ± 1.8 67.8 ± 4.3 87.4 ± 0.8 96.4 ± 1.3 73.2 ± 1.6 79.5 ± 3.9 92.3 ± 1.2 84.0 ± 0.4 84.9 ± 0.4 Qwen3-8B TabLLM 75.2 64.9 ± 1.9 62.7 ± 8.9 77.7 ± 2.6 94.1 ± 6.8 63.6 ± 3.0 70.6 ± 8.6 86.3 ± 2.0 75.8 ± 2.6 81.5 ± 2.7 BoostLLM 81.5 74.1 ± 1.0 67.7 ± 4.1 84.7 ± 0.7 96.5 ± 1.5 72.2 ± 1.8 79.1 ± 3.5 91.9 ± 1.5 82.5 ± 1.5 84.7 ± 1.5 T5Gemma2-2B TabLLM 76.6 69.7 ± 2.4 62.2 ± 4.8 72.3 ± 4.9 99.0 ± 0.8 68.5 ± 2.3 73.3 ± 4.0 87.0 ± 2.4 76.0 ± 0.7 81.0 ± 1.7 BoostLLM 81.7 73.6 ± 1.9 67.2 ± 3.7 84.6 ± 1.0 97.3 ± 0.9 72.1 ± 1.4 79.0 ± 3.4 92.3 ± 1.6 83.5 ± 0.8 85.9 ± 1.3 T5Gemma2-8B TabLLM 77.2 69.5 ± 1.5 61.6 ± 3.7 79.3 ± 3.6 99.1 ± 0.6 65.8 ± 3.0 73.2 ± 5.6 86.9 ± 2.2 77.2 ± 1.8 82.0 ± 1.5 BoostLLM 81.6 73.9 ± 2.1 66.9 ± 4.4 85.4 ± 1.0 97.4 ± 1.1 71.0 ± 1.7 79.4 ± 3.4 92.0 ± 1.2 83.3 ± 1.2 84.7 ± 1.0 
+
+512 shots Model Method Avg. bank blood calhousing Car credit-g diabetes heart income jungle 
+
+XGBoost 83.0 74.2 ± 1.4 68.4 ± 4.1 87.8 ± 0.5 96.2 ± 2.0 74.7 ± 3.4 79.4 ± 2.3 92.0 ± 1.8 84.6 ± 1.5 89.8 ± 0.4 Qwen3-4B TabLLM 78.4 68.4 ± 1.7 64.6 ± 4.4 83.2 ± 1.5 99.2 ± 1.0 69.4 ± 1.5 69.6 ± 1.3 88.0 ± 2.8 76.3 ± 3.8 86.9 ± 1.9 BoostLLM 83.4 75.1 ± 1.1 69.5 ± 3.6 88.5 ± 0.4 98.7 ± 0.8 73.2 ± 2.5 80.3 ± 3.2 93.4 ± 1.6 84.2 ± 1.8 88.1 ± 1.6 Qwen3-8B TabLLM 77.7 68.2 ± 2.7 63.7 ± 2.0 78.1 ± 4.2 99.4 ± 0.5 63.0 ± 2.9 73.1 ± 5.0 90.0 ± 1.3 77.6 ± 1.1 86.4 ± 0.9 BoostLLM 82.3 74.7 ± 1.2 68.8 ± 3.0 87.0 ± 1.9 96.6 ± 1.9 72.0 ± 2.4 79.6 ± 2.2 92.8 ± 1.3 83.5 ± 1.6 85.2 ± 2.2 T5Gemma2-2B TabLLM 77.3 68.7 ± 1.3 60.6 ± 3.3 74.4 ± 2.0 99.8 ± 0.4 66.8 ± 2.9 71.5 ± 6.8 89.9 ± 2.2 78.0 ± 1.0 85.9 ± 0.9 BoostLLM 83.5 76.1 ± 1.6 70.1 ± 3.5 86.7 ± 1.3 99.1 ± 0.6 72.9 ± 2.8 79.8 ± 2.6 92.9 ± 1.1 84.6 ± 1.4 89.6 ± 1.2 T5Gemma2-8B TabLLM 77.6 69.1 ± 1.9 60.0 ± 4.0 78.8 ± 1.1 99.7 ± 0.3 65.7 ± 4.5 71.6 ± 4.7 88.0 ± 2.3 79.0 ± 1.0 86.9 ± 1.5 BoostLLM 83.3 75.3 ± 1.1 70.3 ± 2.7 87.4 ± 0.9 99.0 ± 1.1 72.0 ± 3.3 80.3 ± 2.5 92.8 ± 1.7 84.8 ± 1.5 88.2 ± 1.4 
+
+All shots Model Method Avg. bank blood calhousing Car credit-g diabetes heart income jungle 
+
+XGBoost 83.0 - 68.9 ± 8.6 - 99.2 ± 0.6 76.0 ± 3.5 80.1 ± 4.4 90.8 ± 1.8 - -Qwen3-4B TabLLM 77.6 - 59.1 ± 3.9 - 100.0 ± 0.0 66.9 ± 3.4 72.0 ± 4.1 89.7 ± 3.4 - -BoostLLM 83.0 - 67.8 ± 7.2 - 99.9 ± 0.1 74.0 ± 4.1 80.1 ± 4.0 93.3 ± 1.0 - -Qwen3-8B TabLLM 78.0 - 64.0 ± 7.8 - 100.0 ± 0.0 65.0 ± 5.1 71.3 ± 5.0 89.5 ± 2.8 - -BoostLLM 82.6 - 67.4 ± 6.7 - 99.8 ± 0.3 74.0 ± 4.7 78.7 ± 5.5 93.2 ± 1.0 - -T5Gemma2-2B TabLLM 76.9 - 55.9 ± 3.7 - 100.0 ± 0.0 67.4 ± 3.0 73.3 ± 3.6 87.9 ± 2.4 - -BoostLLM 83.3 - 69.1 ± 7.3 - 100.0 ± 0.0 73.7 ± 4.6 80.7 ± 3.8 93.1 ± 1.4 - -T5Gemma2-8B TabLLM 77.4 - 58.3 ± 4.7 - 100.0 ± 0.0 67.8 ± 4.5 72.0 ± 4.0 88.9 ± 2.4 - -BoostLLM 83.0 - 68.2 ± 6.6 - 100.0 ± 0.0 72.9 ± 4.9 80.9 ± 4.1 93.0 ± 1.2 - -
+
+G Parameter Sensitivity 
+
+This section examines the per-dataset sensitivity of BoostLLM to two key hyperparameters: the epoch-round allocation and the boosting learning rate. Table 12 breaks down the round-epoch allocation ablation (discussed in Section 5.1) by dataset. The granular numbers reveal that the stability observed in the average AP metric holds consistently across individual datasets. For nearly all tasks, an intermediate allocation (e.g., 5 or 6 rounds) provides stable and near-optimal performance. This widespread uniformity confirms that our default setting is robustly applicable across diverse datasets without requiring custom tuning. Similarly, Table 13 presents the dataset-level results for varying the boosting learning rate ( η). Consistent with the aggregated trend in Section 5.1, the performance on almost every individual dataset remains nearly flat across a broad range of learning rates. This confirms the main conclusion that the default boosting learning rate is reliably across different data. Table 12: Ablation study on the number of boosting rounds (total epochs kept constant). 
+
+# rounds # epochs Avg. bank blood calhousing Car credit-g diabetes heart income jungle 
+
+1 30 74.6 64.9 ± 4.0 59.9 ± 5.6 80.3 ± 2.4 91.4 ± 5.6 64.7 ± 4.1 73.3 ± 2.9 84.9 ± 2.2 76.0 ± 1.7 76.1 ± 3.5 2 15 76.9 70.0 ± 2.1 61.6 ± 6.7 78.3 ± 9.9 90.3 ± 6.9 68.0 ± 1.9 77.1 ± 3.5 88.2 ± 3.1 79.2 ± 2.5 79.4 ± 0.6 3 10 78.7 70.5 ± 2.0 64.7 ± 6.0 82.5 ± 2.4 91.7 ± 6.6 69.9 ± 2.0 77.2 ± 1.4 90.7 ± 2.8 80.1 ± 1.4 80.9 ± 1.9 4 8 79.0 71.2 ± 2.7 65.5 ± 4.8 81.7 ± 2.6 90.4 ± 9.6 70.8 ± 1.1 78.7 ± 2.7 91.5 ± 1.1 80.5 ± 1.5 81.0 ± 2.4 5 6 79.7 71.3 ± 2.2 65.8 ± 2.8 84.7 ± 1.6 91.4 ± 5.6 71.3 ± 1.0 78.3 ± 2.8 91.3 ± 2.4 82.1 ± 1.4 81.2 ± 1.6 6 5 79.9 71.6 ± 2.6 68.3 ± 5.3 84.8 ± 1.3 92.0 ± 4.6 71.1 ± 1.5 77.8 ± 2.3 90.9 ± 3.5 81.2 ± 1.3 81.0 ± 0.7 7 4 79.7 71.7 ± 2.5 67.5 ± 4.3 83.9 ± 2.2 90.3 ± 7.5 71.3 ± 1.3 79.1 ± 3.3 91.2 ± 2.3 81.9 ± 1.6 80.8 ± 1.4 10 3 79.7 72.1 ± 1.8 66.6 ± 2.3 84.6 ± 0.9 89.2 ± 4.5 71.5 ± 1.3 77.8 ± 1.1 91.0 ± 2.3 82.3 ± 1.1 82.0 ± 1.8 15 2 79.5 72.0 ± 2.9 67.8 ± 4.3 84.2 ± 1.3 89.6 ± 4.3 70.3 ± 1.3 78.6 ± 4.0 90.1 ± 2.8 81.6 ± 1.2 81.4 ± 1.7 30 1 77.9 70.5 ± 2.4 68.0 ± 3.3 84.2 ± 1.4 81.3 ± 6.3 67.9 ± 2.6 79.3 ± 3.0 89.5 ± 3.7 82.4 ± 1.0 78.1 ± 2.9 17 Table 13: Per-dataset average precision for varying boosting learning rates (128-shot, Qwen3-4B). 
+
+lr Avg. bank blood calhousing car credit-g diabetes heart income jungle 
+
+0.1 79.1 70.5 ± 3.8 66.5 ± 5.1 83.9 ± 2.2 88.7 ± 7.8 70.2 ± 2.4 77.9 ± 2.8 90.7 ± 2.6 81.8 ± 1.2 81.5 ± 0.9 0.3 79.7 71.3 ± 2.2 65.8 ± 2.8 84.7 ± 1.6 91.4 ± 5.6 71.3 ± 1.0 78.3 ± 2.8 91.3 ± 2.4 82.1 ± 1.4 81.2 ± 1.6 0.5 79.5 71.7 ± 3.2 67.2 ± 3.6 83.9 ± 2.0 89.9 ± 6.1 70.9 ± 1.3 78.4 ± 3.6 90.3 ± 2.3 82.0 ± 1.2 81.3 ± 1.3 0.7 79.6 72.2 ± 2.4 67.4 ± 5.2 83.1 ± 1.4 90.7 ± 6.2 70.2 ± 1.3 78.2 ± 2.2 91.1 ± 2.3 81.8 ± 1.2 81.6 ± 1.6 0.9 79.1 71.6 ± 1.8 65.8 ± 4.6 84.9 ± 1.3 89.4 ± 5.8 70.9 ± 1.7 77.5 ± 3.7 90.0 ± 3.6 81.1 ± 1.7 80.7 ± 1.2 1.0 78.8 71.0 ± 2.5 66.4 ± 4.2 84.4 ± 0.7 88.2 ± 7.2 70.0 ± 1.9 76.0 ± 3.2 90.6 ± 2.6 80.9 ± 1.4 81.3 ± 1.6 
+
+H Per-round performance of BoostLLM 
+
+Figure 3 supplements the training dynamics analysis from Section 5.2. By illustrating the per-round average precision trajectories for all nine datasets individually, we can verify that the monotonic improvement trend seen in the aggregated average faithfully represents the optimization process on each specific task. In nearly all cases, the accumulated model consistently refines its predictions step-by-step. Furthermore, the solid lines (paired-view fusion) invariably track above the dashed lines (path-informed view) and the dot lines (feature-only view) across several datasets, confirming the conclusion that view fusion provides an additive, universally beneficial gain during training. 1 2 3 4 5                                
+
+> 0.780
+> 0.800
+> 0.820
+> 0.840
+> 0.860
+> Average Precision
+> calhousing
+> 12345
+> 0.890
+> 0.895
+> 0.900
+> 0.905
+> 0.910
+> 0.915
+> heart
+> 12345
+> 0.675
+> 0.700
+> 0.725
+> 0.750
+> 0.775
+> 0.800
+> 0.825
+> jungle
+> 12345
+> 0.600
+> 0.625
+> 0.650
+> 0.675
+> 0.700
+> 0.725
+> Average Precision
+> bank
+> 12345
+> 0.640
+> 0.645
+> 0.650
+> 0.655
+> 0.660
+> blood
+> 12345
+> 0.740
+> 0.750
+> 0.760
+> 0.770
+> 0.780
+> 0.790
+> 0.800
+> diabetes
+> 12345
+> Round
+> 0.800
+> 0.805
+> 0.810
+> 0.815
+> 0.820
+> Average Precision
+> income
+> 12345
+> Round
+> 0.860
+> 0.870
+> 0.880
+> 0.890
+> 0.900
+> 0.910
+> 0.920
+> car
+> 12345
+> Round
+> 0.680
+> 0.690
+> 0.700
+> 0.710
+> creditg
+> Feature-only View
+> Path-informed View
+> Paired-view Fusion
+
+Figure 3: Performance during boosting for each dataset. 
+
+I Per-Dataset View Contribution Ratios 
+
+Figure 4 shows the view contribution ratio ρ for each dataset individually (128-shot, Qwen3-4B, 5 rounds). The absolute magnitude of ρ varies across datasets—for example, car exhibits ρ ≈ 0.80 –
+
+0.88 , indicating that the path view consistently dominates, while calhousing show ρ > 1.0, meaning the feature view carries more weight. Despite these differences in scale, most datasets display the same qualitative pattern observed in the average (Figure 2b): an initial decrease in ρ during early training steps followed by a steady increase, consistent with decision paths acting as early-stage guidance that diminishes as the LLM adapts. 18 1.000                             
+
+> 1.025
+> 1.050
+> 1.075
+> 1.100
+> Contribution Ratio
+> bank
+> 0.960
+> 0.980
+> 1.000
+> 1.020
+> blood
+> 1.000
+> 1.050
+> 1.100
+> 1.150
+> calhousing
+> 0.800
+> 0.825
+> 0.850
+> 0.875
+> 0.900
+> 0.925
+> Contribution Ratio
+> car
+> 0.990
+> 1.000
+> 1.010
+> 1.020
+> creditg
+> 0.980
+> 0.990
+> 1.000
+> 1.010
+> 1.020
+> 1.030
+> diabetes
+> 025 50 75 100 125 150 175 200
+> Step
+> 0.980
+> 0.985
+> 0.990
+> 0.995
+> 1.000
+> 1.005
+> Contribution Ratio
+> heart
+> 025 50 75 100 125 150 175 200
+> Step
+> 0.990
+> 0.995
+> 1.000
+> 1.005
+> 1.010
+> 1.015
+> income
+> 025 50 75 100 125 150 175 200
+> Step
+> 1.000
+> 1.020
+> 1.040
+> jungle
+> Round 0 Round 1 Round 2 Round 3 Round 4
+
+Figure 4: Per-dataset view contribution ratio ρ over training steps (128-shot, Qwen3-4B, 5 rounds). Each subplot shows one dataset; Smaller ρ indicates stronger path-view influence, while larger ρ
+
+indicates stronger feature-view influence. 
+
+J Computational Cost Analysis 
+
+We discuss the training and inference costs of BoostLLM relative to the TabLLM baseline. 
+
+Training cost. As described in Appendix C, BoostLLM allocates the same total 30 epochs as TabLLM, split evenly across R=5 boosting rounds with 6 epochs per round. Since the backbone, optimizer, and other implementation details are identical, pure boosting (single-view) has equivalent training cost to TabLLM in terms of FLOPs and memory. The paired-view variant doubles the batch size (the two input views are processed in the same batch) per training step, yielding approximately 
+
+2× theoretical training cost. In practice, due to our limited hardware memory, we must apply memory-saving techniques that trade off speed, which makes precise time or time comparisons hardware-dependent. 
+
+Inference cost. At inference, BoostLLM requires a sequential forward pass through all R round-specific adapters. With R=5 , the pure boosting variant (no paired view) incurs 5× the inference FLOPs of a single TabLLM forward pass. The full paired-view model processes two prompts per round, leading to ≈10 × inference cost. We note that this is the cost relative to a single TabLLM forward pass of the same backbone (Qwen3-4B). In the broader context, training-free baselines such as DeLTa invoke GPT-4o once per sample, whose per-query compute and monetary cost far exceed ten forward passes of a 4B model. Furthermore, the pure boosting variant—which already surpasses TabLLM by 4.0 AP (Table 3)—incurs only 5× cost. 
+
+K Hardware Used 
+
+The following hardware configuration was used for all of our experiments. All LLM experiments run on GPUs, while tree-based models run on CPUs . GPU: NVIDIA L40S (40G); CPU: Intel(R) Xeon(R) Gold 6442Y 19
