@@ -1,0 +1,853 @@
+Title: WindINR: Latent-State INR for Fast Local Wind Query and Correction in Complex Terrain
+
+URL Source: https://arxiv.org/pdf/2605.09511v1
+
+Published Time: Tue, 12 May 2026 01:34:07 GMT
+
+Number of Pages: 20
+
+Markdown Content:
+# WindINR: Latent-State INR for Fast Local Wind Query and Correction in Complex Terrain 
+
+Yi Xiao 
+
+Tsinghua University MBZUAI 
+
+xiaoyi200018@gmail.com 
+
+Qilong Jia 
+
+Tsinghua University 
+
+jiaqilong2000@163.com 
+
+Hang Fan 
+
+Columbia University 
+
+hf2526@columbia.edu 
+
+Pascal Fua 
+
+EPFL 
+
+pascal.fua@epfl.ch 
+
+Robert Jenssen 
+
+The Arctic University of Norway 
+
+robert.jenssen@uit.no 
+
+Xiaosong Ma 
+
+MBZUAI 
+
+Xiaosong.Ma@mbzuai.ac.ae 
+
+Wei Xue 
+
+Tsinghua University 
+
+xuewei@tsinghua.edu.cn 
+
+# Abstract 
+
+Many downstream decisions in complex terrain require fast wind estimates at a small number of user-specified locations and heights for a given forecast valid time, rather than another dense forecast field on a fixed grid. We present WindINR, a latent-state implicit neural representation framework for continuous high-resolution local wind query and sparse-observation correction. WindINR maps static terrain descriptors, a low-resolution background field, and continuous query coordinates to a high-resolution wind state through a latent-conditioned decoder. To enable rapid inference-time correction, WindINR separates reusable representation learning from sample-specific latent-state correction. During training, a privileged encoder infers a reference latent state from high-resolution supervision, a deployable latent predictor estimates an initial latent state from inference-time inputs alone, and their discrepancies are summarized into a dataset-adaptive Gaussian prior over latent cor-rections. At inference time, within the WindINR module, network weights remain fixed and only the latent state is updated by minimizing a regularized correction objective using sparse observations and their uncertainty. In controlled OSSEs over the Senja region, including a UAV-aided approach scenario and random-observation robustness tests, WindINR improves local high-resolution wind estimates by up-dating only a compact latent state rather than the full network. The corrected representation remains continuously queryable at arbitrary coordinates and, in our CPU benchmark, yields about a 2.6× online-correction speedup over full-network fine-tuning, suggesting a practical interface between kilometer-scale background products, sparse local observations, and wind queries in complex terrain. 
+
+# 1 Introduction 
+
+Operational weather products are usually delivered as gridded analyses and forecasts, but many decisions in complex terrain require only a small number of fast, accurate wind estimates at user-specified locations. During a helicopter approach, for example, the relevant question is often not the full wind field over a large domain, but the local gusts and potential turbulence along an approach corridor and around a landing zone. These local winds can vary strongly because of terrain-
+
+> Preprint.
+> arXiv:2605.09511v1 [cs.AI] 10 May 2026
+
+Figure 1: Operational motivation for WindINR. Kilometer-scale forecast products provide useful coarse background information over complex terrain, but helicopter approach and landing decisions require fast wind estimates at tens-of-meters scale and at user-specified off-grid locations. In the illustrated workflow, a UAV flying ahead of the helicopter provides sparse local wind observations along the approach corridor. WindINR uses the terrain and coarse forecast background as conditioning inputs, and rapidly updates a compact latent state with these sparse observations while preserving continuous local wind query. 
+
+induced channeling, ridge acceleration, land–sea contrast, and boundary-layer structure. Sparse new observations from UAVs or stations may also arrive immediately before the decision. The desired operating point is therefore not simply another dense high-resolution forecast, but a local wind-state estimator that can be queried continuously and corrected quickly. Fig. 1 illustrates such a scenario. Recent advances in AI weather forecasting and terrain-aware wind downscaling have made fast local wind estimation increasingly feasible. Large AI weather models can generate forecasts efficiently, and downscaling methods can map coarse atmospheric inputs to fine-scale terrain-dependent wind structures. However, most existing approaches still operate on fixed grids and treat downscaling as a one-shot prediction problem, which limits their ability to answer arbitrary off-grid local queries or to rapidly incorporate sparse observations after deployment. The challenge is not only one of spatial resolution. Fine-scale wind prediction over mountains and fjords cannot be obtained from low-resolution data alone: Multiple terrain-aligned high-resolution realizations can be consistent with the same kilometer-scale atmospheric state. Sparse but high-resolution observations, such as those of the drone of Fig. 1 are therefore necessary not merely to correct small point-wise errors but, more crucially, to fully resolve local state variables. Conditional implicit neural representations are a natural fit for this task because they define the wind field as a continuous function of coordinates, supporting off-grid queries. The main challenge lies in fast observation-guided correction. A straightforward strategy would be to fine-tune the whole network during inference after observations arrive, but this is unattractive in the sparse-observation regime: the number of observations is often far smaller than the number of trainable parameters, making overfitting likely, while repeated weight updates also increase latency and entangle reusable representation learning with case-specific state correction. Instead, we seek a formulation in which offline learning captures reusable terrain-aware structure, while online assimilation is restricted to a compact sample-specific latent state regularized by an explicit dataset-adaptive prior. We introduce WindINR, a latent-state conditional implicit neural representation for fast local wind query and correction. Given static terrain descriptors, a low-resolution wind background, and continuous query coordinates, WindINR predicts the wind state through a shared INR decoder conditioned on a sample-specific latent state. The decoder captures reusable terrain-aware structure, while the latent state represents unresolved local variation and provides the degree of freedom for observation-guided correction. During training, a privileged reference encoder uses high-resolution supervision to define reference latents, and a deployable latent predictor estimates initial latents from inference-time inputs alone. Their discrepancies define a dataset-adaptive Gaussian prior over latent corrections. At inference time, all network weights remain fixed: without observations, WindINR decodes the initial latent state directly; with sparse observations, it updates only the low-dimensional latent state by minimizing a regularized correction objective evaluated through direct INR queries at 2the observation coordinates. Thus the same arbitrary-coordinate query interface is preserved before and after correction, while avoiding full-network fine-tuning. This paper makes two main contributions: • We formulate WindINR, a latent-state conditional INR for terrain-aware local wind estimation with arbitrary-coordinate continuous query. • We introduce a training and inference scheme for fast observation-guided latent correction, using training-set latent discrepancies to define a dataset-adaptive prior and updating only the latent state. We evaluate these contributions in controlled OSSEs over the Senja region of northern Norway, using RANS/OpenFOAM simulations as surrogate high-resolution truth and synthetic sparse observations for latent correction. The experiments include a UAV-aided helicopter-approach scenario and random-observation robustness tests across heights and observation densities. Across these settings, WindINR demonstrates that sparse observations can update a compact latent state while preserving arbitrary-coordinate query. In the aggregate CPU benchmark, this latent-only update is about 2.6× faster than full-network fine-tuning, providing a useful accuracy/efficiency operating point for local wind analysis in complex terrain. 
+
+# 2 Related Work 
+
+This work lies at the intersection of AI weather downscaling, continuous neural representations, and observation-driven state estimation. 
+
+AI weather forecasting and downscaling. Recent AI weather models such as FourCastNet, Pangu-Weather, GraphCast, and GenCast deliver strong forecast skill and low latency, but they generally remain fixed-grid predictors [1, 2, 3, 4]. On the downscaling side, FuXi-CFD, CorrDiff, and related terrain-aware frameworks show that learned models can recover realistic fine-scale atmospheric structure from coarse inputs in complex terrain [ 5, 6, 7 ]. Our focus is different: rather than full-field gridded prediction alone, we target continuous local query with fast observation-driven correction after deployment. 
+
+Continuous representations and implicit neural representations. Implicit Neural Representa-tions were initially introduced for shape modeling [ 8, 9] and image re-synthesis [ 10 ] and have since been considerably refined [ 11 , 12 ]. They provide a natural interface for arbitrary-coordinate and arbitrary-resolution decoding [ 13 , 14 ]. In atmospheric and geophysical applications, recent works such as KANI, HyperDS, SpLIIF, and continuous field reconstruction from sparse observations show that such representations are well matched to off-grid meteorological query and flexible downscaling [15 , 16 , 17 , 18 ]. However, most existing INR-based weather methods treat the model primarily as a feed-forward downscaler or reconstructor, rather than studying how a deployed conditional INR can be updated efficiently when new sparse observations arrive. 
+
+Data assimilation and AI-based assimilation. Data assimilation combines a background estimate with observations under uncertainty assumptions to produce an updated analysis state. Recent AI-based approaches explore arbitrary-resolution neural-process assimilation, latent-space variational methods, diffusion-based DA, and forecast-assimilation systems coupled to AI weather models [ 19 , 20 , 21 , 22 , 23 , 24 , 25 , 26 , 27 ]. While these methods advance learned observation-conditioned state estimation, they mostly target gridded analyses, fixed model outputs, or large generative recon-structions, rather than terrain-aware continuous local query on top of a conditional INR background. Taken together, existing work has advanced terrain-aware downscaling, continuous atmospheric representations, and observation-driven state estimation largely along separate directions. Our work targets their intersection: a terrain-aware conditional INR for local wind estimation whose sample-specific latent state can be corrected using a dataset-adaptive prior and sparse observations, while preserving arbitrary-coordinate continuous query. 31. Reference latent learning 2. No-observation latent prediction learning   
+
+> HR targets implicit decoder
+> deployable no-observation latents
+> dataset-adaptive prior
+> if , skip correction
+
+sparse observations  
+
+> latent correction
+> continuous HR query latent predictor
+> conditioning inputs
+> static low-res
+> implicit decoder
+> latent predictor
+
+static features 
+
+low-res grid fields  
+
+> query coordinates
+> high-res
+> reference latents
+> conditioning inputs
+> static low-res
+> reference latents
+> reference latent states
+> deployable no-observation latents
+> no-obs. latent states
+
+3. Data-adaptive prior estimation   
+
+> Training Samples Trained Networks Latents
+> dataset-adaptive prior
+> refined latent state
+
+Inference Input Query Input Output 
+
+WindINR 
+
+Learning 
+
+> encoder
+> (auxiliary, not used in inference)
+
+Figure 2: Overview of WindINR. At training time, reference latent states and no-observation latent states are learned and their discrepancies are summarized into a dataset-adaptive prior γ. At inference time, sparse observations guide a regularized latent correction from the initial latent state z0 to a refined latent state z⋆,enabling continuous high-resolution query through the implicit decoder Fθ .
+
+# 3 Formulation 
+
+Our goal is to estimate the local high-resolution wind field over complex terrain from terrain descrip-tors, a low-resolution background wind prediction, and sparse local observations when available. We call the resulting framework WindINR: a latent-state implicit neural representation in which a learned decoder supports continuous query at arbitrary coordinates and only a low-dimensional latent state is updated at inference time. Figure 2 summarizes the full learning-and-inference pipeline and highlights the deployed WindINR boundary at inference time. 
+
+3.1 Latent-State INR for Querying Local Wind Fields 
+
+Let Ω ⊂ R3 denote the continuous query domain, and let p = ( rx, r y , h ) ∈ Ω be a 3D query coordinate. For any given sample, that is, a target area with its static terrain descriptors s and sparse observations of the local conditions O, let xLR be the low-resolution grid-based wind prediction, which we assume to be given a priori , and let xHR : Ω → RC denote the target high-resolution wind field. In our current setting, C = 3 because we predict wind components along three axes. A standard conditional INR can be written as 
+
+ˆxHR (p) = Fθ
+
+ s, x LR , p  , ∀p ∈ Ω , (1) where Fθ is a decoder. This already supports arbitrary-coordinate continuous query, but the recon-struction is fully determined by the decoder weights θ and the deployable inputs (s, x LR ).To provide a sample-specific and updatable degree of freedom, we introduce a low-dimensional latent state z ∈ Rd and define the latent-state INR as 
+
+ˆxHR (p; z) = Fθ
+
+ s, x LR , p, z  , p ∈ Ω. (2) Here, θ captures reconstruction structure shared across samples, while z represents sample-specific variation unresolved by (s, x LR ) alone. Therefore, when new local observations become available, we refine the queried field by updating z rather than modifying θ. Because the backbone is an INR, predictions at observation locations are obtained by direct evaluation of Fθ at the observed coordinates, so the same continuous query interface is preserved before and after latent correction. 43.2 Inferring the Latent State 
+
+We now describe how the latent state is inferred at training time and at inference time. 
+
+Training-time reference latent state. During training, when high-resolution supervision is avail-able, we define a privileged reference latent state 
+
+zref = Eα
+
+ s, x LR , x HR  . (3) This latent state provides a high-quality sample-specific target in latent space during training, but it is not available at inference time. 
+
+Why not directly learn an observation-conditioned latent map? At inference time, the high-resolution target field is unavailable, so the goal is to infer a latent state that approximates the reference latent state that would have been obtained under privileged supervision. A naive strategy would be to learn a unified observation-conditioned predictor, for example z = Zη
+
+ s, x LR , O, that directly maps the deployable inputs and the available observations to a latent state aligned with zref .We do not adopt this fully amortized strategy because, in our setting, the observation set O is sparse, irregular, variable in number, and heterogeneous in quality. A single feed-forward predictor would therefore be tied to the observation layouts and noise patterns seen during training. Instead, we treat the observations at inference time as constraints that guide regularized correction of a latent estimate. 
+
+Two-step latent inference. Let z0 = Zβ (s, x LR ) denote the no-observation initial latent state. We therefore define the latent inference map as 
+
+Z s, x LR , O =
+
+z0, O = ∅,Uγ (z0, O ; s, x LR ), O̸ = ∅. (4) Here, Zβ denotes a deployable no-observation latent predictor that provides an initial latent state from (s, x LR ) alone, while Uγ denotes an observation-conditioned correction operator. The concrete learning objective for Zβ and the concrete form of Uγ are introduced in Section 4. When no observations are available, Zβ returns the initial deployable latent state. When observations are available, Uγ refines this initial latent state while keeping the network weights fixed. 
+
+dataset-adaptive prior for correction. In contrast to many previous correction schemes, where γ
+
+is treated as a tunable regularization parameter chosen empirically, here γ denotes the parameters of a dataset-adaptive prior for latent correction. Specifically, over the training set we consider the discrepancies between the reference codes and their matched no-observation codes, ∆z(i) =
+
+z(i)ref − z(i)0 , and summarize them through their empirical mean and covariance, 
+
+γ = ( μ∆z , Σ∆z ) . (5) Rather than imposing a generic isotropic ℓ2 penalty with a hand-tuned weight, this formulation uses training-set latent discrepancies to define a more informative prior, thereby guiding the correction toward latent-error patterns supported by the data. The final high-resolution field remains continuously queryable as 
+
+ˆxHR (p; O) = Fθ
+
+ s, x LR , p, Z s, x LR , O , p ∈ Ω. (6) This separation defines the core operating principle of WindINR: the decoder learns a reusable terrain-aware representation, while sparse local observations refine only the latent state of the current local wind field. 
+
+# 4 Learning and Latent Correction in WindINR 
+
+We now instantiate the operators that define WindINR in Section 3. At training time, we first learn a privileged reference latent state and then train a deployable no-observation latent predictor. We next estimate the parameters of the dataset-adaptive prior from training-set latent discrepancies. At inference time, when sparse observations are available, WindINR refines the latent state by solving a regularized correction problem while keeping all network weights fixed. 54.1 Reference latent learning 
+
+We first learn the implicit decoder Fθ together with the reference latent encoder Eα. Although Section 3.2 writes the reference latent state abstractly as zref = Eα(s, x LR , x HR ), in implementation the high-resolution target field enters through sampled support and query sets. For each training sample, we draw Psup =   pi, x HR (pi) msup  
+
+> i=1
+
+, Pqry =   qj , x HR (qj ) mqry  
+
+> j=1
+
+, where pi, q j ∈ Ω
+
+are continuous coordinates sampled from the high-resolution domain. The reference latent state is inferred from the deployable inputs together with the support set: zref = Eα
+
+ s, x LR , Psup 
+
+ .
+
+Conditioned on this latent state, the decoder predicts the field at held-out query coordinates, 
+
+ˆxHR ref (qj ) = Fθ
+
+ s, x LR , q j , z ref 
+
+ . We train the reference branch by minimizing 
+
+Lref = 1
+
+mqry 
+
+> mqry
+
+X
+
+> j=1
+
+ˆxHR ref (qj ) − xHR (qj ) 22 + λref ∥zref ∥22 . (7) This stage serves two roles. First, it learns Fθ as a latent-conditioned INR that supports arbitrary-coordinate continuous query. Second, it defines a high-quality training-time latent state zref that acts as the latent target for the later deployable branch. 
+
+4.2 No-observation latent prediction 
+
+We next instantiate the O = ∅ branch in Eq. (4) by learning the deployable predictor Zβ . For each sample, the predictor returns the initial no-observation latent state z0 = Zβ
+
+ s, x LR  . This latent state is decoded by the frozen INR as ˆxHR 0 (qj ) = Fθ
+
+ s, x LR , q j , z 0
+
+ . At this stage, Fθ and Eα are fixed, and only Zβ is optimized. The objective combines reconstruction under the frozen decoder with alignment to the reference latent state. We take it to be 
+
+Lβ = 1
+
+mqry 
+
+> mqry
+
+X
+
+> j=1
+
+ˆxHR 0 (qj ) − xHR (qj ) 22 + λalign ∥z0 − zref ∥22 . (8) The first term ensures that the no-observation latent state remains useful for reconstruction. The second term encourages Zβ to approximate the privileged reference latent state from deployable inputs alone. After this stage, WindINR can already answer continuous queries without local observations through ˆxHR (p) = Fθ (s, x LR , p, z 0).
+
+4.3 Estimating the dataset-adaptive prior 
+
+We now instantiate the prior parameter γ introduced in Section 3.2. Over a training set of N samples, we form the latent discrepancies ∆z(i) = z(i)ref − z(i)0 , i = 1 , . . . , N. These samples describe how the deployable no-observation latent state typically differs from the corresponding reference latent state. In the current implementation, we summarize these discrepancies by their empirical mean and covariance: μ∆z = 1
+
+> N
+
+PNi=1 ∆z(i), Σ∆z = 1 
+
+> N−1
+
+PNi=1 
+
+ ∆z(i) − μ∆z
+
+   ∆z(i) − μ∆z
+
+⊤ . We then define γ = ( μ∆z , Σ∆z ) . This yields a Gaussian prior on the latent correction increment, p(δz | γ) = 
+
+N (μ∆z , Σ∆z ) , δz = z − z0. Compared with a generic isotropic ℓ2 regularizer with a hand-tuned weight, this prior captures both the typical direction and the covariance structure of latent corrections supported by the training data. 
+
+4.4 Observation-guided latent correction 
+
+When local observations are available, WindINR instantiates the O̸ = ∅ branch in Eq. (4) through the correction operator Uγ . For implementation, we write O = {(pn, y n, M n, R n)}Nobs  
+
+> n=1
+
+, where pn ∈ Ω
+
+is the observation coordinate, yn is the observed value, Mn selects the observed variables, and Rn is the corresponding observation-error covariance or variance. We implement Uγ as regularized latent correction: δz ∗ = arg min δz ∈Rd J (δz ; z0, O, γ ) , with 
+
+J (δz ; z0, O, γ ) = 12 ∥δz − μ∆z ∥2(Σ ∆z +εI )−1 + 12
+
+PNobs  
+
+> n=1
+
+Mn Fθ
+
+ s, x LR , p n, z 0 + δz  − yn
+
+> 2
+> R−1
+> n
+
+,
+
+where ε > 0 is a small numerical-stability constant and ∥a∥2 
+
+> A−1
+
+= a⊤A−1a. The refined latent 6Figure 3: UAV-aided helicopter approach OSSE. Top left: terrain map with the emulated 1-km fore-cast/background grid and UAV/helicopter geometry for a representative approach case. The grid highlights that the kilometer-scale background provides useful large-scale context but is too coarse by itself for corridor-scale, arbitrary-coordinate wind queries. Top right: RMSE in the moving query volume as the helicopter progresses along the approach. Bottom: spatial diagnostics at one representative time, showing the no-observation error and the error reduction produced by different correction strategies. 
+
+state is then z∗ = z0 + δz ∗. Thus, the first term enforces the dataset-adaptive prior induced by training-set latent discrepancies, while the second term matches the corrected latent state to the available observations through direct decoder evaluations at the observation coordinates. All network parameters inside WindINR remain fixed during this step; only the d-dimensional latent state is updated. If no observations are available, no correction is performed and the latent state remains z0.A probabilistic MAP derivation of this objective is provided in Appendix A. Finally, the refined high-resolution field remains continuously queryable as ˆxHR  
+
+> ∗
+
+(p) =
+
+Fθ
+
+ s, x LR , p, z ∗ . Therefore, WindINR instantiates the formulation in Section 3 by preserving the continuous-query interface of the INR while restricting inference-time correction to a low-dimensional latent correction problem. 
+
+# 5 Experiments 
+
+We evaluate WindINR in controlled observing system simulation experiments (OSSEs) over the Senja region in northern Norway, as shown in Figure 1 and the top left panel of Figure 3. The experiments are designed to test whether sparse wind observations can rapidly improve local high-resolution wind estimates in complex terrain while preserving WindINR’s arbitrary-coordinate query interface. We focus on two settings. The first is an operational UAV-aided helicopter approach scenario, where a UAV flies ahead of a descending helicopter and provides sparse observations for updating the wind estimate in the forward approach corridor. The second is a standard random-observation OSSE, which tests robustness across observation densities and heights. 
+
+5.1 Experimental setup 
+
+All experiments use the same fixed Senja terrain domain, covering approximately 6.4 km × 6.4 km 
+
+horizontally and extending to 2 km height. Senja provides a challenging testbed because steep coastal terrain, fjords, ridge–valley structures, and land–sea contrast produce strongly terrain-dependent low-altitude winds. High-resolution targets are generated by RANS simulations solved with Open-7Figure 4: Random-observation OSSE across height and observation density. Top: height-dependent component-wise RMSE under the standard 128 -observation setting. WindINR improves the wind reconstruction across most of the 0–2 km AGL column, although the coarse background is provided only at 20 m AGL. Bottom: component-wise RMSE as the number of assimilated random observations varies. WindINR performs best overall, with the clearest advantage when observations are sparse; the gap narrows as observations become denser and interpolation becomes a stronger baseline. 
+
+FOAM [ 28 ], while the low-resolution background is obtained by sampling and averaging the RANS fields to a 1 km grid at 20 m above ground level (AGL). The terrain descriptor contains elevation and horizontal elevation gradients. The dataset contains 1200 cases, generated by varying inflow direction, inflow speed, and vertical shear; we use an 840 /180 /180 train/validation/test split. At test time, each high-resolution RANS field is treated as surrogate truth. Synthetic observations are sampled from this truth, perturbed with prescribed noise, and assimilated by updating only the WindINR latent state while keeping all network weights fixed. The corrected INR can then be queried at arbitrary coordinates and evaluated against the original high-resolution field. We compare against no-observation prediction, inverse-distance interpolation, WindINR with an isotropic latent prior, partial fine-tuning, and full fine-tuning. The no-observation baseline measures the accuracy before online correction; the isotropic-prior ablation tests the role of the dataset-adaptive latent prior; and the fine-tuning baselines test whether online parameter updates are preferable to latent-only correction under sparse observations. Further details on the dataset, OSSE construction, training protocol, observation noise, and baseline implementations are provided in Appendix B. 
+
+5.2 UAV-aided helicopter approach OSSE 
+
+We first evaluate WindINR in a trajectory-based OSSE motivated by UAV-aided helicopter approach in complex terrain. A simulated helicopter descends along a valley at 80 m AGL, while a UAV flies approximately 500 m ahead and collects wind observations. At each step, WindINR assimilates the UAV observations accumulated so far by updating only the latent state, and we evaluate the corrected prediction in a moving forward query volume extending 800 m along the flight direction with a 
+
+300 m × 300 m cross-section. This setting tests whether sparse mobile observations can improve the wind estimate in the approach corridor before the helicopter enters it. The top-left panel of Figure 3 overlays the 1-km forecast grid, highlighting that the kilometer-scale input provides useful context 8Table 1: Aggregate random-observation OSSE results. Results are computed over the 180 -case test split using 128 random observations and 256 disjoint holdout points per case. Timing is measured on a 24-core Intel(R) Xeon(R) Gold 6248R CPU @ 3.00GHz. All optimization algorithms iterate for 20 steps. Metric No-obs. prediction Interpolation Partial fine-tuning Full fine-tuning WindINR (iso. prior) WindINR (adaptive prior) Field RMSE ↓ 0.306 0.268 0.268 0.345 0.214 0.203                                    
+
+> Holdout RMSE ↓0.306 0.267 0.264 0.342 0.212 0.201
+> Holdout RMSE ( u)↓0.360 0.323 0.319 0.427 0.259 0.248
+> Holdout RMSE ( v)↓0.435 0.350 0.339 0.446 0.281 0.262
+> Holdout RMSE ( w)↓0.123 0.129 0.134 0.154 0.097 0.092
+> Assimilation time ( s)↓–0.423 0.864 1.541 0.520 0.593
+
+but is too coarse for corridor-scale, off-grid wind queries; WindINR therefore uses it as background conditioning and corrects a continuous high-resolution representation with UAV observations. The top panels of Figure 3 show the experimental geometry and the RMSE evolution along the approach. WindINR consistently outperforms the no-observation prediction and the online adaptation baselines over most of the trajectory. The comparison with the isotropic-prior variant shows that the dataset-adaptive prior is useful for regularizing sparse trajectory-based updates. Full fine-tuning is less stable: its performance varies substantially along the approach, suggesting that updating all network parameters with only a small number of UAV observations can overfit locally and degrade predictions elsewhere in the query volume. The bottom panels provide spatial diagnostics at a representative approach time. The no-observation prediction contains structured errors in the forward query region, while WindINR produces a more coherent error reduction after assimilating the UAV observations. In contrast, full fine-tuning introduces noisier spatial increments, indicating weaker robustness under sparse supervision. We omit the interpolation baseline in this corridor experiment because the UAV trajectory provides too few spatially distributed samples for meaningful three-dimensional interpolation; the interpolation baseline would fall back to the no-observation prediction. Additional baseline visualizations are provided in Appendix B. 
+
+5.3 Random-observation OSSE 
+
+We next test whether WindINR remains robust beyond the trajectory geometry of the helicopter approach experiment. In each test case, we randomly sample noisy observations from the RANS truth, assimilate them by updating only the latent state, and evaluate the corrected prediction against high-resolution RANS targets. We use this protocol for two diagnostics: height-dependent errors over the AGL column and observation-count sweeps from sparse to denser observation regimes. The top row of Figure 4 shows height-dependent RMSE under the standard 128 -observation setting, computed over evaluation points grouped by AGL height. WindINR achieves the lowest errors across most of the column and for most wind components, despite receiving the coarse background only at 
+
+20 m AGL. The horizontal components have larger absolute errors, reflecting stronger terrain-induced channeling and ridge acceleration, while the vertical component remains smaller in magnitude. The bottom row sweeps the number of assimilated observations and evaluates the resulting corrected fields over the corresponding high-resolution target points. WindINR is strongest overall, especially in the sparse-observation regime; as observations become denser, interpolation becomes more competitive because local geometric information is already sufficient for many target points. Table 1 reports a separate aggregate evaluation on the 180 -case test split, using 128 random observa-tions and 256 disjoint holdout points per case. Under this protocol, WindINR with the adaptive prior reduces field RMSE from 0.306 to 0.203 and holdout RMSE from 0.306 to 0.201 , outperforming interpolation, partial fine-tuning, and full fine-tuning. It also keeps the online update substantially faster than full fine-tuning ( 0.593 s versus 1.541 s on CPU) because only the latent state is optimized. 
+
+# 6 Conclusion 
+
+We presented WindINR, a latent-state conditional INR for fast local wind query and sparse-observation correction in complex terrain. By updating only a compact latent state, WindINR can assimilate UAV or point observations while preserving continuous query at user-specified locations. In OSSEs over 9Senja, including UAV-aided approach and random-observation tests, WindINR showed a practical path for connecting kilometer-scale background products with local wind-sensitive decisions. 
+
+Limitations. This study remains limited to controlled OSSEs over one terrain region, with RANS surrogate truth and synthetic observations. The current framework addresses fixed-time wind recon-struction rather than time-evolving, multi-variable forecasting; future work should validate it with real observations and broader weather regimes. 
+
+# References 
+
+[1] Jaideep Pathak, Shashank Subramanian, Peter Harrington, Sanjeev Raja, Ashesh Chattopadhyay, Morteza Mardani, Thorsten Kurth, David Hall, Zongyi Li, Kamyar Azizzadenesheli, et al. Fourcastnet: A global data-driven high-resolution weather model using adaptive fourier neural operators. arXiv preprint arXiv:2202.11214 , 2022. [2] Kaifeng Bi, Lingxi Xie, Hengheng Zhang, Xin Chen, Xiaotao Gu, and Qi Tian. Accurate medium-range global weather forecasting with 3d neural networks. Nature , 619(7970):533–538, 2023. [3] Remi Lam, Alvaro Sanchez-Gonzalez, Matthew Willson, Peter Wirnsberger, Meire Fortunato, Ferran Alet, Suman Ravuri, Timo Ewalds, Zach Eaton-Rosen, Weihua Hu, et al. Learning skillful medium-range global weather forecasting. Science , 382(6677):1416–1421, 2023. [4] Ilan Price, Alvaro Sanchez-Gonzalez, Ferran Alet, Tom R Andersson, Andrew El-Kadi, Dominic Masters, Timo Ewalds, Jacklynn Stott, Shakir Mohamed, Peter Battaglia, et al. Probabilistic weather forecasting with machine learning. Nature , 637(8044):84–90, 2025. [5] Chensen Lin, Ruian Tie, Shihong Yi, Xiaohui Zhong, and Hao Li. Terrain-aware deep learning for wind energy applications: From kilometer-scale forecasts to fine wind fields. arXiv preprint arXiv:2505.12732 , 2025. [6] Morteza Mardani, Noah Brenowitz, Yair Cohen, Jaideep Pathak, Chieh-Yu Chen, Cheng-Chin Liu, Arash Vahdat, Mohammad Amin Nabian, Tao Ge, Akshay Subramaniam, et al. Residual corrective diffusion modeling for km-scale atmospheric downscaling. Communications Earth & Environment , 6(1):124, 2025. [7] Philipp Hess, Michael Aich, Baoxiang Pan, and Niklas Boers. Fast, scale-adaptive and uncertainty-aware downscaling of earth system model fields with generative machine learning. 
+
+Nature Machine Intelligence , 7(3):363–373, 2025. [8] J. J. Park, P. Florence, J. Straub, R. A. Newcombe, and S. Lovegrove. DeepSDF: Learning Continuous Signed Distance Functions for Shape Representation. In Conference on Computer Vision and Pattern Recognition , 2019. [9] L. Mescheder, M. Oechsle, M. Niemeyer, S. Nowozin, and A. Geiger. Occupancy Networks: Learning 3D Reconstruction in Function Space. In Conference on Computer Vision and Pattern Recognition , pages 4460–4470, 2019. [10] Ben Mildenhall, S. P. P., M. Tancik, J. T. Barron, R. Ramamoorthi, and R. Ng. NeRF: Rep-resenting Scenes as Neural Radiance Fields for View Synthesis. In European Conference on Computer Vision , 2020. [11] B. Zhang, J. Tang, M. Nießner, and P. Wonka. 3DShape2VecSet: A 3D Shape Representation for Neural Fields and Generative Diffusion Models. In ACM SIGGRAPH , 2023. [12] Rui Chen, Jianfeng Zhang, Yixun Liang, Guan Luo, Weiyu Li, Jiarui Liu, Xiu Li, Xiaoxiao Long, Jiashi Feng, and Ping Tan. Dora: Sampling and benchmarking for 3d shape variational auto-encoders. In Conference on Computer Vision and Pattern Recognition , 2025. [13] Vincent Sitzmann, Julien Martel, Alexander Bergman, David Lindell, and Gordon Wetzstein. Im-plicit neural representations with periodic activation functions. Advances in neural information processing systems , 33:7462–7473, 2020. 10 [14] Yinbo Chen, Sifei Liu, and Xiaolong Wang. Learning continuous image representation with local implicit image function. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 8628–8638, 2021. [15] Zili Liu, Hao Chen, Lei Bai, Wenyuan Li, Zhengxia Zou, and Zhenwei Shi. Kolmogorov arnold neural interpolator for downscaling and correcting meteorological fields from in-situ observations. arXiv preprint arXiv:2501.14404 , 2025. [16] Zili Liu, Hao Chen, Lei Bai, Wenyuan Li, Keyan Chen, Zhengyi Wang, Wanli Ouyang, Zhengxia Zou, and Zhenwei Shi. Observation-guided meteorological field downscaling at station scale: A benchmark and a new method. arXiv preprint arXiv:2401.11960 , 2024. [17] Yago del Valle Inclan Redondo, Enrique Arriaga-Varela, Dmitry Lyamzin, Pablo Cervantes, and Tiago Ramalho. Sparse local implicit image function for sub-km weather downscaling. arXiv preprint arXiv:2510.20228 , 2025. [18] Xihaier Luo, Wei Xu, Yihui Ren, Shinjae Yoo, and Balu Nadiga. Continuous field reconstruction from sparse observations with implicit neural networks. arXiv preprint arXiv:2401.11611 , 2024. [19] Kun Chen, Peng Ye, Hao Chen, Kang Chen, Tao Han, Wanli Ouyang, Tao Chen, and Lei Bai. Fnp: Fourier neural processes for arbitrary-resolution data assimilation. volume 37, pages 137847–137872, 2024. [20] Hang Fan, Yubao Liu, Yuewei Liu, Zhaoyang Huo, Baojun Chen, and Yu Qin. A novel latent space data assimilation framework with autoencoder-observation to latent space (ae-o2l) network. part ii: Observation and background assimilation with interpretability. Monthly Weather Review , 153(8), 2025. [21] Yi Xiao, Qilong Jia, Kun Chen, Lei Bai, and Wei Xue. Vae-var: Variational autoencoder-enhanced variational methods for data assimilation in meteorology. In The Thirteenth Interna-tional Conference on Learning Representations , 2025. [22] Hang Fan, Lei Bai, Ben Fei, Yi Xiao, Kun Chen, Yubao Liu, Yongquan Qu, Fenghua Ling, and Pierre Gentine. Physically consistent global atmospheric data assimilation with machine learning in latent space. Science Advances , 12(1):eaea4248, 2026. [23] Langwen Huang, Lukas Gianinazzi, Yuejiang Yu, Peter Dominik Dueben, and Torsten Hoefler. Diffda: a diffusion model for weather-scale data assimilation. In International Conference on Machine Learning , pages 19798–19815. PMLR, 2024. [24] Jing-An Sun, Hang Fan, Junchao Gong, Ben Fei, Kun Chen, Fenghua Ling, Wenlong Zhang, Wanghan Xu, Li Yan, Pierre Gentine, et al. Lo-sda: Latent optimization for score-based atmospheric data assimilation. arXiv preprint arXiv:2510.22562 , 2025. [25] Gérôme Andry, Sacha Lewin, François Rozet, Omer Rochman, Victor Mangeleer, Matthias Pirlet, Elise Faulx, Marilaure Grégoire, and Gilles Louppe. Appa: Bending weather dynamics with latent diffusion models for global data assimilation. arXiv preprint arXiv:2504.18720 ,2025. [26] Xiaoze Xu, Xiuyu Sun, Wei Han, Xiaohui Zhong, Lei Chen, Zhiqiu Gao, and Hao Li. Fuxi-da: A generalized deep learning data assimilation framework for assimilating satellite observations. 
+
+npj Climate and Atmospheric Science , 8(1):156, 2025. [27] Hang Fan, Juan Nathaniel, Yi Xiao, Ce Bian, Fenghua Ling, Ben Fei, Lei Bai, and Pierre Gentine. Accurate and efficient hybrid-ensemble atmospheric data assimilation in latent space with uncertainty quantification. arXiv preprint arXiv:2603.04395 , 2026. [28] Hrvoje Jasak. Openfoam: Open source cfd in research and industry. International journal of naval architecture and ocean engineering , 1(2):89–94, 2009. 11 A Derivation of observation-guided latent correction 
+
+This appendix derives the observation-guided latent correction objective used in Section 4.4. For a fixed test sample, let the deployable conditioning inputs be (s, x LR ) and let 
+
+z0 = Zβ (s, x LR )
+
+be the no-observation latent state predicted from the deployable inputs alone. When observations are available, WindINR does not update the decoder parameters θ. Instead, it introduces a latent correction increment 
+
+δz = z − z0,
+
+and optimizes only δz ∈ Rd.
+
+Latent prior from training-set discrepancies. During training, each sample has two latent states: the privileged reference latent state zref , inferred with access to high-resolution supervision, and the deployable no-observation latent state z0, predicted from (s, x LR ) alone. Their discrepancy 
+
+∆z(i) = z(i)ref − z(i)0
+
+describes how the deployable latent state typically differs from the training-time reference latent state. We summarize these discrepancies over the training set by the empirical mean and covariance, 
+
+μ∆z = 1
+
+N
+
+> N
+
+X
+
+> i=1
+
+∆z(i), Σ∆z = 1
+
+N − 1
+
+> N
+
+X
+
+> i=1
+
+
+
+∆z(i) − μ∆z
+
+  
+
+∆z(i) − μ∆z
+
+⊤
+
+.
+
+This defines a Gaussian prior over the latent correction increment, 
+
+p(δz | γ) = N (δz ; μ∆z , B z ) , Bz = Σ ∆z + ϵI, 
+
+where γ = ( μ∆z , Σ∆z ) and ϵ > 0 is a small numerical-stability constant. The corresponding negative log-prior, up to an additive constant independent of δz , is 
+
+− log p(δz | γ) = 12 (δz − μ∆z )⊤ B−1 
+
+> z
+
+(δz − μ∆z ) + const .
+
+Observation likelihood. Let the sparse observation set be 
+
+O = {(pn, y n, M n, R n)}Nobs  
+
+> n=1
+
+,
+
+where pn ∈ Ω is the observation coordinate, yn is the observed value, Mn selects the observed wind components, and Rn is the corresponding observation-error covariance or variance. For a candidate latent increment δz , the WindINR prediction at the observation coordinate is obtained by directly querying the implicit decoder, 
+
+ˆyn(δz ) = MnFθ (s, x LR , p n, z 0 + δz ).
+
+We assume independent Gaussian observation errors, 
+
+yn = MnFθ (s, x LR , p n, z 0 + δz ) + ηn, ηn ∼ N (0 , R n).
+
+Thus the likelihood factorizes as 
+
+p(O | δz, s, x LR , θ ) = 
+
+> Nobs
+
+Y
+
+> n=1
+
+N  yn; MnFθ (s, x LR , p n, z 0 + δz ), R n
+
+ .
+
+The corresponding negative log-likelihood, again up to constants independent of δz , is 
+
+− log p(O | δz, s, x LR , θ ) = 12
+
+> Nobs
+
+X
+
+> n=1
+
+MnFθ (s, x LR , p n, z 0 + δz ) − yn
+
+> 2
+> R−1
+> n
+
++ const ,
+
+where ∥a∥2
+
+> R−1
+> n
+
+= a⊤R−1 
+
+> n
+
+a.12 MAP latent correction. By Bayes’ rule, the posterior over the latent correction is 
+
+p(δz | O, s, x LR , θ, γ ) ∝ p(O | δz, s, x LR , θ )p(δz | γ).
+
+The maximum a posteriori estimate is therefore obtained by minimizing the negative log-posterior: 
+
+δz ⋆ = arg min 
+
+> δz ∈Rd
+
+J(δz ; z0, O, γ ),
+
+with 
+
+J(δz ; z0, O, γ ) = 12 ∥δz − μ∆z ∥2(Σ ∆z +ϵI )−1
+
++ 12
+
+> Nobs
+
+X
+
+> n=1
+
+MnFθ (s, x LR , p n, z 0 + δz ) − yn
+
+> 2
+> R−1
+> n
+
+.
+
+The refined latent state is then 
+
+z⋆ = z0 + δz ⋆,
+
+and the corrected high-resolution wind field remains continuously queryable as 
+
+ˆxHR  
+
+> ⋆
+
+(p) = Fθ (s, x LR , p, z ⋆), p ∈ Ω.
+
+This is the objective used by the correction operator Uγ in the main text. 
+
+Relation to variational data assimilation. The above objective has the same structure as a varia-tional data-assimilation cost function, but the control variable is the low-dimensional latent increment 
+
+δz rather than a dense gridded wind field. The first term is the background or prior term in latent space, whose covariance is estimated from training-set latent discrepancies. The second term is the observation term, where the observation operator is implemented by direct INR evaluation at the observed coordinates. This removes the need for a separate grid-to-point interpolation operator when observations are off-grid. To make the connection explicit, define the nonlinear observation operator 
+
+Hn(δz ) = MnFθ (s, x LR , p n, z 0 + δz ).
+
+Then the correction objective can be written compactly as 
+
+J(δz ) = 12 ∥δz − μ∆z ∥2
+
+> B−1
+> z
+
++ 12
+
+> Nobs
+
+X
+
+> n=1
+
+∥Hn(δz ) − yn∥2
+
+> R−1
+> n
+
+.
+
+Because Fθ is nonlinear in the latent state, this posterior is generally non-Gaussian and the MAP estimate is found by gradient-based optimization. All gradients are obtained through the fixed decoder 
+
+Fθ , while the decoder weights themselves remain unchanged. 
+
+Linearized interpretation. A local linearization around the initial latent state helps interpret the update. Let 
+
+Hn(δz ) ≈ Hn(0) + Gnδz, Gn = ∂H n(δz )
+
+∂δz δz =0 
+
+.
+
+Stacking all observations gives 
+
+H(δz ) ≈ H(0) + Gδz, 
+
+with block-diagonal observation covariance R. The linearized objective is quadratic: 
+
+Jlin (δz ) = 12 ∥δz − μ∆z ∥2
+
+> B−1
+> z
+
++ 12 ∥H(0) + Gδz − y∥2 
+
+> R−1
+
+.
+
+Its minimizer satisfies the normal equation 
+
+ B−1 
+
+> z
+
++ G⊤R−1G δz ⋆ 
+
+> lin
+
+= B−1 
+
+> z
+
+μ∆z + G⊤R−1 (y − H(0)) .
+
+Equivalently, 
+
+δz ⋆ 
+
+> lin
+
+= μ∆z + Bz G⊤  GB z G⊤ + R−1 [y − H(0) − Gμ ∆z ] .
+
+This expression shows how the latent covariance Bz controls the directions in latent space along which observations are allowed to modify the no-observation state, while R controls the trust assigned to the observations. The nonlinear WindINR correction used in the experiments can be viewed as the corresponding nonlinear MAP problem solved directly through the INR decoder. 13 No-observation case and mean-shifted implementation. The derivation above applies to the observation-guided correction branch, i.e., when O̸ = ∅. When no observations are available, WindINR follows the deployable no-observation branch and uses z0 directly, without solving the correction problem. This design keeps the no-observation prediction determined by the trained latent predictor Zβ , while the latent prior is used to regularize sample-specific updates once observations are assimilated. In implementation, the empirical prior mean can be absorbed into a deterministic bias correction of the initial latent state. This converts the nonzero-mean prior above into an equivalent zero-mean prior over an additional online increment. Appendix C gives the implementation form used in the experiments. 
+
+# B OSSE data and evaluation protocols 
+
+This appendix describes the OSSE data, observation-generation protocols, and evaluation metrics. Implementation details of the WindINR architecture, latent-prior construction, online optimization, and baseline optimization are separated into Appendix C to avoid repeating model-specific details here. 
+
+B.1 Senja domain and surrogate high-resolution truth 
+
+All experiments are conducted over a fixed complex-terrain domain in the Senja region of northern Norway. The domain covers approximately 6.4 km × 6.4 km horizontally and extends to 2 km above ground level (AGL). The terrain contains coastal slopes, fjords, and ridge–valley structures, making it suitable for testing local wind correction in complex terrain. We generate high-resolution wind fields using Reynolds-averaged Navier–Stokes (RANS) simulations solved with OpenFOAM. RANS solves the time-averaged Navier–Stokes equations with a turbulence closure, yielding steady-state turbulent flow solutions over the terrain. The OpenFOAM mesh contains approximately 8 × 10 5 cells, so the resulting fields resolve flow structures below the 50 m scale. We treat these RANS outputs as the surrogate high-resolution targets xHR in the OSSE benchmark. 
+
+B.2 Low-resolution background, terrain descriptors, and splits 
+
+The low-resolution background xLR is constructed from the high-resolution RANS fields by sampling and averaging to a kilometer-scale grid. We use the wind field at 20 m AGL as the low-resolution input height, since this is close to the near-surface wind information commonly available from operational meteorological products. The horizontal resolution of the low-resolution grid is 1 km ,matching the scale of Nordic regional analysis products. The static terrain descriptor s contains terrain elevation and horizontal elevation gradients, allowing the model to condition on both absolute terrain height and local slope. The dataset contains 1200 
+
+RANS cases over the same terrain. Cases are generated by varying the OpenFOAM inflow conditions over 48 wind directions, five inflow-speed bins (8 , 12 , 16 , 20 , 24) m s −1, and five prescribed vertical-shear settings (0 .01 , 0.03 , 0.10 , 0.30 , 0.50) . We use a fixed 840 /180 /180 train/validation/test split. 
+
+B.3 Synthetic observation construction 
+
+At test time, each RANS field is treated as surrogate truth. Synthetic observations are generated by sampling this truth at specified coordinates and adding independent Gaussian noise. Unless otherwise stated, the observation-noise standard deviations are 
+
+σu = 0 .5 m s −1, σv = 0 .5 m s −1, σw = 0 .2 m s −1.
+
+For three-component wind observations, Rn is therefore diagonal with entries (σ2
+
+> u
+
+, σ 2 
+
+> v
+
+, σ 2
+
+> w
+
+). If only a subset of components is observed, the corresponding selection matrix Mn and sub-covariance of Rn
+
+are used. WindINR first predicts an initial latent state from the terrain descriptor and low-resolution background. Given observations, it solves the latent correction problem described in Section 4.4, keeping all neural-network weights fixed and updating only the latent state. The corrected implicit decoder can then be queried at arbitrary coordinates and evaluated against the original RANS truth. 14 B.4 Random-observation OSSE 
+
+The random-observation OSSE tests robustness to sparse but spatially distributed observations. For each test case, observations and holdout points are sampled without replacement from the high-resolution RANS point cloud. The standard aggregate setting uses 
+
+Nobs = 128 , Nholdout = 256 .
+
+Observation points are used for online correction. Holdout points are disjoint from the observations and are used only for evaluation. We also report field metrics by decoding the corrected INR over the available high-resolution target point cloud. The observation-count sweep varies Nobs to test sparse-to-dense regimes, while the height-profile diagnostic groups evaluation points by AGL height to assess whether observations improve not only the near-surface field but also the vertical structure of the three-dimensional wind reconstruction. To make random sampling reproducible, observation and holdout indices are generated from de-terministic case-specific seeds derived from the case filename and a global OSSE seed. The train/validation/test split uses a fixed split seed. 
+
+B.5 UAV-aided helicopter approach OSSE 
+
+The UAV-aided helicopter approach OSSE tests a trajectory-based sensing geometry. The simulated helicopter follows a valley-aligned path at 80 m AGL. In normalized horizontal coordinates, the path runs approximately from (−0.75 , −0.35) to (0 .75 , 0.35) . The helicopter speed is set to 20 m s −1.The UAV flies ahead along the same path with a lead distance of approximately 500 m and samples observations at 100 m spacing, corresponding to one observation approximately every 5 s at the chosen speed. At each helicopter evaluation time, all UAV observations collected so far are assimilated. Evaluation is performed in a moving look-ahead query corridor in front of the helicopter. The corridor extends 
+
+800 m along the flight direction and has a 300 m cross-section. In the reported single-height setting, the corridor is queried at 80 m AGL using 16 along-track samples and 7 cross-track samples. The RANS surrogate truth at arbitrary UAV and corridor locations is obtained by inverse-distance interpolation from the high-resolution RANS point cloud using 16 nearest neighbors and inverse-distance power 2.We omit the interpolation baseline in the UAV corridor experiment because the UAV trajectory provides too few spatially distributed samples to support meaningful three-dimensional interpolation over the moving query volume. In practice, interpolation degenerates to background filling over most query points in this setting. 
+
+B.6 Metrics and timing protocol 
+
+For the random-observation OSSE, we report full-field RMSE and MAE, holdout RMSE and MAE, component-wise errors for (u, v, w ), height-dependent RMSE, assimilation latency, and the fraction of test cases improved relative to the no-observation prediction. For the UAV-aided helicopter OSSE, we report RMSE in the moving forward query volume along the helicopter approach, together with spatial diagnostics showing no-observation error and error reduction after correction. All RMSE and MAE values are reported in physical units of m s −1. The online-correction timing reported in the main text measures the inference-time update procedure and does not include offline training or latent-statistics estimation. Timing comparisons are performed with the same online step budget for all optimization-based methods; the concrete optimization settings are given in Appendix C. 
+
+# C WindINR model and optimization details 
+
+This appendix describes the implementation details of WindINR used in the OSSE experiments. To avoid overlap with Appendix B, this section focuses on model inputs, architecture, training, latent-prior estimation, online optimization, and baseline implementation. 15 C.1 Input representation and normalization 
+
+Each sample consists of a static terrain descriptor s, a low-resolution wind background xLR , and high-resolution point samples from the RANS surrogate truth. The continuous query coordinate is 
+
+p = ( rx, r y , h ),
+
+where the horizontal coordinates (rx, r y ) are normalized to [−1, 1] 2 over the terrain domain, and the vertical coordinate is represented as normalized height above ground level, 
+
+h = zAGL /z top , ztop = 2000 m .
+
+Thus h ∈ [0 , 1] for the reported experiments. The terrain input contains three channels: normalized terrain elevation and the two normalized horizontal terrain-gradient components. The low-resolution input contains the near-surface horizontal wind background at 20 m AGL and a validity mask. This gives three low-resolution input channels: low-resolution u, low-resolution v, and a binary valid-grid mask. The decoder output is the three-component wind vector (u, v, w ) in physical units. For optimization stability, wind labels are normalized using the training-set component-wise mean and standard deviation. The decoder prediction is produced in physical units and is normalized before the supervised reconstruction loss is computed. 
+
+C.2 Context encoders and query features 
+
+WindINR first encodes static terrain and low-resolution background fields into spatial feature maps. The terrain encoder takes the three-channel terrain tensor and uses lightweight convolutional residual blocks with channels 
+
+3 → 32 → 64 ,
+
+with GroupNorm and SiLU activations. The low-resolution background encoder has the analogous form 
+
+3 → 16 → 32 .
+
+We denote the resulting terrain and low-resolution feature maps by fs and fLR , respectively. In the reported configuration, their channel dimensions are 
+
+Cs = 64 , CLR = 32 .
+
+At each query location, WindINR bilinearly samples both feature maps using grid_sample with border padding and aligned corners. It also bilinearly samples the low-resolution horizontal wind background at the query location. The sampled query feature therefore contains terrain features, low-resolution background features, local low-resolution (u, v ) values, and a positional encoding of the query coordinate. 
+
+C.3 Coordinate encoding 
+
+The horizontal coordinates use Fourier features with 10 frequency bands. For the vertical coordinate, we use a non-periodic encoding because height is not a periodic dimension. Specifically, the vertical encoding concatenates polynomial features (h, h 2, h 3) with Gaussian radial-basis features along the normalized height coordinate. With 10 horizontal Fourier frequency bands, the implementation uses 
+
+20 vertical RBF centers. The full coordinate encoding is 
+
+ϕ(p) = ϕFourier (rx, r y ), h, h 2, h 3, ϕ RBF (h) .
+
+In the reported configuration, the full per-query feature dimension is 161 .
+
+C.4 Reference latent encoder 
+
+The reference latent encoder Eα is used only during training and latent-statistics estimation. For each case, we sample a support set 
+
+Psup = {(pi, x HR (pi)) }msup  
+
+> i=1
+
+, msup = 2048 ,
+
+16 and infer a privileged reference latent state zref from the support set. For each support point, the reference encoder concatenates the local query features with the normal-ized wind label and passes them through a point-wise MLP with hidden width 256 . Global context is obtained from the spatial mean and standard deviation of the terrain and low-resolution feature maps. This global context is injected into the point-wise features. The encoder then computes attention-style scalar scores over support points, applies softmax pooling, and forms pooled mean, weighted standard deviation, and max features. These pooled features, together with the global context, are mapped to the latent vector 
+
+zref ∈ R128 .
+
+Thus the latent dimension used in the reported experiments is d = 128 .
+
+C.5 Deployable no-observation latent predictor 
+
+The deployable latent predictor Zβ does not use high-resolution labels or observations. It receives only the encoded terrain and low-resolution background feature maps. We compute the spatial mean and standard deviation of these feature maps and pass the resulting global descriptor through an MLP with hidden width 256 to produce a raw no-observation latent state, denoted zbg .The empirical mean latent discrepancy estimated from the training set is absorbed into the initial latent state as a deterministic bias correction. Let 
+
+bz = Etrain [zbg − zref ] .
+
+The bias-corrected no-observation latent used in the OSSE experiments is 
+
+z0 = zbg − bz .
+
+Equivalently, if the probabilistic derivation in Appendix A is written with ∆z = zref − zbg and nonzero prior mean μ∆z , then bz = −μ∆z and z0 = zbg + μ∆z . The subsequent online correction optimizes an additional zero-mean increment around this bias-corrected latent. This is algebraically equivalent to the nonzero-mean MAP formulation, but is more convenient in code. 
+
+C.6 Latent-conditioned implicit decoder 
+
+The decoder Fθ maps the per-query feature and the case-specific latent state to a three-component wind vector. The query feature is first projected to a hidden width of 256 using a linear layer, LayerNorm, and SiLU activation. The latent vector is mapped through a latent-seed MLP and added to the projected query feature. The decoder then applies four FiLM-modulated residual blocks. Each block uses the latent vector to generate scale and shift parameters for feature modulation. In each FiLM block, the scale and shift are bounded by a tanh nonlinearity for stability. The final output head consists of LayerNorm, a hidden linear layer with SiLU activation, and a final linear layer producing (u, v, w ).The decoder predicts a residual correction on top of a simple low-resolution baseline. For the horizontal components, the baseline is the bilinearly sampled low-resolution (u, v ) field multiplied by a height-dependent factor 
+
+α(h) = exp( −h/τ ), τ = 0 .30 ,
+
+with zero floor in the reported configuration. The vertical baseline is set to zero. The final prediction is therefore 
+
+Fθ (s, x LR , p, z ) = α(h)uLR (p), α (h)vLR (p), 0 + ∆ Fθ (s, x LR , p, z ).
+
+C.7 Offline training protocol 
+
+WindINR is trained in two stages. 
+
+Stage 1: reference latent learning. We train the context encoders, reference latent encoder, and implicit decoder. For each case and each optimization step, we randomly sample a support set of 17 2048 points and a disjoint query set of 8192 points. The reference latent state is inferred from the support set, while the reconstruction loss is computed on the query set. The Stage-1 objective is 
+
+Lref = 1
+
+mqry 
+
+> mqry
+
+X
+
+> j=1
+
+Norm  Fθ (s, x LR , q j , z ref ) − Norm  xHR (qj ) 22 + λref ∥zref ∥22,
+
+where mqry = 8192 and λref = 10 −4. We use AdamW with learning rate 2 × 10 −4 and weight decay 10 −4. The batch size is two cases. The checkpoint with the best validation loss is retained. 
+
+Stage 2: deployable latent prediction. The context encoders, reference encoder, and decoder are frozen. We train only the deployable no-observation latent predictor. The objective combines query-point reconstruction with latent alignment to the privileged reference latent: 
+
+Lβ = 1
+
+mqry 
+
+> mqry
+
+X
+
+> j=1
+
+Norm  Fθ (s, x LR , q j , z bg ) − Norm  xHR (qj ) 22 + λalign ∥zbg − zref ∥22,
+
+with λalign = 1 . The optimizer is again AdamW with learning rate 2 × 10 −4 and weight decay 10 −4.The same support/query sampling protocol is used. 
+
+C.8 Latent-prior estimation 
+
+After Stage 2, we estimate latent-error statistics on the training split. For every training case, we infer both the reference latent zref and the raw deployable latent zbg . We then form the empirical latent error 
+
+ez = zbg − zref .
+
+The empirical mean bz = Etrain [ez ] is used as the deterministic bias correction described above. The centered errors are used to estimate the covariance. In the reported experiments, we use the shrinkage covariance 
+
+Bz = (1 − ρ)Σ z + ρ diag(Σ z ) + ϵI, 
+
+where ρ = 0 .1 and ϵ = 10 −4. The reported WindINR adaptive-prior results use this shrinkage covariance with covariance scale equal to one. For the isotropic-prior ablation, we keep the same latent-only update interface but replace the dataset-adaptive covariance by 
+
+Biso  
+
+> z
+
+= ¯ σ2 
+
+> z
+
+I, 
+
+where ¯σ2 
+
+> z
+
+is the mean of the diagonal empirical latent-error variances. This ablation removes the learned covariance structure while keeping the latent correction dimension, optimizer, observations, and decoder fixed. 
+
+C.9 Online latent correction 
+
+At test time, WindINR first encodes the terrain and low-resolution background, computes the bias-corrected latent z0, and evaluates the no-observation prediction. When observations are available, all network weights remain fixed and only the latent state is optimized. For an observation set O = {(pn, y n, M n, R n)}Nobs  
+
+> n=1
+
+, we optimize an online increment ξ around the bias-corrected latent, 
+
+z = z0 + ξ. 
+
+The implementation minimizes 
+
+Jimpl (ξ) = 12 ∥ξ∥2
+
+> B−1
+> z
+
++ 12
+
+> Nobs
+
+X
+
+> n=1
+
+MnFθ (s, x LR , p n, z 0 + ξ) − yn
+
+> 2
+> R−1
+> n
+
+,
+
+where Rn is defined by the observation components and noise levels in Appendix B.3. All online optimization methods in the reported comparison are run for exactly 20 optimizer steps. This includes WindINR with the dataset-adaptive prior, WindINR with the isotropic prior, partial fine-tuning, and full fine-tuning. The main WindINR latent correction uses Adam with learning rate 
+
+5 × 10 −2 and gradient clipping at norm 10 . We keep the best latent state encountered during the 
+
+20 optimization steps according to the correction objective. If O = ∅, no online optimization is performed and WindINR directly decodes the bias-corrected no-observation latent. 18 C.10 Baseline and ablation implementation No-observation prediction. The no-observation baseline decodes the bias-corrected latent state z0
+
+without using any test-time observations. 
+
+Interpolation. The interpolation baseline performs inverse-distance weighted interpolation in normalized three-dimensional coordinate space. We interpolate observation residuals relative to the no-observation prediction and add the interpolated residuals back to the no-observation field. Components that are not observed are left unchanged. The inverse-distance power is 2.
+
+WindINR with isotropic prior. This ablation uses the same bias-corrected initial latent state, the same decoder, and the same latent-only online optimizer as the main WindINR method, but replaces 
+
+Bz by Biso  
+
+> z
+
+. It isolates the role of the learned latent covariance structure. 
+
+Partial fine-tuning. The partial fine-tuning baseline updates only a small subset of decoder param-eters: the latent-seed module and the final linear layer of the output head. The rest of the network is frozen. An anchor regularization term penalizes deviation from the pretrained parameter values with weight 10 −2, and the number of optimization steps is 20 .
+
+Full fine-tuning. The full fine-tuning baseline updates all model parameters online using the sparse observations. It also uses Adam and is run for 20 optimization steps in the reported comparison. Unlike WindINR, this baseline modifies reusable network weights during test-time adaptation. 
+
+C.11 Decoding and timing 
+
+Because WindINR is an implicit representation, the corrected field can be queried at any coordinate after latent correction. For full-field evaluation, query points are decoded in chunks to control memory use. The online-correction timing reported in the main text measures the inference-time update procedure and does not include offline training or latent-statistics estimation. All optimization-based online methods are compared using the same 20 -step budget. 
+
+# D Additional UAV-aided helicopter approach visualizations 
+
+This section provides additional spatial diagnostics for the UAV-aided helicopter approach OSSE. The main text reports the trajectory-level RMSE evolution and representative spatial diagnostics. Here we show the corresponding baseline visualizations at the same representative time step, so that the spatial behavior of different online correction strategies can be compared directly. For a correction method m, let 
+
+em(p) = ˆxHR  
+
+> m
+
+(p) − xHR (p) 2
+
+denote the point-wise vector error at query coordinate p, and let e0(p) denote the no-observation error. The improvement map is defined as 
+
+∆em(p) = e0(p) − em(p),
+
+so positive values indicate that the correction method reduces error relative to the no-observation prediction. The visualization highlights that the different online correction strategies produce qualitatively different spatial increments under the same sparse UAV observations. Full fine-tuning can introduce high-amplitude positive and negative patches away from the observation trajectory, indicating less stable extrapolation from sparse mobile observations. Partial fine-tuning and the isotropic-prior latent update are more conservative in this example. In contrast, WindINR with the dataset-adaptive prior produces a more coherent improvement pattern along and around the approach corridor, while keeping the decoder weights fixed and updating only the latent state. 19 Figure 5: Additional baseline visualizations for the UAV-aided helicopter approach OSSE. All panels show the same representative case at 80 m AGL and time step 27 ( t = 135 .0 s ), after 28 UAV observations have been assimilated. Top left: no-observation prediction of horizontal wind speed. Top middle: no-observation point-wise vector error. The remaining panels show error reduction relative to the no-observation prediction for WindINR with the dataset-adaptive prior, full fine-tuning, partial fine-tuning, and WindINR with an isotropic prior. Red indicates improvement over the no-observation prediction, while blue indicates degradation. 20

@@ -1,0 +1,719 @@
+Title: TIDES: Implicit Time-Awareness in Selective State Space Models
+
+URL Source: https://arxiv.org/pdf/2605.09742v1
+
+Published Time: Tue, 12 May 2026 02:58:42 GMT
+
+Number of Pages: 18
+
+Markdown Content:
+# TIDES: Implicit Time-Awareness in Selective State Space Models 
+
+Taylan Soydan 
+
+AIMM, ETH Zürich Zurich, Switzerland 
+
+Miguel A. Bessa 
+
+School of Engineering Brown University Providence, RI, USA 
+
+Dirk Mohr 
+
+AIMM, ETH Zürich Zurich, Switzerland 
+
+Rui Barreira ∗
+
+AIMM, ETH Zürich Zurich, Switzerland 
+
+Abstract 
+
+Selective state space models (SSMs), such as Mamba, achieve strong per-token expressivity by making the time discretization step ˜∆ a learned function of the input. However, in doing so, ˜∆ ceases to represent a physical sampling interval, limiting its irregular time series modeling capability. Continuous-time SSMs, such as S5, preserve the physical meaning of ˜∆ and handle irregular timestamps natively ( ˜∆ ≡ ∆) , but their dynamics remain linear time-invariant (LTI), limiting per-token expressivity. We propose TIDES , a selective SSM variant that reconciles selective and continuous architectures by moving input-dependence off the step size and onto the diagonal state matrix. As a result, ˜∆ retains its physical meaning, tied to the state discretization, allowing the model to handle irregular timestamps natively without sacrificing the per-token expressivity that makes selective SSMs effec-tive. We show this on a novel Fading Flash experimental benchmark, a compact controlled diagnostic for sequence models that jointly tests input-dependence and extrapolation to out-of-distribution ∆ values, and isolates the distinct failure modes of current state-of-the-art architectures that TIDES avoids by construction. On large-scale benchmarks, TIDES sets the new state-of-the-art average rank on UEA time-series classification and the Physiome-ODE regression benchmark. Code available at: https://github.com/TaylanSoydan/TIDES .
+
+1 Introduction 
+
+Real-world sequential data is rarely sampled on a regular grid. Clinical observations, for instance, arrive whenever a measurement happens to be ordered; environmental sensors drop and resume; financial events occur at intervals that span many orders of magnitude. Sequence models that assume a uniform step between tokens must either resample these sequences (discarding information about 
+
+when events happened) or be augmented with explicit time-handling machinery. The latter approach dominates in the irregular-time-series literature: methods such as mTAN ( 1), CRU ( 2), GRU-D ( 3), and Latent ODE ( 4) encode time as an auxiliary feature, parameterize an attention bias by elapsed time, or solve an ordinary differential equation (ODE) between observations. In parallel, two lineages of state space models (SSMs) have emerged as strong general sequence models. Continuous-time diagonal SSMs such as S5 ( 5) discretize a linear system ˙x = Ax + Bu 
+
+using the spacing between successive data observations, ∆, as the integration step, i.e., ˜∆ = ∆ .The diagonal entries of A are complex-valued: the real part controls how fast each state component decays, the imaginary part sets its oscillation frequency. Because ˜∆ is equivalent to the physical sampling time, these architectures handle irregularly sampled sequences naturally: changing the spacing between observations reshapes the discretized dynamics in the way the underlying continuous    
+
+> ∗Corresponding author: rbarreira@ethz.ch .Preprint.
+> arXiv:2605.09742v1 [cs.LG] 10 May 2026 Static parameter Input-dependent parameter Physical timestep
+
+S5 Λ B C ˜∆
+
+Mamba Λ B C ˜∆
+
+TIDES Λ B C ˜∆
+
+Figure 1: Where input-dependence lives in each architecture. S5 keeps all parameters static. Mamba makes B, C, and ˜∆ input-dependent, which collapses ˜∆ from a physical sampling interval into a learned function of the input. TIDES instead places input-dependence on Λ, B, and C while leaving 
+
+˜∆ ≡ ∆ as the physical timestep, recovering selectivity without sacrificing irregular-time semantics. system would respond. The tradeoff is that the resulting discrete evolution is time-invariant, so identical inputs produce identical state updates regardless of context. Selective SSMs such as Mamba ( 6) and its successors ( 7) removed this rigidity by making ˜∆
+
+and the input and output projections functions of the input. These models can contract or expand their effective time constant token-by-token, which is the source of their strong language modeling performance. But this comes at a cost: ˜∆ is no longer a physical sampling interval, i.e., ˜∆̸ = ∆ , but a learned, content-dependent gate. A real, irregular timestamp has nowhere to enter the model unless it is appended to the input as a feature, in which case the model must learn the relationship between this feature and its internal gate from data, a relationship that, as we show, does not extrapolate beyond the training distribution. 
+
+Our approach. Mamba and S5 disagree on the meaning of ˜∆. We propose a third design that avoids this tradeoff by routing input-dependence through the state matrix instead (Fig. 1). Concretely, we make the per-component decay rate and the input and output projections functions of the input, while keeping the oscillation frequency static and leaving ˜∆ as a physical timestep quantity rather than a learned gate. Under irregular sampling, ˜∆ still varies from step to step, but it is set by the observation timestamps, not produced by a function of the input. Crucially, selectivity now lives in the continuous-time generator rather than in the discretization step, so expressivity is preserved without collapsing ˜∆.We call the resulting property selective implicit time-awareness : the model’s response depends on observation spacing, yet that spacing never appears in the input, in a positional embedding, or in a learned gate. Time is handled by the architecture’s discretization, not by the network’s representations. 
+
+Contributions. 
+
+• Architecture. TIDES – Time-Implicit Decay and Eigenvalue Selectivity : a selective SSM variant with input-dependence on (Re( λ), B, C ), a static Im( λ) and implicit ˜∆, designed so that physical sampling intervals enter the model only through the discretization (Section 3). • Mechanistic analysis. A controlled toy experiment that isolates two orthogonal failure modes in existing SSMs—S5’s LTI rigidity and Mamba’s failure to extrapolate across training ∆—and demonstrates that TIDES is the only design overcoming both (Section 4). • Empirical results. New state of the art on UEA time-series classification and Physiome-ODE regression benchmarks by average rank (Section 5). 2S5   
+
+> input: u∆
+> Λ, B, C
+> static
+> Discretize
+> Parallel scan
+> Output
+
+Mamba     
+
+> input: [ u,∆]
+> ˜∆( u, ∆) , B (u, ∆) ,C(u, ∆) projectors
+> Discretize
+> Parallel scan
+> Output
+
+TIDES   
+
+> input: u∆
+> Λ( u), B (u), C (u)
+> projectors
+> Discretize
+> Parallel scan
+> Output
+> TIDES contribution (input-dependent components)
+
+Figure 2: Information flow through S5, Mamba, and TIDES architectures. Λ, B, and C are static in S5, while Mamba makes B, C, and ˜∆ input-dependent. TIDES recovers implicit use of ∆.
+
+2 Background 
+
+2.1 Continuous-time SSMs and discretization 
+
+Linear SSMs are defined in continuous time by the equations below, where H denotes the hidden (input/output) dimension and P denotes the state dimension: 
+
+˙x(t) = A x (t) + B u (t), y(t) = C x (t) + D u (t), (1) with input signal u(t) ∈ RH , latent state x(t) ∈ CP , and output y(t) ∈ RH . The model is parameterized by a state matrix A ∈ CP ×P governing the latent dynamics, input and output matrices 
+
+B ∈ CP ×H and C ∈ CH×P , and a feedthrough matrix D ∈ RH×H .To apply such a model to a discrete sequence {(tk, u k)}Lk=1 , the dynamics are integrated over each interval ∆k := tk+1 − tk to yield the recursion 
+
+xk+1 = ¯A x k + ¯B u k, yk = C x k + D u k, (2) where the discrete matrices ( ¯A, ¯B) are functions of (A, B, ∆) determined by the chosen discretization scheme such as bilinear, or zero-order hold (ZOH). A defining feature of this construction is that ∆
+
+enters the update as the physical elapsed time between samples, doubling ∆ produces the same state evolution as integrating the continuous system for twice as long. Discrete-time SSMs that preserve this property inherit a faithful notion of physical time from their continuous-time origin, a property we will return to in Section 3 as the central design constraint motivating TIDES. 
+
+2.2 S5: diagonal linear time-invariant dynamics 
+
+S5 ( 5) parameterizes A as a complex diagonal matrix Λ = diag( λ1, . . . , λ P ), where each λp ∈ C is a learned eigenvalue, initialized from a HiPPO-derived spectral decomposition ( 8). Each eigenvalue defines a one-dimensional continuous-time mode: the real part Re( λp) < 0 sets its decay rate (how quickly the mode forgets past inputs) and the imaginary part Im( λp) sets its oscillation frequency. Diagonality reduces the matrix exponential to elementwise scalars, so the recurrence admits a parallel associative scan for training efficiency ( 9). Since Λ is fixed across the sequence, the resulting model is linear time-invariant (LTI): a given input contributes the same state increment regardless of context. Crucially for our setting, the integration step at step k ∆k enters S5 implicitly through the discretization, as an exogenous input rather than a learned quantity, so irregular sampling is handled natively. 
+
+2.3 Mamba: input-dependent selection 
+
+Mamba (6) departs from the LTI regime by making the discretization parameters input-dependent: 
+
+˜∆k = softplus( W∆ uk), Bk = WB uk, Ck = WC uk, (3) 3and applying the discretization with these per-token quantities. The recurrence is no longer time-invariant as each token modulates its own dynamics, yet remains compatible with a parallel scan, which accounts for Mamba’s strong empirical performance on long-range and language-modeling tasks. The cost of this design is that ˜∆k becomes a learned gate rather than a physical sampling interval. Therefore Mamba assumes a uniform input grid; to expose actual elapsed time, one concatenates ∆k to uk as a feature and relies on W∆ to recover an appropriate mapping from data. As we show in Section 4, this indirect coupling causes Mamba to fail to extrapolate outside the irregularity regimes encountered during training, hindering its applicability to irregularly sampled sequences. 
+
+3 Method 
+
+3.1 Moving input-dependence from ∆ to Λ
+
+Given the diagonal SSM recurrence under ZOH discretization 
+
+xk+1 = exp(Λ k ˜∆k) xk + ¯Bk uk, yk = Ckxk + Du k, (4) the design space of selectivity is the set of components that can be made input-dependent: Λ, B, C,and ˜∆ (Figure 2). We argue for the following allocation: • ˜∆ stays implicit and physical ( ˜∆ ≡ ∆). This gives the model its implicit time-awareness: the relationship between elapsed time and state evolution is fixed by the discretization rule (12), not learned from data. • Re(Λ) is input-dependent. The decay rate of each mode becomes a function of the current input. Input-dependent decay has a clear interpretation: the model can “forget faster” when the input signals an event boundary, or “hold longer” when the input signals a quantity worth remembering. This is the closest semantic analog to Mamba’s selectivity that does not conflict with the physical-time interpretation of ˜∆.• Im(Λ) stays static. The imaginary part of each eigenvalue is the oscillation frequency of the corresponding mode. Per-token modulation of an oscillation frequency has no clean interpretation: the model would be redefining its own basis of dynamical modes at every step, and the resulting trajectory no longer corresponds to any coherent continuous-time signal. We empirically confirm in the ablation (Section 5.3) that input-dependent Im(Λ) 
+
+hurts performance. • B and C are input-dependent. These projections control how each token reads into the state and how the state is read out. Input-dependent B, C provide additional expressivity in a way that is orthogonal to the eigenvalues of the dynamics; they allow filtering out noise and are analogous to a forget gate. We empirically confirm in the ablation (Section 5.3) that input-dependence on B and C brings significant expressivity. 
+
+3.2 Architecture Selectivity heads. Three projection heads compute the input-dependent SSM parameters from each input uk ∈ RH :
+
+Re(Λ k) = WΛ uk + Re(Λ 0), Bk = WB uk + B0, Ck = WC uk + C0, (5) where Λ0, B 0, C 0 are the heads’ bias terms, initialized to S5’s HiPPO-derived values, and the projection weights WΛ, W B , W C are zero-initialized. With this initialization the model training begins from a well-conditioned HiPPO recurrence and learns selectivity as a smooth perturbation, rather than having to recover HiPPO from random initialization before the selection mechanism becomes useful. 
+
+Low-rank B and C. A dense projection WB ∈ R2P H ×H has 2P H 2 parameters; for typical settings ( P =128 , H=128 ) this single matrix exceeds the rest of the SSM in parameter count, leaving the model’s capacity dominated by its selectivity heads on B and C rather than by the recurrence those heads modulate. We instead factor 
+
+WB = WB, up WB, down , WB, down ∈ Rr×H , WB, up ∈ R2P H ×r , (6) 4and analogously for C, with rank r a hyperparameter. This low-rank structure also provides regular-ization by bottle-necking these large projectors which can be adjusted with the r knob. Only WB, up 
+
+and WC, up are zero-initialized, which preserves the HiPPO biases at step zero. The per-head cost drops from O(P H 2) to O(rP H ). The Λ head is left full-rank, as its output dimension is P rather than P H .
+
+Deep projectors. The heads in (5) are affine in uk. Mamba enriches its input pathway with a depthwise convolution, a SiLU nonlinearity, and multiplicative gating before computing its selection parameters; we add comparable nonlinear preprocessing by composing d residual gated-linear-unit (GLU) blocks before the final projection. Concretely, define 
+
+g(d)(x) = Wout 
+
+ bd ◦ · · · ◦ b1
+
+(x), bk(x) = x + ( W (1)  
+
+> k
+
+x) ⊙ σ(W (2)  
+
+> k
+
+x), (7) where Wout projects from width H to the target dimension. The Λ head replaces uk with g(dΛ)(uk)
+
+before the affine map, and the input encoder applies g(denc )(·) with Wout : Rdinput → RH . Setting 
+
+d = 0 reduces g(d) to a plain linear map, recovering the affine baseline; dΛ = denc = 0 is our default. In practice, we set dΛ and denc as hyperparameters. 
+
+Projector normalization. In the LTI case, Λ, B, and C are static parameters. When these quantities become input-dependent, unconstrained projectors produce them at every timestep, introducing perturbations that are harder to bound: errors in Re(Λ k) are exponentially amplified through the recurrence, while Bk affects the state norm at every step. To stabilize training under this harder regime, we apply RMSNorm to the projected Re(Λ k) and a complex-valued variant to the projected 
+
+Bk and Ck immediately before discretization. This is analogous to the BCNorm adopted in Mamba-2 ( 7), which applies RMSNorm to the projected B and C activations for the same reason. Empirically, the normalization matters most when deep projectors ( dΛ > 0) are used, where the projection itself can accumulate scale. 
+
+Λ reparameterization. SSMs are known to benefit from reparameterizing Re(Λ) rather than learning it directly. Common choices include the exponential parameterization Re(Λ) = − exp( θ),and the stable parameterization Re(Λ) = −1/(θ2 + 1 /2) (10 ). These formulas map an unconstrained 
+
+θ ∈ R to a strictly negative decay rate, which keeps Λ in the stable half-plane throughout training and prevents gradient descent from pushing modes onto the stability boundary, where gradients across decay rates become poorly conditioned and the model is effectively confined to exponentially decaying memory. The same reasoning applies, and arguably more strongly, when Re(Λ) is input-dependent: a stable parameterization ensures that no token can produce a locally explosive recurrence, regardless of where its projection lands. In practice, we treat the reparameterization as a hyperparameter. 5(a) Sequence model  
+
+> Input
+> Deep encoder
+> TIDES block 1
+> ...
+> TIDES block N
+> Features
+
+(b) TIDES block 
+
+> Input
+> BatchNorm
+> TIDES SSM
+> GELU
+> GLU
+> +
+> Output
+
+(c) TIDES SSM                            
+
+> uk∆k
+> Λprojector
+> HiPPO init
+> B, C projectors
+> low-rank, HiPPO
+> Discretize
+> ¯Λk= exp(Λ k˜∆k),˜∆k= ∆ k
+> ¯Bk=Λ−1
+> k( ¯Λk−I)Bk
+> Parallel scan
+> xk+1 =¯Λkxk+¯Bkuk
+> yk=Re( Ckxk) + Du k
+> Output
+> applied in parallel for k= 1 . . .L
+> Input-dependent components with HiPPO bias initialization
+
+Figure 3: TIDES architecture: from sequence model (a) to TIDES block (b) to the lower-level SSM (c). In (c), only the ZOH discretization is shown explicitly, but both ZOH and bilinear are possible. 
+
+4 The Fading Flash experiment: two failure modes Input  Slow        
+
+> λ = 1.0
+> Medium
+> λ = 1.5
+> Fast
+> λ = 2.0
+> Glow
+> (Δ = 1)
+> 0510 15 20 25 30 35
+> Position j
+> Glow
+> (Δ = 0.1)
+
+Figure 4: Task setup. 40 detectors split into three rate zones. Sparse flashes (top) produce zone-dependent decaying glows; the same flashes under different ∆
+
+(middle, bottom) yield rescaled dynamics. The model needs to predict the correct decaying glows given the sparse flashes, zone and ∆ values. Before scaling to large benchmarks, we use a controlled toy problem to better illustrate our design argument. The setup: a row of 40 de-tectors is hit by sparse flashes; each detector glows and exponentially fades after a hit; the detectors are partitioned into three colored zones with different fade rates (slow, medium, fast). A still-glowing detector that crosses into a new zone takes on that zone’s fade rate. A global “clock time” ∆k=1 ,..., 40 = ∆ 
+
+stretches or compresses the entire trajectory. This setup isolates the two architectural axes: • LTI vs Input-dependent: A purely LTI model has a single fixed readout and cannot represent three different decay rates simultaneously. • How is ∆ exposed to the model? Amodel that learns ∆ as a function of the input cannot extrapolate to clock speeds outside the training range. We train three SSM core variants: S5 as LTI baseline, Mamba S (a Mamba surrogate where we take the vanilla SSM core and make ˜∆, B, C 
+
+input-dependent), TIDES (input-dependent Re(Λ) , B, C ). For both Mamba models, we input ∆
+
+as a separate input channel, following the standard practice when irregular timestamps cannot be implicitly baked into the model. All models are matched in parameter count. 
+
+Findings. The three models split cleanly along two axes: Expressivity (whether the model represents zone-conditional decay) and Extrapolation (whether its behavior extrapolates to unseen ∆). 
+
+S5 lacks expressivity. S5’s effective learned decays stay constant per zone, and its relative error stays robust across unseen ∆ values (Figure 5), thanks to its implicit use of ∆. However, without 610 −1 10 0   
+
+> Test-time Δ
+> 1.0
+> 1.5
+> 2.0
+> 2.5
+> 3.0
+> 3.5
+> Effective decay
+> Slow (λ=1.0)
+> Training Δ
+> Ground truth
+> S5
+> Mamba S
+> TIDES
+> 10 −1 10 0
+> Test-time Δ
+> Medium (λ=1.5)
+> 10 −1 10 0
+> Test-time Δ
+> Fast (λ=2.0)
+> 10 −1 10 0
+> Test-time Δ
+> 10 0
+> 10 1
+> 10 2
+> Relative error (%)
+> OOD error
+
+Figure 5: Left: Effective learned decay vs. test ∆, per zone. S5 and TIDES bake ∆ into the discretization, so the learned decay stays flat across the full test range. Mamba S distorts the physically meaningful ∆ through a learned gate, breaking the cancellation and causing drift outside training. Right: Relative error vs. test ∆. TIDES consistently outperforms Mamba and S5 both in- and out-of-distribution. See Appendix C for full details. input-dependence, no single linear readout can reproduce three different zone decays simultaneously, and the model plateaus at the LTI floor, failing to capture the zone-dependent decays. 
+
+Mamba lacks extrapolation. The learned gate ˜∆k = softplus( W∆[uk, ∆]) fits the training ∆
+
+distribution well, achieving low training error; however, this mechanism precludes implicit time-awareness. As a result, effective decay rates drift with ∆ and error grows sharply outside the training range (Figure 5). 
+
+TIDES overcomes both. Input-dependence on Λ provides expressivity, while baking ∆ in implicitly provides extrapolation across unseen timedeltas by construction. Eigenvalues land at the three target decays, and the model stays robust across a wide span of ∆.
+
+5 Experiments 
+
+We compare TIDES to S5 ( 5 ), Mamba/S6 ( 6 ), Rough Transformer ( 11 ), and the rest of the irregular-time-series baselines: LRU ( 12 ), NCDE ( 13 ), NRDE ( 14 ), LogNCDE ( 15 ), and a vanilla Transformer ( 16 ) on UEA, and GRU-ODE-Bayes ( 17 ), Neural Flows ( 18 ), CRU ( 19 ), LinODEnet ( 20 ), and GraFITi/GraFITi-C ( 21 ) on Physiome-ODE. TIDES is implemented in PyTorch. Hyperparameters are tuned per-dataset within a fixed budget; full search spaces are given in Appendix D. All experiments use approximately 5,000 GPU-hours of A100 time. 
+
+5.1 UEA time series classification 
+
+For time series classification, we select the UEA multivariate archive ( 22 ) and follow the Rough Transformer environment ( 11 ). Complete details are given in Appendix D.1. TIDES achieves the highest average accuracy across the six UEA datasets, surpassing the LogNCDE by approximately 2 points on average and ranking first on 2 of 6 datasets (Table 1), demonstrating its capability to also model sequences with uniform gaps. Table 1: UEA time series classification results (accuracy % ± standard deviation). Bold indicates the best result per dataset. Baseline accuracies are reproduced from Walker et al. ( 15 ) and Moreno et al. (11).                                                                                           
+
+> Dataset TIDES LogNCDE RFormer LRU S6 S5 Transformer NCDE NRDE Mamba SCP1 87 .6±3.383 .1±2.881 .2±2.882 .6±3.482 .8±2.789 .9±4.684 .3±6.379 .8±5.680 .9±2.580 .7±1.4
+> SCP2 56 .5±6.253 .7±4.152 .3±3.751 .2±3.649 .9±9.550 .5±2.649 .1±2.553 .0±2.853 .7±6.948 .2±3.9
+> MI 58 .2±2.853 .7±5.355 .8±6.648 .4±5.051 .3±4.747 .7±5.550 .5±3.049 .5±2.847 .0±5.747 .7±4.5
+> EW 85 .7±4.085 .6±5.190 .3±0.187 .8±2.885 .0±16 .181 .1±3.7OOM 75 .0±3.983 .9±7.370 .9±15 .8
+> ETC 34 .2±2.434 .4±6.434 .7±4.121 .5±2.126 .4±6.424 .1±4.340 .5±6.329 .9±6.525 .3±1.827 .9±4.5
+> HB 74 .4±4.075 .2±4.672 .5±0.178 .4±6.776 .5±8.377 .7±5.570 .5±0.173 .9±2.672 .9±4.876 .2±3.8
+> Avg 66 .164.3 64.5 61.7 62.0 61.8 59.0 60.2 60.6 58.6 Avg Rank 2.83 3.58 4.33 5.33 5.33 5.75 6.33 6.67 7.08 7.75
+
+75.2 Physiome-ODE 
+
+Physiome-ODE is a comprehensive, state-of-the-art regression benchmark for IMTS, comprised of 50 irregular-time-series forecasting datasets derived from biophysical models. We follow the protocol of Klötergens et al. ( 23 ) – the complete details are given in Appendix E. We find that TIDES achieves the best average rank, surpassing LinODEnet, while tying it on per-dataset wins (16 / 50) (Table 2, full per-dataset results are given in Appendix E). Table 2: Physiome-ODE benchmark results. Full per-dataset results are given in Appendix E. Baseline MSEs are reproduced from Klötergens et al. (23). TIDES is our run. 
+
+Dataset TIDES LinODEnet GraFITi GraFITi-C CRU Neural Flows GRU-ODE-Bayes # Wins 16 16 5 10 3 0 0Avg. Rank 2.40 2.62 2.82 3.54 3.68 5.76 6.88 
+
+5.3 Random drop 
+
+To study generalization to irregular sampling, we design a random drop experiment on EigenWorms: a different random 50% of timesteps is dropped at each training step; evaluation uses fixed indices at varying rtest , with original timestamps preserved to expose the elapsed gap. We train six ∼ 30 k-parameter SSM variants that differ only in which of {Re(Λ) , Im(Λ) , B,C, ˜∆} is input-dependent (Appendix F, Table 7). RFormer ( 11 ) is included as a SOTA non-SSM continuous-time sequence model. 0.1 0.3 0.5 0.7 0.9  
+
+> Test drop rate rtest
+> 0.3
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> 0.8
+> 0.9
+> Test accuracy
+> rtrain
+> S5
+> TIDES Λ
+> Mamba S
+> TIDES BC
+> TIDES
+> TIDES full
+> RFormer
+
+Figure 6: Test accuracy vs. rtest on Eigen-Worms ( n=3 seeds; trained at rtrain =0 .5). In Figure 6, we show that (i) LTI B, C caps expressiv-ity, as S5 and TIDES Λ plateau near chance regardless of rtest . (ii) Input-dependent ˜∆ does not extrapo-late: Mamba S matches TIDES for rtest ≤ 0.7 but collapses from ∼0.7 to ∼0.4 at rtest =0 .9; RFormer fails analogously, with its fixed signature window count baked into positional encodings. (iii) Input-dependent Re(Λ) recovers expressivity and extrap-olation: TIDES achieves the best mean accuracy (0.739 ) and stays flat across the full rtest range. Adding input-dependence to Im(Λ) (TIDES full ) does not help and slightly hurts, confirming that selectivity belongs on decay rates, not on oscillation frequencies. 
+
+6 Related work 
+
+State space models. S4 ( 24 ) introduced structured SSMs. S5 ( 5) simplified to complex-diagonal form with a per-step ˜∆k amenable to parallel scan. Mamba/S6 ( 6) introduced selectivity over 
+
+( ˜∆, B, C ). A parallel line of gated linear recurrences — GLA ( 25 ), RetNet ( 26 ), Mamba-2 ( 7) — also injects input-dependence into the state transition via data-dependent scalar or structured decay, but operates purely discretely: there is no continuous-time generator and no ˜∆, so irregular timestamps must enter as an input feature. TIDES is, to the best of our knowledge, the first to combine selective 
+
+Λ with a physical-time discretization. 
+
+Irregular time series. Methods for IMTS handle elapsed time explicitly, through one of three mechanisms. Numerical integration between observations: Latent ODE ( 4) and ODE-RNN propagate the hidden state with a neural ODE solver, while CRU ( 2) replaces the ODE with a linear SDE that admits closed-form Kalman-style updates between observations. Time as a gated input: GRU-D ( 3)feeds elapsed time into a learned exponential decay on the hidden state. Time as a positional code: 
+
+mTAN ( 1) parameterizes attention with a kernel over elapsed time, and ContiFormer ( 27 ) and Rough Transformer ( 11 ) extend transformers with continuous-time machinery (ODE-driven attention and path signatures, respectively). 8Continuous-time deep learning. Neural ODEs ( 28 ) and neural CDEs ( 13 ) formulate sequence models as ODE solvers. These methods provide flexible time handling but incur a substantial computational cost compared to SSM-style discretization. 
+
+7 Discussion 
+
+Interpreting the empirical pattern. The advantage TIDES holds over each baseline scales with how much the task benefits from three properties: per-token input-dependent processing needed to filter noise and resolve context, faithful handling of irregular sampling intervals, and extrapolation to sampling regimes not seen during training. Different baselines satisfy different subsets, which explains the variation in the margin we observe. On UEA, where the dominant competitors (LogNCDE, RFormer) have only weak per-token selectivity and no implicit continuous-time discretization, TIDES wins on average rank and accuracy. On Physiome-ODE, the strongest baseline LinODEnet is itself continuous-time, sharing two of the three properties; the gap narrows accordingly, with TIDES retaining a small edge on average rank ( 2.40 vs. 2.62 ) and tying on per-dataset wins (16/50). The third axis, namely extrapolation across irregularity is what the Fading Flash diagnostic and the random-drop ablation (Section 5.3) isolate in controlled settings: TIDES is the only architecture in our comparison that satisfies all three properties simultaneously, while ablations such as Mamba S and RFormer collapse precisely when the test-time sampling regime diverges from training. 
+
+A recipe for expressive irregular sequence modeling. Beyond TIDES specifically, our analysis surfaces a design principle that applies broadly to architectures for irregularly-sampled sequences: keep discretization and expressivity separate. The physical sampling interval ∆k should enter the model only through the rule that converts the continuous-time generator into a discrete recurrence, where its semantics are fixed analytically rather than learned. Expressivity should live on the continuous-time generator itself, in our case (Re(Λ) , B, C ). This separation is what allows a model to be simultaneously expressive (through its input-dependent components) and extrapolative across sampling regimes (through the analytic time-handling of the discretization). When the two roles are conflated, as in the case of Mamba where the discretization step is itself made a learned function of the input, the model recovers per-token expressivity but loses extrapolation, as the Fading Flash 
+
+experiment illustrates. We encourage this principle to extend beyond state space models to other continuous-time architectures, including neural-ODE-based models and attention variants with continuous-time positional structure. 
+
+Scope. TIDES is mainly designed for sequence problems where the spacing between observations carries information such as irregular clinical, simulation, or sensor based time series. We do not claim it as a general-purpose replacement for Mamba on regular-grid tasks such as language modeling, where the input-dependent ˜∆ gate plays a different role and the implicit-time benefit does not apply. Whether the principle survives at language-model scale is an open question we leave to future work. 
+
+Limitations. Several caveats temper our claims. We do not evaluate TIDES on language modeling or other regular-grid long-range benchmarks, so our results speak mainly to the irregular-time regime. The Fading Flash experiment is a controlled diagnostic designed to isolate failure modes; it is not itself evidence of real-world advantage, which we instead derive from UEA and Physiome-ODE. TIDES introduces additional tunable structure beyond S5 such as rank r for the low-rank B and C
+
+projectors, projector depths dΛ and denc , and the choice of Λ reparameterization, potentially posing more tuning work. Our implementation uses a generic parallel scan rather than a hardware-aware kernel, so the wall-clock comparisons should be read as architectural rather than fully optimized. Our argument that input-dependent Im(Λ) is a poor selectivity target is conceptual and limited in the empirical validation (Section 5.3), we do not provide a formal expressivity result. 
+
+Broader impact. TIDES inherits the SSM family’s linear training scaling and constant per-step inference cost in recurrent mode, and adds native handling of irregular timestamps without explicit time features. The combination is well-suited to real-time sensor settings on resource-constrained hardware such as wearable health monitoring, where streams arrive at irregular intervals, sensors drop and resume, and compute and memory budgets are tight. The implicit time-awareness we add lets such systems operate without engineering an explicit time-encoding pipeline or maintaining separate 9logic for missing observations, and the extrapolation behavior we demonstrate offers some robustness to sampling regimes that differ from those seen at training time. 
+
+Future directions. Several extensions follow naturally. Beyond physical time. More broadly, the principle extends to settings where ∆k encodes any meaningful continuous parameter along which the sequence evolves, not necessarily wall-clock time. For example, trajectory modeling parameterized by arc length, or to any sequence indexed by a continuum the model can be made aware of analytically rather than as a learned feature. Active sampling. A model with a faithful notion of its step parameter can be coupled to an acquisition rule that decides where the next observation should be taken. It is particularly relevant in clinical, scientific, and industrial settings where observations are costly. 
+
+Robust Anytime forecasting. Because ˜∆ is physical at inference, a trained TIDES can in principle forecast at arbitrary future steps without retraining by feeding the desired ∆ at readout. Characterizing how this property degrades far from the training horizon distribution is a concrete open question. 
+
+8 Conclusion 
+
+The strengths of Mamba and S5, per-token expressivity and faithful physical-time semantics, are usually treated as belonging to different design philosophies. We show they are compatible once input-dependence is placed on the continuous-time generator rather than the discretization step: the model gains per-token expressivity, while the physical sampling interval keeps its physical role in the discretization. The resulting architecture, TIDES, achieves selective implicit time-awareness and sets new state-of-the-art results on UEA classification and Physiome-ODE forecasting. More broadly, our analysis suggests a design principle that generalizes beyond state space models: in any architecture for irregularly-sampled sequences, keep discretization and expressivity on separate ledgers, expressivity on the continuous-time generator, time-handling analytic in the discretization. 
+
+Acknowledgments and Disclosure of Funding 
+
+[Acknowledgments. Hidden in anonymous submission.] 
+
+References                   
+
+> [1] Satya Narayan Shukla and Benjamin M Marlin. Multi-time attention networks for irregularly sampled time series. arXiv preprint arXiv:2101.10318 , 2021. [2] Mona Schirmer, Mazin Eltayeb, Stefan Lessmann, and Maja Rudolph. Modeling irregular time series with continuous recurrent units. In International conference on machine learning , pages 19388–19405. PMLR, 2022. [3] Zhengping Che, Sanjay Purushotham, Kyunghyun Cho, David Sontag, and Yan Liu. Recurrent neural networks for multivariate time series with missing values. Scientific reports , 8(1):6085, 2018. [4] Yulia Rubanova, Ricky TQ Chen, and David K Duvenaud. Latent ordinary differential equations for irregularly-sampled time series. Advances in neural information processing systems , 32, 2019. [5] Jimmy TH Smith, Andrew Warrington, and Scott W Linderman. Simplified state space layers for sequence modeling. arXiv preprint arXiv:2208.04933 , 2022. [6] Albert Gu and Tri Dao. Mamba: Linear-time sequence modeling with selective state spaces. arXiv preprint arXiv:2312.00752 , 2023. [7] Tri Dao and Albert Gu. Transformers are ssms: Generalized models and efficient algorithms through structured state space duality. arXiv preprint arXiv:2405.21060 , 2024. [8] Albert Gu, Tri Dao, Stefano Ermon, Atri Rudra, and Christopher Ré. HiPPO: Recurrent memory with optimal polynomial projections. Advances in Neural Information Processing Systems , 33:1474–1487, 2020. [9] Allan L Fisher and Anwar M Ghuloum. Parallelizing complex scans and reductions. ACM SIGPLAN Notices , 29(6):135–146, 1994.
+
+10 [10] Shida Wang and Qianxiao Li. Stablessm: Alleviating the curse of memory in state-space models through stable reparameterization, 2024. URL https://arxiv.org/abs/2311.14495 .[11] Fernando Moreno-Pino, Alvaro Arroyo, Harrison Waldon, Xiaowen Dong, and Álvaro Cartea. Rough transformers for continuous and efficient time-series modelling. arXiv preprint arXiv:2403.10288 , 2024. [12] Antonio Orvieto, Samuel L Smith, Albert Gu, Anushan Fernando, Caglar Gulcehre, Razvan Pascanu, and Soham De. Resurrecting recurrent neural networks for long sequences. In International conference on machine learning , pages 26670–26698. PMLR, 2023. [13] Patrick Kidger, James Morrill, James Foster, and Terry Lyons. Neural controlled differential equations for irregular time series. Advances in neural information processing systems , 33:6696–6707, 2020. [14] James Morrill, Cristopher Salvi, Patrick Kidger, and James Foster. Neural rough differential equations for long time series. In International Conference on Machine Learning , pages 7829–7838. PMLR, 2021. [15] Benjamin Walker, Andrew D McLeod, Tiexin Qin, Yichuan Cheng, Haoliang Li, and Terry Lyons. Log neu-ral controlled differential equations: The lie brackets make a difference. arXiv preprint arXiv:2402.18512 ,2024. [16] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz Kaiser, and Illia Polosukhin. Attention is all you need. Advances in neural information processing systems ,30, 2017. [17] Edward De Brouwer, Jaak Simm, Adam Arany, and Yves Moreau. Gru-ode-bayes: Continuous modeling of sporadically-observed time series. Advances in neural information processing systems , 32, 2019. [18] Marin Biloš, Johanna Sommer, Syama Sundar Rangapuram, Tim Januschowski, and Stephan Günnemann. Neural Flows: Efficient Alternative to Neural ODEs. In Advances in Neu-ral Information Processing Systems , volume 34, pages 21325–21337. Curran Associates, Inc., 2021. URL https://proceedings.neurips.cc/paper_files/paper/2021/hash/ b21f9f98829dea9a48fd8aaddc1f159d-Abstract.html .[19] Mona Schirmer, Mazin Eltayeb, Stefan Lessmann, and Maja Rudolph. Modeling irregular time series with continuous recurrent units. In International conference on machine learning , pages 19388–19405. PMLR, 2022. [20] Randolf Scholz, Stefan Born, Nghia Duong-Trung, Mariano Nicolas Cruz-Bournazou, and Lars Schmidt-Thieme. Latent linear odes with neural kalman filtering for irregular time series forecasting. 2023. [21] Vijaya Krishna Yalavarthi, Kiran Madhusudhanan, Randolf Scholz, Nourhan Ahmed, Johannes Burchert, Shayan Jawed, Stefan Born, and Lars Schmidt-Thieme. Grafiti: Graphs for forecasting irregularly sampled time series. In Proceedings of the AAAI Conference on Artificial Intelligence , volume 38, pages 16255– 16263, 2024. [22] Anthony Bagnall, Hoang Anh Dau, Jason Lines, Michael Flynn, James Large, Aaron Bostrom, Paul Southam, and Eamonn Keogh. The uea multivariate time series classification archive, 2018. arXiv preprint arXiv:1811.00075 , 2018. [23] Christian Klötergens, Vijaya Krishna Yalavarthi, Randolf Scholz, Maximilian Stubbemann, Stefan Born, and Lars Schmidt-Thieme. Physiome-ode: A benchmark for irregularly sampled multivariate time series forecasting based on biological odes. arXiv preprint arXiv:2502.07489 , 2025. [24] Albert Gu, Karan Goel, and Christopher Ré. Efficiently modeling long sequences with structured state spaces. arXiv preprint arXiv:2111.00396 , 2021. [25] Songlin Yang, Bailin Wang, Yikang Shen, Rameswar Panda, and Yoon Kim. Gated linear attention transformers with hardware-efficient training. arXiv preprint arXiv:2312.06635 , 2023. [26] Yutao Sun, Li Dong, Shaohan Huang, Shuming Ma, Yuqing Xia, Jilong Xue, Jianyong Wang, and Furu Wei. Retentive network: A successor to transformer for large language models. arXiv preprint arXiv:2307.08621 ,2023. [27] Yuqi Chen, Kan Ren, Yansen Wang, Yuchen Fang, Weiwei Sun, and Dongsheng Li. Contiformer: Continuous-time transformer for irregular time series modeling. Advances in Neural Information Processing Systems , 36:47143–47175, 2023. [28] Ricky TQ Chen, Yulia Rubanova, Jesse Bettencourt, and David K Duvenaud. Neural ordinary differential equations. Advances in neural information processing systems , 31, 2018. 
+
+11 A Architecture details 
+
+Block execution order. Each TIDES block applies the following sequence of operations to its input 
+
+x ∈ RB×L×H :
+
+z = Dropout  GLU  Dropout(GELU(SSM(BN( x))))  + x, 
+
+where BN is BatchNorm and both Dropout calls share the same rate drop_rate . The two Dropout applications are placed (i) immediately after the GELU nonlinearity, before the GLU, and (ii) after the GLU, before the residual addition. 
+
+BatchNorm without affine parameters. The BatchNorm layer is configured with no learnable scale or shift ( affine=False ), normalizing over the joint batch–time dimensions per channel. A learnable affine rescaling would be redundant because the SSM recurrence and GLU provide all the learned scaling; more importantly, a per-channel scale that is constant across time would interfere with the HiPPO bias initialization. 
+
+Per-mode timescale initialization. Each of the P complex modes has an independent learnable timescale parameter initialized uniformly in [0 .001 , 0.1] range. In practise it is reparametrized in the log-space i.e. δp = exp(log _step p), which is positive by construction. It acts as a scaler per state dimension that is learned in the log-space. 
+
+Parallel scan. The associative scan uses the binary operator (Ai, b i) ⊕ (Aj , b j ) = ( Aj Ai, b j +
+
+Aj bi), applied in parallel over the sequence axis with O(log L) depth and O(L) work per layer. All operations are complex-valued on the diagonal state; the real and imaginary parts are stored as separate float channels to remain compatible with PyTorch autograd. 
+
+Bidirectional scan. When bidir is enabled, we run an additional pass over the reversed input sequence and concatenate the forward and backward hidden states along the channel dimension, treating the result as the hidden state. 
+
+GLU feed-forward expansion. The ff_mult hyperparameter sets the expansion factor of the inner dimension in the GLU feed-forward block (i.e. inner width = ff_mult · hidden_size ). 
+
+Eigenvalue clipping. When clip_eigs is enabled, we clamp the real part of the continuous-time eigenvalues λ to be at most −10 −5, preventing eigenvalues from drifting into the right half-plane and ensuring stable state transitions. 
+
+LR factor. LTI SSM matrices are commonly assigned a lower learning rate than the rest of the network for stability reasons; the non-SSM learning rate is computed as ssm_lr · lr_factor . For TIDES, this lower rate applies to the imaginary part of Λ, since it is the only SSM parameter that remains LTI. 
+
+SSM block grouping. The ssm_b hyperparameter partitions the diagonal state into independent groups, analogous to attention heads: the eigenvalues Λ are split into ssm_b disjoint groups, each evolving as its own SSM with its own Λ, B, and C parameters. The total state dimension is 
+
+ssm_size = ssm_b · ssm_mult , where ssm_mult sets the per-group state size. This block structure trades off representational capacity (more groups capture more distinct dynamical modes) against per-group expressiveness (larger ssm_mult allows richer dynamics within each group). 
+
+B Discretization derivations 
+
+We consider the continuous time linear state space model 
+
+˙x(t) = Λ x(t) + B u (t), y(t) = C x (t) + D u (t), (8) with diagonal state matrix Λ ∈ CP ×P , input matrix B ∈ CP ×H , and output matrix C ∈ CP ×P . To process discrete sequences sampled at (possibly irregular) timesteps {tk}Lk=0 , we discretize (8) over each interval of length ∆k = tk+1 − tk, yielding the recurrence 
+
+xk+1 = ¯Λk xk + ¯Bk uk, yk = C x k + D u k. (9) 12 B.1 Zero order hold (ZOH) 
+
+Assuming the input u(t) is held constant on [tk, t k+1 ) at value uk, the exact solution of (8) is 
+
+x(tk+1 ) = eΛ∆ k x(tk) + 
+
+Z ∆k
+
+> 0
+
+eΛ(∆ k −τ )dτ
+
+!
+
+B u k. (10) For diagonal Λ with strictly negative real part, Λ is invertible and the integral admits the closed form 
+
+Z ∆k
+
+> 0
+
+eΛ(∆ k −τ )dτ = Λ −1  eΛ∆ k − I . (11) The ZOH discretized matrices are therefore 
+
+¯ΛZOH  
+
+> k
+
+= exp(Λ∆ k), ¯BZOH  
+
+> k
+
+= Λ −1 (exp(Λ∆ k) − I) B. (12) Because Λ is diagonal, the matrix exponential reduces to elementwise scalar exponentials, making (12) cheap to compute and compatible with parallel scan. 
+
+C The Fading Flash experiment: full details 
+
+C.1 Data generation 
+
+A sequence has length L = 40 and consists of two fields: a binary flash indicator pk ∈ { 0, 1} and an integer zone index zk ∈ { 0, 1, 2} for each position k = 1 , . . . , L .
+
+Zone layout. Each sequence is assigned 2 or 3 contiguous zones (sampled uniformly). Zone boundaries are drawn without replacement from positions {4, . . . , 35 }, so every zone spans at least 4 positions. Consecutive zones are guaranteed to have distinct rate indices. Each zone i is assigned a rate λi ∈ { 1.0, 1.5, 2.0} (slow / medium / fast) sampled uniformly, with the constraint that no two adjacent zones share a rate. 
+
+Flash positions. Between 2 and 4 flash positions are drawn without replacement from {0, . . . , 39 }
+
+and set to 1; all other positions are 0. 
+
+Target signal. Given a global timestep ∆ and the per-position rate λk = λzk , the glow yk evolves as 
+
+hk = αkhk−1 + βkpk, yk = hk, αk = e−λk ∆, βk = 1−αk 
+
+> λk
+
+. (13) This is the exact zero-order-hold discretization of a continuous first-order system ˙h = −λkh + p,sampled at interval ∆.
+
+Model input. The input to each model at position k is uk ∈ R4: the flash indicator pk concatenated with the one-hot encoding of the zone zk ∈ { 0, 1, 2}. The zone identity is thus explicit in the input; the challenge is to use it to select the correct decay rate, then generalize that selection across unseen 
+
+∆ values. 
+
+Training distribution. During training, ∆ is sampled uniformly from [0 .5, 1.5] for each batch element independently. 
+
+C.2 Model details 
+
+All models share the same input and output interface: they receive the sequence u ∈ RL×4 and the scalar ∆, and predict ˆy ∈ RL×1. The architectures use a simplified, self-contained SSM without the full block structure (no BatchNorm, no GLU, no dropout), isolating the SSM core. Each consists of a linear encoder Wenc : R4 → RH followed by a real-diagonal SSM with P states and a linear readout C ∈ R1×P plus direct feedthrough D ∈ R1×H . The state update uses ZOH discretization. The three variants differ only in which parameters are input-dependent: for S5 and TIDES variants, ˜∆k is the physical timestep, i.e., ˜∆k = ∆ k, and enters through multiplication, not through the network; for the Mamba surrogate, the step is softplus( W∆[hk, ∆k]) , where hk =
+
+Wenc uk, so ˜∆k is learned as a function of the input. 13 C.3 Training protocol 
+
+All models are trained with Adam ( lr = 3 × 10 −3, default β1, β 2) for 3000 steps with batch size 32, minimizing MSE against the ground-truth glow (13) . All runs use seed 0. No learning-rate schedule or weight decay is applied. 
+
+C.4 Evaluation protocol 
+
+Models are evaluated at ten test values ∆ ∈ { 0.1, 0.2, 0.3, 0.5, 0.8, 1.0, 1.2, 1.5, 1.8, 2.0}. The training range ∆ ∈ [0 .5, 1.5] covers positions 4–8 in this grid; positions 1–3 and 9–10 are out-of-distribution. At each ∆, we draw 6 × 64 = 384 fresh sequences at that fixed ∆ and report the mean MSE. The primary metric is relative error = pMSE /Var( y) × 100% , where Var( y) is estimated from 
+
+10 × 128 = 1280 samples drawn at the same ∆. Normalizing by target variance makes the metric comparable across ∆ values: a target with small ∆ has small glow values, and raw MSE would be misleadingly low. 
+
+D Dataset details and experimental setup 
+
+D.1 UEA classification (Walker 2024 protocol) 
+
+We use six datasets from the UEA multivariate time series classification archive ( 22 ): SelfRegulation-SCP1 (SCP1), SelfRegulationSCP2 (SCP2), MotorImagery (MI), EigenWorms (EW), EthanolCon-centration (ETC), and Heartbeat (HB). These are the same six long-context classification problems used in the LogNCDE evaluation ( 15 ) and reproduced by RFormer ( 11 ), selected to span EEG/MEG (SCP1, SCP2, MI, HB), motion-capture worm dynamics (EW), and spectroscopy (ETC). Sequence lengths range from L=405 (HB) to L=17 ,984 (EW); channel counts range from 6 (SCP1, EW) to 64 
+
+(MI). All series in each problem are equal length and contain no missing values; we use the archive’s pre-stored ARFF files without further interpolation. Per-channel inputs are standardized to zero mean and unit variance using statistics computed on the training partition only. 
+
+Splits and task. We follow the RFormer protocol bit-for-bit. The original UEA train and test partitions are concatenated and re-split into train / validation / test using a 70 /15 /15 random partition with five seeds; all reported numbers are mean ± std over the five resulting folds. The task is closed-set multivariate classification, evaluated by accuracy on the held-out test partition. No data augmentation, time warping, or downsampling is applied. Table 3: Best TIDES configurations per UEA dataset.                                                                                                                  
+
+> Dataset lr wd hssm ssm_b Ldenc learn λdisc drop bs dλbc_rank bidir clip ep
+> SCP1 2.17 ×10 −40.016 32 440exp zoh 0.15 508−−200
+> SCP2 2.72 ×10 −40.016 64 820stable zoh 0.00 10 016 ✓✓400
+> MI 6.52 ×10 −40.01 32 16 440standard zoh 0.05 20 016 ✓✓200
+> EW 1.56 ×10 −30.116 16 210stable zoh 0.00 10 016 ✓✓400
+> ETC 5.18 ×10 −40.1832 881exp zoh 0.05 20 28✓−200
+> HB 3.32 ×10 −40.164 16 440exp zoh 0.10 20 08✓−400
+
+D.2 Physiome-ODE (Klötergens 2025 protocol) 
+
+We use the public Physiome-ODE benchmark ( 23 ) without modification. Physiome-ODE comprises 
+
+50 irregularly-sampled multivariate time-series (IMTS) forecasting datasets, each generated by simulating a biological ordinary differential equation; the 50 ODEs were selected from a pool of 
+
+208 candidate models by ranking on the Joint Gradient Deviation (JGD) score ( 23 ), which jointly captures within-trajectory gradient variance and across-trajectory diversity. For each ODE, the authors stochastically perturb the literature initial conditions, ODE constants, and integration duration, with spreads (σinitial , σ const , σ dur ) optimized to maximize JGD over σinitial ∈ { 0.1, 0.3, 0.5}, σconst ∈{0.05 , 0.1, 0.3}, and σdur ∈ { 0.33 , 1, 3.3, 10 , 30 }. Each dataset contains 2,000 trajectories, each with 
+
+200 regularly-spaced ODE solutions over duration 12 σ∗
+
+> dur
+
+. To turn these into IMTS instances, 80% of observations are randomly masked out per channel and additive Gaussian noise ε ∼ N (0 , 0.05) is 14 Table 4: Hyperparameter search space for TIDES on the UEA benchmark. Continuous parameters use log-uniform sampling; all others are categorical. 
+
+Hyperparameter Values / Range 
+
+lr [10 −6, 10 −3]
+
+weight decay {0, 10 −3, 10 −2, 10 −1}
+
+h (hidden dim) {8, 16 , 32 , 64 }
+
+L (layers) {1, 2, 4, 6, 8}
+
+ssm_b (SSM blocks) {2, 4, 8}
+
+ssm_mult {1, 2, 4}
+
+disc {zoh, bilinear} drop {0.00 , 0.05 , 0.10 , 0.15 , 0.20 }
+
+λ reparametrization {standard, stable, exp} bidir {True, False} 
+
+denc {0, 1, 2}
+
+dλ {0, 1, 2}
+
+bc_rank {4, 8, 16 }
+
+batch size {5, 10 , 20 }
+
+epochs {200 , 400 }
+
+clip_eigs {True, False} applied to the retained values. All channels are normalized to zero mean and unit variance over the union of all timesteps and instances within a dataset. For multivariate ODEs, the JGD score reported in Table 6 is the mean of the ten channels with the highest per-channel JGD (as per the protocol of Klötergens et al. (23), designed to avoid diluting JGD by trivially-constant channels). 
+
+Splits and task. We use the benchmark’s published 5-fold cross-validation with a 70 /20 /10 
+
+train/validation/test instance-level split per fold; the observation mask is resampled per instance per fold to maintain the 80% sparsity. The forecasting target is the second half of each trajectory ( 100 
+
+steps) given the first half ( 100 steps) as conditioning. Performance is reported as masked MSE on observed entries in the forecast window, averaged over the five folds; per-dataset means and standard deviations appear in Table 6. 
+
+Training. All models are trained for 200 epochs with early stopping on validation MSE (pa-tience 30 ), using AdamW with a cosine-annealed learning rate and linear warmup over the first 
+
+warmup_epochs epochs. The training objective is mean squared error on observed entries in the forecast window. Following the protocol of Klötergens et al. ( 23 ), we sample 10 hyperparameter configurations and select the best on the first fold’s validation set, then evaluate the selected configu-ration on all five folds; reported numbers in Table 6 are mean ± std across folds. The hyperparameter search space is given in Table 5. 
+
+E Physiome-ODE per-dataset results 
+
+Table 6 reports the full per-dataset results across all 50 Physiome-ODE problems, ordered by descending Joint Gradient Deviation (JGD). For each dataset, we report the 5-fold mean and standard deviation of the masked forecasting MSE, with the best score per row in bold . Aggregate statistics over the suite—namely, the number of best-method wins per model and the average rank—are reported in the bottom two rows. TIDES achieves the best average rank (2.40) and ties for the most wins (16 of 50, jointly with LinODEnet); the remaining wins are distributed across GraFITi, GraFITi-C, and CRU, with no architecture dominating across the JGD spectrum. The two extremes of the table behave differently: high-JGD problems (top) are dominated by the constant-channel baseline GraFITi-C, indicating that several of the most “volatile” ODEs offer little forecastable signal beyond their channel mean, whereas the low-JGD regime (bottom) cleanly separates the methods, with LinODEnet and TIDES alternating in first place. 15 Table 5: Hyperparameter search space for Physiome-ODE. Continuous parameters use log-uniform sampling; all others are categorical. 
+
+Hyperparameter Values / Range 
+
+lr [10 −6, 10 −3]
+
+lr_factor [1 , 350] 
+
+weight_decay [10 −6, 10 −1]
+
+warmup_epochs {1, 5, 10 }
+
+batch_size {16 , 32 , 48 , . . . , 128 }
+
+drop_rate {0.00 , 0.05 , 0.10 , . . . , 0.30 }
+
+h (hidden_size) {16 , 20 , 24 , . . . , 192 }
+
+num_blocks [2 , 16] 
+
+denc (encoder_depth) {0, 1, 2}
+
+ff_mult {0.5} ∪ { 1, 2, . . . , 8}
+
+bidir {True, False} ssm_size {2, 4, 6, . . . , 50 }
+
+bc_rank [1 , 48] 
+
+dλ (lambda_encoder_depth) {0, 1, 2}
+
+λ reparametrization {standard, stable, exp, softplus} disc (discretization) {zoh, bilinear} clip_eigs {True, False} proj_init_method {zeros, random} 
+
+F Random drop task details 
+
+To study generalization to irregular sampling, we apply a custom random drop experiment to the EigenWorms dataset: at each training step a fraction rtrain of time indices is sampled uniformly without replacement and discarded, and the model observes only the remaining (1 − rtrain ) fraction of steps. The retained observations are paired with their original timestamps so that the model can be informed of the size of the gaps caused by the random drops. At evaluation time we fix the dropped indices per sequence (drawn once per seed before training begins) and sweep 
+
+rtest ∈ { 0.1, 0.3, 0.5, 0.7, 0.9} independently of the training rate. This separation between rtrain and 
+
+rtest turns the benchmark into an extrapolation test: models must handle observation densities that may be substantially higher or lower than those seen during training, with rtest =0 .9 representing the most extreme out-of-distribution regime (only 10% of steps observed), enforcing true continuous learning. Within this task we ablate the role of input dependence in each component of the SSM by defining six architecture variants that share all hyperparameters ( L=1 , P =16 , bidir , ZOH, wd=0 .1) and adjust the hidden dimension d to keep the number of parameters close among the models, matched to ≈30k 
+
+parameters. Each variant selects independently whether Re(Λ) , Im(Λ) , the B,C projections, and the step size ˜∆ are LTI or input-dependent (see Table 7). ˜∆ being LTI means we implicitly provide the timedeltas to the model and ˜∆ being ID is the case where we provide the ∆ as an additional input channel. Models are trained with drop rate rtrain =0 .5 on EigenWorms and evaluated across rtest ∈{0.1, 0.3, 0.5, 0.7, 0.9} (Figure 6). 
+
+LTI B,C lacks expressivity. S5 and TIDES Λ, which use LTI B and C, plateau at a poor accuracy across rtest : statically deciding how the input affects the state ( B) and how the state affects the output (C) significantly limits the model’s performance at this task. All variants with input-dependent B,C 
+
+(Mamba S, TIDES BC , TIDES, TIDES full ) learn the task successfully, confirming that the ability to expressively modulate what is read and written at each observation is essential. 
+
+Input-dependent ˜∆ hurts out-of-distribution generalization. Mamba S, which makes the step size ˜∆ input-dependent instead of Λ, matches TIDES on in-distribution rates ( r = ∼0.5) but collapses dramatically at rtest =0 .9, dropping from ∼0.7 to ∼0.4. Because ˜∆k is computed as 
+
+softplus( W∆[uk, ∆k]) , it cannot extrapolate to out-of-distribution drop rates. 16 Table 6: Physiome-ODE benchmark results (MSE). Bold indicates the best result per dataset. Baseline MSEs are reproduced from Klötergens et al. (23); TIDES is our run. 
+
+Dataset JGD TIDES LinODEnet GraFITi GraFITi-C CRU Neural Flows GRU-ODE-Bayes DUP01 2.697 0.953 ±0.037 0.964 ±0.036 0.955 ±0.037 0.951 ±0.036 0.958 ±0.038 1.030 ±0.046 1.037 ±0.047 
+
+JEL01 2.580 0.937 ±0.014 0.949 ±0.015 0.942 ±0.020 0.935 ±0.016 0.939 ±0.015 1.000 ±0.013 1.017 ±0.014 
+
+DOK01 2.277 0.982 ±0.004 0.996 ±0.003 0.984 ±0.005 0.982 ±0.005 0.985 ±0.005 0.998 ±0.005 1.011 ±0.004 
+
+INA01 2.218 1.003 ±0.010 1.009 ±0.011 1.004 ±0.010 1.004 ±0.009 1.005 ±0.010 1.008 ±0.008 1.018 ±0.010 
+
+WOL01 1.973 0.807 ±0.027 0.806 ±0.027 0.787 ±0.028 0.784 ±0.030 0.814 ±0.029 0.841 ±0.029 0.952 ±0.035 
+
+BOR01 1.795 0.711 ±0.022 0.719 ±0.021 0.712 ±0.022 0.709 ±0.022 0.715 ±0.020 0.743 ±0.026 0.794 ±0.034 
+
+HYN01 1.548 1.026 ±0.068 0.672 ±0.044 0.625 ±0.043 0.619 ±0.046 0.665 ±0.053 0.636 ±0.045 0.883 ±0.060 
+
+JEL02 1.271 0.777 ±0.032 0.693 ±0.031 0.699 ±0.029 0.687 ±0.027 0.674 ±0.028 0.779 ±0.028 0.816 ±0.049 
+
+DUP02 1.202 0.722 ±0.044 0.740 ±0.042 0.728 ±0.044 0.718 ±0.046 0.722 ±0.046 0.890 ±0.081 0.895 ±0.055 
+
+WOL02 0.895 0.650 ±0.015 0.663 ±0.015 0.654 ±0.014 0.645 ±0.016 0.653 ±0.017 0.685 ±0.012 0.854 ±0.010 
+
+DIF01 0.735 0.706 ±0.054 0.832 ±0.087 0.985 ±0.030 0.982 ±0.029 0.985 ±0.025 1.014 ±0.025 1.035 ±0.023 
+
+VAN01 0.407 0.249 ±0.005 0.250 ±0.006 0.246 ±0.005 0.242 ±0.006 0.253 ±0.005 0.250 ±0.006 0.321 ±0.023 
+
+DUP03 0.254 0.621 ±0.047 0.632 ±0.044 0.627 ±0.043 0.744 ±0.042 0.622 ±0.047 1.098 ±0.447 0.874 ±0.089 
+
+BER01 0.179 0.265 ±0.016 0.279 ±0.020 0.300 ±0.018 0.342 ±0.018 0.280 ±0.016 0.398 ±0.014 0.594 ±0.054 
+
+LEN01 0.178 0.383 ±0.023 0.387 ±0.071 0.607 ±0.055 0.970 ±0.063 0.754 ±0.157 1.009 ±0.061 1.028 ±0.060 
+
+LI01 0.113 0.111 ±0.006 0.084 ±0.009 0.202 ±0.013 0.742 ±0.010 0.175 ±0.020 0.979 ±0.049 1.067 ±0.015 
+
+LI02 0.097 0.380 ±0.049 0.434 ±0.044 0.397 ±0.058 0.458 ±0.056 0.437 ±0.046 0.674 ±0.105 0.723 ±0.080 
+
+REV01 0.081 0.607 ±0.040 0.597 ±0.061 0.674 ±0.055 0.855 ±0.050 0.602 ±0.049 0.978 ±0.042 1.091 ±0.075 
+
+PUR01 0.049 0.134 ±0.013 0.106 ±0.006 0.153 ±0.006 0.476 ±0.020 0.353 ±0.083 0.654 ±0.102 0.703 ±0.058 
+
+NYG01 0.047 0.369 ±0.084 0.358 ±0.071 0.344 ±0.065 0.366 ±0.047 0.403 ±0.092 0.442 ±0.094 0.571 ±0.074 
+
+PUR02 0.044 0.271 ±0.020 0.280 ±0.028 0.322 ±0.021 0.511 ±0.023 0.293 ±0.026 0.723 ±0.077 0.830 ±0.066 
+
+HOD01 0.042 0.408 ±0.032 0.441 ±0.043 0.493 ±0.046 0.609 ±0.056 0.409 ±0.049 0.701 ±0.077 0.851 ±0.118 
+
+REE01 0.035 0.022 ±0.002 0.045 ±0.012 0.033 ±0.007 0.039 ±0.012 0.051 ±0.008 0.045 ±0.011 0.266 ±0.068 
+
+VIL01 0.028 0.355 ±0.021 0.374 ±0.021 0.344 ±0.044 0.378 ±0.042 0.373 ±0.039 0.500 ±0.060 0.511 ±0.053 
+
+KAR01 0.023 0.035 ±0.007 0.034 ±0.008 0.041 ±0.013 0.078 ±0.011 0.044 ±0.012 0.069 ±0.009 0.193 ±0.013 
+
+SHO01 0.023 0.093 ±0.019 0.057 ±0.006 0.062 ±0.013 0.055 ±0.013 0.095 ±0.010 0.092 ±0.014 0.260 ±0.017 
+
+BUT01 0.020 0.253 ±0.067 0.254 ±0.074 0.281 ±0.071 0.324 ±0.091 0.317 ±0.108 0.441 ±0.153 0.583 ±0.172 
+
+MAL01 0.019 0.041 ±0.003 0.018 ±0.007 0.020 ±0.004 0.054 ±0.005 0.064 ±0.007 0.052 ±0.002 0.420 ±0.061 
+
+ASL01 0.019 0.035 ±0.004 0.022 ±0.003 0.025 ±0.009 0.026 ±0.002 0.046 ±0.014 0.066 ±0.033 0.114 ±0.035 
+
+BUT02 0.016 0.205 ±0.029 0.207 ±0.056 0.248 ±0.052 0.256 ±0.039 0.282 ±0.042 0.329 ±0.068 0.483 ±0.047 
+
+MIT01 0.015 0.003 ±0.000 0.003 ±0.000 0.003 ±0.000 0.003 ±0.000 0.003 ±0.000 0.008 ±0.004 0.005 ±0.001 
+
+GUP01 0.014 0.041 ±0.017 0.018 ±0.007 0.041 ±0.006 0.035 ±0.006 0.057 ±0.017 0.043 ±0.017 0.153 ±0.041 
+
+GUY01 0.013 0.004 ±0.001 0.006 ±0.005 0.005 ±0.003 0.004 ±0.001 0.004 ±0.001 0.024 ±0.015 0.036 ±0.004 
+
+PHI01 0.013 0.128 ±0.022 0.131 ±0.014 0.222 ±0.013 0.345 ±0.015 0.133 ±0.020 0.635 ±0.158 0.674 ±0.030 
+
+GUY02 0.013 0.009 ±0.001 0.010 ±0.006 0.012 ±0.009 0.032 ±0.015 0.010 ±0.002 0.082 ±0.066 0.124 ±0.044 
+
+PUL01 0.013 0.009 ±0.002 0.008 ±0.004 0.008 ±0.001 0.024 ±0.008 0.012 ±0.003 0.061 ±0.060 0.099 ±0.024 
+
+CAL01 0.013 0.103 ±0.012 0.078 ±0.009 0.179 ±0.012 0.643 ±0.024 0.158 ±0.008 0.867 ±0.014 1.049 ±0.055 
+
+WOD01 0.012 0.120 ±0.011 0.154 ±0.016 0.164 ±0.013 0.344 ±0.016 0.113 ±0.017 0.510 ±0.060 0.612 ±0.072 
+
+GUP02 0.012 0.314 ±0.018 0.469 ±0.022 0.449 ±0.027 0.461 ±0.025 0.444 ±0.018 0.577 ±0.017 0.870 ±0.059 
+
+M01 0.012 0.004 ±0.001 0.004 ±0.001 0.003 ±0.000 0.003 ±0.000 0.005 ±0.000 0.124 ±0.207 0.055 ±0.009 
+
+LEN02 0.012 0.041 ±0.003 0.039 ±0.005 0.099 ±0.021 0.143 ±0.022 0.059 ±0.012 0.380 ±0.141 0.297 ±0.071 
+
+KAR02 0.011 0.159 ±0.007 0.140 ±0.010 0.151 ±0.009 0.252 ±0.010 0.151 ±0.011 0.257 ±0.016 0.515 ±0.032 
+
+SHO02 0.011 0.062 ±0.016 0.037 ±0.006 0.043 ±0.006 0.073 ±0.010 0.083 ±0.015 0.109 ±0.015 0.368 ±0.028 
+
+MAC01 0.010 0.047 ±0.003 0.020 ±0.003 0.021 ±0.003 0.019 ±0.002 0.065 ±0.006 0.029 ±0.011 0.242 ±0.026 
+
+IRI01 0.010 0.047 ±0.012 0.037 ±0.003 0.038 ±0.017 0.097 ±0.008 0.049 ±0.010 0.116 ±0.006 0.151 ±0.032 
+
+BAG01 0.010 0.037 ±0.002 0.032 ±0.005 0.029 ±0.002 0.109 ±0.002 0.046 ±0.005 0.075 ±0.012 0.294 ±0.041 
+
+WOL03 0.008 0.125 ±0.010 0.073 ±0.010 0.105 ±0.016 0.247 ±0.032 0.177 ±0.016 0.479 ±0.107 0.859 ±0.114 
+
+WAN01 0.008 0.115 ±0.015 0.103 ±0.012 0.119 ±0.010 0.232 ±0.015 0.125 ±0.012 0.345 ±0.027 0.504 ±0.031 
+
+NEL01 0.007 0.009 ±0.000 0.010 ±0.001 0.007 ±0.000 0.023 ±0.006 0.009 ±0.001 0.060 ±0.029 0.054 ±0.012 
+
+HUA01 0.007 0.087 ±0.009 0.052 ±0.004 0.063 ±0.005 0.115 ±0.007 0.116 ±0.007 0.149 ±0.015 0.321 ±0.046 
+
+# Wins 16 16 5 10 3 0 0Avg. Rank 2.40 2.62 2.82 3.54 3.68 5.76 6.88 
+
+Input-dependent Λ and B,C unlocks maximal expressivity without sacrificing extrapolation. 
+
+TIDES, which adds input-dependent Re(Λ) on top of input-dependent B,C , achieves the best mean accuracy ( 0.739 ) and stays robust across drop rates, indicating that dynamic real eigenvalues help the model adapt its decay rate to varying observation densities. Making Im(Λ) , which models frequency oscillation, input-dependent as well (TIDES full ) enables per-time-step modeling of frequency oscilla-tions, which does not hurt extrapolation; however, it slightly hurts accuracy, suggesting the imaginary component is best kept static. 
+
+RFormer as a non-SSM baseline. To situate our SSM ablation against a qualitatively different model family, we also evaluate RFormer ( 11 ), a Transformer that replaces the raw time series with fixed-length path-signature summaries computed over uniformly spaced windows in the orig-inal time grid, thereby handling irregular observations without recurrence. We use the published best-configuration for EigenWorms reported in the RFormer paper (10 local windows, signature level 2, nembd =20 , nhead =1 , L=2 ). RFormer achieves a mean accuracy of 0.720 across drop rates, competitive with but below TIDES ( 0.739 ). More strikingly, it exhibits the same sharp collapse at 
+
+rtest =0 .9 (0.562 ) observed for Mamba S. The failure mode is structural: with 10 fixed windows, each window contains ≈900 observations at rtrain =0 .5 but only ≈180 at rtest =0 .9, placing the signature features far outside the training distribution. Since num_windows is baked into the posi-17 Table 7: Architecture and drop-rate generalization results on EigenWorms ( rtrain =0 .5). Shared SSM settings: L=1 , P =16 , bidir , ZOH, wd =0.1, lr =10 −3, 400 epochs. Accuracy is mean over 3 seeds. 
+
+Architecture Accuracy Model h Re(Λ) Im(Λ) B,C ˜∆ r=0 .1 r=0 .3 r=0 .5 r=0 .7 r=0 .9 Mean S5 80 LTI LTI LTI LTI 0.419 0.419 0.419 0.419 0.419 0.419 
+
+Mamba S 16 LTI LTI ID ID 0.705 0.705 0.705 0.686 0.400 0.640 
+
+TIDES 16 ID LTI ID LTI 0.752 0.743 0.743 0.743 0.714 0.739 
+
+TIDES Λ 80 ID LTI LTI LTI 0.457 0.457 0.457 0.467 0.467 0.461 
+
+TIDES BC 16 LTI LTI ID LTI 0.695 0.695 0.695 0.695 0.686 0.693 
+
+TIDES full 16 ID ID ID LTI 0.676 0.667 0.676 0.648 0.648 0.663 
+
+RFormer † 20 † path signature 0.771 0.762 0.771 0.733 0.562 0.720      
+
+> †RFormer uses the best published EigenWorms configuration from Moreno-Pino et al. (11) (10 local path-signature windows, level 2, nembd =20 ,nhead =1 , lr =6 .73 ×10 −3, 400 epochs with best validation accuracy model selection).
+
+tional embeddings and attention mask, more windows cannot be used at test time without retraining, preventing generalization on OOD drop rates. The comparison is, therefore, structurally fair, and the result underscores that TIDES’s robustness at extreme drop rates stems from a genuine architectural advantage: continuous-time eigenvalue extrapolation via eΛ ˜∆k , which neither input-dependent ˜∆ nor fixed signature windows can match. 
+
+G Training time and memory 
+
+SSMs scale linearly in sequence length, O(L), while attention-based transformers incur quadratic cost, O(L2), in both compute and memory. This asymptotic gap is reflected in Table 8: at short sequences ( L = 1 ,000 ), RFormer is faster and more memory-efficient than TIDES due to smaller constant factors, but the crossover occurs well before L = 5 ,000 , where TIDES is already 2.2× faster and uses roughly half the memory. By L = 10 ,000 , RFormer exhausts the 24 GB budget entirely, while TIDES continues to scale linearly in both wall-clock time and peak memory. This confirms that the linear-recurrence formulation of TIDES retains the favorable scaling characteristics of the SSM family and makes it suitable for long sequences. Table 8: Training step wall time (ms, mean ± std over 20 steps) and peak GPU memory for TIDES and RFormer across sequence lengths L (batch size 8, channels 1). Both models are parameter-matched at ≈100 k trainable parameters with 4 layers. OOM denotes out-of-memory on a 24 GB Quadro RTX 6000 GPU. 
+
+TIDES RFormer 
+
+L Time (ms) Mem (MB) Time (ms) Mem (MB) 1 000 59 .9 ± 1.3 1 223 22 .3 ± 1.6 531 5 000 173 .3 ± 0.1 5 924 380 .1 ± 0.4 11 508 10 000 342 .1 ± 0.3 11 816 OOM 18

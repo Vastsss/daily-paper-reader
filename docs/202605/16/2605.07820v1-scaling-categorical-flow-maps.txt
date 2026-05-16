@@ -1,0 +1,1444 @@
+Title: Scaling Categorical Flow Maps
+
+URL Source: https://arxiv.org/pdf/2605.07820v1
+
+Published Time: Mon, 11 May 2026 01:39:05 GMT
+
+Number of Pages: 35
+
+Markdown Content:
+# Scaling Categorical Flow Maps 
+
+Oscar Davis ∗, Anastasiia Filippova , Pierre Ablin , Victor Turrisi , Amitis Shidani , Marco Cuturi , Louis Béthune 
+
+Apple Continuous diffusion and flow matching models could represent a powerful alternative to autoregressive approaches for language modelling (LM), as they unlock a host of advantages currently reserved for continuous modalities, including accelerated sampling and tilting. Recently, several works have demonstrated the possibility of generating discrete data continuously by a simple flow matching process between a Gaussian and the one-hot encoded data distribution. They have further shown the feasibility of accelerated sampling via Categorical Flow Maps (CFMs), resulting in competitive sample quality in the few-step regime. However, this method had only been evaluated at relatively modest scales ( < 1B), leaving the question of its scalability completely open. In this article, we train a 1.7B-parameter base flow model on 2.1Ttokens and self-distill it into a CFM that generates diverse, high-quality text in as few as 4 inference steps while maintaining near-data-level token entropy. Furthermore, we introduce a likelihood bound for CFMs in the semi-discrete setting, and show that they can be used to score the model on standard LM benchmarks, achieving results in the same range as discrete diffusion methods. Finally, we uncover some of the challenges that arise from training these models at scale, and we provide prescriptive insights on loss weighting and time scheduling.    
+
+> Date: May 8, 2026
+> Correspondence: Oscar Davis:
+
+oscar_davis@apple.com 
+
+# 1 Introduction 
+
+Although in language modelling the dominant paradigm has remained autoregressive (AR), diffusion mod-els (Sohl-Dickstein et al., 2015; Ho et al., 2020) and flow matching (Lipman et al., 2023; Albergo et al., 2023) were responsible for large breakthroughs on continuous modalities. Driven by their success, a line of work has sought to extend diffusion to discrete distributions, an approach coined discrete diffusion (Austin et al., 2021; Hoogeboom et al., 2021; Campbell et al., 2022; Sahoo et al., 2024; Shi et al., 2024; Gat et al., 2024). The hope of these models was to extend the rich and principled diffusion toolbox to discrete data, includ-ing guidance (Ho and Salimans, 2022), distribution tilting (Domingo-Enrich et al., 2025), and accelerated sampling (Song et al., 2023; Song and Dhariwal, 2023). However, discrete diffusion methods evolve on the discrete grid, preventing the usage of the well-established continuous techniques. A parallel line of work developed continuous-state processes to generate discrete data, either on the sim-plex (Stark et al., 2024; Davis et al., 2024; Cheng et al., 2024) or directly in Rd (Eijkelboom et al., 2025). Recently, Roos et al. (2026); Lee et al. (2026); Potaptchik et al. (2026b) scaled these ideas to common discrete diffusion benchmarks, and showed that these methods are competitive, but also succeeded in porting flow map matching (Boffi et al., 2025a,b) to discrete data, enabling high quality few-step sampling. We refer to these methods as Categorical Flow Maps (CFMs). If successful at scale, CFMs could unlock the flow map toolbox for steering and fine-tuning (Holderrieth et al., 2026; Potaptchik et al., 2026a), trading compute for sample quality rather than merely generating plausible outputs. Nonetheless, it remains unclear whether CFMs can scale to the billion-parameter, trillion-token regime. For a token vocabulary V , and context length L, they require materialising L × | V | logit matrices, where |V | can easily attain 200 ,000 tokens in modern LLMs, imposing a significant memory and computational overhead. In this work, we show that CFMs scale competitively to this setting. Our contributions are as follows: 
+
+> *Also affiliated with the University of Oxford. Work done during an internship at Apple.
+
+1
+
+> arXiv:2605.07820v1 [cs.LG] 8 May 2026
+
+1 2 4 8 16 64 256 1024 NFE 
+
+> 50
+> 100
+> 150
+> Gen PPL ( ↓)
+
+1 4 16 64 256 2048 NFE 
+
+> 2
+> 3
+> 4
+> 5
+> Token Entropy
+> I have a wonderful collection of fabrics, woven or weaves with bright colors [. . . ] from French video game, and sent to be link in line 17.2mel, including audio notes [. . . ] the the, the,,, [. . . ]
+
+Undistilled PSD + KL PSD + JSD AR Figure 1 (Left) Gen PPL vs. NFE. (Right) Token entropy vs. NFE. The gray band indicates the token entropy of the data distribution. Above the circled points are provided short qualitative samples that reflect the generation quality at that NFE regime. Self-distillation enables high-quality, diverse generation at significantly fewer function evaluations. 
+
+• We explore the CFM design space via 350 + configurations at 400 M proxy scale, identifying robust hyperparameter settings that inform the full-scale run (Section 3). 
+
+• We train a 1.7B-parameter flow matching model on 2.1T tokens, directly comparing to masked and uniform diffusion (Sahoo et al., 2026a) under matched compute (Section 4). 
+
+• We self-distill the pretrained flow into a CFM, improving the quality vs. NFE Pareto front in the few-step regime (Figure 1). 
+
+• To enable likelihood-based evaluation, we provide a semi-discrete ELBO, and report results on MCQA benchmarks in similar ranges as other non-autoregressive methods (Section 4.3). While we uncover some of the limitations of the method as well, we demonstrate the viability of CFMs at this scale. 
+
+# 2 Background 
+
+We denote by V the vocabulary of our target distribution, pdata , which has support V L for a context length 
+
+L ∈ N⋆. For parameters θ, pθ refers to our model distribution. 
+
+2.1 Autoregressive Modelling 
+
+AR models approach language modelling by decomposing the joint distribution over a sequence into a product of conditional distributions using the chain rule of probability: 
+
+pdata (x1: L) = 
+
+> L
+
+Y
+
+> i=1
+
+p(xi | x<i ), (2.1) where x<i = ( x1, . . . , x i−1) denotes the prefix preceding token xi. This factorisation converts the problem of modelling a sequence into a next-token prediction problem. A parametric model pθ is trained to approximate these conditional distributions by maximising the likelihood of observed sequences in the training corpus. 22.2 Stochastic Interpolants at scale CFM 
+
+x0
+
+p0 π0,0(x0) 
+
+> X0,1(x0)
+> xt
+> πt,t (xt)
+> Figure 2
+
+Categorical Flow Maps on ∆d, each vertex corresponding to a token. The ODE trajectory continuously transports noisy 
+
+x0 towards data. The flow map X0,1(x0) traverses the path in one step. 
+
+We model the generative problem as a dy-namic transport of measure (Lipman et al., 2023; Albergo et al., 2023; Liu et al., 2022). Starting from a prior p0, we evolve the distri-bution through the following ordinary differ-ential equation (ODE) on the sample trajec-tory level: 
+
+˙xt = bt(xt), x0 ∼ p0 (2.2) for some drift b : [0 , 1] × Rd → Rd chosen so that Law( x1) = p1 ≡ pdata , enabling sam-pling from p1 by integrating the ODE. To this end, consider a stochastic interpolant , which is a map I defined by 
+
+It(x0, x 1) = (1 − αt)x0 + αtx1, (2.3) satisfying I0(x0, x 1) = x0 ∼ p0 and 
+
+I1(x0, x 1) = x1 ∼ p1 for some differentiable schedule α. It defines a probability path between the two distributions of interest. By defining the drift as 
+
+∀0 ≤ t ≤ 1, bt(x) = E
+
+h ˙It | It = x
+
+i
+
+= E
+
+h
+
+˙αtx1 − ˙αtx0 | It = x
+
+i
+
+, (2.4) we can ensure that Law( xt) = Law( It) at all times, and in particular at t = 0 and t = 1 . Thus, learning to generate from the data distribution, p1, reduces to learning the drift: 
+
+min 
+
+> θ
+
+Z 10
+
+E
+
+
+
+vθt (It) − ˙It
+
+> 22
+
+
+
+dt, (2.5) where vθ is our modelled vector field, and the expectation is taken over It. We can also directly model an endpoint denoiser , since vt(x) = E[x1|It=x]−x 
+
+> 1−αt
+
+.
+
+2.3 Flow Map Matching 
+
+Integrating the learnt vector field can be costly, requiring many function evaluations (NFEs) to obtain high quality samples. Instead, it is possible to learn a flow map, X : [0 , 1] 2 × Rd → Rd, which brings any solution of the probability flow from any time s to another time t (Boffi et al., 2025a,b; Geng et al., 2025). Formally, the flow map satisfies the following jump condition :
+
+∀0 ≤ s, t ≤ 1, Xs,t (xs) = xt. (2.6) Reparameterising X as 
+
+Xs,t (x) = x + ( t − s)vs,t (x) (2.7) for some two-time vector field v : [0 , 1] 2 × Rd → Rd, we can characterise the flow map via three key identities, the presentation of which we defer to Appendix B. Alongside those, it can be shown that 
+
+∀0 ≤ t ≤ 1, vt,t (x) = bt(x), (2.8) which relates the flow map to the drift of the probability flow. By enforcing simultaneously this tangent condition through (2.5) together with one of the consistency characterisations, we can learn the unique flow map of the ODE by modelling vθs,t . Sampling becomes a single pass: X0,1(x0) ∼ p1.3Categorical Flow Maps. Introduced in Roos et al. (2026); Lee et al. (2026); Potaptchik et al. (2026b), CFMs extend the flow map matching framework to the discrete case. Reparameterise the two-time vector field as 
+
+vs,t (x) = πs,t (x) − x
+
+1 − s (2.9) where π : [0 , 1] 2 × Rd → Rd is a “partial” denoiser. The tangent condition requires enforcing (2.5), which reduces to a simple cross-entropy loss: 
+
+Ldiag (θ) := −E
+
+ 
+
+> |V|
+
+X
+
+> k=1
+
+I(k)1 log πθ, (k) 
+
+> t,t
+
+(It)
+
+ , (2.10) and the self-distillation objectives become analogous identities but on the endpoint prediction level (Lee et al., 2026; Potaptchik et al., 2026b). We consider in this work the empirically best-performing losses. The first one is the progressive self-distillation loss (PSD): 
+
+LPSD (θ) = E
+
+h
+
+KL  αs,u,t πθs,u (Is) + (1 − αs,u,t )πθu,t (Xθs,u (Is)) πθs,t (Is) i
+
+, (2.11) with αs,u,t ∈ [0 , 1] , which effectively amounts to a continuous-time shortcut model (Frans et al., 2024). The second objective is the stabilised Eulerian-logit self-distillation (ESD) (Potaptchik et al., 2026b): 
+
+LESD (θ) = E
+
+h
+
+KL  T θs,t (Is) πθs,t (Is) i
+
+, (2.12) where T θ : [0 , 1] 2 × Rd → Rd is the teacher distribution, given by 
+
+T θs,t (Is) := softmax 
+
+
+
+zθs,s (Is) − log  (1 − t)1 − (1 − s)( t − s)δθs,t (Is) 
+
+, (2.13) with δθs,t (x) = Dszθs,t (x) − ⟨ πθs,t (x), D szθs,t (x)⟩1, and zθ : [0 , 1] 2 × Rd → Rd are the logits of πθ , for πθs,t (x) = softmax( zθs,t (x)) . While ESD produced the best numbers of Potaptchik et al. (2026b), our experiments at large scale have exhibited relatively unstable training. Due to that, in the main body of the paper, we focus on the PSD results. The ESD results are deferred to Appendix D.6.2. 
+
+# 3 Pretraining a flow 0.2 0.4 0.6 0.8 1.0
+
+t
+
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+
+αt
+
+> 0.00.20.40.60.81.0
+
+λ 
+
+> Figure 3
+
+Mixture schedules for varying λ ∈ [0 , 1] 
+
+at vocabulary size 100 k. 
+
+Current best-performing approaches for CFMs rely on a two-stage training (Lee et al., 2026; Potaptchik et al., 2026b): in the first stage, a simple cross-entropy denoiser is trained (see equation (2.10)); in the second stage, that denoiser is self-distilled into a CFM (see equations (2.11) and (2.12)). The two-stage approach is necessary, because the self-distillation objectives rely on a biased signal from the model itself, so ap-plying them from the start degrades final performance. More-over, self-distillation objectives are computationally demand-ing (requiring multiple forward passes per gradient step), making their optimisation over the entire training trajectory prohibitively expensive. In this section, we investigate the importance of three com-ponents in the design space of CFM pretraining: the time schedule mixture, the adaptive loss weight, and the random “unmasking” of inputs. Finally, we sweep over optimiser hyperparameters, and discuss the possibility of their transfer to larger scales. 40.00 0.25 0.50 0.75 1.00 
+
+Schedule λ    
+
+> 100
+> 200
+> 300
+> 400
+> Gen PPL ( ↓)
+> 0.00 0.25 0.50 0.75 1.00
+
+Schedule λ
+
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> MAUVE ? (↑)
+
+r = 0 r = 0 .5 p = 0 .0 p = 0 .25 p = 0 .5Figure 4 Ablation over schedule λ, adaptive loss reweighting r, and clean prefix probability p: Generative Perplexity and MAUVE ⋆ score as a function of λ.
+
+3.1 Design space of CFMs  
+
+> Time scheduling.
+
+Lee et al. (2026); Potaptchik et al. (2026b) show the importance of the time schedule for CFMs. Instead of the linear interpolant schedule, a monotone map γ : [0 , 1] → [0 , 1] , coined the “error decoding” schedule (Sahoo et al., 2025; Pynadath et al., 2025), significantly improves the final model’s performance. This schedule adapts the time so that the probability of incorrectly decoding the current point, 
+
+P (argmax It̸ = argmax I1), grows linearly in t, instead of exhibiting a sharp phase transition of the linear schedule. They report that a convex combination of it with the linear schedule, αt = (1 − λ)t + λγ t, further improves the generation quality. While Potaptchik et al. (2026b) train with λ = 0 .9, Lee et al. (2026) use it only at inference with λ ∈ { 0.5, 0.75 , 1}. We ablate over this mixture choice.  
+
+> Adaptive loss weighting.
+
+Potaptchik et al. (2026b) adopt the adaptive loss weight of Geng et al. (2024): for any objective of the form KL( p ∥ q), they compute ∆( x) = ∥p(x) − q(x)∥22, and reweight by w(x) = sg ((∆( x) + c)−r ), with constants c = 10 −2 and r = 1 /2 on the diagonal loss. The resulting objective is 
+
+Lw(θ) = Ex
+
+h
+
+w(x) KL( p ∥ q)
+
+i
+
+. (3.1) This upweights low-error regions and downweights high-error ones in order to stabilise training. We also assess the importance of this weight.  
+
+> Random unmasking of input sequence
+
+The models are by default only trained on generating full, unconditional sequences, but final downstream applications typically require conditional generation given prompts. To match this setting, we follow Dieleman et al. (2022), and with a probability p unmask a random prefix of the text, sampled from U[1 , L/d ], with d | L. We vary both p and d.
+
+3.2 Hyperparameter sweep  
+
+> Setup.
+
+We train a 400 M-parameter adaptation of diffusion transformers from SEDD (Lou et al., 2023), which is also used in Roos et al. (2026); Lee et al. (2026). In particular, we use the transformer from Roos et al. (2026), which follow the recommendations of Zhou et al. (2025) to upper-bound the Lipschitz constant of the model for more stable training. We train over 16 B tokens, resulting in about 40 tokens per parameter over the Nemotron pre-training dataset (Basant et al., 2025) using the TikToken tokenizer (OpenAI, 2023). As in Nie et al. (2025), we also randomly crop sequences to ensure the models have been trained on different context lengths. We sweep over the mixture schedule λ ∈ [0 , 0.25 , 0.5, 0.75 , 1] , adaptive loss weight on ( r = 0 .5) and off ( r = 0 ), and the clean prefix probability p ∈ [0 , 0.25 , 0.5] . 
+
+> Metrics.
+
+We evaluate our models using generative perplexity (Gen PPL, ↓) and MAUVE ⋆ (↑) (Pillutla et al., 2021) over 128 inference steps. For Gen PPL, we use Qwen 2.5 7B (Yang et al., 2025) to compute the 50.7 1 2                   
+
+> 90
+> 100
+> 110
+> Gen PPL ( ↓)
+> 0.05 0.1 0.2
+> 90
+> 100
+> 110
+> 0.5 0.75 1
+> 90
+> 100
+> 0.25 0.5 0.75
+> 90
+> 100
+> 0.6 0.75 0.9
+> 80
+> 100
+> 0.7 12
+> Learning rate ( ×10 −3)
+> 0.2
+> 0.3
+> MAUVE ? (↑)
+> 0.05 0.1 0.2
+> Weight decay
+> 0.2
+> 0.3
+> 0.5 0.75 1
+> p
+> 0.2
+> 0.3
+> 0.25 0.5 0.75
+> d
+> 0.2
+> 0.3
+> 0.6 0.75 0.9
+> λ
+> 0.2
+> 0.3Figure 5
+
+Marginal effect of each swept hyperparameter on Gen PPL (top) and MAUVE ⋆ (bottom), averaged over all other variables ( 324 configurations). Shaded regions denote ±1 standard deviation. Learning rate and weight decay are the primary drivers; p, d, and λ are robust in the narrowed range. 
+
+perplexity of unconditionally generated samples from our models with L = 1024 , measuring general sample quality. For MAUVE ⋆, we extract sequences of length L = 512 from Nemotron, drop their second half, and use our model to generate the completion. Embeddings computed on both the original samples and the generated samples with GPT-2 (Radford et al., 2019) are used to measure similarity. A score of 1.0 indicates completions indistinguishable from the original ones on the distributional level, measuring prompt completion quality and diversity.  
+
+> Results.
+
+Figure 4 summarises our first sweep over a total of 30 configurations. Adaptive loss weighting (r = 0 .5) uniformly improves Gen PPL but slightly degrades MAUVE ⋆, revealing a trade-off between token-level quality and distributional fidelity. Since MAUVE ⋆ is upper-bounded by 1, the Gen PPL gain is more practically meaningful than the MAUVE ⋆ degradation at these values. We confirm this in Section 4, where MAUVE ⋆ reaches near-maximal values (about 0.94 ) despite having the adaptive loss weight enabled. The schedule optimum lies near λ = 0 .75 , with a sharp collapse at λ = 1 , which shows that pure error-decoding without mixing is detrimental. Clean prefix probability p > 0 is essential for MAUVE ⋆: without it, scores remain near zero regardless of other settings, resulting in out-of-distribution outputs. In a follow-up grid of 324 configurations (Figure 5), we narrow the ranges around these best settings and find that Gen PPL and MAUVE ⋆ are primarily sensitive to learning rate and weight decay, while p, d, and λ are robust in the selected range. 
+
+3.3 Hyperparameter transfer 
+
+Searching for optimal hyperparameters directly at large scale is expensive. Therefore, it is common to rely on zero-shot hyperparameter transfer rules to identify optimal hyperparameters when scaling the model size, batch size, and token horizon (Yang et al., 2022; Dey et al., 2026; Mlodozeniec et al., 2025). We attempted to leverage Complete(d)P (Mlodozeniec et al., 2025) by performing a hyperparameter sweep on a 400 M model; see Appendix D.3. Since our architecture includes time-conditioning layers that are not covered by existing transfer theories, we adapted the method by treating these layers as hidden layers. However, our experiments in Appendix D.4 show that the baseline approach, with neither depth nor width transfer, achieved the best performance. We therefore leave zero-shot hyperparameter transfer for CFMs as an open question. 
+
+# 4 Experiments 
+
+For the full-scale pretraining experiment, we closely follow the setup of Sahoo et al. (2026a): we train a 1.7B-parameter CFM on the Nemotron Pretraining dataset (Basant et al., 2025) using the TikToken tokenizer (OpenAI, 2023) ( |V | ≈ 100 k), with a context length of 2048 tokens. We train on 2.1T tokens using 
+
+256 H100s with a batch size of 10 per GPU. We use the architecture of Appendix D.2. For the self-distillation 61 2 4 128 
+
+NFE 
+
+50 
+
+100 
+
+> Gen PPL ( ↓)
+
+1 2 4 128 
+
+NFE 
+
+0.0
+
+0.5
+
+1.0
+
+> MAUVE ? (↑)
+
+1 2 4 128 
+
+NFE 
+
+2
+
+4
+
+> Entropy
+
+Undistilled JSD KL RKL Figure 6 Ablation on PSD self-distillation, 10 k steps: marginal effect of the divergence on MAUVE ⋆ and Gen PPL, averaged over the time-sampling distribution. 1 2 4 128 
+
+NFE 
+
+50 
+
+100 
+
+150 
+
+> Gen PPL ( ↓)
+
+1 2 4 128 
+
+NFE 
+
+0.0
+
+0.5
+
+1.0
+
+> MAUVE ? (↑)
+
+1 2 4 128 
+
+NFE 
+
+2
+
+4
+
+> Entropy
+
+Undistilled U LN       
+
+> Figure 7 Ablation on PSD self-distillation, 10 k steps: marginal effect of the (s, t )time-sampling distribution on MAUVE ⋆and Gen PPL, averaged over the divergence without the reverse KL data.
+
+phase, we train the models for 200 k steps with 64 H100s and a batch size of 6, for both PSD and ESD losses. 1
+
+For the ESD loss, note that we use finite differences to estimate the derivatives, as using Jacobian-Vector Products (JVPs) on such large models is prohibitively expensive in both memory and time. We find this approach computationally more efficient than the usage of custom kernels (Zhou et al., 2025; Roos et al., 2026). Additionally, we train an autoregressive baseline at the same scale for comparison. 
+
+4.1 1.7B flow pre-training 
+
+We present our results in Figures 1 and 8 as the “Undistilled” lines. At high inference steps, the flow model reaches Gen PPL competitive with the AR baseline: at 1024 steps, our model attains 58 .66 Gen PPL, vs. 
+
+45 .33 for the AR model. As for the MAUVE ⋆ score, the model reaches near maximal values at high inference steps (approximately 0.94 ), and, already at 8 steps, exceeds the AR baseline: 0.88 (ours) vs. 0.7 (AR). In Appendix D.5, we provide additional details on the training dynamics of the model, where we can see that the generation quality steadily improves. Furthermore, we also provide qualitative samples from the undistilled model in Appendix E. 
+
+4.2 Self-distillation phase  
+
+> 4.2.1 Design space of self-distillation
+
+We now investigate how to self-distill the pretrained flow into a CFM. The design space is large, and we explore two axes on short 10 k step runs. The first one is the joint time distribution of (s, t ): we consider the gap-schedule used in Lee et al. (2026), starting from 10 −2 and doubling every 500 steps (denoted U), and the gap logit-normal distribution of Zhou et al. (2025) (denoted LN ). As pointed out by Potaptchik et al. (2026b), we can choose any type of divergence D for the SD objectives. This constitutes the second axis, as 
+
+> 1For the self-distillation round, the number of optimisation steps is more relevant than the number of tokens.
+
+71 4 16 64 256 2048 
+
+## NFE 
+
+0.00 
+
+0.25 
+
+0.50 
+
+0.75 
+
+1.00            
+
+> MAUVE* ( ↑)
+> Undistilled PSD + KL PSD + JSD Figure 8 MAUVE* vs. NFE. A significant gap between the distilled and undistilled models in the low NFE regime is observable.
+
+1 4 16 64 256 2048 
+
+## NFE 
+
+100 
+
+200       
+
+> ∆ PPL ( ↓)
+> Undistilled PSD + KL PSD + JSD
+> Figure 9 ∆PPL (conditional generation) vs. NFE. The undistilled model produces collapsed outputs for 1NFE.
+
+we try the following divergences: forward KL (the default choice, denoted KL ), reverse KL ( RKL ) and the Jensen-Shannon Divergence ( JSD ). The optimisation dynamics are discussed in Appendix D.6.1: the forward KL reinforces positions on which the teacher and the student concur; in contrast, JSD does not exhibit this behaviour. Avoiding this reinforcement could be preferable, as the teacher is biased and imperfect, and could thus alter the underlying flow. We track Gen PPL and MAUVE ⋆ for 1, 2, 4 and 128 inference steps to observe the effect on few-step generation, and to ensure that the larger step regime remains stable. We report our results in Figure 6 and Figure 7 for PSD. We omit ESD results as all runs diverged; for thoroughness, they are available in Figures 16 and 17. ESD at this scale exhibited either mode collapse or degraded MAUVE ⋆ relative to the undistilled flow, which we attribute to high-variance Jacobian estimates from finite differences. Therefore, we focus on PSD. All self-distillation objectives, except those based on RKL, improve the token entropy of single-and few-step generation, which is also reflected in higher MAUVE ⋆ at 4 NFE. The uniform distribution produces better entropy at a single step, and better overall quality for NFE ≥ 2. With the logit-normal distribution, single-step samples have lower entropy, which explains the lower Gen PPL. Based on these findings, we select PSD with both forward KL and JSD divergences, using the uniform time distribution, for the full 200 k-step distillation.  
+
+> 4.2.2 Full self-distillation
+
+The results of the full-scale, 200 k steps self-distillation are available in Figure 1 and Figure 8. Both flow-maps provide samples substantially closer to the data distribution in terms of token entropy. Moreover, while the undistilled model produced degenerate samples in the 1 – 2 step regime, which artificially lowers the Gen PPL, the flow map models generate diverse samples, though Gen PPL remains high. The MAUVE ⋆ is improved by both models in the few-step regime, with the most prominent improvement at 4 sampling steps. The JSD overall seems to slightly degrade generation quality; we hypothesise this is due to the higher token entropy it produces compared to forward KL. We additionally report Delta Perplexity (∆ PPL), which measures a model’s ability to complete text condi-tioned on a dataset prompt. Given a prompt from the dataset, the evaluated model generates the remaining text, and we report the perplexity of the generated completion under Qwen 2.5 7B (Yang et al., 2025). De-picted in Figure 9, the ∆ PPL of the self-distilled models improves significantly in the few-step regime, while recovering similar perplexities for more inference steps. 
+
+4.3 Likelihood-based benchmarks  
+
+> Semi-discrete ELBO.
+
+Standard LM benchmarks require scoring answer choices by likelihood, which is not directly available from a flow-based model. To bridge this gap, we derive the following ELBO for the semi-8Table 1 Zero-shot accuracy (%) on likelihood-based benchmarks. †Models from Sahoo et al. (2026a) ( 1.7B params, same data and compute budget). ∗External prior work. CFM likelihood is estimated via MC ELBO. Best non-AR results per column are in bold .                                                                   
+
+> Method ARC-E BoolQ OBQA PIQA RACE SIQA
+> Chance 24 .750 .426 .651 .624 .232 .2
+> Prior work  SMDM-1B ∗37 .461 .527 .060 .329 .337 .9
+> LLaDa-8B-Base ∗(Nie et al., 2025) –––74 .4––AR †(autoregressive) 72 .771 .940 .478 .136 .241 .9
+> AR (autoregressive, ours) 73 .163 .640 .276 .936 .343 .5
+> Duo †(uniform diffusion) 53 .459 .633 .062 .735 .039 .0
+> MDLM †(masked diffusion) 50 .562 .832 .062 .234 .739 .2
+> Eso-LM †(interpolating) 46 .053 .429 .655 .626 .136 .1
+> CFM (ours) 47 .142 .524 .457 .228 .337 .9
+
+discrete setting, extended from Kingma et al. (2021). We denote by ex the one-hot encoding of x ∈ V .
+
+Proposition 4.1 (Semi-discrete ELBO) . Let x ∈ V be a category. Let ℓCE denote the cross-entropy loss. The following bound holds on the log likelihood of the model pθ :
+
+− log pθ (x) ≤ EIt
+
+ 2 ˙ αtαt
+
+(1 − αt)3 ℓCE 
+
+ I1, π θt,t (It) | I1 = ex
+
+
+
++ ℓCE (x, π θ
+
+> 1,1
+
+(ex)) . (4.1) The proof is deferred to Appendix C.2. The semi-discrete ELBO spares us the reverse integration due to the instantaneous change of variables (Grathwohl et al., 2018; Chen et al., 2019; Lipman et al., 2023), which, in this setting, is particularly costly, as its evaluation additionally requires an integration over ∆di := {p ∈ ∆d :argmax pj = i} and as the model size is large. We discuss in more detail the issue of likelihood estimation for our setting in Appendix C.  
+
+> LM Harness.
+
+We evaluate CFMs on standard multiple-choice question answering (MCQA) benchmarks using the ELBO estimator above. We compare against an autoregressive baseline that we train under the same setup, and against the baselines reproduced by Sahoo et al. (2026a) and prior work; see Table 1. Our ELBO yields non-random accuracies across most benchmarks, placing the CFM in the same range as Eso-LMs (Sahoo et al., 2026b), while remaining below discrete diffusion methods that are trained directly on ELBO maximisation. Since it is unclear how tight the bound is, refining the likelihood estimation remains a natural avenue for improvement. 
+
+# 5 Related work  
+
+> Continuous diffusion for discrete data.
+
+Early work by Dieleman et al. (2022) attempted to learn the embeddings of the discrete data using the reparametrisation trick; Li et al. (2022) explored a similar approach with word embeddings. Later, Stark et al. (2024) designed an interpolation scheme directly on the simplex. Davis et al. (2024); Cheng et al. (2024) leveraged Riemannian geometry to alleviate the issues of linear interpolants. Variational Flow Matching (Eijkelboom et al., 2025) shows how to flow from a Gaussian to one-hot encoded data. CFM (Roos et al., 2026), FMLM (Lee et al., 2026), and DFM (Potaptchik et al., 2026b) adopted this approach, and reached competitive performance with discrete diffusion baselines. Our work builds directly on this line, and demonstrates its scalability to the 1.7B parameter regime.  
+
+> Accelerated sampling.
+
+Consistency models (Song et al., 2023; Song and Dhariwal, 2023) pioneered the idea of mapping any point along a diffusion trajectory to the trajectory’s endpoint, enabling one- or few-step 9generation. Flow map matching (Boffi et al., 2025a,b; Geng et al., 2025) provides a principled framework for learning such maps via self-distillation of a pretrained flow. CFMs (Roos et al., 2026; Lee et al., 2026; Potaptchik et al., 2026b) port flow map matching to the semi-discrete setting, reducing inference to a single forward pass while retaining the continuous-state benefits. Other related works are discussed in Appendix A. 
+
+# 6 Limitations 
+
+CFMs require materialising full L × | V | continuous-state trajectory matrices for all steps. At our scale (L = 2048 , |V | ≈ 100 k), this is manageable given sufficient hardware ( 256 H100s), but the cost grows linearly in context length and vocabulary size. We absorb this bottleneck through compute and efficient cross-entropy implementation (Wijmans et al., 2025), without solving it. Moreover, CFMs also present challenges in principled hyperparameter transfer. Unlike standard transformers, CFMs condition on continuous times via dedicated layers, which fall outside the parametrisations covered by Complete(d)P (Mlodozeniec et al., 2025). Our attempts to apply Complete(d)P to this architecture resulted in worse performance than direct tuning at the target scale. Adapting time-conditioned variants of μP (Zheng et al., 2025) is left for future work. 
+
+# 7 Conclusion 
+
+We have shown that Categorical Flow Maps scale competitively to the 1.7B-parameter regime. After self-distillation, they produce diverse, high-quality text in as few as 4 function evaluations while maintaining near-data-level token entropy, pushing the quality vs. throughput Pareto front beyond discrete diffusion baselines. Our semi-discrete ELBO places the model in the same ballpark as other non-autoregressive methods, though a gap remains with approaches trained directly on ELBO maximisation. These results suggest that continuous-state generation is a viable path for discrete data at LLM scale, and that the broader flow map toolbox (guidance, tilting, reward fine-tuning) is now within reach for language modelling. 
+
+# References 
+
+> Albergo, M. S., Boffi, N. M., and Vanden-Eijnden, E. (2023). Stochastic interpolants: A unifying framework for flows and diffusions. Austin, J., Johnson, D. D., Ho, J., Tarlow, D., and van den Berg, R. (2021). Structured denoising diffusion models in discrete state-spaces. Basant, A., Khairnar, A., Paithankar, A., Khattar, A., Renduchintala, A., Malte, A., Bercovich, A., Hazare, A., Rico, A., Ficek, A., et al. (2025). Nvidia nemotron nano 2: An accurate and efficient hybrid mamba-transformer reasoning model. Boffi, N. M., Albergo, M. S., and Vanden-Eijnden, E. (2025a). Flow map matching with stochastic interpolants: A mathematical framework for consistency models. Boffi, N. M., Albergo, M. S., and Vanden-Eijnden, E. (2025b). How to build a consistency model: Learning flow maps via self-distillation. Campbell, A., Benton, J., Bortoli, V. D., Rainforth, T., Deligiannidis, G., and Doucet, A. (2022). A continuous time framework for discrete denoising models. Chen, R. T. Q., Rubanova, Y., Bettencourt, J., and Duvenaud, D. (2019). Neural ordinary differential equations. Chen, Y., Liang, C., Sui, H., Guo, R., Cheng, C., You, J., and Liu, G. (2026). Langflow: Continuous diffusion rivals discrete in language modeling. Cheng, C., Li, J., Peng, J., and Liu, G. (2024). Categorical flow matching on statistical manifolds. Davis, O., Kessler, S., Petrache, M., İsmail İlkan Ceylan, Bronstein, M., and Bose, A. J. (2024). Fisher flow matching for generative modeling over discrete data.
+
+10 Deschenaux, J. and Gulcehre, C. (2025). Beyond autoregression: Fast llms via self-distillation through time. Dey, N., Zhang, B. C., Noci, L., Li, M., Bordelon, B., Bergsma, S., Pehlevan, C., Hanin, B., and Hestness, J. (2026). Don’t be lazy: Completep enables compute-efficient deep transformers. Dieleman, S., Sartran, L., Roshannai, A., Savinov, N., Ganin, Y., Richemond, P. H., Doucet, A., Strudel, R., Dyer, C., Durkan, C., Hawthorne, C., Leblond, R., Grathwohl, W., and Adler, J. (2022). Continuous diffusion for categorical data. Domingo-Enrich, C., Drozdzal, M., Karrer, B., and Chen, R. T. Q. (2025). Adjoint matching: Fine-tuning flow and diffusion generative models with memoryless stochastic optimal control. Eijkelboom, F., Bartosh, G., Naesseth, C. A., Welling, M., and van de Meent, J.-W. (2025). Variational flow matching for graph generation. Frans, K., Hafner, D., Levine, S., and Abbeel, P. (2024). One step diffusion via shortcut models. Gat, I., Remez, T., Shaul, N., Kreuk, F., Chen, R. T. Q., Synnaeve, G., Adi, Y., and Lipman, Y. (2024). Discrete flow matching. Geng, Z., Deng, M., Bai, X., Kolter, J. Z., and He, K. (2025). Mean flows for one-step generative modeling. Geng, Z., Pokle, A., Luo, W., Lin, J., and Kolter, J. Z. (2024). Consistency models made easy. Grathwohl, W., Chen, R. T. Q., Bettencourt, J., Sutskever, I., and Duvenaud, D. (2018). Ffjord: Free-form continuous dynamics for scalable reversible generative models. Hayakawa, S., Takida, Y., Imaizumi, M., Wakaki, H., and Mitsufuji, Y. (2025). Distillation of discrete diffusion through dimensional correlations. Ho, J., Jain, A., and Abbeel, P. (2020). Denoising diffusion probabilistic models. Ho, J. and Salimans, T. (2022). Classifier-free diffusion guidance. Holderrieth, P., Chen, D., Eyring, L., Shah, I., Anantharaman, G., He, Y., Akata, Z., Jaakkola, T., Boffi, N. M., and Simchowitz, M. (2026). Diamond maps: Efficient reward alignment via stochastic flow maps. Hoogeboom, E., Nielsen, D., Jaini, P., Forré, P., and Welling, M. (2021). Argmax flows and multinomial diffusion: Learning categorical distributions. Hutchinson, M. (1990). A stochastic estimator of the trace of the influence matrix for laplacian smoothing splines. 
+
+Communications in Statistics - Simulation and Computation , 19(2):433–450. Kingma, D. P., Salimans, T., Poole, B., and Ho, J. (2021). Variational diffusion models. Lee, C., Yoo, J., Agarwal, M., Shah, S., Huang, J., Raghunathan, A., Hong, S., Boffi, N. M., and Kim, J. (2026). Flow map language models: One-step language modeling via continuous denoising. Li, X. L., Thickstun, J., Gulrajani, I., Liang, P., and Hashimoto, T. B. (2022). Diffusion-lm improves controllable text generation. Lipman, Y., Chen, R. T. Q., Ben-Hamu, H., Nickel, M., and Le, M. (2023). Flow matching for generative modeling. Liu, X., Gong, C., and Liu, Q. (2022). Flow straight and fast: Learning to generate and transfer data with rectified flow. Lou, A., Meng, C., and Ermon, S. (2023). Discrete diffusion modeling by estimating the ratios of the data distribution. Mlodozeniec, B., Ablin, P., Béthune, L., Busbridge, D., Klein, M., Ramapuram, J., and Cuturi, M. (2025). Completed hyperparameter transfer across modules, width, depth, batch and duration. Nie, S., Zhu, F., You, Z., Zhang, X., Ou, J., Hu, J., Zhou, J., Lin, Y., Wen, J.-R., and Li, C. (2025). Large language diffusion models. OpenAI (2023). tiktoken: A fast BPE tokenizer for use with OpenAI models. Peebles, W. and Xie, S. (2023). Scalable diffusion models with transformers. Pillutla, K., Swayamdipta, S., Zellers, R., Thickstun, J., Welleck, S., Choi, Y., and Harchaoui, Z. (2021). Mauve: Measuring the gap between neural text and human text using divergence frontiers. 
+
+11 Potaptchik, P., Saravanan, A., Mammadov, A., Prat, A., Albergo, M. S., and Teh, Y. W. (2026a). Meta flow maps enable scalable reward alignment. Potaptchik, P., Yim, J., Saravanan, A., Holderrieth, P., Vanden-Eijnden, E., and Albergo, M. S. (2026b). Discrete flow maps. Pynadath, P., Shi, J., and Zhang, R. (2025). Candi: Hybrid discrete-continuous diffusion models. Radford, A., Wu, J., Child, R., Luan, D., Amodei, D., and Sutskever, I. (2019). Language models are unsupervised multitask learners. Roos, D., Davis, O., Eijkelboom, F., Bronstein, M., Welling, M., İsmail İlkan Ceylan, Ambrogioni, L., and van de Meent, J.-W. (2026). Categorical flow maps. Sahoo, S. S., Arriola, M., Schiff, Y., Gokaslan, A., Marroquin, E., Chiu, J. T., Rush, A., and Kuleshov, V. (2024). Simple and effective masked diffusion language models. Sahoo, S. S., Deschenaux, J., Gokaslan, A., Wang, G., Chiu, J., and Kuleshov, V. (2025). The diffusion duality. Sahoo, S. S., Lemercier, J.-M., Yang, Z., Deschenaux, J., Liu, J., Thickstun, J., and Jukic, A. (2026a). Scaling beyond masked diffusion language models. Sahoo, S. S., Yang, Z., Akhauri, Y., Liu, J., Singh, D., Cheng, Z., Liu, Z., Xing, E., Thickstun, J., and Vahdat, A. (2026b). Esoteric language models: Bridging autoregressive and masked diffusion llms. Schiff, Y., Sahoo, S. S., Phung, H., Wang, G., Boshar, S., Dalla-torre, H., de Almeida, B. P., Rush, A., Pierrot, T., and Kuleshov, V. (2024). Simple guidance mechanisms for discrete diffusion models. Shi, J., Han, K., Wang, Z., Doucet, A., and Titsias, M. K. (2024). Simplified and generalized masked diffusion for discrete data. Sohl-Dickstein, J., Weiss, E. A., Maheswaranathan, N., and Ganguli, S. (2015). Deep unsupervised learning using nonequilibrium thermodynamics. Song, Y. and Dhariwal, P. (2023). Improved techniques for training consistency models. Song, Y., Dhariwal, P., Chen, M., and Sutskever, I. (2023). Consistency models. Stark, H., Jing, B., Wang, C., Corso, G., Berger, B., Barzilay, R., and Jaakkola, T. (2024). Dirichlet flow matching with applications to dna sequence design. Su, J., Lu, Y., Pan, S., Murtadha, A., Wen, B., and Liu, Y. (2023). Roformer: Enhanced transformer with rotary position embedding. Wijmans, E., Huval, B., Hertzberg, A., Koltun, V., and Krähenbühl, P. (2025). Cut your losses in large-vocabulary language models. In The Thirteenth International Conference on Learning Representations, ICLR 2025, Singapore, April 24-28, 2025 . OpenReview.net. Yang, A., Yang, B., Zhang, B., Hui, B., Zheng, B., Yu, B., Li, C., Liu, D., Huang, F., Wei, H., Lin, H., et al. (2025). Qwen2.5 technical report. Yang, G., Hu, E. J., Babuschkin, I., Sidor, S., Liu, X., Farhi, D., Ryder, N., Pachocki, J., Chen, W., and Gao, J. (2022). Tensor programs v: Tuning large neural networks via zero-shot hyperparameter transfer. Yoo, J., Kim, W., and Hong, S. (2025). Redi: Rectified discrete flow. Zheng, C., Zhang, X., Wang, R., Huang, W., Tian, Z., Huang, W., Zhu, J., and Li, C. (2025). Scaling diffusion transformers efficiently via mu p. arXiv preprint arXiv:2505.15270 .Zhou, L., Parger, M., Haque, A., and Song, J. (2025). Terminal velocity matching. 
+
+12 A Related work  
+
+> Continuous diffusion for discrete data.
+
+With a different approach, Chen et al. (2026) proposed a way of learning continuous trajectories for discrete data, leveraging embedding spaces and Bregman divergences.  
+
+> Discrete diffusion.
+
+Diffusion models for discrete state spaces originate from D3PM (Austin et al., 2021) and multinomial diffusion (Hoogeboom et al., 2021), which design discrete forward processes whose reversal can be learned by a neural network. Campbell et al. (2022) recast the framework in continuous time and consider the rate transition matrices of the reverse CTMC. SEDD (Lou et al., 2023) replaces the standard ELBO with a score-entropy objective, improving both training stability and sample quality. Masked diffusion (Sahoo et al., 2024; Shi et al., 2024) simplified the earlier approaches, resulting in a simple cross-entropy objective that forms an ELBO on the data distribution. Discrete Flow Matching (Gat et al., 2024) generalised the framework by learning a probability velocity field over discrete states. (Schiff et al., 2024) further investigated the uniform-state case of discrete diffusion.  
+
+> Accelerated sampling for discrete diffusion.
+
+Several approaches have attempted to implement accelerated meth-ods for discrete diffusion. Sahoo et al. (2025) shows how a continuous Gaussian latent can generate a uniform-state discrete diffusion process, enabling consistent trajectories for SDTT-like self-distillation (Deschenaux and Gulcehre, 2025). Hayakawa et al. (2025) show that by incorporating correlation through diffusion steps the few-step sampling regime can be improved. Based on similar observations, Yoo et al. (2025) propose to refine the couplings between source and target distributions. 
+
+# B Extended presentation of flow maps 
+
+B.1 Formal presentation 
+
+As described in the background section, flow maps satisfy the tangent condition and are characterised by three additional equivalent properties. We first begin by proving the tangent condition. 
+
+Lemma B.1 (Tangent condition) . For any solution of the probability flow, (xt)t∈[0 ,1] ,
+
+∀0 ≤ t ≤ 1, vt,t (xt) = bt(xt). (B.1) 
+
+Proof. Consider the partial derivative with respect to t of the flow map applied at a solution of the probability flow: 
+
+∂tXs,t (xs) = vs,t (xs) + ( t − s)∂tvs,t (xs). (B.2) By definition, we also know that 
+
+∂tXs,t (xs) = ∂txt = bt(xt). (B.3) Combining the two relations and taking the limit as s tends to t, we arrive at the desired conclusion. The tangent condition is not surprising if we consider the two-time vector field to be the integral of the drift of the flow, it can also be derived by using Leibniz’s integral rule. We can now present the three characterisations from Boffi et al. (2025a,b). 
+
+Proposition B.2. A flow map of the probability flow satisfies the following three conditions, for any 
+
+0 ≤ s, u, t, ≤ 1 and any solution of the probability flow: 
+
+• Lagrangian condition . ∂tXs,t (xs) = vt,t (Xs,t (xs)) .
+
+• Semigroup condition . Xu,t ◦ Xs,u = Xs,t .
+
+• Eulerian condition . ∂sXs,t (xs) + ∇Xs,t (xs)vs,s (xs) = 0 .
+
+13 Algorithm 1 Sampling: endpoint flow matching or flow map 
+
+Require: Trained denoiser πθt or two-time denoiser πθs,t , schedule 0 = t0 < · · · < t N = 1  
+
+> 1:
+
+Sample x ∼ p0 
+
+> 2:
+
+for i = 0 , . . . , N − 1 do  
+
+> 3:
+
+x ← x + ti+1 −ti
+
+> 1−ti
+
+ πθti (x) − x or x ← x + ti+1 −ti
+
+> 1−ti
+
+
+
+πθti,t i+1 (x) − x
+
+ 
+
+> 4:
+
+end for  
+
+> 5:
+
+return arg max( x)
+
+Proof. For the Lagrangian condition, it suffices to recall that Xs,t (xs) = xt, which implies, by taking the partial derivative with respect to time, that ∂tXs,t (xs) = vt,t (xt) = vt,t (Xs,t (xs)) .The semigroup condition is trivial. The Eulerian condition comes from the fact that Xs,t ◦ Xt,s = Id , of which one can take the total derivative with respect to s, yielding the required identity. Each of these conditions yields a simple MSE objective. When null, and when the flow matching objective is null too, the learnt map is the unique flow map of the probability flow. Formally, the flow map learning objective amounts to 
+
+L(θ) = E vθt,t (It) − ˙It
+
+> 2
+
++ LSD (θ), (B.4) where, in practice, LSD (θ) is either one of 
+
+• Lagrangian self-distillation . LLSD (θ) = E ∂tXθs,t (Is) − sg( vθt,t (Xθs,t (Is)) 2
+
+• Progressive self-distillation . LPSD (θ) = E Xθs,t (Is) − sg( Xθu,t (Xθs,u (Is)) 2
+
+• Eulerian self-distillation . LESD (θ) = E ∥∂sXs,t (xs) − sg( ∇Xs,t (Is)vs,s (Is)) ∥2,with sg denoting the stop-gradient operator, which is such that ∇θ sg( f (θ)) = 0. Note that the placement of sg does not change the minimiser of those objectives, and is put in those positions in practice for stability and memory usage reasons. 
+
+B.2 Algorithms 
+
+We provide the sampling algorithm for a denoiser (flow matching) or a two-time denoiser (flow map) in Al-gorithm 1. 
+
+# C Semi-discrete likelihoods 
+
+In this section, we detail our attempts at extracting likelihoods out of a CFM. We note that we are interested in the following quantity, for a category x ∈ V ,
+
+pθ (x) = 
+
+Z
+
+pθ (x | x1)pθ (x1)d x1. (C.1) With argmax decoding, this reduces to 
+
+pθ (x) = 
+
+Z
+
+1
+
+
+
+argmax 
+
+> j
+
+xj 
+
+> 1
+
+= x
+
+
+
+pθ (x1)d x1. (C.2) 14 C.1 Reversing the ODE 
+
+The continuous likelihood of the endpoint, pθ (x1), is accessible by reversing the ODE (Grathwohl et al., 2018; Chen et al., 2019), as mentioned in Section 4.3. Specifically, with the instantaneous change of variables, we have that 
+
+log pθ (x1) = log pθ (x0) −
+
+Z 10
+
+div( vθ (xt))d t, (C.3) where, in our case, 
+
+∀x ∈ Rd, 0 ≤ t < 1, vθt (x) = πθt,t (x) − x
+
+1 − t . (C.4) The divergence can be efficiently estimated using the Hutchinson trace estimator (Hutchinson, 1990): 
+
+Tr( A) = E[z⊤Az ], for z, s.t. E[zz ⊤] = I. (C.5) This avoids the materialisation of the Jacobian matrix through a Jacobian-Vector Product (JVP). While this is true, this computation remains prohibitively expensive in high dimensions. In our case, we operate over 
+
+RL×| V | requiring many samples for the convergences of the above estimator, and applying a JVP to a 1.7Bmodel is also expensive. Besides, this computation has to be carried through time and space in our case, as described in (C.1). We therefore cannot leverage this technique. 
+
+C.2 Semi-discrete ELBO 
+
+We prove, here, the semi-discrete ELBO stated in Section 4.3. 
+
+Proposition 4.1 (Semi-discrete ELBO) . Let x ∈ V be a category. Let ℓCE denote the cross-entropy loss. The following bound holds on the log likelihood of the model pθ :
+
+− log pθ (x) ≤ EIt
+
+ 2 ˙ αtαt
+
+(1 − αt)3 ℓCE 
+
+ I1, π θt,t (It) | I1 = ex
+
+
+
++ ℓCE (x, π θ
+
+> 1,1
+
+(ex)) . (4.1) 
+
+Proof. Kingma et al. (2021) provide the following continuous-time ELBO: 
+
+− log pθ (x) ≤ KL( q(I0 | I1 = ex) ∥ p(I0)) + Eq(z0|I1=ex) [− log pθ (x | I1 = ex)] + L∞(x). (C.6) The first term is the prior loss and is 0 in our case. The second term is a cross entropy loss between the clean point, and our prediction at time 1, assuming a continuous relaxation of the decoding of our model, replacing the argmax by a sample from Cat( x1), where x1 is the endpoint of our trajectory. The last term is the continuous-time diffusion loss and is given by 
+
+L∞(x) = 12 E
+
+Z 10
+
+SNR ′(t) ex − πθt,t (It) 22 dt, (C.7) where SNR( t) = α2 
+
+> t
+> (1 −αt)2
+
+, for any t, the derivative of which corresponds to twice the weight in the final integral. Moreover, we have, by Pinsker’s inequality, since ex, π θt,t (It) ∈ ∆d,
+
+∥ex − πθt,t (It)∥22 ≤ 2 KL  ex πθt,t (It) = 2 ℓCE (x, π θt,t (It)) (C.8) The tightness of this bound in the semi-discrete setting remains, however, unknown. We hypothesise that it is possible to extract better likelihoods out of the model. 
+
+# D Experimental details 
+
+D.1 Model configurations 
+
+Table 2 summarises the model configurations. 15 Table 2 Model configurations. 
+
+400M (sweep) 1.7B (scaling) 
+
+Hidden dimension d 1280 2304 Transformer blocks 8 18 Attention heads 20 36 Head dimension 64 64 MLP expansion 3× 3×
+
+Context length 1024 2048 Global Batch Size 324 2560 Tokenizer TikToken Vocabulary size ∼ 100 kTraining data Nemotron Pretraining dataset Prior N (0 , I )
+
+Precision bfloat16 Hardware 8× H100 256 × H100 
+
+D.2 Architecture 
+
+The backbone is a transformer with AdaLN-Zero modulation (Peebles and Xie, 2023), rotary position em-beddings (Su et al., 2023), SwiGLU MLP, and RMSNorm, following the Lipschitz recommendations of Zhou et al. (2025). The network takes as input the noisy simplex representation x ∈ RL×K (sequence length L,vocabulary size K), together with two scalar time conditionings (s, t ) embedded via sinusoidal encodings and injected through AdaLN-Zero. For s = t, the model is a standard denoiser; for s̸ = t, the two conditionings allow learning the full two-time flow map. 
+
+D.3 Hyperparameter sweep details 
+
+The hyperparameter search was conducted in two stages, both at the 400 M proxy scale (Table 2), trained for 100k steps on the Nemotron corpus.  
+
+> Optimizer fundamentals (702 configurations).
+
+We first sweep over learning rate, β1, β2, weight decay, ε, and dropout. Figure 10 shows the marginal effect of each variable on CE loss. Learning rate has a clear optimum around 7 × 10 −4; higher weight decay improves CE loss; β2 = 0 .95 is consistently preferred over larger values, in line with the findings of Zhou et al. (2025); β1, ε, and dropout have negligible marginal effects ( ε insensitive, dropout weakly detrimental).  
+
+> Design space sweep (30 configurations).
+
+We perform a grid search over the mixture schedule λ ∈ { 0, 0.25 , 0.5, 0.75 , 1},the adaptive loss reweighting exponent r ∈ { 0, 0.5}, and the clean prefix probability p ∈ { 0, 0.25 , 0.5}, with all other hyperparameters fixed. This sweep identifies λ ≈ 0.75 , r = 0 .5, and p > 0 as the best operating point (Figure 4). Figure 12 shows the complementary view with p on the x-axis.  
+
+> Optimizer sweep (324 configurations).
+
+Fixing r = 0 .5 and narrowing the ranges around the best design-space settings, we sweep over learning rate ∈ { 5 × 10 −4, 7 × 10 −4, 10 −3, 2 × 10 −3}, weight decay ∈ { 0.05 , 0.1, 0.2},
+
+p ∈ { 0.5, 0.75 , 1.0}, max prefix fraction d ∈ { 0.25 , 0.5, 0.75 }, and λ ∈ { 0.6, 0.75 , 0.9}. The marginal effects (Figure 5) show that learning rate and weight decay are the primary drivers, while p, d, and λ are robust in the narrowed range. Figure 11 details the learning rate–weight decay interaction, and Figure 13 shows the Gen PPL vs MAUVE ⋆ trade-off across all configurations ( ρ = −0.51 ). Figure 13 shows the joint distribution of Gen PPL and MAUVE ⋆ across all 324 configurations. The two metrics are moderately anti-correlated ( ρ = −0.51 ), suggesting a trade-off between token-level quality and distributional fidelity for small training horizons. 16 0.1 0.2 0.3 0.5 0.7 1 1.5 2 3 5           
+
+> Learning rate ( ×10 −3)
+> 2.6
+> 2.8
+> 3.0
+> 3.2
+> 3.4
+> CE loss ( ↓)
+> 0.9 0.95
+> β1
+> 2.8
+> 3.0
+> 3.2
+> 0.95 0.975 0.99 0.999
+> β2
+> 2.8
+> 3.0
+> 3.2
+> 0.01 0.05 0.1 0.2
+> Weight decay
+> 2.6
+> 2.8
+> 3.0
+> 3.2
+> 3.4
+> CE loss ( ↓)
+> 10 −10 10 −810 −7
+> ε
+> 2.8
+> 3.0
+> 3.2
+> 00.05 0.1
+> Dropout
+> 2.8
+> 3.0
+> 3.2
+
+Figure 10 Marginal effect of optimizer hyperparameters on CE loss ( ±1 std), averaged over 702 configurations. β2 = 0 .95 
+
+is consistently preferred; weight decay helps; ε and β1 are insensitive. 0.5 0.7 1 2
+
+Learning rate ( ×10 −3)   
+
+> 80
+> 90
+> 100
+> 110
+> 120
+> Gen PPL ( ↓)
+> 0.5 0.7 12
+
+Learning rate ( ×10 −3)
+
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> MAUVE ? (↑)
+
+wd = 0 .05 wd = 0 .1 wd = 0 .2
+
+Figure 11 Gen PPL and MAUVE ⋆ as a function of learning rate, conditioned on weight decay ( ±1 std shaded). Low weight decay consistently improves both metrics. 
+
+D.4 Complete(d)P hyperparameter transfer 
+
+We attempted to leverage Complete(d)P (Mlodozeniec et al., 2025) to transfer hyperparameters from the 400M proxy scale to the 1.7B target scale. Figure 14 compares training loss curves with and without Com-plete(d)P transfer at batch size 1,280 (128 × H100). The run without Complete(d)P consistently achieves lower CE loss throughout training. We find that Complete(d)P degrades Gen PPL by 35% and MAUVE ⋆
+
+by 10% .
+
+D.5 Training dynamics 
+
+We provide in Figure 15 the evolution of ∆ PPL and MAUVE ⋆ through time using 128 inference steps. Both improve rather steadily across time, but, given their relatively high variance, some parts do not follow the overall monotonic trend. We also report that the Gen PPL and entropy converge relatively fast to the right values, and remain stable across training. 17 0.00 0.25 0.50               
+
+> Clean prefix probability p
+> 100
+> 150
+> 200
+> 250
+> 300
+> 350
+> 400
+> Gen PPL ( ↓)
+> 0.00 0.25 0.50
+> Clean prefix probability p
+> 0.00
+> 0.05
+> 0.10
+> 0.15
+> 0.20
+> 0.25
+> 0.30
+> 0.35
+> MAUVE ? (↑)
+> r= 0 r= 0 .5λ= 0 λ= 0 .5λ= 1 Figure 12
+
+Gen PPL and MAUVE ⋆ as a function of clean prefix probability p. Colour encodes reweighting r, opacity encodes schedule λ. Increasing p substantially improves MAUVE ⋆ with minimal impact on Gen PPL. 
+
+D.6 Self-distillation divergence ablation  
+
+> D.6.1 Choice of divergence
+
+In this work, additionally to the typically used forward KL divergence, we also attempted using reverse KL and Jensen-Shannon Divergence. As a reminder, for a model pθ and a target q, the forward KL is 
+
+KL( q ∥ pθ ) := Eq log q − Eq log pθ , (D.1) which results in the following gradients with respect to the parameters, θ:
+
+∇θ KL( pθ ∥ q) = −∇ θ Eq log pθ = −Eq
+
+∇θ pθ
+
+pθ
+
+, (D.2) recovering typical cross entropy training. Since qθ weighs the loss term, it is highest when pθ puts almost no density on a point where q does. On the other hand, if q puts no mass on a given point but pθ does, the loss is zero. It is said to be “mode-covering”. While this seems favourable, let us rewrite the gradient in clearer way: 
+
+∇θ KL( pθ ∥ q) = −
+
+Z q(x)
+
+pθ (x) ∇θ pθ (x)d x. (D.3) Notice that when q ≈ p, then the gradient under the integral is weighed by approximately 1: this means that in positions where the model and the target agree already, the model is reinforced in that direction. While this may be favourable on the diagonal part of the loss, this might not hold for self-distillation part: the imperfect, biased teacher might further push the student towards the wrong distribution. It might be favourable that the self-distillation loss minimally alters the base model, to avoid biasing the model while learning the flow map, as we show with JSD. The reverse KL, on the other hand, is defined as 
+
+KL( pθ ∥ q) := Epθ log pθ
+
+q = −H(pθ ) − Epθ log q, (D.4) where H(pθ ) is the entropy of pθ . Minimising this objective results in a maximisation of the entropy of the model distribution and a minimisation of the reverse cross-entropy. In this objective, the log q terms prevails in terms of magnitude (remember that q(x) ∈ [0 , 1] , in the discrete case), and therefore, on any density point where pθ and q differ, the model is drawn back strongly towards it. For example, if pθ puts some non-zero mass on a point x and q(x) ≈ 0, then the magnitude of the term may diverge. It is therefore said to be “mode-seeking”. (We also note that the entropy is maximised when it is uniform.) The reverse KL presented the most instabilities as shown in the results. 18 70 80 90 100 110 120 130 
+
+Gen PPL ( ↓)
+
+0.05 
+
+0.10 
+
+0.15 
+
+0.20 
+
+0.25 
+
+0.30 
+
+0.35 
+
+0.40 
+
+0.45 
+
+> MAUVE ? (↑)
+
+wd = 0 .05 wd = 0 .1wd = 0 .2lr = 0 .5 × 10 −3
+
+lr = 0 .7 × 10 −3
+
+lr = 1 .0 × 10 −3
+
+lr = 2 .0 × 10 −3
+
+ρ = −0.51 Figure 13 Gen PPL vs MAUVE ⋆ for all 324 optimizer sweep configurations. Colour encodes weight decay, marker shape encodes learning rate. Dashed line: linear fit ( ρ = −0.51 ). 
+
+Finally, the JSD is defined as follows. Let mθ := 12 (pθ + q) be the midpoint distribution between the model and the target. Then, 
+
+JSD( pθ ∥ q) := 12 KL( pθ ∥ mθ ) + 12 KL( q ∥ mθ ) = H(mθ ) − 12
+
+
+
+H(q) + H(pθ )
+
+
+
+. (D.5) It is minimising the entropy of the middle point while maximising the entropy of the model. As such, we can already note that it has the property that there may no be points such that mθ and pθ diverge completely on mass, by the middle-point’s definition, therefore acting in some sense as a higher temperature term. Let us inspect its gradient: 
+
+∇θ H(mθ ) = − 12
+
+Z
+
+∇θ
+
+
+
+(pθ (x) + q(x)) log pθ (x) + q(x)2
+
+
+
+dx (D.6) 
+
+= − 12
+
+Z 
+
+∇θ pθ (x) log pθ (x) + q(x)2 +  pθ (x) + q(x) ∇θ pθ (x)
+
+pθ (x) + q(x)
+
+
+
+dx (D.7) 
+
+∇θ H(mθ ) = − 12
+
+Z 
+
+∇θ pθ (x) log pθ (x) + q(x)2 + ∇θ pθ (x)
+
+
+
+dx. (D.8) The pθ entropy term’s gradient amounts to: 
+
+12 ∇θ H(pθ ) = − 12
+
+Z 
+
+log pθ (x)∇θ pθ (x) + pθ (x) ∇θ pθ (x)
+
+pθ (x)
+
+
+
+dx (D.9) 
+
+= − 12
+
+Z
+
+[log pθ (x)∇θ pθ (x) + ∇θ pθ (x)] . (D.10) Summing the two terms yields 
+
+∇θ JSD( pθ ∥ q) = ∇θ H(mθ ) − 12 ∇θ H(pθ ) = − 12
+
+Z
+
+∇θ pθ (x) log pθ (x) + q(x)2pθ (x) dx. (D.11) Otherwise stated: 
+
+∇θ JSD( pθ ∥ q) = 12
+
+Z
+
+∇θ pθ (x) log 2pθ (x)
+
+pθ (x) + q(x) dx. (D.12) 19 0 10,000 20,000 30,000 40,000 50,000 
+
+## Training step 
+
+4
+
+5
+
+6
+
+7
+
+8
+
+9
+
+> CE Loss
+
+Without Complete(d)P With Complete(d)P Figure 14 CE training loss with and without Complete(d)P hyperparameter transfer (batch size 1,280 , 128 ×H100). The transferred hyperparameters result in consistently higher loss. 
+
+When the two distributions concur, the gradient is near zero. When pθ tends to infinity, the log term tends to log 2 , therefore bounding gradients in the case of a (large) overestimation by the model. Remark as well that this term is always bounded by log 2 . When pθ is small (tends to zero) where q assigns mass, the term diverges to infinity. We see that the JSD alters the model’s distributions in less aggressive ways than the forward KL divergence, and show empirically that the base flow is better preserved. Finally, the boundedness of the term, beyond avoiding divergence, naturally balances out the training dynamics between the diagonal 
+
+s = t loss and the self-distillation—an issue in the case of the KL divergences, where the diagonal term is of roughly the same order of magnitude of the self-distillation one, leading to the possible and detrimental domination of the latter. 2 
+
+> D.6.2 Additional results for ESD
+
+As mentioned in Section 4, we present our ablation results on the ESD-logit loss in Figures 16 and 17. Some results exhibit clearly the claimed behaviour of degeneracy: in the single step regime, all methods either collapse, or provide extraordinarily high Gen PPL (forward KL). MAUVE ⋆ is significantly reduced in the 
+
+128 regime, significantly degrading the one of the undistilled flow. 
+
+# E Qualitative samples 
+
+We report below several qualitative samples of both our undistilled and distilled models. We show uncondi-tional samples, alongside samples used for ∆ PPL, exhibiting model’s capabilities in prompt completion. 
+
+> 2If the flow term remains high, but the self-distillation remains close to zero, then the model would have effectively learnt a trivial solution of the self-distillation loss landscape.
+
+20 100 200 300 400 
+
+Training step ( ×10 3)   
+
+> 45
+> 50
+> 55
+> ∆ PPL ( ↓)
+> 100 200 300 400
+
+Training step ( ×10 3) 
+
+> 0.70
+> 0.75
+> 0.80
+> 0.85
+> 0.90
+> 0.95
+> MAUVE ? (↑)Figure 15
+
+Generation quality metrics evaluated every 20k training steps using 128 Euler steps. (Left) ∆ PPL (evaluated with Qwen 2.5 7B) decreases steadily, indicating improving agreement with the autoregressive reference. (Right) MAUVE ⋆ rapidly saturates to ∼0.93 by 160k steps, showing that the model’s unconditional distribution converges early in training. 1 2 4 128 
+
+NFE 
+
+0
+
+100 
+
+200 
+
+> Gen PPL ( ↓)
+
+1 2 4 128 
+
+NFE 
+
+0.0
+
+0.5
+
+1.0
+
+> MAUVE ? (↑)
+
+1 2 4 128 
+
+NFE 
+
+2
+
+4
+
+> Entropy
+
+Undistilled JSD KL RKL  
+
+> Figure 16
+
+ESD-logit self-distillation: same format as Figure 6. 1 2 4 128 
+
+NFE 
+
+50 
+
+100 
+
+150 
+
+> Gen PPL ( ↓)
+
+1 2 4 128 
+
+NFE 
+
+0.0
+
+0.5
+
+1.0
+
+> MAUVE ? (↑)
+
+1 2 4 128 
+
+NFE 
+
+2
+
+4
+
+> Entropy
+
+Undistilled U LN  
+
+> Figure 17
+
+ESD-logit self-distillation: same format as Figure 7. 
+
+21 1.7B CFM, undistilled Unconditional generation   
+
+> NFE 1024 Entropy: 4.78 Gen PPL: 20.23
+
+This article will discuss the Japanese chart chart, thus will have a proper understanding of the visual lines and market direction. This will practical in the forex market and technical trading. Learn about Keystick chart The key chart is clearly in the left. This chart serves as an indicator of the black market. See how the trend chart is better than spot market chart. Start with the base of the black market. Beforeifying the key chart of a candle chart, it is suitable for trading with multiple periods. However, it is likely to find the volume trend easily. That is, one will need patience. Therefore, you should learn about fast indicators in forex trading. Source: Trading charts. Mainly there are two main types of indicators: bullish and negative/positiveward or fallingrend. While finding these data, you must draw the fast trends to know the forex market and the forex phase. We need to understand some two points before discussing the key drawing According to the principle of period chart Removing a flat line is a long line, or a horizontal line from the bullish trend in market. If Removing a black line is a long line, or a horizontal line from the bearish line. How about calculating change from two consecutive trend line? Which is by drawing a horizontal line from the first. These are both types of market movements. The level chart is the end point of each trend. As we said it, each candlestick corresponds to a trend. But today’s I is different from a single candlestick. To know this, we can think the chart how a horizontal line along the trend chart is a trend line. Thus, we need to find the line at intersection with the line upward or north of the trendrend. Removing the line at a midpoint can get the same result as we remove a single trend point. When the market moves, the consumption line is drawn in the forex market. Here the same principle applies to the trading chart. However, the strength is how long it is reflected in the downt chart. Then, the trend turns into a trend is completed. But the difference in price does not affect the whole figure. Analysis of Key chart The candlestick chart is a touch of the top and bottom of the market. And considering this trend chart, the forex market movesuates. To follow the key points, we can check trends from the longer-term trend values. By drawing a horizontal line, we can calculate the trend, which begins with the initial period based on the by-fow model until the number is reached Then, we can check trends from the price drop. The same principle applies to the candlestick chart. [...] 
+
+Figure 18 Example unconditional generation from the 1.7B CFM using 1024 sampling steps. Trimmed to fit in page. 
+
+22 1.7B CFM, undistilled Unconditional generation   
+
+> NFE 1024 Entropy: 4.96 Gen PPL: 31.21
+
+blocks have a pivotal role as a guide for your rope during climbing. Rope blocks are used for climbing, processing, etc, purposes FAQ What is a rope block for? Rope blocks can be used as anchors in engineering or walls. It can be used as a brace, climbing aid, and as construction blocks. What is rope blocks and how it work? Rope blocks come in a variety of sizes, so you’re right at the right time. After all, the one enables you to run the length of the base and is right at the internal door. In this guide, we’ll take a look at a rope block and help you understand how it works. A rougholding block is a boxy structure that is placed vertically in the garage door’s opening. The of its role is to absorb the energy of the construction bar against the rough window. The block is placed into place at another door and then on top of the door without any friction against the walls, handrail, or other irregularities. As the wall is locked in place, the block to hold into place so that the compresses more force when the wall comes moving. Wall ropeolding systems are used to install walls and with soft patterns into the walls. They are quick and durable, but they require special attention to safety. They’re also effective at withstanding high winds that cause impact impact. The function of a high-quality rope block Mop blocks are pretty tough at face use. The mast is just a kind of a structure, and the hit from the outside can give a force of up to three parts. Still, the issue block is the vertical face anchor. The tool shows does the following. It was holding the rope right until it reaches the edge of the top of the mast. It also is to give it a suitable grip when at the top of the roof. How heavy blocks are installed? A rope rope block is basically held in place of a number inches below the rail and it comes the holding the rock, a vertical plate on top of the roof, in the place. How to use a rope rope Block? The correct rope rope blocks provides an anchor to the top of the block in place. The block helps to secure the structure by dissusing the energy of the handrail of the partner.000 the bottom sign block block is a practical tool. The rope block helps to keep the side of the rope rise in the real estate. It is designed to that the impact will be made with the correct force. The storeopump is another method that can be used. The rope block is the mechanism that remove the rope blocks. The first step is to build a structure foundation. The the rope rope block method is achieved by pushing the vertical part until the rope touches it. What is a Framing block? A locking block is a small type of block that has a locking function. It is used to hold climbing blocks with its height. There are many types of buckling blocks. with a pulling force that works to secure the stone. In order to have a grip, you need to be facing the face plate. Regardless of the type you use, a face plate is one signal to dedulate the direction you should do to the rock faceplate. [...] 
+
+Figure 19 Example unconditional generation from the 1.7B CFM using 1024 sampling steps. Trimmed to fit in page. 
+
+23 1.7B CFM, undistilled Unconditional generation   
+
+> NFE 1 Entropy: 2.03 Gen PPL: 8.11
+
+„„„„, the the the the of, the the the„ know„ the, the, to the„ the„.„, the, the the the„„.„, the, the, the, the the of, the, the„ of„„„„ the, the„ the, the the, the the,., the„ the, of the, the„ the„. the, the the„„ the, the, the the the., I the the the„„, the, the, to„ the„„,. [...]   
+
+> NFE 2 Entropy: 4.02 Gen PPL: 88.36
+
+[?][?] T[?][?] of[?] [?][?] on the[?][?][?] T to.,[?]2006 is theies[?][?][?][?][?][?] of and[?][?][?][?][?][?] together the[?][?][?][?]s about![?] from the,[?][?][?],[?] use of money[?][?][?][?][?] of more[?] -[?][?] of[?][?][?][?][?][?][?] [?][?][?][?][?][?]1.2.[?] images from across 0.5[?][?][?][?][?][?][?] Si[?]2006.6[?][?][?][?][?][?][?]2, I[?][?][?][?][?][?][?] are use like an[?] [...]   
+
+> NFE 4 Entropy: 4.70 Gen PPL: 189.82
+
+Abstract\n\nThe second edition of COP 101 focuses on the following topics:\n\nthe historical value, policies and analysis of the International land;\n\n sea;\n\nthe;\n\n impacts of world ;\n\n on the new coast of the G States;\n\ncerns about nuclear effects, the use of nuclear weapons, the use of nuclear and concerning the atmospheric temperature of Antarctica;\n\nthe current effects of rapid climate change.\n\n [...]   
+
+> NFE 8 Entropy: 4.67 Gen PPL: 82.53
+
+Abstract\n\nThe second edition of COP 101 focuses on the following topics:\n\nthe remote monitoring, monitoring and analysis of the upper Gorges glaciers;\n\nthe quantification of the thermal effects on the thermallogy of the Gorges;\n\ntalks about thermal effects, the use of thermal snow, the use of thermal and measuring the melting temperature of structures;\n\nthe thermal effects of recent climate change.\n\nSnowest capacity [...]   
+
+> NFE 128 Entropy: 4.67 Gen PPL: 67.42
+
+News\n\nThe second edition of Training 101 focuses on the following topics:\n\nthe predictive value, interpretation and analysis of the Global GHI index;\n\nthe latest update of the monitoring system, the new assessment of the GPM;\n\nthoughts about thermal effects, the use of seismic sensors, the use of thermalars, the freezing temperature of trees;\n\nthe current effects of recent climate change.\n\nEarthismicards\n [...]   
+
+> NFE 1024 Entropy: 4.57 Gen PPL: 72.46
+
+News\n\nThe second edition of Building 101 focuses on the following topics:\n\nthe ecological value, description and analysis of the agricultural land therefrom;\n\nthe technical evolution of the drainage system, the new assessment of the GFC;\n\ntalks about ecological effects, the use of fertilicides, the use of fertilicides, the thinorestation of trees;\n\nthe current effects of recent climate change.\n\nEarthtlement analysis [...] 
+
+Figure 20 Progression of unconditional generation quality using the undistilled CFM. Trimmed to fit in page. [?] 
+
+replace unrenderable tokenizer artifacts. 
+
+24 1.7B CFM, PSD + KL Unconditional generation   
+
+> NFE 1 Entropy: 4.99 Gen PPL: 112.83
+
+and potential would deep well management opportunities make the goal much class. a a day, of pressure, address, and area of the child your school. The use of minutes 31 and n’s, it’s one: take this opportunity to do the teacher in relation to the 38 ( is hours up to any each day. either a fun out time for friends are at you friends or more a perfect 4-3 you all learn. Ins, that of the 8-13s 15-36 long and a out on this money, the students to work good data from their day by Day 4. 4ing today’s expected value of a family in 10 day 2005, to an hour, to In sources, and paper. 29-able% for your parents isn’t you to the social. 10-20 time of you can their 9 the process of a visit to a time (or an initial at year in paper or year amount the above as with a free, when science is on the last 2 weeks, you can take (10 days not only in day if you have the data, considerity or effect using a half.S. is worth is your same income the day that of values. If the value is. time are of a month by 3 times is the day have been playing with same account for a range of up 7-2% from the. the amount for a data system of 8-5 30% lower 2015-s Day 1.M and interest only To year as are% out. However, for some for this time are for areas such as reading and math and social. This is step as well for whether you’ve this change if you want to an in. ( a 4) s this through the number of in school for a moment who, 2013 on April 1, and then 10% and taking as.. The level is timea who also received is 40 percent of. During this five-year to in this e. As is the start of these two. we need to use it was 6 without a in the standard content divided by the end of a student or a time teacher, but has, and data changes in the top of the year: C, 0 for the value of about.5 each is a. of the, if your first on day 19, it is 1 as a was taken on your the next part. used for a new student is as. The a lot of the period, and select the year, and to the standard check outside of this individual be year and keep up for your, to school time. e four key explains why the body type has a living with a more-man review and aistAside from another a subject of 2004 short that you should be given a limited area of context. However, teacher type of the heart of any school do you on free time you like it there is n you need of a new, so that your may will will had better no period for, and other. the 2008,. major required was not sufficient as to this the cost of in. 8- in of to college child with disabilities who are the career in a and developing that are built relevant students when in large school learn in order to have a strong of science, reading, writing, and a. Your. You should do a three-year period from the student learning point and 2013 –. . 12 at every in the some of his data A to the subject and to get there regarding the 1994, example, leading into the strategies of students 4: the time of working. and closely with school that and usually a hours of class and In the years following. Now, up to date with many of the process by over a six:. 9 4 children, mother, and and the end of each. V answer goals should keep this all at 11: on period 2014 this level of a 2008 and whether you ready to may have helped me. This in a time of plan a 10 year out little time. Now, someone that the 10 years. I could, a. or and helpate data who a more about the time value of his plan. All students and always his immediately, at could I in school like the ones time as a by, and even men and women. greater B. As of the field interest was over 1. it is the entire school to. becomes an important factor when the 2016 program your students. The average number who are my class school, and this while you as an effect, which I believe other enough of the industry the field is not. When A needs grade B in. Z I find the time that the some to be different, or C to either students or children. In 54 2- to0 student included in the school process. Even 
+
+Figure 21 Example unconditional generation from the 1.7B CFM using 1 sampling step. 
+
+25 1.7B CFM, PSD + KL Unconditional generation   
+
+> NFE 2 Entropy: 4.90 Gen PPL: 97.96
+
+Which, would be your problem should? 18. When when you are small as done in,. For each of the remaining 20.30. Each time is counted. % of any 1 in a 4. Use the hours you weeks. Can you use their? The Time of app and local g. Well the following with simple scientificIt has been published. Time from traditional companies are called 0 are based on the hour. 25. See also has. 13 days free of basic math. Add a specific date; its as with days. with a standard or formula that of as.4s out 3 time the standard product of two consecutive events with the straight line, of the same size. units of Time. If as days.. of hour 20 5. half a that the five minutes of working will be $5. % of time spent: 90x5, be very and told: Time.) 3 to a child of between in parts of the better do not hold are involved. After that and due a clock, at 1. time. be people, the length of time interval between the days source as your computer or device started the clock with the web app with. end of each hour and about this 2 c paper person your to - a? You can achieve this for. W on the part-time. is expected to start now. 5, the in year, from an hour equal to 10 11 days of time. of days: approximately 16.1 to the hour, used 0 and more. In size: the 9 days or class are usually reserved for an hour or total bit of a week together with a specific data source from the time of hours. goal of one day: four minutes in length and four minutes, 14. B your underos heard, but of 4 million, a bit. Does not included for a period of a Mar 24, 2020 [?] by’s / Time Calculator; amount: 3 - first to work at a and period to. If you. be hard to is 5. every person. In order values, per character, to music off with increasing time used, 8. (There is the easy of the grade level. As 50 minutes or 60 just means you need for each time t go to was with the speed of a for as 9 and one of the hour day: a, you should pay and. From 12 days to about as a 1, but also the. ( shall be used to know 6 by 1. 10 hours. running from the hour as it I came about the seventh day in. At the end these is, and therefore full time and minutes on year of the issues that are not the activities of the individual activity, new language, etc. 1. medical standards for time start with time, but published three to and items time language, math, cultural. And until not on time in a child its knowledge, understanding and V education. the same length of his 20 percent of time: of time in English stands for ’a. which involve themselves in the setting of the rules. is a reference to the amount of hours. A time is equal to time is 1000 seconds. First time or more 20 days in o is the two parts used in plain English: in 1a9.a. Table of14. the top. 10 to 1 times that. A before value that is for free. results of the European is. However, when you add the left side of the to use, and it is the.as for using the time of and the standard. (One test is)0.3 percent. P withils: length, but 3. 4 hour. : create usually length of ouram week. time8 to 12 hours apart. Time (with time) unit of income: name, this includes. Time with time unit and 4 hour daily for rest using a time, 3.3 million and 1.2 different units. 000 (int get with different percent of the 25 and average of hours in day with and special) (0. The time is length of hours, I would like, more hours: 1 5) hours by 1:10., we sum up a portion of code 10 for greater? and that were created with this also be calculated using a common denominator of the week on. Your, represents time because they choose the network that was the car, from the mass of Earth being measured. = 3.3 days 0.000. It is because of and 80 with the help of a period slightly different number, a. 5 (day 1) three seconds, but with the amount of seconds or in the value below to make the hour their mark on their respective of. Most 4 minutes or 4 seconds in time, and about 0.00 day. 
+
+Figure 22 Example unconditional generation from the 1.7B CFM using 2 sampling step. [?] replace unrenderable tokenizer artifacts. 
+
+26 1.7B CFM, PSD + KL Unconditional generation   
+
+> NFE 1 Entropy: 4.90 Gen PPL: 112.98
+
+alat must a 0.6 and (from a hard of ) to ensure that 2018\nHowever, the first events,000 of the. project and upV can beal in is 40 byU. D inacist, as they design, A and journey, especially in the period. 6h - 80- 7 and a half. had on the and up. they are for the (c) develop5 these) to and a significant increase in the.5 only from that sixal ( 7 you can add a dal to you. its. that [...]   
+
+> NFE 2 Entropy: 5.09 Gen PPL: 99.87
+
+Divisional officers must strong 0.14 experience (from a minimum of 1 to assure that 2011 For example, the first events,000 of the largest staff and upV can be located in is 40 mU. D inacetime, as they design, A and journey, especially in the period of 16h - 8pm- 7 and a half. while on fire and I. reportage for the (c) 5A; to and a significant reduction in the. but only from that ital ( 7 you can add a decal to you. just. that [...]   
+
+> NFE 4 Entropy: 5.17 Gen PPL: 92.29
+
+Seasonal winds must strong 0.14[?]C (not a hard of temperature) to indicate that 2011 For season, the first events, regardless of the. Water and weather weather can be unequally input via smallU. Drought weather wind, wind, wind, fog and August, especially in the UK. 16h - 8h | 7 and a half. depends on Friday and Thursday. Shortage for the (c) cityley gas forecast to experience a significant decline in the. Apart only from that it are [...]   
+
+> NFE 8 Entropy: 5.38 Gen PPL: 72.76
+
+Oral workers must strong 0.14 experience (from their hard-working score) to diseases that infectious disease, infectiousemics, adverse adverse events, and treat art. Ebola and CoV can spread infect human respiratoryplets via airways. Distrue fever, nausea, nausea, teeth and vomiting, especially in the elderly. 16h - 8pm | 7 and a half. advice on diet and nutrition. Shortage for the. One COVID-19 vaccines continue to experience a [...]   
+
+> NFE 128 Entropy: 5.36 Gen PPL: 58.29
+
+Oral Americans must strong 0.14 mg (see their Cholesterol Levels) to risk that heart disease, kidney failure, adverse cardiac events, and kidney failure. Zika and CoV can cross enter human respiratory tract via small particles. Damp affects lips, nails, nails, hair and nails, especially in the elderly. 16 oz - 8 oz of protein, and a snack. advice on diet and lifestyle. Dosage for the. DPH-5A continue to experience a significant [...] 
+
+Figure 23 Unconditional generation progression (PSD + KL). [?] replace unrenderable tokenizer artifacts. 
+
+27 1.7B CFM, PSD + JSD Unconditional generation   
+
+> NFE 1 Entropy: 5.04 Gen PPL: 137.00
+
+,done a little for a small business? Because’re have to have who to create and sell room. The they set you yourself with your own eyes, and done for what happens. A do you do that well, made with different products that you a lot of the other books, does there. that if you do out under the rules of money, you don’t have to do. In fact, make’t you build many jobs. She just for users and I am that is too much. I the more on your own, making you creating and is a great ( for many, is your way, and can help you to create the images as you aren’t away at a social enterprise. I are the best one that have a company logo. can take wants to under the? a company that can help our all extremely much don the like is media for your business. But does their that, you have a more is a feeling of have to ensure you want more. I make sure that you’re, as a part of the world. The jobs are current. that given to your house or is the need, which are a good. with a location. of the, is better. I had things love of I and it’s done for the people. Most was with a. You to A. Likeed asked. for every day on top of in their to businessSome up in various different in of it look like a of the other end. She started, like just one of. In is that your company in a to think a body, it, don’t 1 hour how to do. If another down into a building, and so is one of the will you’ve experience. been at the start of the a lot of my know how are the company? Why is nothing as well and as an less. We of how in building people that are just and related to let you sure what do. I is going to make up her more up for you it could haves while go all myes for the impact they these her before your company. and for those who & as a good. as well like you, and for your art A him as a strong woman stress idea, and this " on your career. of normal? is very happy, needs that are not and a class and we, by reaching out to find more. As. She theem in at out that I talk to believe me, it can be that a woman for her if y [...] 
+
+Figure 24 Unconditional generation (PSD + JSD, 1 NFE). 
+
+1.7B CFM, PSD + JSD Unconditional generation   
+
+> NFE 2 Entropy: 4.22 Gen PPL: 132.24
+
+Don’t to the bank, he isn’t in n once so you don’t have money anymore. The video is this season, and, all the start -oh, players there. Thanks! I have talked to many fans like the method is and as would the track be a bit of force, but maybe there is one, is on a player note. Thanks, Jay Wilder. What happens is there are only the normaler-in for the guy, he found on twitter and where you can visit miller. getting their step back in 2017. I don’t have a friend moving up who truly is a replacement for him. 
+
+Figure 25 Unconditional generation (PSD + JSD, 2 NFE). 
+
+28 1.7B CFM, PSD + KL Unconditional generation   
+
+> NFE 1 Entropy: 4.87 Gen PPL: 100.06
+
+Nal time is taught in their learning mass. This usually happens. the below, which may provideal. in the school’s have regular plans for for data materials based on their project or and how your child your child. For example, understanding. A project, this may serve as a basis for students of out your event or it. No on 1994. you consider the role of online learning and the a for percentage of course? (or online) back to class and help someone. less a code into the curriculum. or 2003 time frame. This is a will things to do with their final t [...]   
+
+> NFE 2 Entropy: 5.03 Gen PPL: 102.58
+
+Nal to is reflected in their learning styles. This usually happens under the below, which may contain one. in the family members have regular plans for specific extra materials based on their project ask science how they child your child. For example, understanding. A project, this may serve as a reference for students of out your event or it. No on 1994. you consider the role between online learning and the a significant portion of course completion (or so) and to another and help someone. less to fall into the latest- or 2003 time frame. T [...]   
+
+> NFE 4 Entropy: 5.23 Gen PPL: 77.15
+
+Parental behavior is measured in childhood through mass. This usually happens under the below, which may contain no difference in the family members have regular plans for this example, based on their birth status and how they child together again. at this particular setting. In project, this may serve as a reference for students of out your old or it may travel on 18 weeks. Please consider the role of online calculator and the possibility for purposes of course average (or losing) weight to assist and help someone weigh less than fit into the [...]   
+
+> NFE 8 Entropy: 5.10 Gen PPL: 60.25
+
+This Wikipedia article is posted in detail through mass. This section happens under the below, which may contain increasingly complex errors. Faculty members have posted plans for preparing educational materials based on their in the science program. The discussion again looked at this particular assignment. In project, this may have been a challenge for students of the Y old or it still depends on 1994. We love the challenge of online forums and the last minute we of course assign (or so) weight to another and help someone calculate, so we too [...]   
+
+> NFE 128 Entropy: 5.12 Gen PPL: 45.43
+
+This page article is presented in PDF through links. This section has supplementary material below, which may contain affiliate links, which may earn something from reality. For example, based on discussions in the science program entitled The Physics Project. at this particular university. engineering project, this may serve as a reference for students of related work before submitting it. Copyright Copyright 1997. Physics Physics | N/A When received the last that we had applied one (or one) weight to another and found a force, so we took the [...]   
+
+> NFE 1024 Entropy: 5.00 Gen PPL: 37.60
+
+This page article is contained in our main office. This section has additional material below, which may contain increasingly complex concepts. Project members have different plans for organizing these materials based on their project requirements and how they organize this material. For example, depending on the project, this may serve as a reference for students of the work before submitting it. Appendix 7.1. Load and Load System A load operation is the operation of adding one (or one) weight to another and applying a force, so we give the lo [...] 
+
+Figure 26 Unconditional generation progression (PSD + KL). 
+
+29 1.7B CFM, PSD + JSD Unconditional generation   
+
+> NFE 1 Entropy: 5.04 Gen PPL: 137.00
+
+,done a little for a small business? Because’re have to have who to create and sell room. The they set you yourself with your own eyes, and done for what happens. A do you do that well, made with different products that you a lot of the other books, does there. that if you do out under the rules of money, you don’t have to do. In fact, make’t you build many jobs. She just for users and I am that is too much. I the more on your own, making you creating and is a great ( for many, is your way, and can help you to create the images as you aren’t [...]   
+
+> NFE 2 Entropy: 5.15 Gen PPL: 121.37
+
+Just done a little less a small business? You’d have to have who to create and sell things. If they who an interview with your own eyes, and done for everything happens. A do you do that well, made with little products that you a lot of the other books, does? products that small is do out under the rules of products, you don’t have to do. In fact, can’t you doing many things. She speaks for you and I am that is too much. I the photos on your own, making you creating and is a great job for many, is your way, and can help you to create the image [...]   
+
+> NFE 4 Entropy: 4.22 Gen PPL: 34.81
+
+Is there a logo for a small business? Because yes You’re trying to create a brand logo. It’s who you represent with your brand identity, and this knows everything happens. How do you do that well, especially with little products that you a lot of the time and expenseMy guess is that if your logo was under the rules of products, you wouldn’t have to worry. In fact, this happens after build many logos. Our passion for users and this behavior that could too muchly create the logo on your logo. If you’re looking for a logo (or logo) for your logo [...]   
+
+> NFE 8 Entropy: 5.48 Gen PPL: 71.39
+
+Is there a logo for a moving business? Because yes You’re trying to create a logo logo. Every client logo you pick with your brand eyes, and done knows everything happens. How do you do that? Make it online. They save you a lot of the time and it does look promising that if you do outsource the amount of money, you don’t have to worry. In fact, if you’re doing enough multi affiliate marketing campaigns for users then I guess that is too much to create the logo on your own. If you’re looking for a logo (or logo) for your logo, we can help you [...]   
+
+> NFE 128 Entropy: 5.13 Gen PPL: 44.12
+
+Is there a logo for a crochet business? Because Do You’re trying to create a cool logo. Look designs as you built with your own eyes, and done knows what happens. How do you do that? It’s online. You are getting a lot of the time and attention out there, so if you do a realize the amount of money, you don’t have to worry. In fact, if you’re doing enough buying crochures for users then I’d that it too much to create the designs on your own. If you’re looking for a girl (or logo) for your memory, we can help you to create the images as you like [...]   
+
+> NFE 1024 Entropy: 5.11 Gen PPL: 35.50
+
+Is there a logo for a cartoon designer? Because nobody You’re trying to create a cartoon guy. a friend who you built with your own eyes, and done knows what happens. How do you do that? It’s easy. You are getting a lot of the time and attention out there, so if you do a kid the amount of money, you don’t have to worry. In fact, if you’re doing enough to create a website for users then I’d that it too much to create the logo on your own. If you’re looking for a theme (or logo) for your site, we can help you to create the images as you like. [...] 
+
+Figure 27 Unconditional generation progression (PSD + JSD). 
+
+30 1.7B CFM, PSD + KL Conditional generation 
+
+> PROMPT
+
+Market’s Downward Tilt So far in 2014, the Dow Jones Industrial average has dropped for 5 of the first 7 trading days. Conversely, this index has rise [...] d, characterized by up-day probabilities closer to 40In other words we are more likely to be tilted in a  
+
+> NFE 1
+
+∆ PPL: 103.48 
+
+and in those below- 2008 which% as, as a product as 2013. once you have that every month for a certain on an 25, may 56. A person term picture of a & through a marketing test. But the target. through an every, government to,? that are to a -, more days. one of the price. The use of possible that ( be up 5% since 5% amount of all it with no 2002. That nota?? add back to 135. the individual 1970 get (of the amount of 10., 75% and, and can. others that. all 7. 201 set for other time you 201 hours is a 14. It is used to at). a [...]  
+
+> NFE 2
+
+∆ PPL: 67.91 
+
+trend in going below a 200%-95% day, as a year as 2013. once you have that every month for a day on an 25% to 200 basis. A very term picture of a loss through a marketing channel. But the target taken through an up, hasical, if that risk to a marginally more days. one would the price. The share of possible trades ( be up 22% since 5% year of all it back to 2002. That 15 up?? and back to 13% for the individual 1970 base (of the theory of 10%), 80% and, and can. So that’s all 7. 201%, for the years of 2010 is January 14. It’s used to at). a 201 [...]  
+
+> NFE 4
+
+∆ PPL: 41.22 
+
+phase in going below a 200% up-day day, as a year as 2013. Imagine you have that every month for a decade back from 25% to 2009. A very nice picture of a trend through a tree trend. But the probability of through an up-day has to ’add that’ to a marginally adjusted trend. Neither would the price. The share of possible trades ( gone up 22% since 5%?) of having it back to 2002. That 15 up? probability is back to 28% for the individual 1970+ (of the years of 10%. So 80% probability, and repeat. So that’s all 7%. 60% for the years [...]  
+
+> NFE 8
+
+∆ PPL: 29.68 
+
+phase in closer to a 50% up-day probability, as a small probability of 40% once you have that probability probability for a decade back from 25% to 2009. A very nice picture of a trend through a tree forest. But the probability of seeing an up-day has to ’add that’ to a marginally adjusted distribution. Here again the price. The chart shows we have a higher up 22% to 5% probability of having it back to 2002. That 15 up-day probability is closer to 62% for the individual 1970[?] (of the years of 10 a long 80% probability, and [...]  
+
+> NFE 128
+
+∆ PPL: 25.95 
+
+phase in closer to a 50% up-day probability, with a small probability of 40% (the observed probability of an up-day probability ranges from 25% to 40%), so we can probably better get a forecast through a tree distribution. But the probability of seeing an up-day has decreased, so that corresponds to a marginally adjusted trend. Here again the price. The chart shows we have a higher up 50% to 5% probability of having it back after 2002. That having an up-day probability is closer to 50% for the individual market participants. [...]  
+
+> NFE 1024
+
+∆ PPL: 22.64 
+
+phase in closer to a 50% up-day probability, with a small probability of 40% (the typical probability of an up-day probability ranges from 25% to 40%), so we can probably better get a pass through a random distribution. But the probability of seeing an up-day has decreased, so that corresponds to a marginally adjusted trend. Here again the price. The chart shows we have a higher up 50% to 100% probability of having up-days after 2002. That having an up-day probability is closer to 50% within the up-day threshold. [...] 
+
+Figure 28 Conditional generation progression (PSD + KL). [?] replace unrenderable tokenizer artefacts. 
+
+31 1.7B CFM, PSD + JSD Conditional generation 
+
+> PROMPT
+
+It’s important to understand the math behind present value calculations because it helps you see what’s actually happening inside a calculator or spre [...] o increases the actual realized rate of return. In this example the stated interest rate was 10  
+
+> NFE 1
+
+∆ PPL: 143.77 
+
+since since that is a regular it will get into, along with also the the following a. rate for a Dounding this. It with simple other But, more you know the cost of getting an with a lot of that you with a calculator, you it’s as an ofs how we can read this issue when over our just1. Is for a. value, is one of your to pay amount, what wouldn’t be ’t in, and down put, to the any since you? of safe when interest [...]  
+
+> NFE 2
+
+∆ PPL: 95.09 
+
+and since that is a regular it we get into, along with increases the the following a return result for a DCFive. [In other words, more you know the cost of getting an annuity version of that you with a discount, you then paid as an investor. how we can solve this result when over our $1.05 for a lump sum, is one of your regular pay amount, what cost would be willing ( in, and alsoounding, to the entireounding you? Yes safe when interest [...]  
+
+> NFE 4
+
+∆ PPL: 63.97 
+
+( since that is a calculation that we get into later along with how the formula calculates a return rate for a DCF this. [Endip] But now that you know the value of getting an investment and stream of that formula with a calculator, you Let’s take an experiment on how we can best this result when over our $1.050 for a lump sum, is one of your most profitable investments, what rate would be equal (interest, and currently paid) to the cash since you got x) when interest [...]  
+
+> NFE 8
+
+∆ PPL: 42.49 
+
+( since that is a percentage that we get into, along with calculating the actual annual annual return rate for a DCF calculation. [Videoued] But, that you know the value of getting an with a 1% yield with a bank, so Let’s take an example of how we can utilize this result to calculate our $1.050 for a lump sum that is one of your monthly principal amount, what rate would be equal (1,300.0) [...]  
+
+> NFE 128
+
+∆ PPL: 21.49 
+
+And since that is a calculation that we get into, along with what the actual value of return grows as a result of this. Example In other words, we can know the value of the investment with a 10% increase with a compounding. Let’s take an example of how we can calculate this result when investing our $1.050 for a fixed 10/ period of comp. To illustrate, what rate does the investment (1,3000000) [...]  
+
+> NFE 1024
+
+∆ PPL: 13.49 
+
+and since that is a percentage that we get annually, it can simplify the present value formula. Formula for a Destructive Niche In other words, we can know the value of the investment with a 10% increase with a large factor. Let’s take an example of how we can utilize this result to calculate our $1.1 for cash at 10/30 of an annualized amount, what rate does the investment (1,1000000) [...] 
+
+Figure 29 Conditional generation progression (PSD + JSD). 
+
+32 1.7B CFM, PSD + JSD Conditional generation 
+
+> PROMPT
+
+How To Choose Hobby How to choose a hobby is a question that has been asked by people for many years. The answer to this question is not a simple one, [...] offer quizzes and tests to help you figure out your interests. This can be a fun way to explore different options and see what you might be interested  
+
+> NFE 1
+
+∆ PPL: 135.22 
+
+and how to improve your career. It’s no one to give and less of work, and some so for. The cost of the best possible to use ones at home or our friends, or because. That are lot of different personal interests out there, it’s important not to help back your own life. I create and that can often require a lot of brainstorming around the process. [...]  
+
+> NFE 2
+
+∆ PPL: 102.66 
+
+and how to improve your career. There’s no going to type and method of work, and some so for themselves take advantage of the best possible to use ones at home or our friends, or colleagues. That are lots of different hobby options out there, it’s important not to hold find your own life. To create and that can often require a lot of brainstorming in the process. [...]  
+
+> NFE 4
+
+∆ PPL: 68.15 
+
+in working to improve your career. There’s no limits to type and method of work, and some people like to take advantage of the best possible facilities to work at home or our own office or offices. With a lot of different record options out there, it’s important not to truly find your own private list of interests and that can often require a lot of brainstorming in the process. [...]  
+
+> NFE 8
+
+∆ PPL: 60.36 
+
+in working to improve your career. There’s no restriction to this and method of work, and some people like to take advantage of the best possible facilities to work from home or freelance from office. There a reference a lot of different work options out there, it’s important not to actually find your own private list of hobbies and that can often require a lot of brainstorming in the process. [...]  
+
+> NFE 128
+
+∆ PPL: 36.74 
+
+in doing to improve your career. There’s no downside to this alternative method of work, and some people like to take advantage of the best possible government to work from home or freelance from home. There can be a lot of different work options out there, making it much more difficult to find your own niche. Another issue is that can often require a lot of brainstorming in the process. [...]  
+
+> NFE 1024
+
+∆ PPL: 36.64 
+
+in and to improve your career over time. 4. Look up freelance or online work, and some people like to take advantage of the best possible internet to work from home or freelance from home. There can be a lot of different work options out there, making it much more difficult to find your own niche. Another downside is that can often require a lot of brainstorming in the process. [...] 
+
+Figure 30 Conditional generation progression (PSD + JSD). 
+
+33 Cross-method comparison NFE 4 
+
+> PROMPT
+
+How To Choose Hobby How to choose a hobby is a question that has been asked by people for many years. The answer to this question is not a simple one, [...] offer quizzes and tests to help you figure out your interests. This can be a fun way to explore different options and see what you might be interested  
+
+> PSD + KL
+
+∆ PPL: 45.53 
+
+and how to improve your abilities over time. 4. Take portfolios and samples of work, and some people like to take pictures of the best possible as to whether you’re a good artist, or not. 5. Lots of different or resources out there and tools provide you with a foundation for your own interests. What items and sources can help you with things would get you in the process. These you can choose to find. 6. Try a variety of hobbies. How do I have a hobby? There are, even if you are new to it. Find something outside zone, experiment and add to your [...]  
+
+> PSD + JSD
+
+∆ PPL: 68.15 
+
+in working to improve your career. There’s no limits to type and method of work, and some people like to take advantage of the best possible facilities to work at home or our own office or offices. With a lot of different record options out there, it’s important not to truly find your own private list of interests and that can often require a lot of brainstorming in the process. Whether you were drawn to the number of raising children for ease of making memories or the modern-day State player for summer self-care your if you are unsure, it’s c [...]  
+
+> Undistilled
+
+∆ PPL: 48.78 
+
+in in life. Try not to let your curiosity about you to a halt. Make on with confidence and confidence. Give yourself permission that you are smart enough to make mistakes at the first attempt. If you’re not feeling confident due to in the idea too quickly, don’t be discouraged! 
+
+Figure 31 Cross-method comparison at NFE 4. 
+
+34 Cross-method comparison NFE 8 
+
+> PROMPT
+
+Abstract The dynamic behavior of a mixture consisting of liquid crystalline 4-cyano-4’-pentylbiphenyl (5CB) and CdSe/ZnS quantum dots in electric field [...] ropy, [?]aeff. (8) If a small spherical cavity is considered inside the liquid crystal, a polarisation field on the hole surface appears. According to  
+
+> PSD + KL
+
+∆ PPL: 33.71 
+
+the classical principle, such phenomenon is observed when deviation angles are considered. Molecules with the maximum dielectric anisotropy and polarisation field in the perpendicular to the direction of (L ), and the electric field acting on the free hand is the direction out. (9) If the tunneling distance toward the polarisation field direction, we then use the classical CdSe/Zn-S quantum dots of quantum dots. This model agrees with the development of the electro-optical analysis, showed that the choice of parameters determines which [...]  
+
+> PSD + JSD
+
+∆ PPL: 45.92 
+
+the classical literature, such materials acting as polarisation molecules are formed. They interact with the liquid dots as an [39]. (9) while in the liquid to field-free solution (LF), the electric field mass in the free electric field canc cancel out. (10) Theoretical Wing Using the Young & Young material, a model of the liquid and the tunnicoanical behaviour of a mixture. This model considers only the quantum dots in the dynamical cell, and that the concentration of liquid dots (2G) [ [28, 3.5 10[?]28, 0.02 ]. (i.e. 2G > 0.75%) in the [...]  
+
+> Undistilled
+
+∆ PPL: 71.42 
+
+experiments, the effective polar force of the liquid ([ ([vff] fluct varies from zero[?]f) to nearly zero. When an LC liquid of this situation is exposed to an external electric field then the molecules are can to align in parallel parallel to the field by polar polarization. To calculate the electric properties of the local components, a different device [53,54] is considered. Let us describe the relaxation time induced by adding quantumDs permalsivity, [?] and orientation of the cell by an electric field. The general theory shows that the ma [...] 
+
+Figure 32 Cross-method comparison at NFE 8. [?] replace unrenderable tokenizer artefacts. 
+
+35

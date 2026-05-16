@@ -1,0 +1,950 @@
+Title: Newton's Lantern: A Reinforcement Learning Framework for Finetuning AC Power Flow Warm Start Models
+
+URL Source: https://arxiv.org/pdf/2605.11102v1
+
+Published Time: Wed, 13 May 2026 00:06:18 GMT
+
+Number of Pages: 23
+
+Markdown Content:
+# Newton’s Lantern: A Reinforcement Learning Framework for Finetuning AC Power Flow Warm Start Models 
+
+Shourya Bose ∗
+
+, Helgi Hilmarsson ∗
+
+, Dhruv Suri ∗
+
+Pravah 
+
+{shourya.bose, helgi.hilmarsson, dhruv.suri}@pravah.com 
+
+## Abstract 
+
+Neural warm starts can sharply reduce the number of Newton-Raphson iterations required to solve the AC power flow problem, but existing supervised approaches generalize poorly on heavily loaded instances near voltage collapse. We prove a lower bound on the Newton-Raphson iteration count that depends on the direction of the warm start error rather than on its magnitude, and show as a corollary that the bound becomes vacuous as the smallest singular value of the power-flow Jacobian shrinks, identifying the failure mode of supervised regression near the saddle-node bifurcation. Motivated by this analysis, we introduce Newton’s Lantern , a finetuning pipeline that combines group relative policy optimization with a learned reward model trained on perturbations of the base model’s predictions, using the iteration count itself as the supervisory signal. Across IEEE 118-bus, GOC 500-bus, and GOC 2000-bus benchmarks, Newton’s Lantern is the only method that converges on every test snapshot while attaining the smallest mean iteration count. 
+
+## 1 Introduction 
+
+The electric grid is instrumental in providing a reliable supply of electricity to billions of people worldwide. A critical component of grid operations is the AC power flow (ACPF) problem [Stott, 1974], which determines the steady-state operating point of the system. At its core, ACPF is a root-finding problem for a set of nonlinear equations gD (x) describing the grid, wherein x represents the system state and D a single snapshot of the grid characteristics. Here, x comprises the bus voltage magnitudes and angles to be determined, while D encapsulates the grid’s physical and operational parameters. It is conventionally solved using the Newton-Raphson (NR) algorithm [Tinney and Hart, 1967]. An important objective for utility companies and independent system operators is to determine a good starting point x0 for the NR algorithm such that it converges in the fewest iterations. The conventionally accepted solution is the flat start [Tinney and Hart, 1967], which sets all voltage magnitudes to unity and angles to zero, or the DC start , which uses linear DC power flow to generate angles while retaining the unity voltage magnitudes. However, as the size of the grid (and therefore the resulting ACPF problem) grows, both methods can fail to achieve convergence. One category of solutions modifies the NR algorithm itself to improve its convergence characteristics [Iwamoto and Tamura, 1981], but these methods fail when the region of convergence is far from the flat start point. The second category of solutions, which encompasses the present work, exploits the structure of gD ( · ) or a dataset of solutions corresponding to different instances of D to generate a good x0.In the latter category, the analytical method of choice has conventionally been continuation power flow, which obtains the solution of a ‘difficult’ instance D′ by tracing a path homotopy from the solution of a related ‘easy’ instance D [Ajjarapu and Christy, 1992, Mehta et al., 2016]. Recently 
+
+> ∗Equal contribution. Preprint.
+> arXiv:2605.11102v1 [cs.LG] 11 May 2026
+
+however, there has been increased interest in using learning-based methods to approximate the mapping D 7 → x0 from datasets of pre-solved ACPF instances. While there exists a plethora of work in the supervised setting (see [Khaloie et al., 2025] for a detailed review), applications of reinforcement learning (RL) for this purpose [Yan et al., 2025] have been scarce. This is disappointing, since ACPF solvers produce rich traces during the iterative solution process, which can be used to improve model performance without explicit labels. Another aspect which has been understudied, and directly relates to the necessity of RL for this problem is the contracted region of convergence when the grid is near its voltage collapse point [Sauer and Pai, 1990]. This implies that warm start models trained on grids operating under nominal conditions fail to generalize to the aforementioned cases. We specifically focus on three shortcomings with the present literature. 1. Supervised warm start models use ACPF solutions as targets: A significant amount of prior literature on supervised warm start models for ACPF [Okhuegbe et al., 2024b,a, Diehl, 2019] uses the exact solution x∗ from existing datasets as the target for the model. As will be shown in the sequel, this results in poor warm start performance when the unit vector  
+
+> ˆx∗−x∗
+> ∥ˆx∗−x∗∥
+
+points in certain directions, where ˆx∗ is the model prediction. 2. Heavily loaded systems near voltage collapse are not considered: Most ML-for-ACPF datasets are generated by uniformly perturbing a lightly loaded operating point, so the entire dataset stays in the voltage stability regime. The recent PF ∆ benchmark [Rivera et al., 2025] is a notable exception, using continuation methods to include near collapse cases, but the models trained therein are not used for warm starts. This results in a gap in literature concerning generalization of warm start models. 3. Reinforcement learning has been underutilized: To our knowledge, only two prior works apply RL to improve ACPF convergence: Yan et al. [2025] modifies each NR step, while Kaseb et al. [2025] requires a quantum-enhanced RL environment. Neither yields a plug-and-play warm start model which simply generates a x0 that minimizes the number of NR iterations. To overcome these shortcomings, we introduce Newton’s Lantern , an RL framework for finetuning warm start models that are pretrained on datasets restricted to voltage stable operating points away from the voltage collapse point, and are subsequently finetuned on a difficult holdout dataset con-taining near collapse cases. This setup is representative of practical grid operating conditions, where overloading and voltage collapse occur only under rare adverse events such as extreme weather and demand spikes [Khazeiynasab and Qi, 2021]. Our contributions are concretely as follows. 1. Characterizing the shortcoming of ACPF targets: We provide a theoretical result showing that the NR iteration count depends on the direction of the prediction error of warm start models trained with the ACPF solution x∗ as the supervised target. A representative 2-bus example is analyzed in Appendix [FUTURE]. 2. Considering heavily loaded systems: The above result implies that near the voltage collapse point, anisotropy of the region of convergence causes the NR iteration count to inflate severely in certain directions. We demonstrate experimentally that warm start models trained on voltage stable cases fail to produce a starting point for which NR converges, while supervised finetuning (SFT) on a holdout set of voltage collapse cases restores convergence. 3. Reinforcement learning for improving convergence: Our framework Newton’s Lantern 
+
+uses group-relative policy optimization (GRPO) with a negative iteration-count reward to finetune pretrained warm start models on the voltage collapse holdout. Experiments show it outperforms SFT on multiple grid examples, as well as a proximal policy optimization (PPO) baseline with an oracle value function. 
+
+Notation. Rn denotes n-dimensional Euclidean space and Sn−1 ∆
+
+= {v ∈ Rn : ∥v∥ = 1 } the unit sphere. All norms ∥·∥ are Euclidean unless an explicit subscript appears. The class C3 collects functions with continuous third derivatives. For a vector-valued map g : Rn → Rm, the Hessian ∇2g
+
+is a tensor of shape m × n × n, and ∇2g [v, v ] ∈ Rm is the vector with ℓ-th entry P 
+
+> i,j
+
+vivj ∂i∂j gℓ.The ACPF residual at snapshot D is gD : R2N → R2N , with Jacobian JD = ∂g D /∂x and Hessian 2HD = ∇2gD . A solution of gD (x) = 0 is denoted x∗, a model’s prediction by ˆx∗, and the NR warm start by x0. The smallest singular value of a matrix M is σmin (M ).
+
+## 2 Background 
+
+2.1 AC Power Flow 
+
+Let G = {N , E} be a power network with N ∆
+
+= |N | buses. The ACPF residual gD (x) ∆
+
+=
+
+∆P ⊤ ∆Q⊤⊤ is given by the bus-wise mismatches 
+
+∆Pi = P spec  
+
+> i
+
+− Vi
+
+X
+
+> j∈N
+
+Vj (Gij cos( θi − θj ) + Bij sin( θi − θj )) ,
+
+∆Qi = Qspec  
+
+> i
+
+− Vi
+
+X
+
+> j∈N
+
+Vj (Gij sin( θi − θj ) − Bij cos( θi − θj )) ,
+
+where Vi, θ i are the voltage magnitude and angle at bus i, P spec  
+
+> i
+
+, Q spec  
+
+> i
+
+are the specified active and reactive injections, and Gij , B ij are the conductance and susceptance entries of the bus admittance matrix. The grid snapshot D collects these admittances, the specified injections, and a bus-type label (PQ, PV, or slack) per bus, which pins two of the 4-tuple (Vi, θ i, P spec  
+
+> i
+
+, Q spec  
+
+> i
+
+): (P, Q ) at PQ buses, 
+
+(P, V ) at PV buses, and (V, θ ) at the slack bus. The free unknowns therefore form an NR system of effective dimension NPV + 2 NPQ , where NPV , N PQ count the respective bus types. Following standard convention in ACPF software and literature on warm start models, we represent the state in the over-parameterized space x ∈ R2N of all bus voltages and angles; entries pinned by D are overwritten before NR is invoked. 
+
+2.2 NR Method and Voltage Collapse 
+
+The NR method is an iterative root finding algorithm which, starting from an initial point x0, proceeds as 
+
+xk+1 = xk − [JD (xk)] −1 gD (xk),
+
+and terminates at iteration k(x0, τ ) ∆
+
+= inf {k ≥ 1 : ∥xk − xk−1∥ < τ }, where τ is a predefined termination tolerance. Here, JD (x) ∆
+
+= ∂g D (x)/∂x is the Jacobian of the residual, commonly referred to as the power-flow Jacobian . Voltage collapse refers to the phenomenon wherein, as the load on the grid grows, bus voltages decline progressively until the ACPF loses its solution entirely, marking the steady-state stability limit [Sauer and Pai, 1990]. Whether a given snapshot D lies near this limit is itself a property of D, since the loading, generation dispatch, and topology it encodes determine how close the system operates to collapse. This limit is characterized by the singularity of the power-flow Jacobian at the equilibrium. As D approaches a collapse condition, the smallest singular value σmin (JD (x∗)) shrinks to zero, and is widely used as a proximity index to voltage instability [Tiranuchit and Thomas, 1988]. Figure 1 illustrates this on the IEEE 14-bus system. The minimum bus voltage and σmin (JD (x∗)) both collapse to small values as the loading factor 
+
+λ approaches the bifurcation point at which the NR method ceases to converge. The contour in Figure 1c further reveals that the convergence basin around the nominal load is highly anisotropic .NR iteration counts grow much faster along certain directions in (P, Q ) than others, with the basin pinching off into a narrow tongue near the divergence boundary. This directional sensitivity, which is driven by the singular structure of JD near collapse, will play a central role in the analysis that follows. 
+
+## 3 Convergence Anisotropy and the Failure of Distance Losses 
+
+Supervised warm start models for ACPF are trained against x∗ as a regression target [Khaloie et al., 2025, Okhuegbe et al., 2024b, Diehl, 2019], under the implicit assumption that a smaller ∥ˆx∗ − x∗∥
+
+yields fewer NR iterations. This assumption presumes that the convergence region around x∗ is isotropic, which Figure 1c and the established literature on load flow fractals [Thorp and Naqavi, 1989] show is not the case. We quantify the anisotropy through a lower bound on the NR iteration 31 2 3 4 
+
+> λ
+> 0.70
+> 0.75
+> 0.80
+> 0.85
+> 0.90
+> 0.95
+> 1.00
+> Vmin  [pu]
+> Vmin trajectory
+> nominal point
+> voltage collapse
+
+(a) Trajectory of the minimum volt-age as a function of load scaling fac-tor λ.1 2 3 4 
+
+> λ
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> σmin (JD)
+> σmin (JD)trajectory
+> nominal point
+> voltage collapse
+
+(b) Trajectory of σmin (JD (x∗)) as a function of load scaling factor λ.0 10 20  
+
+> P4[MW]
+> 1
+> 0
+> 1
+> 2
+> 3
+> 4
+> Q4 [MVAr]
+> nominal point
+> 2
+> 3
+> 4
+> 5
+> 6
+> 7
+> 8
+> 9
+> 10
+> iterations to converge
+
+(c) Iteration count for NR conver-gence over a symmetric grid of 
+
+(P, Q ) load values around the nomi-nal point of the critical bus. 
+
+Figure 1: IEEE 14-bus system: indicators of voltage collapse as the loading factor λ scales the nominal load uniformly. count that depends on the direction of the warm start error rather than its magnitude. We write the warm start error as e0∆
+
+= x0 − x∗ in polar form e0 = ρv with ρ ∆
+
+= ∥e0∥ and v ∆
+
+= e0/ρ ∈ S2N −1.Newton’s method requires regularity of gD and nonsingularity of JD (x∗) [Ortega and Rheinboldt, 2000, Kelley, 2003, Deuflhard, 2004], which we make precise as the following two assumptions. (A1) gD ∈ C3 on a neighborhood of x∗. This holds automatically for ACPF, since gD is polynomial in voltage magnitudes and trigonometric in angles [Tinney and Hart, 1967]. (A2) The Hessian tensor HD
+
+> ∆
+
+= ∇2gD (x∗) satisfies inf v∈S2N −1 JD (x∗)−1HD [v, v ] ≥ 2q
+
+for some q > 0. By Sauer and Pai [1990], this is equivalent to x∗ being away from the saddle-node bifurcation, the loading at which σmin (JD (x∗)) = 0 .
+
+Theorem 3.1 (Lower bound on NR iterations by direction) . Under (A1) and (A2), there exists 
+
+r0 > 0, depending only on the third-derivative bound of gD and on q, such that for every warm start 
+
+x0 = x∗ + ρv with ρ ∈ (τ, r 0),
+
+k(x0, τ ) ≥ log 2
+
+ log(1 /τ )log(1 /ρ ) − Λ( v; D)
+
+
+
+− 1, (1) 
+
+whenever log(1 /ρ ) − Λ( v; D) > 0. The function Λ : S2N −1 → R1 is a discounted average of 
+
+log ∥QD ( · )∥ along the orbit of v under the Newton-direction map on the sphere, where QD (v) ∆
+
+= 
+
+> 12
+
+JD (x∗)−1HD [v, v ] ∈ R2N . The contribution of the j-th iterate to Λ is weighted by 2−j−1.Definitions and proof are in Appendix A. 
+
+The bound is doubly logarithmic in the warm start magnitude ρ and only singly logarithmic in 
+
+Λ( v; D), so direction has the larger leverage. A distance loss ∥ˆx∗ − x∗∥ carries no representation of 
+
+Λ, and two models with identical mean squared error can produce warm starts requiring very different iteration counts. 
+
+Corollary 3.2 (Voltage collapse uniformly degrades the lower bound) . Let {Dλ}λ∈[0 ,λ ∗) be a smooth path of grid snapshots approaching a saddle-node bifurcation at λ = λ∗, so σλ
+
+> ∆
+
+= σmin (JDλ (x∗
+
+> λ
+
+)) →
+
+0+ as λ → λ∗. Then for v outside a Lebesgue-measure-zero subset of S2N −1,
+
+Λ( v; Dλ) = log(1 /σ λ) + C(v) + o(1) , (2) 
+
+where C(v) = O(1) is bounded uniformly. The denominator of the bound in Theorem 3.1 therefore vanishes once σλ ≲ ρ, at which point the bound becomes vacuous. 
+
+Near voltage collapse, the log(1 /σ λ) term dominates the bounded correction C(v) for almost every direction, and the convergence basin contracts to size ∼ σλ. A model trained on voltage stable cases produces ˆx∗ with ∥ˆx∗ − x∗∥ ≫ σλ near λ∗, so the bound becomes vacuous and NR diverges. The 40 2 4 6  
+
+> θ[rad]
+> 0.6
+> 0.8
+> 1.0
+> 1.2
+> 1.4
+> 1.6
+> 1.8
+> Λ( v(θ);  D)
+> Λ( v(θ); D)
+
+(a) Λ( v(θ); D) along agreat circle in S2N −1.0 2 4 6  
+
+> θ[rad]
+> 2.00
+> 2.25
+> 2.50
+> 2.75
+> 3.00
+> 3.25
+> 3.50
+> 3.75
+> 4.00
+> NR iterations
+> actual k(x0, τ )
+> Thm. 3.1 bound
+
+(b) NR iteration count and Theorem 3.1 bound along the same circle. 1.5 2.0 2.5        
+
+> log(1 /σ min (JD))
+> 1
+> 0
+> 1
+> 2
+> Λ( v; D)
+> v=wλ(collapse mode)
+> v=e1
+> vuniform
+> y= log(1 /σ min )
+
+(c) Λ( v; Dλ) vs. 
+
+log(1 /σ λ) for three directions. 0 2 4 6     
+
+> predicted bound (Thm. 3.1)
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> actual  k(x0, τ )
+> y=x
+> y=x+ 1
+> 1.2
+> 1.0
+> 0.8
+> 0.6
+> 0.4
+> log 10  σmin (JD)
+
+(d) Theorem 3.1 bound vs. actual iteration count over random warm starts. 
+
+Figure 2: IEEE 14-bus diagnostics for Theorem 3.1 and Corollary 3.2. measure zero exception consists of directions whose Newton-direction orbit stays orthogonal to the voltage collapse mode of JDλ (x∗
+
+> λ
+
+) [Gao et al., 1992, Dobson, 1992], and these correspond to the long axis of the narrow tongue in Figure 1c. Figure 2 collects the empirical content of this section on the IEEE 14-bus case. Figures 2a and 2b test whether the iteration count of NR is sensitive to direction at a fixed warm start magnitude. We pick a moderately loaded operating point at which σmin (JD ) ≈ 0.027 , parameterize a great circle in 
+
+S2N −1 by v(θ) = cos θ w + sin θ v ⊥ where w and v⊥ are the two smallest right-singular vectors of 
+
+JD (x∗), and sweep θ at fixed ρ = 0 .05 and τ = 10 −6. The actual iteration count varies with θ in tight agreement with Λ( v(θ); D), and the lower bound of Theorem 3.1 traces the same shape one step below, confirming that direction is the dominant degree of freedom even when distance is held fixed. Figure 2c tests the asymptotic predicted by Corollary 3.2. Sweeping the loading factor λ along a continuation curve drives σmin (JDλ (x∗
+
+> λ
+
+)) to zero, and we measure Λ at each λ for three direction choices. The three curves track the reference log(1 /σ λ) at unit slope with bounded offsets equal to the direction dependent constant C(v) of the corollary, confirming the leading-order shape of the asymptotic. Figure 2d validates the predicted bound directly against actual NR iteration counts over 
+
+∼ 800 random triples (λ, v, ρ ). Every sample respects the bound and most lie within one iteration of it. Color encodes σmin (JD ) at the sampled operating point and confirms that the bound becomes vacuous as σmin → 0.The two results identify the iteration count, not the Euclidean distance to x∗, as the quantity a warm start model should optimize. The next section develops a GRPO finetuning pipeline that uses the iteration count directly as a reward signal. 
+
+## 4 Finetuning with Newton’s Lantern 
+
+Consider the setting in which a base warm start model fθ has been pretrained on a large supervised dataset of voltage stable operating points, and the modeler is granted a smaller holdout of more difficult instances on which to finetune. The role of the holdout is to expose fθ to the near voltage collapse regime identified in Section 3 as the failure mode of distance based losses. The PF ∆
+
+benchmark of Rivera et al. [2025], populated by continuation power flow runs that approach the bifurcation, is one such source. The simplest use of the holdout is supervised finetuning (SFT), in which fθ is updated against x∗
+
+with the same regression loss used during pretraining. We retain SFT as a baseline. By Theorem 3.1 and Corollary 3.2, SFT is structurally limited because the regression loss carries no representation of the directional functional Λ( v; D) that controls the iteration count near the bifurcation. To break this degeneracy we move to a finetuning objective that depends on the iteration count itself. 
+
+Reinforcement learning formulation. We cast finetuning as a single-step Markov decision process. The state is the grid snapshot s ∆
+
+= D drawn from the holdout, and the action a ∆
+
+= x0 ∈ R2N is the warm start that the policy supplies to NR. The mean of the policy is the base model’s prediction 
+
+fθ (s), perturbed by a Gaussian whose state-independent log standard deviations log σV and log σθ
+
+5are optimized jointly with θ,
+
+a = fθ (s) + σ ⊙ ϵ, ϵ ∼ N (0 , I ), (3) where ⊙ acts only on the free voltage and angle coordinates of the over parameterized state. The policy is updated with proximal policy optimization [Schulman et al., 2017], whose clipped surrogate objective 
+
+LPPO (θ) = Emin  ηt(θ)At, clip  ηt(θ), 1 − ε, 1 + εAt
+
+ , (4) employs the importance ratio ηt(θ) = πθ (at | st)/π θold (at | st) relative to the data-generating policy, and an advantage At formed by subtracting a baseline from the action’s reward. The reward and the baseline are the two design choices that separate our two configurations below. 
+
+Configuration 1 (PPO with an oracle baseline). Because the holdout ships with labeled solutions, an oracle baseline is available without a learned critic. For each snapshot s we precompute V ⋆(s),the iteration count of NR seeded from x∗(s). The reward for a sampled action is a bounded saturating function of the iteration count, 
+
+rsat (s, a ) = 
+
+R+ − g k(a, τ ), NR converged from a, 
+
+−R−, otherwise, g(n) = n − 1
+
+n − 1 + c , (5) where c is set to the holdout-mean of V ⋆ so that g reaches its half-saturation value at the typical iteration count and R± keep the reward bounded. The advantage takes the form 
+
+A(s, a ) = rsat (s, a ) − rsat 
+
+ s, x ∗(s), (6) which subtracts the per-snapshot oracle from the rollout reward. We denote this configuration 
+
+PPO+ V ⋆.
+
+Configuration 2 (GRPO with a learned reward). PPO+ V ⋆ inherits two computational costs. Each rollout requires running NR to obtain rsat , and each holdout snapshot incurs an additional Newton solve to compute V ⋆(s). We address both with a pair of substitutions, replacing the per-snapshot oracle with a per-batch group baseline and replacing NR with a learned reward model. For the baseline, we adopt group relative policy optimization [Shao et al., 2024]. For each state in the batch we draw K rollouts from the current policy, evaluate their rewards, and standardize within the resulting group, 
+
+Ak = rk − μg
+
+σg + εg
+
+, (7) with μg and σg the within-group mean and standard deviation. The group baseline absorbs the state-dependent offset that V ⋆ would have removed, without consulting the labeled solution. For the reward, we replace the NR call with a learned reward model Rϕ that maps the snapshot features and the warm start to a predicted iteration count. The model is trained on perturbations of the base model’s own predictions. For each holdout snapshot, we sample a grid of magnitudes and random directions in the free coordinate subspace, run NR once per perturbed warm start, and aggregate the resulting (s, a, k (a, τ )) triples into a regression dataset. Training Rϕ on this distribution calibrates the reward over the region the policy will subsequently visit. The reward function used in this configuration is not the saturating rsat of Configuration 1. Rather, we adopt a piecewise linear reward with a convergence bonus, 
+
+rlin (s, a ) = −Rϕ(s, a ) + B · 1Rϕ(s, a ) < k max 
+
+, (8) where kmax is the iteration cap that defines convergence and B is a constant on the order of kmax .The choice was hand-tuned upon two empirical observations made during training. First, rsat is nearly flat over the iteration counts that GRPO rollouts typically produce on a holdout, and the within-group standardization Ak collapses to noise under such a flat reward; the linear form spreads the reward over the relevant range so that the standardized advantage is informative. Second, without an additional discrete signal at the convergence boundary, GRPO has no way to distinguish a marginally non-converging rollout from a comfortably converging one; the bonus B creates the necessary gap. We denote this configuration GRPO+ Rϕ.6Algorithm 1 Newton’s Lantern 
+
+Require: Pretrained warm start model fθ ; holdout Dhold split into train, val, and test 
+
+Reward model training:  
+
+> 1:
+
+for si ∈ D train do  
+
+> 2:
+
+ˆx∗ 
+
+> i
+
+← fθ (si) 
+
+> 3:
+
+for magnitudes f ∈ { f1, . . . , f M } and directions u1, . . . , u Kd ∈ S2N −1 do  
+
+> 4:
+
+a ← ˆx∗ 
+
+> i
+
++ f · u 
+
+> 5:
+
+Run NR from a on snapshot si, record iteration count k(a, τ ) 
+
+> 6:
+
+end for  
+
+> 7:
+
+end for  
+
+> 8:
+
+Train Rϕ on the aggregated  si, a, k (a, τ ) pairs. 
+
+GRPO finetuning:  
+
+> 9:
+
+Wrap fθ in a stochastic policy πθ with learnable σ. 
+
+> 10:
+
+for outer iter t = 1 , . . . , T do  
+
+> 11:
+
+Draw a batch {sb}Bb=1 ⊂ D train . 
+
+> 12:
+
+for b = 1 , . . . , B do  
+
+> 13:
+
+Sample K rollouts akb 
+
+> Kk=1
+
+from πθ (· | sb). 
+
+> 14:
+
+Compute rewards rkb ← rlin (sb, a kb ) from Eq. (8) , with Rϕ as the iteration-count predictor.  
+
+> 15:
+
+Compute advantages Akb ← (rkb − μb)/(σb + εg ). 
+
+> 16:
+
+end for  
+
+> 17:
+
+Update θ via PPO-clipped surrogate over (sb, a kb , A kb ) . 
+
+> 18:
+
+if t mod Tv = 0 then  
+
+> 19:
+
+Evaluate πθ on Dval with real NR, snapshot θ if mean iter count improved.  
+
+> 20:
+
+end if  
+
+> 21:
+
+end for  
+
+> 22:
+
+return best snapshot of θ.
+
+Newton’s Lantern. Newton’s Lantern is the GRPO+ Rϕ configuration together with one additional ingredient. Every Tv outer iterations we evaluate the current policy on a held-out validation slice using real NR, and at the end of training we return the snapshot whose validation iteration count is smallest, rather than the policy of the final outer iteration. This decouples the returned policy from the noise of any single iteration. The full procedure is summarized in Algorithm 1. 
+
+4.1 Models 
+
+The pipeline above does not depend on the architecture of the base model fθ beyond the requirement that fθ (s) produce a usable prediction of the ACPF solution. We instantiate Newton’s Lantern with two such backbones to span the practical range of warm start architectures in the literature. The first backbone is a heterogeneous graph neural network (GNN) in the message passing style of Piloto et al. [2024], the architecture used by their CANOS solver for AC optimal power flow. Each bus is a node with features encoding demand, generation, and shunt, each line is an edge with features encoding line impedance, susceptance, transformer ratio, and rate limits, and the graph is heterogeneous in that PQ, PV, and slack buses carry distinct node embeddings. Per-node-type encoder multilayer perceptrons (MLPs) lift these inputs to a hidden representation h(0)  
+
+> v
+
+of dimension d. The network then performs T rounds of edge updates and node aggregations, 
+
+m(t+1)  
+
+> e
+
+= ϕ e
+
+> type( e)
+
+ h(t)
+
+> u(e)
+
+, h (t)
+
+> v(e)
+
+, e attr 
+
+, (9) 
+
+h(t+1)  
+
+> v
+
+= ϕ n
+
+> type( v)
+
+h(t) 
+
+> v
+
+, 1
+
+|E (v)|
+
+X
+
+> e∈E (v)
+
+m(t+1) 
+
+> e
+
+ , (10) where ϕe and ϕn are MLPs whose parameters are shared across edges or nodes of the same type, and 
+
+E(v) denotes the edges incident to v. After the final round, per-node-type decoder MLPs produce 
+
+(ˆθi, ˆVi) at PQ buses, ( ˆQi, ˆθi) at PV buses, and the slack injections ( ˆPslack , ˆQslack ). The components of the over-parameterized state that are pinned by D (slack V and θ, PV V ) are then overwritten with their setpoints before ˆx∗ is returned, so the same model can be queried for warm starts directly. 7Table 1: case500 (GNN, d = 128 , T = 32 , 30 test samples).                                  
+
+> Method Solved Iters (solved) Iters (all) ∥x0−x∗∥PBL@ x0
+> Flat start 30 /30 15 .20 15 .20 14 .40 7.59
+> DC start 30 /30 15 .77 15 .77 4.32 7.21
+> SFT 27 /30 15 .00 113 .50 9.62 1.38
+> PPO+ V⋆29 /30 15 .17 48 .00 9.58 1.49
+> Newton’s Lantern (GRPO+ Rϕ)30 /30 15 .00 15 .00 9.66 1.47
+
+Table 2: case2000 (GNN, d = 128 , T = 60 , 30 test samples).                                  
+
+> Method Solved Iters (solved) Iters (all) ∥x0−x∗∥PBL@ x0
+> Flat start 0/30 —1000 .00 78 .43 5.06
+> DC start 0/30 —1000 .00 38 .31 4.97
+> SFT 30 /30 14 .87 14 .87 55 .17 0.99
+> PPO+ V⋆30 /30 14 .67 14 .67 55 .19 1.04
+> Newton’s Lantern (GRPO+ Rϕ)30 /30 14 .03 14 .03 55 .32 1.36
+
+To verify that any improvement we report is attributable to the GRPO pipeline rather than to the inductive bias of the GNN, we also instantiate fθ as a fully connected feedforward network (FCNN) on the smallest test grid. 
+
+## 5 Experiments 
+
+We evaluate Newton’s Lantern on three grids of increasing size, namely the IEEE 118-bus system (denoted case118 ), the GOC 500-bus system ( case500 ), and the GOC 2000-bus system ( case2000 ). All snapshots are drawn from the PF ∆ benchmark of Rivera et al. [2025] 2, which already segregates samples into a large pool of voltage stable instances and a smaller pool of near voltage collapse instances generated via continuation power flow. We use the voltage stable pool for pretraining, and a disjoint subset of the voltage collapse pool for the holdout (which is itself partitioned into train, val, and 30 reserved test snapshots). The base model fθ is the heterogeneous GNN of Section 4 for case500 and case2000 , with hidden dimension d = 128 and T = 32 message passing rounds for case500 and T = 60 for case2000 .For case118 we use the FCNN with four hidden layers of width 512 in place of the GNN. All base models are pretrained on the voltage stable pool with the power balance loss (PBL) of Piloto et al. [2024], 
+
+LPBL (ˆ x) = Ei∈N 
+
+hp ∆Pi(ˆ x)2 + ∆ Qi(ˆ x)2 + ζ
+
+i
+
+, (11) where ∆Pi, ∆Qi are the bus-wise mismatches at the predicted state ˆx and ζ = 10 −12 keeps the gradient finite at the root. The pretrained model is then finetuned via one of supervised regression on the holdout (SFT), PPO with the oracle baseline (PPO+ V ⋆), or Newton’s Lantern (GRPO+ Rϕ). All training, RL, and reward model hyperparameters are deferred to Appendix C; in the body we only flag the two values that are not standard. The policy learning rate on the GNN backbones is 10 −6
+
+and the PPO clip radius is ε = 0 .1, both an order of magnitude tighter than commonly reported PPO defaults, because larger values cause the GNN policy to collapse within a few outer iterations. Tables 1, 2, and 3 report results on 30 randomly drawn test snapshots per grid, evaluated with PowerModels.jl Newton-Raphson at iteration cap 1000. We report convergence rate, mean iteration count restricted to the converged subset, mean iteration count over all samples (with non-converged samples set to the iteration cap), and the mean Euclidean distance and PBL of the warm start to the labeled solution. The three tables exhibit the same qualitative ordering. Newton’s Lantern is the only method that converges on all 30 test snapshots across every grid, and it attains the smallest mean iteration count among methods that converge. PPO+ V ⋆ is a fair baseline that recovers some of the divergences of  
+
+> 2Hugging Face repository: https://huggingface.co/datasets/pfdelta/pfdelta .
+
+8Table 3: case118 (FCNN, 4 hidden layers, width 512, 30 test samples).                                  
+
+> Method Solved Iters (solved) Iters (all) ∥x0−x∗∥PBL@ x0
+> Flat start 30 /30 18 .50 18 .50 19 .93 3.24
+> DC start 30 /30 17 .97 17 .97 8.06 2.15
+> SFT 30 /30 17 .43 17 .43 5.37 0.66
+> PPO+ V⋆30 /30 17 .53 17 .53 5.42 0.79
+> Newton’s Lantern (GRPO+ Rϕ)30 /30 17 .43 17 .43 5.37 0.66
+
+plain SFT, but never matches the GRPO configuration on either convergence rate or mean iteration count. The win margin shrinks as the grid grows. On case118 , Newton’s Lantern produces the same per-sample iteration counts as SFT. On case500 , the iteration counts on the converged subset are tied with SFT, and the gain comes from recovering the three samples that SFT diverges on. On 
+
+case2000 , both SFT and Newton’s Lantern converge on all 30 samples, and Newton’s Lantern saves 
+
+0.84 iterations on average. The narrow margins on the two GNN cases are consistent with reports of training instabilities encountered when finetuning GNNs with RL [de Jongh et al., 2023]. The unusually small policy learning rate and PPO clip radius noted above were chosen out of necessity, because relaxing either causes the GNN policy to collapse within a few outer iterations. The MLP backbone on case118 
+
+tolerates standard PPO hyperparameters without instability, which suggests that the limiting factor is the depth and message passing dynamics of the GNN backbone rather than the RL algorithm. The case2000 row offers direct empirical support for Theorem 3.1. Among methods that converge, Newton’s Lantern produces the warm start that is furthest from the labeled solution by Euclidean distance ( 55 .32 versus 55 .17 for SFT) and that has the largest PBL among the model-based methods (1.36 versus 0.99 for SFT), yet it converges in the fewest iterations. The DC start has the smallest distance of any row in the table ( 38 .31 ), but fails to converge on a single sample. These rows together confirm that distance and residual magnitude are inadequate proxies for the iteration count, exactly as predicted by the directional bound of Theorem 3.1. 
+
+## 6 Conclusion 
+
+We derived a lower bound on the Newton-Raphson iteration count for AC power flow warm starts that depends on the direction of the warm start error rather than on its magnitude. The directional analysis explained the empirical failure of supervised regression near voltage collapse, and motivated Newton’s Lantern, a GRPO finetuning pipeline with a learned reward model that uses iteration count as the supervisory signal. Across three grid sizes, Newton’s Lantern was the only method to converge on every test snapshot, while attaining the smallest mean iteration count. The narrow margins observed on the two GNN cases reflect the broader difficulty of training GNN policies with RL. Designing architectures and RL algorithms that handle this regime more gracefully is a natural direction for extending Newton’s Lantern to larger grids. 9References 
+
+Venkataramana Ajjarapu and Colin Christy. The continuation power flow: A tool for steady state voltage stability analysis. IEEE Transactions on Power Systems , 7(1):416–423, 1992. Steven de Jongh, Frederik Mueller, Michael Suriyah, and Thomas Leibfried. Proximal policy optimization with graph neural networks for optimal power flow. In 12th International Conference on Data Science, Technology and Applications (DATA) , 2023. arXiv:2212.12470. Peter Deuflhard. Newton Methods for Nonlinear Problems: Affine Invariance and Adaptive Algorithms . Springer, 2004. Florian Diehl. Warm-starting AC optimal power flow with graph neural networks. In NeurIPS Workshop on Tackling Climate Change with Machine Learning , 2019. Ian Dobson. Observations on the geometry of saddle node bifurcation and voltage collapse in electrical power systems. IEEE Transactions on Circuits and Systems I: Fundamental Theory and Applications , 39(3):240–243, 1992. Bei Gao, Graham K. Morison, and Prabha Kundur. Voltage stability evaluation using modal analysis. IEEE Transactions on Power Systems , 7(4):1529–1542, 1992. John Hubbard, Dierk Schleicher, and Scott Sutherland. How to find all roots of complex polynomials by Newton’s method. Inventiones Mathematicae , 146:1–33, 2001. Shinichi Iwamoto and Yasuo Tamura. A load flow calculation method for ill-conditioned power systems. IEEE Transactions on Power Apparatus and Systems , PAS-100(4):1736–1743, 1981. Zeynab Kaseb et al. Quantum-enhanced reinforcement learning for accelerating Newton-Raphson convergence with Ising machines: A case study for power flow analysis. arXiv preprint arXiv:2511.20237 , 2025. C. T. Kelley. Solving Nonlinear Equations with Newton’s Method . SIAM, 2003. Hooman Khaloie, Mihaly Dolanyi, Jean-François Toubeau, and François Vallée. Review of machine learning techniques for optimal power flow. Applied Energy , 388:125637, 2025. Seyyed Rashid Khazeiynasab and Junjian Qi. Resilience analysis and cascading failure modeling of power systems under extreme temperatures. Journal of Modern Power Systems and Clean Energy , 9(6), 2021. Dhagash Mehta, Hung Dinh Nguyen, and Konstantin Turitsyn. Numerical polynomial homotopy continuation method to locate all the power flow solutions. IET Generation, Transmission & Distribution , 10(12):2972– 2980, 2016. Samuel N. Okhuegbe, Adedasola A. Ademola, and Yilu Liu. Newton-Raphson AC power flow convergence based on deep learning initialization and homotopy continuation. IEEE Transactions on Industry Applications ,2024a. doi: 10.1109/TIA.2024.3514992. Samuel N. Okhuegbe, Adedasola A. Ademola, and Yilu Liu. A machine learning initializer for Newton-Raphson AC power flow convergence. In 2024 IEEE Texas Power and Energy Conference (TPEC) , pages 1–6, 2024b. James M. Ortega and Werner C. Rheinboldt. Iterative Solution of Nonlinear Equations in Several Variables .SIAM, 2000. Reprint of Academic Press, 1970. Luis Piloto, Sofia Liguori, Sephora Madjiheurem, Miha Zgubic, Sean Lovett, Hamish Tomlinson, Sophie Elster, Chris Apps, and Sims Witherspoon. CANOS: A fast and scalable neural AC-OPF solver robust to N-1 perturbations. arXiv preprint arXiv:2403.17660 , 2024. Ana K. Rivera, Anvita Bhagavathula, Alvaro Carbonero, and Priya Donti. PF ∆: A benchmark dataset for power flow under load, generation, and topology variations. In Advances in Neural Information Processing Systems (NeurIPS) , 2025. Peter W. Sauer and M. A. Pai. Power system steady-state stability and the load-flow Jacobian. IEEE Transactions on Power Systems , 5(4):1374–1383, 1990. John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg Klimov. Proximal policy optimization algorithms. arXiv preprint arXiv:1707.06347 , 2017. Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei Zhang, Mingchuan Zhang, Y. K. Li, Y. Wu, and Daya Guo. DeepSeekMath: Pushing the limits of mathematical reasoning in open language models. arXiv preprint arXiv:2402.03300 , 2024. 
+
+10 G. W. Stewart and Ji-guang Sun. Matrix Perturbation Theory . Academic Press, 1990. Brian Stott. Review of load-flow calculation methods. Proceedings of the IEEE , 62(7):916–929, 1974. James S. Thorp and Sajid A. Naqavi. Load-flow fractals. In Proceedings of the 28th IEEE Conference on Decision and Control , pages 1822–1827, 1989. William F. Tinney and Clifford E. Hart. Power flow solution by Newton’s method. IEEE Transactions on Power Apparatus and Systems , PAS-86(11):1449–1460, 1967. A. Tiranuchit and Robert J. Thomas. A posturing strategy against voltage instabilities in electric power systems. 
+
+IEEE Transactions on Power Systems , 3(1):87–93, 1988. Shengyuan Yan et al. Data driven approach towards more efficient Newton-Raphson power flow calculation for distribution grids. arXiv preprint arXiv:2504.11650 , 2025. 
+
+11 A Proof of Theorem 3.1 
+
+Throughout this appendix, assumptions (A1) and (A2) are in force, and JD and HD are eval-uated at the nonsingular root x∗ unless explicitly stated otherwise. We fix a closed ball 
+
+U ∆
+
+= x ∈ R2N : ∥x − x∗∥ ≤ R , with R > 0 small enough that gD ∈ C3 on U, and write 
+
+Mp
+
+> ∆
+
+= sup x∈U g(p) 
+
+> D
+
+(x) for the supremum of the p-th total derivative of gD over U. The contraction of the Hessian tensor with v ⊗ v is the vector HD [v, v ] ∈ R2N with entries P 
+
+> i,j
+
+vivj ∂i∂j gD .
+
+Lemma A.1 (First-order Newton expansion) . The error sequence ek
+
+> ∆
+
+= xk − x∗ of the Newton-Raphson iteration applied to gD satisfies 
+
+ek+1 = −QD (ˆ ek) ρ2 
+
+> k
+
++ R3(ek), ∥R3(ek)∥ ≤ K3ρ3
+
+> k
+
+, (12) 
+
+where ˆek
+
+> ∆
+
+= ek/ ∥ek∥, ρk
+
+> ∆
+
+= ∥ek∥, QD (v) ∆
+
+= 12 JD (x∗)−1HD [v, v ], and K3 is a constant determined by M3 and JD (x∗)−1 .Proof. The expansion is the standard third-order Taylor expansion of the Newton step at the nonsin-gular root x∗. The constant K3 aggregates the third-derivative bound M3 with the operator norm of JD (x∗)−1, both of which are finite because U is compact and JD (x∗) is nonsingular. Textbook derivations of the same expansion are given in Ortega and Rheinboldt [2000, Theorem 10.2.2] and Kelley [2003, Lemma 4.4.5]. 
+
+Lemma A.2 (Splitting magnitude and direction) . Under (A1) and (A2), the recursion of Lemma A.1 can be expressed in polar coordinates (ρk, v k) ∈ (0 , r 0) × S2N −1, with ek = ρkvk, as 
+
+ρk+1 = ∥QD (vk)∥ ρ2 
+
+> k
+
+(1 + O(ρk)) , vk+1 = Φ D (vk) + O(ρk), (13) 
+
+where the Newton-direction map ΦD : S2N −1 → S2N −1 is defined as 
+
+ΦD (v) ∆
+
+= − QD (v)
+
+∥QD (v)∥ . (14) 
+
+Under (A2), ∥QD (v)∥ ≥ q uniformly in v ∈ S2N −1, so ΦD is well-defined and Lipschitz on S2N −1.Proof. Substituting ek = ρkvk into the recursion of Lemma A.1 gives 
+
+ek+1 = −QD (vk) ρ2 
+
+> k
+
++ O(ρ3
+
+> k
+
+). (15) Taking norms isolates the magnitude recursion ρk+1 = ∥QD (vk)∥ ρ2
+
+> k
+
+(1 + O(ρk)) , and dividing 
+
+ek+1 by its norm produces the direction recursion vk+1 = −QD (vk)/ ∥QD (vk)∥ + O(ρk) = ΦD (vk) + O(ρk). Lipschitz continuity of ΦD on S2N −1 follows from the smoothness of QD
+
+together with the uniform lower bound ∥QD (v)∥ ≥ q provided by assumption (A2). Sphere maps of this form arise routinely in the analysis of Newton iterations [Hubbard et al., 2001], and the fractal basin boundaries they generate have been observed empirically in power systems [Thorp and Naqavi, 1989]. 
+
+Definition A.3 (The direction functional) . For v ∈ S2N −1, define 
+
+Λ( v; D) ∆
+
+=
+
+> ∞
+
+X
+
+> j=0
+
+2−j−1 log QD (Φ jD (v)) . (16) 
+
+Set Q ∆
+
+= sup v∈S2N −1 ∥QD (v)∥, which is finite because gD is C3 and the sphere S2N −1 is compact. The integrand of the defining sum then satisfies log q ≤ log ∥QD ( · )∥ ≤ log Q, so the geometric weights 2−j−1 make the series converge absolutely, and Λ is bounded uniformly in v. Equivalently, 
+
+Λ is the unique bounded solution of the recursion 
+
+Λ( v; D) = 12 log ∥QD (v)∥ + 12 Λ(Φ D (v); D). (17) 12 Proof of Theorem 3.1. From Lemma A.2, the magnitude recursion satisfies 
+
+ρk+1 ≤ ∥ QD (vk)∥ ρ2 
+
+> k
+
+(1 + O(ρk)) . (18) Iterating this inequality k times and chaining the multiplicative factors produces 
+
+ρk ≤
+
+> k−1
+
+Y
+
+> j=0
+
+∥QD (vj )∥2k−1−j
+
+· ρ2k 
+
+> 0
+
+· (1 + O(ρ0)) . (19) Taking logarithms and dividing by 2k converts the product into a partial sum, 
+
+log(1 /ρ k)2k ≥ log(1 /ρ 0) −
+
+> k−1
+
+X
+
+> j=0
+
+2−j−1 log ∥QD (vj )∥ + O(ρ0). (20) Lemma A.2 also gives vj = Φ jD (v0) + O(ρ0), and since log ∥QD ( · )∥ is Lipschitz on ΦD -orbits, replacing vj by ΦjD (v0) in the partial sum accumulates only bounded O(ρ0) corrections, which we absorb into the additive slack of the inequality. The resulting truncated sum differs from Λ( v0; D) by at most 2−k log( Q/q ), and we therefore obtain 
+
+log(1 /ρ k)2k ≥ log(1 /ρ 0) − Λ( v0; D) + O(2 −k). (21) The Newton iteration terminates at the first step k for which ρk < τ ′, where τ ′ is proportional to τ
+
+via the bi-Lipschitz equivalence between ∥gD (x)∥ and ∥x − x∗∥ on U [Deuflhard, 2004, Lemma 2.4]. Equivalently, k(x0, τ ) is the smallest integer for which log(1 /ρ k) > log(1 /τ ′). Combining this termination criterion with the inequality on log(1 /ρ k)/2k derived above gives 
+
+log(1 /τ ′)2k−1 > log(1 /ρ 0) − Λ( v0; D), (22) which rearranges to 
+
+2k > 2 log(1 /τ ′)log(1 /ρ 0) − Λ( v0; D) . (23) Taking log 2 of both sides, and absorbing the factor of 2 together with the integer-ceiling slack into the additive constant, yields 
+
+k(x0, τ ) ≥ log 2
+
+ log(1 /τ )log(1 /ρ 0) − Λ( v0; D)
+
+
+
+− 1. (24) 
+
+Verification of (A2) for ACPF. The Hessian tensor HD = ∇2gD (x∗) has entries that are products of bus voltages ViVj and trigonometric functions of angle differences θij , in the standard polar form ACPF conventions of Tinney and Hart [1967]. These are bounded above and below in any compact operating region with Vi > 0 and |θij | < π/ 2. The product JD (x∗)−1HD [v, v ] is then bounded below by σmin (JD (x∗)) · inf v ∥HD [v, v ]∥ / ∥JD (x∗)∥2, which is positive whenever JD (x∗)
+
+is nonsingular. By Sauer and Pai [1990], the singularity of JD (x∗) corresponds exactly to the saddle-node bifurcation, so (A2) holds at every operating point that is voltage stable in the standard sense. The constant q scales with the smallest line susceptance and the minimum bus voltage in the operating region. 
+
+## B Proof of Corollary 3.2 
+
+Throughout this appendix, wλ denotes the right-singular vector of JDλ (x∗
+
+> λ
+
+) corresponding to its smallest singular value σλ
+
+> ∆
+
+= σmin (JDλ (x∗
+
+> λ
+
+)) . By Sauer and Pai [1990] and Gao et al. [1992], wλ
+
+converges as λ → λ∗ to the voltage collapse mode w∗, the right-eigenvector of J⊤ 
+
+> D∗
+
+JD∗ at the bifurcation point. The saddle-node-bifurcation characterization that the proof relies on is the one given in Dobson [1992]. 13 For each v ∈ S2N −1, decompose HDλ [v, v ] along wλ and its orthogonal complement, 
+
+HDλ [v, v ] = αλ(v) wλ + rλ(v), αλ(v) ∆
+
+= ⟨wλ, H Dλ [v, v ]⟩, rλ(v) ⊥ wλ. (25) Using the SVD identity J−1 
+
+> Dλ
+
+wλ = σ−1 
+
+> λ
+
+˜wλ, where ˜wλ is the corresponding left-singular vector, applying J−1 
+
+> Dλ
+
+to each component gives 
+
+QDλ (v) = αλ(v)2σλ
+
+˜wλ + 12 J−1 
+
+> Dλ
+
+rλ(v). (26) The first term diverges as σλ → 0, while the second remains uniformly bounded near λ = λ∗
+
+because gD is C3 and J−1 
+
+> Dλ
+
+stays bounded on the orthogonal complement of wλ even as σλ shrinks to zero [Stewart and Sun, 1990]. The asymptotic behavior of ∥QDλ ∥ is therefore controlled entirely by the first term, except on the surface Zλ
+
+> ∆
+
+= v ∈ S2N −1 : αλ(v) = 0 on which HDλ [v, v ] is orthogonal to the collapse mode and the leading term vanishes. Because αλ is a quadratic form in 
+
+v, the set Zλ is the zero locus of a real-analytic function on S2N −1, and therefore has Lebesgue measure zero. For v / ∈ Z λ, the leading-order asymptotic gives 
+
+∥QDλ (v)∥ = |αλ(v)|
+
+2σλ
+
+(1 + o(1)) (27) as σλ → 0, and equivalently 
+
+log ∥QDλ (v)∥ = log(1 /σ λ) + log |αλ(v)| − log 2 + o(1) . (28) Substituting this expansion into Definition A.3 gives 
+
+Λ( v; Dλ) = 
+
+> ∞
+
+X
+
+> j=0
+
+2−j−1 log QDλ (Φ jDλ (v)) . (29) For v outside a Lebesgue-measure-zero subset of S2N −1, the orbit 
+
+n
+
+ΦjDλ (v)
+
+o
+
+> j≥0
+
+avoids Zλ, so each term in the sum contributes log(1 /σ λ) + O(1) as σλ → 0. Since the geometric weights 2−j−1 sum to one, the leading log(1 /σ λ) contributions accumulate to a single log(1 /σ λ), and the O(1) residuals collect into a direction dependent constant. Concretely, 
+
+Λ( v; Dλ) = log(1 /σ λ) + C(v) + o(1) , (30) where C(v) ∆
+
+= P∞ 
+
+> j=0
+
+2−j−1  log |α∗(Φ j (v)) | − log 2 , with α∗ and Φ denoting the λ → λ∗ limits of αλ and ΦDλ respectively. The function C is bounded on S2N −1, since |α∗| is bounded above by the smoothness of gD and bounded below away from zero outside a measure-zero set. Substituting this asymptotic into the denominator of the lower bound in Theorem 3.1 gives 
+
+log(1 /ρ ) − Λ( v; Dλ) = log( σλ/ρ ) − C (v) − o(1) , (31) which is positive precisely when σλ > ρ · eC(v). Since C(v) is bounded, the denominator becomes nonpositive once σλ falls below a constant multiple of ρ, and the bound of Theorem 3.1 ceases to constrain the iteration count. In practical terms, the warm start magnitude ρ must remain smaller than σλ, up to the direction dependent factor eC(v), for the theorem to deliver a finite iteration-count guarantee. 
+
+Remark on orbits returning to Zλ. Even when v ∈ Z λ, so that αλ(v) = 0 and the j = 0 term of the defining sum loses its log(1 /σ λ) contribution, the iterate ΦDλ (v) is generically not in Zλ because 
+
+ΦDλ does not preserve the surface αλ = 0 . The sum then still receives log(1 /σ λ) contributions from every j ≥ 1, the only effect being a reduction of the leading coefficient from 1 to 2−1. The set of directions whose entire ΦDλ -orbit lies in Zλ has Lebesgue measure zero, so the log(1 /σ λ) scaling holds outside a measure-zero subset of S2N −1 as claimed. 
+
+Connection to Figure 1c. The narrow tongue anisotropy in Figure 1c is the empirical signature of the surface Zλ projected onto the local (P, Q )-space at bus 4. Directions in Zλ are those for which the warm start error is second order orthogonal to the collapse mode, and they correspond to the long axis of the tongue. 14 C Reproducibility Details 
+
+This appendix collects the dataset splits, architectures, training schedules, and hyperparameters used in Section 5. 
+
+Dataset splits. All snapshots are drawn from the PF ∆ benchmark [Rivera et al., 2025], restricted to the unperturbed-topology subset ( n). For each of the three grids we partition the data with seed 42 
+
+into a pretraining train split (~27,000 samples), a pretraining val split ( 1,000 ), a finetuning holdout train split ( 1,500 for case118 /case500 , 480 for case2000 ), and a held-out test split ( 30 samples drawn disjointly from the holdout pool with a separate seed). Each sample carries the full network description, the bus type assignments, and the labeled (V ∗, θ ∗) produced by the PF ∆ pipeline. 
+
+Architectures. For case500 and case2000 we use the heterogeneous GNN of Section 4, with hidden dimension d = 128 , encoder MLPs with two hidden layers per node type, T ∈ { 32 , 60 }
+
+message passing rounds (for case500 and case2000 respectively), and decoder MLPs with three hidden layers of width 256 per node type. Activations are ReLU with LayerNorm in encoder and decoder; aggregation across incoming messages is the mean. Branch flows are recovered from the predicted bus voltages with the standard π-model. For case118 we use the FCNN with four hidden layers of width 512 and GELU activations, taking the per-bus features (demand, generation, shunt, bus type one-hot) flattened into a single input vector and producing a (ˆθi, ˆVi) pair per bus. 
+
+Pretraining. Pretraining minimizes the power balance loss of Eq. (11) on the pretraining train split. The optimizer is Adam, with learning rate 10 −5 on the GNN backbones, 3 × 10 −4 on the MLP, and batch size 16 in all cases. Pretraining runs for 25 epochs on the GNN cases (early-stopped by patience 8 on val PBL) and 10 epochs on the MLP. All training is in fp32; bf16 was tried on the GNN and reverted because it caused PBL to collapse. 
+
+Supervised finetuning. SFT continues from the best pretraining checkpoint on the holdout train split, again under PBL. Learning rates are 10 −5 on the GNN backbones and 10 −4 on the MLP, with batch size 16 and at most 30 epochs (early-stopped by val PBL on the held-out finetuning val slice). 
+
+Stochastic policy. The RL policy of Section 4 adds Gaussian noise to the predicted (ˆθ, ˆV ) on the free-coordinate subspace. The state-independent log standard deviations are initialized to log σV =log(10 −3) for voltage magnitudes and log σθ = log(5 × 10 −3) for angles, and are optimized jointly with the policy parameters. 
+
+PPO+ V ⋆ hyperparameters. V ⋆(s) is precomputed once per holdout snapshot by seeding NR from 
+
+x∗(s) and recording the resulting iteration count. The reward is rsat of Eq. (5) with R+ = R− = 2 
+
+and c set to the holdout-mean of V ⋆ (c ≈ 4.95 for case500 , c ≈ 12 for case2000 , c ≈ 11 .3 for 
+
+case118 ). PPO uses ratio clip ε = 0 .1, target-KL early stop at 0.02 , no entropy bonus, no KL anchor, 
+
+KPPO = 4 inner epochs per outer iteration, batch 16 states per outer iteration, and a total of 30 
+
+outer iterations. Policy learning rate is 10 −6 on the GNN backbones and 10 −5 on the MLP, and the maximum gradient norm is 5 × 10 −3.
+
+Newton’s Lantern hyperparameters. GRPO+ Rϕ uses batch B = 2 states per outer iteration and 
+
+K = 4 rollouts per state. The reward is rlin of Eq. (8) with kmax = 30 and B = 10 . The PPO clipping over rollouts uses ε = 0 .1 and KPPO = 2 inner epochs. Policy learning rate, gradient norm, and stochastic policy initialization match the PPO+ V ⋆ configuration. The total number of outer iterations is 20 , with the validation snapshot interval Tv = 2 outer iterations. The validation slice is a fixed 10-sample subset of the holdout val split. 
+
+Reward model Rϕ. Rϕ is a four-layer MLP with hidden widths (512 , 512 , 256) , GELU activations, and dropout 0.1 on the first two hidden layers. The input dimension is 6 + 2 N (6 snapshot-level fea-tures and the ( ˆV , ˆθ) warm start over N buses), and the scalar output predicts the iteration count. Train-ing data comes from perturbations of the SFT model’s predictions on the holdout train split. For each snapshot we sample magnitudes f ∈ 0, 10 −3, 2 × 10 −3, 5 × 10 −3, 10 −2, 2 × 10 −2, 5 × 10 −2
+
+scaled by the per-snapshot reference radius, with 5 random directions per non-zero magnitude. NR is run once per perturbed warm start and the resulting iteration count is logged. Rϕ is trained for 50 
+
+15 epochs with Adam (learning rate 10 −3, weight decay 10 −5, batch 256 ) under the mean squared error (MSE) loss on z-scored iteration counts. The train/val partition for Rϕ is cross-snapshot ( 80 /20 ), so per-snapshot Spearman ρ is meaningful; the best checkpoint by mean per-snapshot ρ on val is the one used by Newton’s Lantern. 
+
+Newton-Raphson evaluation. Final NR evaluation is performed in Julia with PowerModels.jl and NLsolve.jl, at iteration cap 1000 and the package’s default x-step and residual tolerances ( ∼ 10 −6). The linear solver inside the inner Newton step is HSL MA57 via Ipopt; we found MUMPS to be too slow for stability on case2000 . The Python and Julia processes communicate through juliacall 
+
+with one Julia worker per evaluation process. 
+
+Hardware. Pretraining on the GNN backbones runs on a single NVIDIA H100 80GB GPU; fine-tuning, RL training, and reward-model training run on a single NVIDIA A100 80GB GPU. case118 
+
+runs end-to-end on the A100. NR-based dataset generation and per-method evaluation are parallelized across 20 CPU workers with OPENBLAS_NUM_THREADS=1 to avoid BLAS oversubscription. 
+
+Determinism and seeds. All Python-side stochasticity is seeded with master seed 42 for model initialization and training shuffles, and a separate split seed 42 is used for the train/val/holdout/test partition so that seed-averaging runs share a partition. cudnn.deterministic = True . The 30-sample test pick is drawn with numpy.random.default_rng(seed) where the test seed is set per grid (47 for case500 , 4167 for case2000 , 42 for case118 ), with the per-method warm starts evaluated on the same selected snapshots. 16 NeurIPS Paper Checklist 
+
+1. Claims 
+
+Question: Do the main claims made in the abstract and introduction accurately reflect the paper’s contributions and scope? Answer: [Yes] Justification: The abstract and introduction summarize the directional lower bound (The-orem 3.1, Section 3), its degeneration near voltage collapse (Corollary 3.2, Section 3), the GRPO finetuning pipeline with a learned reward model (Section 4), and the empirical findings (Section 5, Tables 1–3). Guidelines: • The answer [N/A] means that the abstract and introduction do not include the claims made in the paper. • The abstract and/or introduction should clearly state the claims made, including the contributions made in the paper and important assumptions and limitations. A [No] or [N/A] answer to this question will not be perceived well by the reviewers. • The claims made should match theoretical and experimental results, and reflect how much the results can be expected to generalize to other settings. • It is fine to include aspirational goals as motivation as long as it is clear that these goals are not attained by the paper. 2. Limitations 
+
+Question: Does the paper discuss the limitations of the work performed by the authors? Answer: [Yes] Justification: Section 5 discusses the narrow win margins on the GNN cases ( case500 
+
+and case2000 ) and attributes them to known training instabilities of graph neural network policies under reinforcement learning, including the unusually small policy learning rate and PPO clip radius required to keep training stable. Section 6 states that scaling Newton’s Lantern to larger grids depends on architectures and RL algorithms better suited to this regime. Guidelines: • The answer [N/A] means that the paper has no limitation while the answer [No] means that the paper has limitations, but those are not discussed in the paper. • The authors are encouraged to create a separate “Limitations” section in their paper. • The paper should point out any strong assumptions and how robust the results are to violations of these assumptions (e.g., independence assumptions, noiseless settings, model well-specification, asymptotic approximations only holding locally). The authors should reflect on how these assumptions might be violated in practice and what the implications would be. • The authors should reflect on the scope of the claims made, e.g., if the approach was only tested on a few datasets or with a few runs. In general, empirical results often depend on implicit assumptions, which should be articulated. • The authors should reflect on the factors that influence the performance of the approach. For example, a facial recognition algorithm may perform poorly when image resolution is low or images are taken in low lighting. Or a speech-to-text system might not be used reliably to provide closed captions for online lectures because it fails to handle technical jargon. • The authors should discuss the computational efficiency of the proposed algorithms and how they scale with dataset size. • If applicable, the authors should discuss possible limitations of their approach to address problems of privacy and fairness. • While the authors might fear that complete honesty about limitations might be used by reviewers as grounds for rejection, a worse outcome might be that reviewers discover limitations that aren’t acknowledged in the paper. The authors should use their best 17 judgment and recognize that individual actions in favor of transparency play an impor-tant role in developing norms that preserve the integrity of the community. Reviewers will be specifically instructed to not penalize honesty concerning limitations. 3. Theory assumptions and proofs 
+
+Question: For each theoretical result, does the paper provide the full set of assumptions and a complete (and correct) proof? Answer: [Yes] Justification: Theorem 3.1 and Corollary 3.2 state assumptions (A1) and (A2) explicitly in Section 3. Full proofs are given in Appendix A (with Lemmas A.1, A.2 and Definition A.3) and Appendix B, including a verification that (A2) holds for ACPF at any voltage stable operating point. Guidelines: • The answer [N/A] means that the paper does not include theoretical results. • All the theorems, formulas, and proofs in the paper should be numbered and cross-referenced. • All assumptions should be clearly stated or referenced in the statement of any theorems. • The proofs can either appear in the main paper or the supplemental material, but if they appear in the supplemental material, the authors are encouraged to provide a short proof sketch to provide intuition. • Inversely, any informal proof provided in the core of the paper should be complemented by formal proofs provided in appendix or supplemental material. • Theorems and Lemmas that the proof relies upon should be properly referenced. 4. Experimental result reproducibility 
+
+Question: Does the paper fully disclose all the information needed to reproduce the main ex-perimental results of the paper to the extent that it affects the main claims and/or conclusions of the paper (regardless of whether the code and data are provided or not)? Answer: [Yes] Justification: Section 5 states the dataset source, model architectures, and the training stages. Appendix C documents the dataset splits and seeds, encoder/decoder shapes, pre-training and SFT optimizers and schedules, RL hyperparameters for both PPO+ V ⋆ and Newton’s Lantern, the reward model architecture and training data, and the Newton-Raphson evaluation pipeline. Guidelines: • The answer [N/A] means that the paper does not include experiments. • If the paper includes experiments, a [No] answer to this question will not be perceived well by the reviewers: Making the paper reproducible is important, regardless of whether the code and data are provided or not. • If the contribution is a dataset and/or model, the authors should describe the steps taken to make their results reproducible or verifiable. • Depending on the contribution, reproducibility can be accomplished in various ways. For example, if the contribution is a novel architecture, describing the architecture fully might suffice, or if the contribution is a specific model and empirical evaluation, it may be necessary to either make it possible for others to replicate the model with the same dataset, or provide access to the model. In general. releasing code and data is often one good way to accomplish this, but reproducibility can also be provided via detailed instructions for how to replicate the results, access to a hosted model (e.g., in the case of a large language model), releasing of a model checkpoint, or other means that are appropriate to the research performed. • While NeurIPS does not require releasing code, the conference does require all submis-sions to provide some reasonable avenue for reproducibility, which may depend on the nature of the contribution. For example (a) If the contribution is primarily a new algorithm, the paper should make it clear how to reproduce that algorithm. 18 (b) If the contribution is primarily a new model architecture, the paper should describe the architecture clearly and fully. (c) If the contribution is a new model (e.g., a large language model), then there should either be a way to access this model for reproducing the results or a way to reproduce the model (e.g., with an open-source dataset or instructions for how to construct the dataset). (d) We recognize that reproducibility may be tricky in some cases, in which case authors are welcome to describe the particular way they provide for reproducibility. In the case of closed-source models, it may be that access to the model is limited in some way (e.g., to registered users), but it should be possible for other researchers to have some path to reproducing or verifying the results. 5. Open access to data and code 
+
+Question: Does the paper provide open access to the data and code, with sufficient instruc-tions to faithfully reproduce the main experimental results, as described in supplemental material? Answer: [No] Justification: All datasets used are publicly available via the PF ∆ benchmark [Rivera et al., 2025] on Hugging Face ( https://huggingface.co/datasets/pfdelta/pfdelta ). Code is not released alongside this submission for double-blind review; we will release the codebase, trained checkpoints, and reproduction scripts upon acceptance. Appendix C contains the full pipeline specification needed for an independent re-implementation. Guidelines: • The answer [N/A] means that paper does not include experiments requiring code. • Please see the NeurIPS code and data submission guidelines ( https://neurips.cc/ public/guides/CodeSubmissionPolicy ) for more details. • While we encourage the release of code and data, we understand that this might not be possible, so [No] is an acceptable answer. Papers cannot be rejected simply for not including code, unless this is central to the contribution (e.g., for a new open-source benchmark). • The instructions should contain the exact command and environment needed to run to reproduce the results. See the NeurIPS code and data submission guidelines ( https: //neurips.cc/public/guides/CodeSubmissionPolicy ) for more details. • The authors should provide instructions on data access and preparation, including how to access the raw data, preprocessed data, intermediate data, and generated data, etc. • The authors should provide scripts to reproduce all experimental results for the new proposed method and baselines. If only a subset of experiments are reproducible, they should state which ones are omitted from the script and why. • At submission time, to preserve anonymity, the authors should release anonymized versions (if applicable). • Providing as much information as possible in supplemental material (appended to the paper) is recommended, but including URLs to data and code is permitted. 6. Experimental setting/details 
+
+Question: Does the paper specify all the training and test details (e.g., data splits, hyperpa-rameters, how they were chosen, type of optimizer) necessary to understand the results? Answer: [Yes] Justification: Section 5 reports the data splits and the two hyperparameters that depart from defaults (policy learning rate and PPO clip radius); Appendix C documents optimizer types, learning rates, batch sizes, epoch counts, early stopping, reward constants, and how each was chosen. Guidelines: • The answer [N/A] means that the paper does not include experiments. • The experimental setting should be presented in the core of the paper to a level of detail that is necessary to appreciate the results and make sense of them. 19 • The full details can be provided either with the code, in appendix, or as supplemental material. 7. Experiment statistical significance 
+
+Question: Does the paper report error bars suitably and correctly defined or other appropriate information about the statistical significance of the experiments? Answer: [No] Justification: Tables 1–3 report fixed-seed results on a held-out 30-sample test split. Multi-seed averages over five training seeds were also computed for the GNN cases ( case500 
+
+mean 14 .92 ± 0.05 , case2000 mean 26 .02 ± 14 .41 with the inflated standard deviation traceable to a small number of hard tail samples per seed) and confirm the reported numbers within the seed-noise envelope; the main tables report fixed seeds for clarity. Guidelines: • The answer [N/A] means that the paper does not include experiments. • The authors should answer [Yes] if the results are accompanied by error bars, confidence intervals, or statistical significance tests, at least for the experiments that support the main claims of the paper. • The factors of variability that the error bars are capturing should be clearly stated (for example, train/test split, initialization, random drawing of some parameter, or overall run with given experimental conditions). • The method for calculating the error bars should be explained (closed form formula, call to a library function, bootstrap, etc.) • The assumptions made should be given (e.g., Normally distributed errors). • It should be clear whether the error bar is the standard deviation or the standard error of the mean. • It is OK to report 1-sigma error bars, but one should state it. The authors should preferably report a 2-sigma error bar than state that they have a 96% CI, if the hypothesis of Normality of errors is not verified. • For asymmetric distributions, the authors should be careful not to show in tables or figures symmetric error bars that would yield results that are out of range (e.g., negative error rates). • If error bars are reported in tables or plots, the authors should explain in the text how they were calculated and reference the corresponding figures or tables in the text. 8. Experiments compute resources 
+
+Question: For each experiment, does the paper provide sufficient information on the com-puter resources (type of compute workers, memory, time of execution) needed to reproduce the experiments? Answer: [Yes] Justification: Appendix C specifies the GPU and CPU resources used: pretraining on the GNN backbones runs on a single NVIDIA H100 80GB; finetuning, RL training, and reward-model training run on a single NVIDIA A100 80GB; and Newton-Raphson dataset generation and per-method evaluation run across 20 CPU workers with single-threaded BLAS. Guidelines: • The answer [N/A] means that the paper does not include experiments. • The paper should indicate the type of compute workers CPU or GPU, internal cluster, or cloud provider, including relevant memory and storage. • The paper should provide the amount of compute required for each of the individual experimental runs as well as estimate the total compute. • The paper should disclose whether the full research project required more compute than the experiments reported in the paper (e.g., preliminary or failed experiments that didn’t make it into the paper). 9. Code of ethics 
+
+20 Question: Does the research conducted in the paper conform, in every respect, with the NeurIPS Code of Ethics https://neurips.cc/public/EthicsGuidelines ?Answer: [Yes] Justification: The work is foundational research on numerical solvers for AC power flow, uses only synthetic and openly licensed benchmark data, and involves no human subjects, sensitive data, or dual-use risks. We have reviewed the NeurIPS Code of Ethics and confirm conformance. Guidelines: • The answer [N/A] means that the authors have not reviewed the NeurIPS Code of Ethics. • If the authors answer [No], they should explain the special circumstances that require a deviation from the Code of Ethics. • The authors should make sure to preserve anonymity (e.g., if there is a special consid-eration due to laws or regulations in their jurisdiction). 10. Broader impacts 
+
+Question: Does the paper discuss both potential positive societal impacts and negative societal impacts of the work performed? Answer: [Yes] Justification: A faster and more reliable AC power flow solver supports more responsive grid operations, including studies of voltage stability and contingency analysis, which is the immediate positive impact of this work. Because the contribution is a numerical accelerator for an existing physical solver and produces no novel data or generative capabilities, we are not aware of a direct path to negative societal impact. Guidelines: • The answer [N/A] means that there is no societal impact of the work performed. • If the authors answer [N/A] or [No], they should explain why their work has no societal impact or why the paper does not address societal impact. • Examples of negative societal impacts include potential malicious or unintended uses (e.g., disinformation, generating fake profiles, surveillance), fairness considerations (e.g., deployment of technologies that could make decisions that unfairly impact specific groups), privacy considerations, and security considerations. • The conference expects that many papers will be foundational research and not tied to particular applications, let alone deployments. However, if there is a direct path to any negative applications, the authors should point it out. For example, it is legitimate to point out that an improvement in the quality of generative models could be used to generate Deepfakes for disinformation. On the other hand, it is not needed to point out that a generic algorithm for optimizing neural networks could enable people to train models that generate Deepfakes faster. • The authors should consider possible harms that could arise when the technology is being used as intended and functioning correctly, harms that could arise when the technology is being used as intended but gives incorrect results, and harms following from (intentional or unintentional) misuse of the technology. • If there are negative societal impacts, the authors could also discuss possible mitigation strategies (e.g., gated release of models, providing defenses in addition to attacks, mechanisms for monitoring misuse, mechanisms to monitor how a system learns from feedback over time, improving the efficiency and accessibility of ML). 11. Safeguards 
+
+Question: Does the paper describe safeguards that have been put in place for responsible release of data or models that have a high risk for misuse (e.g., pre-trained language models, image generators, or scraped datasets)? Answer: [N/A] Justification: The paper releases neither generative models nor scraped data. The trained warm start models are task-specific to AC power flow and pose no known risk for misuse. 21 Guidelines: • The answer [N/A] means that the paper poses no such risks. • Released models that have a high risk for misuse or dual-use should be released with necessary safeguards to allow for controlled use of the model, for example by requiring that users adhere to usage guidelines or restrictions to access the model or implementing safety filters. • Datasets that have been scraped from the Internet could pose safety risks. The authors should describe how they avoided releasing unsafe images. • We recognize that providing effective safeguards is challenging, and many papers do not require this, but we encourage authors to take this into account and make a best faith effort. 12. Licenses for existing assets 
+
+Question: Are the creators or original owners of assets (e.g., code, data, models), used in the paper, properly credited and are the license and terms of use explicitly mentioned and properly respected? Answer: [Yes] Justification: The PF ∆ benchmark [Rivera et al., 2025] is cited and credited, with its license available on the project’s Hugging Face repository. The CANOS architecture [Piloto et al., 2024], PPO [Schulman et al., 2017], and GRPO [Shao et al., 2024] are cited at every use. The numerical NR backend uses PowerModels.jl and NLsolve.jl under their respective open-source licenses. Guidelines: • The answer [N/A] means that the paper does not use existing assets. • The authors should cite the original paper that produced the code package or dataset. • The authors should state which version of the asset is used and, if possible, include a URL. • The name of the license (e.g., CC-BY 4.0) should be included for each asset. • For scraped data from a particular source (e.g., website), the copyright and terms of service of that source should be provided. • If assets are released, the license, copyright information, and terms of use in the package should be provided. For popular datasets, paperswithcode.com/datasets 
+
+has curated licenses for some datasets. Their licensing guide can help determine the license of a dataset. • For existing datasets that are re-packaged, both the original license and the license of the derived asset (if it has changed) should be provided. • If this information is not available online, the authors are encouraged to reach out to the asset’s creators. 13. New assets 
+
+Question: Are new assets introduced in the paper well documented and is the documentation provided alongside the assets? Answer: [N/A] Justification: This submission does not release new datasets or models. Trained checkpoints and code will be released upon acceptance, with documentation matching the specifications in Appendix C. Guidelines: • The answer [N/A] means that the paper does not release new assets. • Researchers should communicate the details of the dataset/code/model as part of their submissions via structured templates. This includes details about training, license, limitations, etc. • The paper should discuss whether and how consent was obtained from people whose asset is used. • At submission time, remember to anonymize your assets (if applicable). You can either create an anonymized URL or include an anonymized zip file. 22 14. Crowdsourcing and research with human subjects 
+
+Question: For crowdsourcing experiments and research with human subjects, does the paper include the full text of instructions given to participants and screenshots, if applicable, as well as details about compensation (if any)? Answer: [N/A] Justification: The paper involves no crowdsourcing and no research with human subjects. Guidelines: • The answer [N/A] means that the paper does not involve crowdsourcing nor research with human subjects. • Including this information in the supplemental material is fine, but if the main contribu-tion of the paper involves human subjects, then as much detail as possible should be included in the main paper. • According to the NeurIPS Code of Ethics, workers involved in data collection, curation, or other labor should be paid at least the minimum wage in the country of the data collector. 15. Institutional review board (IRB) approvals or equivalent for research with human subjects 
+
+Question: Does the paper describe potential risks incurred by study participants, whether such risks were disclosed to the subjects, and whether Institutional Review Board (IRB) approvals (or an equivalent approval/review based on the requirements of your country or institution) were obtained? Answer: [N/A] Justification: The paper involves no human subjects research and no IRB approval is required. Guidelines: • The answer [N/A] means that the paper does not involve crowdsourcing nor research with human subjects. • Depending on the country in which research is conducted, IRB approval (or equivalent) may be required for any human subjects research. If you obtained IRB approval, you should clearly state this in the paper. • We recognize that the procedures for this may vary significantly between institutions and locations, and we expect authors to adhere to the NeurIPS Code of Ethics and the guidelines for their institution. • For initial submissions, do not include any information that would break anonymity (if applicable), such as the institution conducting the review. 16. Declaration of LLM usage 
+
+Question: Does the paper describe the usage of LLMs if it is an important, original, or non-standard component of the core methods in this research? Note that if the LLM is used only for writing, editing, or formatting purposes and does not impact the core methodology, scientific rigor, or originality of the research, declaration is not required. Answer: [N/A] Justification: LLMs were used only for writing assistance (grammar checking and implemen-tation of standard methods such as routine plotting and boilerplate). No LLM contributed to the core methodology, theoretical results, or experimental design, so per NeurIPS policy a declaration is not required. Guidelines: • The answer [N/A] means that the core method development in this research does not involve LLMs as any important, original, or non-standard components. • Please refer to our LLM policy in the NeurIPS handbook for what should or should not be described. 23
