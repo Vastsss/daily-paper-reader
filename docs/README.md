@@ -6,91 +6,91 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-05-16
-- 运行时间：2026-05-16 21:01:21 UTC
+- 最新运行日期：2026-05-18
+- 运行时间：2026-05-18 20:37:35 UTC
 - 运行状态：成功
 - 本次总论文数：23
 - 精读区：9
 - 速读区：14
 
 ### 今日简报（AI）
-今日精选 23 篇前沿论文，深度解析了时间序列异常检测与预测领域的最新突破。
-重点关注统一常态表征学习及自适应可逆归一化技术，同时跨模态生物信号大模型与重尾不确定性建模展现出巨大潜力。
-建议优先研读高分论文中的归一化与表征统一思路，以应对高波动性数据的建模挑战。
-- 详情：[/202605/16/README](/202605/16/README)
+今日深度研读 23 篇前沿论文，重点聚焦生成式预训练在不规则时间序列领域的突破性进展。
+满分力作 ITGPT 与 SurF 揭示了生成式模型处理复杂多变量序列的巨大潜力，是本期必读核心。
+建议关注 AI 在宏观经济预测与长文本知识迁移中的跨界应用，把握时序建模的新范式。
+- 详情：[/202605/18/README](/202605/18/README)
 
 ### 精读区论文标签
-1. [Learning Unified Representations of Normalcy for Time Series Anomaly Detection](/202605/16/2605.09685v1-learning-unified-representations-of-normalcy-for-time-series-anomaly-detection)  
+1. [ITGPT: Generative Pretraining on Irregular Timeseries](/202605/18/2605.16069v1-itgpt-generative-pretraining-on-irregular-timeseries)  
+   标签：评分：10.0/10、query:llm-ts
+   evidence：使用基于Transformer的LLM框架对不规则时间序列进行生成式预训练
+2. [SurF: A Generative Model for Multivariate Irregular Time Series Forecasting](/202605/18/2605.14069v1-surf-a-generative-model-for-multivariate-irregular-time-series-forecasting)  
    标签：评分：9.0/10、query:ts-fm
-   evidence：使用生成模型进行多变量时间序列异常检测
-2. [NoRIN: Backbone-Adaptive Reversible Normalization for Time-Series Forecasting](/202605/16/2605.10823v1-norin-backbone-adaptive-reversible-normalization-for-time-series-forecasting)  
+   evidence：用于多数据集时间序列预训练的生成模型和Transformer编码器
+3. [EnergyAgentBench: Benchmarking LLM Agents on Live Energy Infrastructure Data](/202605/18/2605.15230v1-energyagentbench-benchmarking-llm-agents-on-live-energy-infrastructure-data)  
+   标签：评分：9.0/10、query:llm
+   evidence：在实时能源基础设施数据和电网动态上测试大语言模型智能体
+4. [Forecasting megaelectron-volt electron flux in the Earth's outer radiation belt using supervised machine learning algorithms and a timeseries foundation model](/202605/18/2605.15752v1-forecasting-megaelectron-volt-electron-flux-in-the-earths-outer-radiation-belt-using-supervised-machine-learning-algorithms-and-a-timeseries-foundation-model)  
+   标签：评分：9.0/10、query:ts-fm
+   evidence：使用时序基础模型进行预测
+5. [Probabilistic Seasonal Streamflow Forecasting Across California's Sierra Nevada Watersheds with Agentic AI](/202605/18/2605.16178v1-probabilistic-seasonal-streamflow-forecasting-across-californias-sierra-nevada-watersheds-with-agentic-ai)  
    标签：评分：9.0/10、query:llm-ts
-   evidence：用于时间序列预测的非线性可逆归一化
-3. [NeuroAtlas: Benchmarking Foundation Models for Clinical EEG and Brain-Computer Interfaces](/202605/16/2605.14698v1-neuroatlas-benchmarking-foundation-models-for-clinical-eeg-and-brain-computer-interfaces)  
-   标签：评分：9.0/10、query:ts-fm
-   evidence：临床脑电图时间序列基础模型的基准测试
-4. [Efficient Prompt Learning for Traffic Forecasting](/202605/16/2605.08273v1-efficient-prompt-learning-for-traffic-forecasting)  
+   evidence：由大语言模型驱动的智能体AI用于径流预测
+6. [A Generative AI Framework for Intelligent Utility Billing CO 2 Analytics and Sustainable Resource Optimisation](/202605/18/2605.16250v1-a-generative-ai-framework-for-intelligent-utility-billing-co-2-analytics-and-sustainable-resource-optimisation)  
+   标签：评分：9.0/10、query:llm
+   evidence：用于公用事业计费和电网压力的生成式AI与Transformer预测器
+7. [TSNN: A Non-parametric and Interpretable Framework for Traffic Time Series Forecasting](/202605/18/2605.09208v1-tsnn-a-non-parametric-and-interpretable-framework-for-traffic-time-series-forecasting)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：时空交通预测的提示学习
-5. [WindINR: Latent-State INR for Fast Local Wind Query and Correction in Complex Terrain](/202605/16/2605.09511v1-windinr-latent-state-inr-for-fast-local-wind-query-and-correction-in-complex-terrain)  
-   标签：评分：8.0/10、query:llm-wd
-   evidence：复杂地形下的快速局部风力查询与修正
-6. [DeepLévy: Learning Heavy-Tailed Uncertainty in Highly Volatile Time Series](/202605/16/2605.10364v1-deeplvy-learning-heavy-tailed-uncertainty-in-highly-volatile-time-series)  
-   标签：评分：8.0/10、query:llm-ts
-   evidence：高波动时间序列的深度概率预测
-7. [Newton's Lantern: A Reinforcement Learning Framework for Finetuning AC Power Flow Warm Start Models](/202605/16/2605.11102v1-newtons-lantern-a-reinforcement-learning-framework-for-finetuning-ac-power-flow-warm-start-models)  
+   evidence：交通时间序列预测的非参数框架
+8. [PriorZero: Bridging Language Priors and World Models for Decision Making](/202605/18/2605.12289v1-priorzero-bridging-language-priors-and-world-models-for-decision-making)  
    标签：评分：8.0/10、query:llm
-   evidence：使用强化学习微调交流潮流模型
-8. [GAR: Carbon-Aware Routing for LLM Inference via Constrained Optimization](/202605/16/2605.11603v1-gar-carbon-aware-routing-for-llm-inference-via-constrained-optimization)  
+   evidence：将大语言模型先验集成到强化学习决策中
+9. [Stochastic Modeling of Power-Grid Frequency Fluctuations in Low-Inertia Systems via a Gaussian-Core Potential and Superstatistics](/202605/18/2605.13289v1-stochastic-modeling-of-power-grid-frequency-fluctuations-in-low-inertia-systems-via-a-gaussian-core-potential-and-superstatistics)  
    标签：评分：8.0/10、query:llm
-   evidence：电力网中LLM推理的碳感知路由
-9. [Distributionally Robust Model Predictive Control for Virtual Power Plants](/202605/16/2605.14642v1-distributionally-robust-model-predictive-control-for-virtual-power-plants)  
-   标签：评分：8.0/10、query:llm-wd
-   evidence：可再生能源管理与预测的基础
+   evidence：可再生能源并网下的电网频率波动
 
 ### 速读区论文标签
-1. [Biosignal Fingerprinting: A Cross-Modal PPG-ECG Foundation Model](/202605/16/2605.09579v1-biosignal-fingerprinting-a-cross-modal-ppg-ecg-foundation-model)  
-   标签：评分：8.0/10、query:ts-fm
-   evidence：生物信号时间序列的跨模态基础模型
-2. [TIDES: Implicit Time-Awareness in Selective State Space Models](/202605/16/2605.09742v1-tides-implicit-time-awareness-in-selective-state-space-models)  
-   标签：评分：8.0/10、query:ts-fm
-   evidence：用于不规则时间序列的选择性状态空间模型
-3. [DeepLévy: Learning Heavy-Tailed Uncertainty in Highly Volatile Time Series](/202605/16/2605.10364v2-deeplvy-learning-heavy-tailed-uncertainty-in-highly-volatile-time-series)  
+1. [LGB+: A Macroeconomic Forecasting Road Test](/202605/18/2605.09740v1-lgb-a-macroeconomic-forecasting-road-test)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：重尾和高波动时间序列的概率预测
-4. [DeepLévy: Learning Heavy-Tailed Uncertainty in Highly Volatile Time Series](/202605/16/2605.10364v3-deeplvy-learning-heavy-tailed-uncertainty-in-highly-volatile-time-series)  
+   evidence：宏观经济预测和经济时间序列
+2. [Yield Curve Forecasting using Machine Learning and Econometrics: A Comparative Analysis](/202605/18/2605.09842v1-yield-curve-forecasting-using-machine-learning-and-econometrics-a-comparative-analysis)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：针对高波动和重尾时间序列的概率预测
-5. [CLEF: EEG Foundation Model for Learning Clinical Semantics](/202605/16/2605.10817v1-clef-eeg-foundation-model-for-learning-clinical-semantics)  
-   标签：评分：8.0/10、query:ts-fm
-   evidence：用于从信号模式中学习临床语义的EEG基础模型
-6. [Unlocking Deep Demand Flexibility via Dynamic Signals](/202605/16/2605.06960v1-unlocking-deep-demand-flexibility-via-dynamic-signals)  
+   evidence：使用深度学习和计量经济学进行时间序列预测
+3. [Generative Diffusion Prior Distillation for Long-Context Knowledge Transfer](/202605/18/2605.11414v1-generative-diffusion-prior-distillation-for-long-context-knowledge-transfer)  
+   标签：评分：8.0/10、query:llm-ts
+   evidence：部分时间序列分类器的知识蒸馏
+4. [Continual Fine-Tuning of Large Language Models via Program Memory](/202605/18/2605.13162v1-continual-fine-tuning-of-large-language-models-via-program-memory)  
+   标签：评分：8.0/10、query:llm-ts
+   evidence：LLM 随时间推移的持续微调
+5. [Quantifying information flow along a stochastic trajectory](/202605/18/2605.13509v1-quantifying-information-flow-along-a-stochastic-trajectory)  
+   标签：评分：8.0/10、query:llm-ts
+   evidence：从通用时间序列数据中估计信息流的深度学习方法
+6. [TSNBench: Benchmarking LLM Proficiency in Time-Sensitive Networking](/202605/18/2605.09481v1-tsnbench-benchmarking-llm-proficiency-in-time-sensitive-networking)  
+   标签：评分：7.0/10、query:llm-ts
+   evidence：评估大语言模型在时间敏感网络中的熟练程度
+7. [Quantifying the Risk-Return Tradeoff in Forecasting](/202605/18/2605.09712v1-quantifying-the-risk-return-tradeoff-in-forecasting)  
+   标签：评分：7.0/10、query:llm-ts
+   evidence：宏观经济时间序列预测的准确性与可靠性
+8. [Delay-Robust Secondary Frequency Control via Passive Interconnection and Randomized Block Updates](/202605/18/2605.10080v1-delay-robust-secondary-frequency-control-via-passive-interconnection-and-randomized-block-updates)  
    标签：评分：7.0/10、query:llm
-   evidence：通过学习算法实现智能电网运行和需求灵活性
-7. [Sensitivity-Based Robust NMPC for Close-Proximity Offshore Wind Turbine Inspection with a Tilted Multirotor](/202605/16/2605.07771v1-sensitivity-based-robust-nmpc-for-close-proximity-offshore-wind-turbine-inspection-with-a-tilted-multirotor)  
-   标签：评分：7.0/10、query:llm-wd
-   evidence：海上风机巡检与控制
-8. [Scaling Categorical Flow Maps](/202605/16/2605.07820v1-scaling-categorical-flow-maps)  
+   evidence：二次频率控制被表述为受约束的经济调度问题
+9. [Stable Long-Horizon PDE Forecasting via Latent Structured Spectral Propagators](/202605/18/2605.10154v1-stable-long-horizon-pde-forecasting-via-latent-structured-spectral-propagators)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：扩展用于语言建模的连续扩散模型
-9. [CHASM: Online Changepoint Detection in Temporal and Cross-Variable Dependence](/202605/16/2605.07852v1-chasm-online-changepoint-detection-in-temporal-and-cross-variable-dependence)  
+   evidence：时间相关偏微分方程的长程预测
+10. [One-Step Graph-Structured Neural Flows for Irregular Multivariate Time Series Classification](/202605/18/2605.10179v1-one-step-graph-structured-neural-flows-for-irregular-multivariate-time-series-classification)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：时间序列时间依赖性的在线变点检测
-10. [On the Tradeoffs of On-Device Generative Models in Federated Predictive Maintenance Systems](/202605/16/2605.07860v1-on-the-tradeoffs-of-on-device-generative-models-in-federated-predictive-maintenance-systems)  
-   标签：评分：7.0/10、query:ts-fm
-   evidence：用于时间序列分析中异常检测的生成模型
-11. [Reformulating KV Cache Eviction Problem for Long-Context LLM Inference](/202605/16/2605.07234v1-reformulating-kv-cache-eviction-problem-for-long-context-llm-inference)  
+   evidence：不规则多变量时间序列分类
+11. [AutoRedTrader: Autonomous Red Teaming of Trading Agents through Synthetic Misinformation Injection](/202605/18/2605.09185v1-autoredtrader-autonomous-red-teaming-of-trading-agents-through-synthetic-misinformation-injection)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：优化长上下文 LLM 推理的 KV 缓存剔除
-12. [FATE: Future-State-Aware Scheduling for Heterogeneous LLM Workflows](/202605/16/2605.07238v1-fate-future-state-aware-scheduling-for-heterogeneous-llm-workflows)  
+   evidence：大语言模型智能体利用数值市场数据和文本信号进行交易
+12. [SkillMAS: Skill Co-Evolution with LLM-based Multi-Agent System](/202605/18/2605.09341v1-skillmas-skill-co-evolution-with-llm-based-multi-agent-system)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：异构大语言模型工作流调度
-13. [CSR: Infinite-Horizon Real-Time Policies with Massive Cached State Representations](/202605/16/2605.07325v1-csr-infinite-horizon-real-time-policies-with-massive-cached-state-representations)  
+   evidence：具有技能演化的基于大语言模型的多智能体系统
+13. [From Detection to Recovery: Operational Analysis on LLM Pre-training with 504 GPUs](/202605/18/2605.09370v1-from-detection-to-recovery-operational-analysis-on-llm-pre-training-with-504-gpus)  
+   标签：评分：6.0/10、query:llm-ts
+   evidence：利用时间序列数据对大语言模型预训练进行运行分析
+14. [TacoMAS: Test-Time Co-Evolution of Topology and Capability in LLM-based Multi-Agent Systems](/202605/18/2605.09539v1-tacomas-test-time-co-evolution-of-topology-and-capability-in-llm-based-multi-agent-systems)  
    标签：评分：6.0/10、query:llm
-   evidence：将大规模 LLM 部署为持续认知引擎
-14. [Deadline-Driven Hierarchical Agentic Resource Sharing for AI Services and RAN Functions in AI-RAN](/202605/16/2605.07547v1-deadline-driven-hierarchical-agentic-resource-sharing-for-ai-services-and-ran-functions-in-ai-ran)  
-   标签：评分：6.0/10、query:llm
-   evidence：AI-RAN中基于LLM的慢尺度放置代理
+   evidence：具有演化能力的基于LLM的多智能体系统
 
 
 <div class="dpr-home-promo-card">
