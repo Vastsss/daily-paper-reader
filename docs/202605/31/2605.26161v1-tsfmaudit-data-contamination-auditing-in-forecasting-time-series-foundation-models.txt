@@ -1,0 +1,968 @@
+Title: TSFMAudit: Data Contamination Auditing in Forecasting Time Series Foundation Models
+
+URL Source: https://arxiv.org/pdf/2605.26161v1
+
+Published Time: Wed, 27 May 2026 00:03:07 GMT
+
+Number of Pages: 22
+
+Markdown Content:
+# TSFMAudit: Data Contamination Auditing in Forecasting Time Series Foundation Models 
+
+Hongkai Li ∗
+
+Zhejiang University 
+
+22521276@zju.edu.cn 
+
+Shifeng Xie ∗
+
+Télécom Paris 
+
+shifeng.xie@telecom-paris.fr 
+
+Lefei Shen 
+
+Zhejiang University 
+
+lefeishen@zju.edu.cn 
+
+Zhuo Li 
+
+State Street Technology (Zhejiang) Ltd. 
+
+lizhuo@zju.edu.cn 
+
+Mouxiang Chen 
+
+Zhejiang University 
+
+chenmx@zju.edu.cn 
+
+Xiaobin Zhang 
+
+Zhejiang University 
+
+22421162@zju.edu.cn 
+
+Han Fu 
+
+Zhejiang University 
+
+11821003@zju.edu.cn 
+
+Jianling Sun 
+
+Zhejiang University 
+
+sunjl@zju.edu.cn 
+
+Xiaoxue Ren 
+
+Zhejiang University 
+
+xxren@zju.edu.cn 
+
+Chenghao Liu †
+
+Datadog 
+
+twinsken@gmail.com 
+
+## Abstract 
+
+Time series foundation models (TSFMs) are increasingly pretrained on large cor-pora, raising concerns that evaluation datasets may have been exposed during pretraining and thus yield overly optimistic performance estimates. Auditing such contamination is challenging in time series because signals are continuous and heterogeneous, and often lack corpus documentation. To the best of our knowl-edge, this is the first work to study pretraining contamination auditing for TSFMs. We formalize the problem of pretraining contamination auditing for TSFMs and propose TSFMA UDIT , a method based on probe adaptation dynamics. Our key intuition is that contamination manifests as unusually efficient adaptation: after a fine tuning probe, contaminated datasets tend to exhibit faster loss reduction with smaller backbone movement. We evaluate TSFMA UDIT on 6 TSFMs and 187 datasets using documented training source evidence as supervision, and compare against 10 competitive baselines adapted from the LLM literature. 
+
+## 1 Introduction 
+
+Time series foundation models (TSFMs) have recently attracted growing attention because of their strong cross domain capabilities across applications such as finance, transportation, and health[Li et al., 2025, 2026, Rahimikia et al., 2025, Pulido and Rodrigues, 2026]. Although there have been promising attempts to train TSFMs on purely synthetic data, current state-of-the-art models still rely heavily on large scale real world corpora collected from diverse sources[Goswami et al., 2024, Xie et al., 2026]. At the same time, widely used evaluation benchmarks, are themselves assembled from multiple public sources[Aksu et al., 2024, Qiao et al., 2026]. This shared multi-source pretraining 
+
+> ∗Equal contribution.
+> †Corresponding author. This work was conducted before Chenghao Liu joined Datadog. Preprint.
+> arXiv:2605.26161v1 [cs.LG] 24 May 2026
+
+evaluation pipeline creates a substantial risk of contamination: data used for evaluation may already have been exposed during pretraining[Meyer et al., 2026]. Such exposure can artificially inflate downstream performance , and thereby bias our assessment of TSFM generalization[Meyer et al., 2026, Aksu et al., 2024, Dong et al., 2024]. More importantly, contamination may arise unintentionally[Meyer et al., 2026, Xu et al., 2024]. In time series data, the same underlying signal can reappear under rescaling, renaming, rewindowing, or other preprocessing changes while preserving nearly identical content[Meyer et al., 2026, Godahewa et al., 2021]. For example, the Monash archive’s Elecdemand dataset is a 1/1000 -scaled subset of Australian Electricity Demand[Meyer et al., 2026]. To ensure the fairness and validity of TSFM benchmarking, we therefore need efficient methods for contamination auditing[Meyer et al., 2026, Aksu et al., 2024, Dekoninck et al., 2024, Choi et al., 2025]. Contamination auditing has been studied extensively in large language models (LLMs) and related domains. Popular families of methods include overlap detection, which searches for direct or near-duplicate benchmark content, memorization extraction, which tests whether a model can reproduce training examples, perplexity-based tests, which flag unusually low model loss, and membership inference attacks, which calibrate a score for deciding whether an example was used in training, often using shadow models, i.e., auxiliary models trained on controlled data splits[Yang et al., 2023, Shi et al., 2024, Carlini et al., 2021, Shokri et al., 2017, Carlini et al., 2022]. However, these methods do not transfer naturally to TSFMs because time series data are continuous, heterogeneous, and often only partially documented at the corpus level[Woo et al., 2024, Das et al., 2024, Qiu et al., 2024, Garza et al., 2024, Goswami et al., 2024]. For instance, leakage can indeed lead to abnormally low loss, and methods such as Dekoninck et al. [2024] exploit this signal for contamination detection; however, a smooth seasonal series may also yield loss far below the normal generalization level even when the model has never seen it before, making static loss or perplexity-style criteria unreliable[Liu et al., 2022, Jiang et al., 2024]. Likewise, membership inference attacks typically require multiple shadow models to calibrate membership scores, but reproducing TSFM pretraining at that scale is expensive[Shokri et al., 2017, Carlini et al., 2022, Hayes et al., 2025]. These limitations call for a contamination auditing method designed specifically for TSFMs. We make the following empirical observation: under a fine tuning probe, contaminated datasets tend to exhibit faster loss reduction and require less backbone movement than clean datasets as shown at Fig. 1 and confirmed by the feature ablation in Table 4. Motivated by this phenomenon, we propose TSFMA UDIT , a contamination auditing framework for TSFMs based on learning dynamics. TSFMA UDIT extracts probe time signals such as loss reduction and parameter displacement to infer contamination risk. We summarize our contributions as follows: • To the best of our knowledge, this is the first work to study pretraining contamination auditing for TSFMs. We formalize the dataset level audit objective for contamination. • We propose TSFMA UDIT 3, a contamination auditing framework specifically designed for TSFMs, which infers contamination risk from probe time adaptation dynamics. • We evaluate TSFMA UDIT on 6 TSFMs using their reported pretraining corpora, GIFT-Eval [Aksu et al., 2024], and the TIME [Qiao et al., 2026] benchmark, covering 187 datasets in total. Compared with 10 contamination auditing baselines adapted from the LLM literature, TSFMA UDIT achieves consistently stronger detection performance. 
+
+## 2 Related Work 
+
+TSFMs and Benchmarks Contamination Concerns. Numerous recent works on time series forecasting have moved from small, dataset-specific evaluations toward standardized large-scale benchmarks such as M4, LSF, and the Monash archive, and, with the rise of time series foundation models, further toward broad zero-shot evaluation suites such as GIFT-Eval, TSFM-Bench, and TIME Makridakis et al. [2020], Godahewa et al. [2021], Wu et al. [2021], Aksu et al. [2024], Li et al. [2025], Qiao et al. [2026]. In parallel, TSFMs themselves are increasingly trained on large heterogeneous corpora collected from diverse real-world and synthetic sources, reflecting the field’s ambition to build universal forecasters across domains Ansari et al. [2024], Das et al. [2024], Woo et al. [2024], Auer et al. [2025]. However, this development has also raised a new concern about  
+
+> 3Code is available at: https://github.com/kkevin117/TSFMAudit .
+
+2benchmark validity: many modern benchmarks are assembled by reusing public datasets, evaluation data may overlap with, or remain implicitly connected to, pretraining corpora, leading to hidden information leakage and overly optimistic estimates of zero-shot generalization Aksu et al. [2024], Meyer et al. [2026]. This problem is particularly acute in time series, where fragmented naming and versioning, weak semantic transparency, and strong temporal dependence make contamination harder to detect than in other modalities Meyer et al. [2026]. These concerns have recently motivated a new wave of benchmark design centered on fresher data sources and stricter evaluation protocols intended to reduce leakage and restore the credibility of TSFM comparison Aksu et al. [2024], Qiao et al. [2026]. 
+
+Contamination Auditing in LLMs. Large language models have motivated a broad literature on contamination auditing. Existing methods mainly fall into four families: corpus-side overlap detection based on n-gram or token-level matching, memorization or extraction attacks that test whether benchmark content can be reproduced, perplexity-based methods that treat unusually low likelihood as evidence of prior exposure, and membership inference attacks (MIA) such as LiRA that estimate whether a sample was included in training Brown et al. [2020], OpenAI [2023], Carlini et al. [2021, 2023], Dekoninck et al. [2024], Shi et al. [2024], Oren et al. [2024], Carlini et al. [2022]. Despite the rich literature on contamination auditing in LLMs, these methods do not transfer directly to TSFMs. Overlap-based and extraction-based approaches rely on discrete tokens or verbatim matching, whereas time series are continuous values and the same underlying signal may reappear after rescaling, resampling, rewindowing, or renaming, making exact matching both brittle and incomplete Yang et al. [2023], Jiang et al. [2024], Meyer et al. [2026]. Perplexity- or loss-based criteria are also especially unreliable in time series, because many datasets are intrinsically easy to predict: smooth trends or strong seasonality can produce low error even without prior exposure, so static low loss alone is not a valid proxy for contamination Dekoninck et al. [2024], Jiang et al. [2024], Sainz et al. [2023], Dong et al. [2024]. Membership inference methods face a different mismatch: they are typically designed for sample-level membership and often require shadow model calibration, while TSFM contamination is more naturally a dataset-level phenomenon and full TSFM pretraining is prohibitively expensive to reproduce Shokri et al. [2017], Carlini et al. [2022]. 
+
+Our Positioning. Our work addresses this gap by formulating contamination auditing for TSFMs in a realistic setting where the auditor can probe model behavior and run limited fine tuning, but cannot inspect the full pretraining corpus or reproduce pretraining at scale. Our method TSFMA UDIT 
+
+uses adaptation dynamics, rather than static loss alone, as the primary signal, following the broader observation that training dynamics can reveal dataset and model behavior Swayamdipta et al. [2020], Frankle et al. [2020], Zhang et al. [2017]. To the best of our knowledge, the closest related work is Dekoninck et al. [2024], which studies performance-based contamination detection for discrete language benchmarks, whereas TSFMA UDIT focuses on continuous time series and does not require shadow model calibration. 
+
+## 3 Problem Formulation 
+
+In this section, we formalize the contamination auditing problem for multivariate TSFMs. We introduce the forecasting setup, a notion of pretraining contamination, and the auditing objective. 
+
+Setup We consider a time series forecasting setting with lookback length L, forecast horizon H,and number of variables (channels) P . Let fθ : RL×P → RH×P denote a candidate TSFM with parameter θ. For sample i, let Hi ∈ RL×P be the historical input and Yi ∈ RH×P be the future target. Following the supervised forecasting formulation, we define the i-th sample and an audited dataset with n samples by 
+
+Zi := ( Hi; Yi) ∈ R(L+H)×P , D := {Zi}ni=1 .
+
+Contamination Let Dpt = SJj=1 Dpt  
+
+> j
+
+, denote the pretraining corpus associated with the candidate model fθ , where J is the number of pretraining sources. Here, Dpt is understood as the collection of pretraining source time series. For each audited sample Zi, let Xi denote the underlying source time series from which Zi is extracted, for example through windowing or preprocessing. Accordingly, 3we define the sample-level contamination indicator for sample Zi as 
+
+ci = c Zi; Dpt  := 
+
+(1, Xi ∈ D pt ,
+
+0, Xi /∈ D pt .
+
+The corresponding dataset-level contamination ratio is defined as 
+
+C D, Dpt  := 1
+
+n
+
+> n
+
+X
+
+> i=1
+
+ci ∈ [0 , 1] .
+
+Under this definition, C(D, Dpt ) = 0 means that no audited sample is derived from a source time series that appears in the pretraining corpus, while C(D, Dpt ) = 1 means that all audited samples are derived from source time series contained in the pretraining corpus. 
+
+Objective Given a candidate model fθ and an audited dataset D, the goal of contamination auditing is to estimate whether D has been exposed during pretraining. More precisely, we seek a scoring function 
+
+S(fθ , D) ∈ [0 , 1] 
+
+that quantifies the contamination risk of the pair (fθ , D), where larger values indicate stronger evidence of pretraining contamination. A binary decision can then be obtained by thresholding the score: 
+
+bS(fθ , D) := 
+
+(1, S(fθ , D) > τ, 
+
+0, S(fθ , D) ≤ τ, 
+
+where τ ∈ [0 , 1] is a decision threshold, and bS = 1 denotes “contaminated”. Under the idealized formulation, one may directly take S(fθ , D) = C(D, Dpt ) .In practice, C is generally unobservable because the pretraining corpus is only partially documented. We therefore work with an observable proxy eC(fθ , D) ∈ { 0, 1} derived from official training-source documentation; see Appendix A.2 for the full definition and Appendix A.3 for transformed duplicate semantics. 
+
+## 4 TSFMA UDIT : Debiased Adaptation Efficiency 
+
+We now describe TSFMA UDIT , which constructs the score S (fθ , D) by evaluating how efficiently a candidate model adapts to D during fine tuning. Figure 2 provides an overview of the full pipeline. The design of TSFMA UDIT is guided by two core observations. Probe step 
+
+> Val. loss
+> Clean Contam.
+> Probe step
+> Displacement  Clean Contam.
+
+Figure 1: Schematic probe-time adaptation behavior. 
+
+Observation 1: Contamination can ap-pear as unusually efficient adaptation. 
+
+If a model has already encoded predictive structure specific to D during pretraining, it may require less adaptation when subse-quently fine tuning on D. In such cases, the model can exhibit faster loss reduction with relatively little backbone movement (as shown in Figure 1). We treat this contrast as behavioral evidence of possible contam-ination. This interpretation is motivated by prior work on neural network memorization Zhang et al. [2017], Feldman and Zhang [2020] and recent detection (audit) methods that use fine tuning induced change as evidence of leakage Choi et al. [2025]. 
+
+Observation 2: Dataset difficulty can bias adaptation behavior. Fast adaptation is not unique to contaminated models: a clean model may adapt just as quickly if D is easy. To reduce this difficulty-induced bias, we compare the candidate model against a reference suite R consisting of models with comparable architecture and scale but no exposure to D. If contamination is substantial, the candidate may exhibit consistently higher adaptation efficiency than these references across varying difficulty levels. This strategy follows the high-level motivation of reference-based tests such as ConStat Dekoninck et al. [2024]. 4Dataset                      
+
+> 𝒟
+> Candidate Model f θ
+> ⋮
+> Reference Suite ℛ
+> Probe Traces Candidate
+> dtwtat
+> Reference Suite ℛ
+> dtwtat
+> Reference Debias Trace Summary
+> xt=[w t,d t,a t]
+> Compare with ℛ
+> xt(𝒟 )xt(r) (𝒟 )
+> −
+> ⋮⋮
+> ÷
+> Δρ
+> Concatenate
+> ⋯
+> zt = [z t(1) |...|z t(R) ]
+> Epochwise Scoring Audit Train
+> zt + Label L
+> ⋯LLogReg gt
+> Epochwise risk scores 10
+> Validation & Selection Clean Val. MCC(g t)
+> max
+> t*
+> Select g*
+
+g* = g t*         
+
+> Set τ
+> Decision f𝒟
+> +
+> S
+> Audit Pair
+> S = g* (z t*)S ? τ
+> Clean
+> S≤τ
+> Conta-minated
+> S > τ
+
+Figure 2: Overview of TSFMA UDIT . A candidate model and a reference suite are probed on D for 
+
+Tprobe gradient epochs under the same fine tuning protocol. The resulting traces are summarized into adaptation features, transformed into reference-based debiased features, and mapped to a scalar contamination-risk score S(fθ , D).
+
+4.1 Adaptation Traces for Auditing 
+
+We construct the auditing signal by probing the candidate model fθ and a reference suite R =
+
+{fθ(r) }|R|  
+
+> r=1
+
+under a shared fine tuning protocol on the audited dataset D.The probing phase runs for Tprobe gradient epochs fine-tuning fθ on D. The resulting optimization trace is 
+
+T (fθ , D) = {ℓt, w t}Tprobe  
+
+> t=0
+
+, ℓt := 1
+
+nHP 
+
+> n
+
+X
+
+> i=1
+
+∥fθ,t (Hi) − Yi∥2 
+
+> F
+
+, wt := θbb  
+
+> t
+
+− θbb 0 2 ,
+
+where ℓt is the loss at epoch t, and wt is the cumulative ℓ2 displacement of the backbone parameters from their initial values. For each reference model fθ(r) ∈ R , we define the corresponding probe trace T (r) = {ℓ(r) 
+
+> t
+
+, w (r) 
+
+> t
+
+}Tprobe  
+
+> t=0
+
+analogously, with 
+
+ℓ(r) 
+
+> t
+
+:= 1
+
+nHP 
+
+> n
+
+X
+
+> i=1
+
+fθ(r)
+
+> t
+
+(Hi) − Yi
+
+> 2
+> F
+
+, w(r) 
+
+> t
+
+:= θ(r) 
+
+> t
+
+− θ(r)0 2
+
+.
+
+From the candidate trace, we compute at each epoch t the relative loss drop and the adaptation efficiency for candidate and reference models 
+
+dt := ℓ0 − ℓt
+
+ℓ0 + εℓ
+
+, at := dt
+
+wt + εae 
+
+, d(r) 
+
+> t
+
+:= ℓ(r)0 − ℓ(r)
+
+> t
+
+ℓ(r)0 + εℓ
+
+, a(r) 
+
+> t
+
+:= d(r)
+
+> t
+
+w(r) 
+
+> t
+
++ εae 
+
+,
+
+where εℓ > 0 and εae > 0 are numerical stabilizers. A large loss drop dt together with a small backbone displacement wt yields a high at, which we interpret as behavioral evidence of possible contamination. At a fixed set of checkpoints, we summarize the candidate and reference traces by 
+
+x(D) = [ wt, d t, a t]1≤t≤Tprobe , x(r)(D) = 
+
+h
+
+w(r) 
+
+> t
+
+, d (r) 
+
+> t
+
+, a (r)
+
+> t
+
+i
+
+> 1≤t≤Tprobe
+
+.
+
+4.2 Debiasing with Reference Models 
+
+The trace summaries introduced above are affected by dataset-specific factors that are shared across models, most notably the intrinsic difficulty of D. To reduce this source of bias, TSFMA UDIT 
+
+5compares the candidate model against each reference model in R under the same probing protocol. Accordingly, for each epoch t and each reference r, we define the elementwise difference and ratio 
+
+∆(r) 
+
+> t
+
+(D) = xt(D) − x(r) 
+
+> t
+
+(D) ∈ R3, ρ(r) 
+
+> t
+
+(D) = xt(D) ⊘
+
+
+
+x(r) 
+
+> t
+
+(D) + εref 1
+
+
+
+∈ R3,
+
+where ⊘ denotes elementwise division and εref > 0 is a numerical stabilizer. For each probe epoch t, let gt : R6|R| → [0 , 1] denote a lightweight scorer (logistic regres-sion more precisely) applied to the reference-debiased representation obtained by concatenating 
+
+{∆(r) 
+
+> t
+
+(D), ρ(r) 
+
+> t
+
+(D)}|R| 
+
+> r=1
+
+. The scorer gt is fitted on an audit training set whose labels are the observ-able proxy indicators eC(fθ , D) ∈ { 0, 1}.
+
+Therefore, gt outputs a contamination probability conditioned on the relative adaptation behavior at probe epoch t.
+
+4.3 Calibration and Decision 
+
+Among the epochwise scorers {gt}Tprobe  
+
+> t=1
+
+, we select the final scorer g∗ using a validation set with known contamination labels. Specifically, we evaluate each gt on the validation set and choose the probe epoch with the highest Matthews correlation coefficient (MCC) Matthews [1975]. To convert this score into a binary decision, we adopt a conservative “do-not-accuse-the-innocent” principle. That is, when setting the decision threshold, we prioritize avoiding false accusations on clean datasets. Let Vclean denote the collection of validation datasets known to be clean, i.e., satisfying C(D, Dpt ) = 0 . We then choose the threshold τ as the largest value such that no clean validation dataset is classified as contaminated: 
+
+τ = max 
+
+> D∈V clean
+
+g∗{∆(r) 
+
+> t
+
+(D), ρ(r) 
+
+> t
+
+(D)}|R| 
+
+> r=1
+
+.
+
+The final binary audit decision is 
+
+bS(fθ , D) = I[S(fθ , D) > τ ] = I
+
+h
+
+g∗{∆(r) 
+
+> t
+
+(D), ρ(r) 
+
+> t
+
+(D)}|R|  
+
+> r=1
+
+> τ 
+
+i
+
+.
+
+This conservative calibration may sacrifice some sensitivity, but it enforces a strict no-false-positive criterion on the clean validation set. Under this rule no clean validation pair is flagged as contaminated, which instantiates the FP-0 calibration protocol of Section B.1. 
+
+## 5 Experiments 
+
+Our experiments are designed to answer four questions: (Q1) Whether TSFMA UDIT can effectively identify contamination, and how it performs relative to competitive baselines. (Q2) Whether reference models provide a debiasing effect in contamination detection. (Q3) Whether each proposed feature makes a meaningful contribution to the final performance. (Q4) Whether TSFMA UDIT remains effective in practical deployment on a fresh external benchmark. 
+
+5.1 Experimental Setup 
+
+Table 1: Class distribution per candidate TSFM. 
+
+Candidate Clean Leaked Total Prevalence 
+
+Chronos 118 19 137 13.9% TiRex 118 19 137 13.9% TimesFM2.0 125 12 137 8.8% Kairos 20 117 137 85.4% Moirai2 20 117 137 85.4% Moirai1 5 132 137 96.4% 
+
+Candidates and datasets. We au-dit six TSFMs: Chronos Ansari et al. [2024], TiRex Auer et al. [2025], Moirai1/2 Woo et al. [2024], TimesFM2.0 Das et al. [2024], and Kairos Feng et al. [2025]. The dataset pool combines benchmark datasets from GIFT-Eval and the GIFT-Eval Pretrain corpus Aksu et al. [2024], covering both evaluation-side and pretraining-side catalogs used by re-cent TSFMs. We retain datasets with ≥30 series, each ≥152 samples, and subsample to ≤50 series per dataset; this yields 137 audited datasets. Details are in Appendix A.1. Ground truth contamination labels are unavailable. We construct proxy labels by comparing each TSFM’s documented training sources against benchmark metadata. Table 1 summarizes class balance. 6Baselines. We compare TSFMA UDIT to static-loss and MIA-inspired baselines, all evaluated under the same FP-k protocol: • Raw Loss : Candidate pre-probe loss ℓ0.• Loss Drop Rate : Candidate relative loss reduction after probing, dTprobe = ℓ0−ℓTprobe  
+
+> ℓ0+εℓ
+
+.
+
+• LiRA Ratio : LiRA-inspired Carlini et al. [2022] zero-probe loss ratio ℓ0/ℓ (r)0 , evaluated sepa-rately for each reference model r.• TS MinK FFT : Min-K% Shi et al. [2024] style frequency-domain score SFFT (fθ , D) computed on forecast residuals across all six candidate TSFMs; see Appendix B.2. • Dyn no Ref : Candidate-only dynamics baseline using the probe summary without reference-based debiasing. 
+
+Reference models. To reduce bias induced by intrinsic dataset difficulty, we instantiate the refer-ence suite R = {fθ(r) }|R|  
+
+> r=1
+
+with four models: ScratchCNN, ScratchTransformer, Stat, and VisionTS. None of them has exposure to time-series pretraining, so they provide reference baselines for dataset difficulty and adaptation speed under downstream fine tuning. ScratchCNN and ScratchTransformer are lightweight forecasters initialized randomly and trained from scratch, with convolutional and self-attention inductive biases, respectively. Stat aggregates predictions from methods such as ETS Hyndman and Athanasopoulos [2021] and serves as a non-parametric difficulty anchor. Vi-sionTS [Chen et al., 2025] is a TSFM whose representations are derived from a masked autoencoder trained on natural images, providing a pretrained reference with no time-series pretraining exposure. 
+
+All-reference configurations. For compactness, we use two roman-text labels for the multi-reference variants. All Ref denotes the configuration that concatenates the difference and ratio features {∆(r) 
+
+> t
+
+(D), ρ(r) 
+
+> t
+
+(D)}|R|  
+
+> r=1
+
+over all reference models and fits the logistic-regression scorer gt.All Ref+Det uses the same all-reference representation and additionally appends the direct candidate dynamics (Det), namely the candidate trace summary x(D) = [ wt, d t, a t]1≤t≤Tprobe . We use the labels All Ref and All Ref+Det consistently in the text and tables. 
+
+Evaluation metrics. We report Matthews Correlation Coefficient (MCC) Matthews [1975], Macro-F1, AUROC, and balanced accuracy (Bal.Acc) to capture both ranking quality and thresholded decision performance under class imbalance. Denoting true/false positives and negatives as TP, TN, FP, FN: 
+
+MCC = TP · TN − FP · FN 
+
+p(TP + FP)(TP + FN)(TN + FP)(TN + FN) , Bal .Acc = 12
+
+ TP TP+FN + TN TN+FP 
+
+
+
+.
+
+Macro-F1 is the unweighted mean of per-class F1 scores; AUROC is the area under the receiver operating characteristic curve, which plots the true positive rate against the false positive rate over all decision thresholds. Higher is better for all metrics. 
+
+5.2 Main Results: Can TSFMA UDIT Identify Contamination? 
+
+We begin by answering Q1, Table 2 reports the main results. The overall pattern is clear: static-loss baselines and LiRA-inspired ratios are weak detectors. Raw loss and loss-drop rate yield only small positive MCC values, while all LiRA variants remain near zero or even negative in MCC. This suggests that contamination in TSFMs cannot be reliably identified from pre-probe loss alone, nor from a simple reference loss ratio. The frequency baseline also fails to provide a stable signal: although it attains moderate Macro-F1 for some K, its MCC is close to zero ( ≤ 0.015 ) with high variance, indicating poor agreement with the contamination labels under thresholded decision making. Probe dynamics provide a substantially more useful signal. Even without any reference model, the dynamics baseline already improves Macro-F1. This result supports our central intuition that contamination is reflected not only in how well a model predicts before probing, but also in how efficiently it adapts during the fine tuning phase. The full TSFMA UDIT method improves further once reference-based debiasing is introduced. Across the single-reference choices and the two all-reference combinations, all reference-based variants outperform the candidate-only dynamics baseline in Macro-F1 and MCC. The strongest setting is All Ref, which uses all reference models through the debiased difference and ratio features. 7Family Method MCC ↑ Macro-F1 ↑ Bal.Acc ↑                                                                                                                                                       
+
+> Static baselines Raw Loss ( ℓ0)0.044 ±0.123 0.342 ±0.255 0.528 ±0.054 Loss Drop Rate ( dTprobe )0.055 ±0.070 0.346 ±0.217 0.522 ±0.061
+> LiRA-inspired
+> LiRA Ratio (ScratchCNN) −0.005 ±0.039 0.332 ±0.191 0.517 ±0.045 LiRA Ratio (ScratchTransformer) −0.031 ±0.024 0.299 ±0.215 0.487 ±0.010 LiRA Ratio (Stat) −0.001 ±0.049 0.292 ±0.242 0.492 ±0.021 LiRA Ratio (VisionTS) 0.012 ±0.030 0.334 ±0.184 0.501 ±0.037
+> Frequency baseline
+> TS MinK FFT ( K= 10% )0.005 ±0.116 0.324 ±0.247 0.490 ±0.052 TS MinK FFT ( K= 20% )0.004 ±0.117 0.323 ±0.249 0.494 ±0.044 TS MinK FFT ( K= 30% )0.015 ±0.113 0.339 ±0.244 0.512 ±0.030
+> Dynamics baseline Candidate-only dynamics (No Ref) 0.032 ±0.061 0.411 ±0.113 0.539 ±0.056
+> TSFMA UDIT (ours)
+> + ScratchCNN 0.087 ±0.125 0.453 ±0.140 0.560 ±0.078 + ScratchTransformer 0.045 ±0.046 0.420 ±0.132 0.529 ±0.020 + Stat 0.046 ±0.073 0.420 ±0.128 0.531 ±0.049 + VisionTS 0.056 ±0.070 0.458 ±0.086 0.548 ±0.054 All Ref+Det 0.102 ±0.116 0.510 ±0.078 0.589 ±0.085 All Ref 0.125 ±0.090 0.521 ±0.077 0.603 ±0.063
+
+Table 2: Main effectiveness comparison, higher is better. None Scratch CNN Scratch Transformer Loss-only VisionTS All Ref +Det All Ref 
+
+0.3 
+
+0.4 
+
+0.5 
+
+0.6 
+
+0.7 
+
+0.8 
+
+> Score
+
+AUROC Macro-F1 MCC Bal.Acc 
+
+0.00 0.03 0.06 0.09 0.12 0.15 
+
+> MCC
+
+Figure 3: Reference model ablation. Higher is better. Taken together, these results provide a positive answer to Q1. TSFMA UDIT is able to distinguish contaminated datasets from clean ones more effectively than static-loss, LiRA-inspired, and frequency domain baselines. At the same time, the absolute MCC values remain modest, which highlights that this is a challenging detection problem under conservative FP-k calibration and noisy proxy labels. 
+
+5.3 Reference-Based Debiasing 
+
+We next answer Q2, Figure 3 compares different single-reference choices and all-reference combina-tions. Table 3 then ablates how the candidate and reference traces are combined. The first conclusion is that reference comparison provides a useful debiasing effect. Compared with the no-reference setting, all reference-based variants improve MCC and Macro-F1, although the gains vary by reference construction. The all-reference combinations provide the strongest aggregate results: All Ref achieves the best Macro-F1, MCC, and balanced accuracy, while All Ref+Det gives the highest AUROC. The second conclusion is that reference-based debiasing improves thresholded decision quality, and the all-reference combinations further improve ranking quality. Under our FP-k
+
+protocol, this is the more relevant behavior: the goal is not only to rank datasets, but to make accurate audit decisions after conservative threshold calibration. From this perspective, reference models are beneficial overall. 
+
+Debiasing mode MCC ↑ Macro-F1 ↑
+
+Xc only (no debiasing) 0.032 ± 0.061 0.411 ± 0.113 
+
+Xdiff (Xc − Xr ) 0.038 ± 0.058 0.425 ± 0.095 
+
+Xratio (Xc/X r ) 0.048 ± 0.065 0.442 ± 0.088 
+
+Xinter (Xc ⊙ Xr ) 0.025 ± 0.048 0.398 ± 0.102 Full concat (all) 0.056 ± 0.070 0.458 ± 0.086 
+
+Table 3: Ablation of debiasing representations. Table 3 shows how the debiasing ef-fect arises from relative features. Us-ing only candidate features Xc is the weakest setting among the competitive variants. Once we introduce relative candidate-reference features, perfor-8mance improves. Among single debi-asing modes, ratio features Xratio per-form best, outperforming both differ-ence features Xdiff and interaction features Xinter . This indicates that scale-normalized comparisons between candidate and reference behavior are more informative than raw additive or multiplicative relations alone. The best overall performance is obtained by concatenating all debiased views. This result suggests that the different transformations capture complementary aspects of the candidate-reference relationship. Taken together, these results give a clear answer to Q2. Yes, reference models provide a debiasing effect. They help by converting probe dynamics into relative candidate-reference signals, which reduce the influence of dataset easiness on the audit score. 
+
+5.4 Feature Ablation: Are the Proposed Features Useful? 
+
+We next answer Q3 by ablating the probe-time features used in TSFMA UDIT . Table 4 compares auditor built from a single feature family against the full dynamics representation. The main result is that no single feature is sufficient on its own. All individual features yield weaker performance than the full dynamics representation. This shows that the contamination signal is distributed across multiple aspects of probe time behavior. 
+
+Feature MCC ↑ Macro-F1 ↑
+
+Loss 0.021 ± 0.045 0.385 ± 0.098 Loss drop rate 0.028 ± 0.052 0.392 ± 0.105 Adaptation efficiency 0.045 ± 0.068 0.418 ± 0.112 
+
+Parameter displacement 0.018 ± 0.041 0.378 ± 0.095 Full dynamics (all) 0.056 ± 0.070 0.458 ± 0.086 
+
+Table 4: Feature ablation of TSFMA UDIT . Higher is better. Among the individual features, adap-tation efficiency is the strongest. It achieves the best standalone MCC and Macro-F1, which supports our core hy-pothesis: contaminated datasets tend to exhibit unusually efficient adap-tation, combining faster loss reduc-tion with smaller parameter movement. Loss and loss-drop rate are weaker when used alone. This suggests that loss-based quantities capture only part of the relevant be-havior. In particular, they do not distinguish whether a fast improvement comes from genuine prior exposure or simply from an intrinsically easy dataset. Parameter displacement is the weakest standalone feature. It appears to play a complementary role. Overall, these results give a clear answer to Q3. Yes, the proposed features are useful, but not equally so. Adaptation efficiency is the strongest individual feature, while loss and displacement provide complementary information. The best performance is obtained by combining all dynamics features, which indicates that TSFMA UDIT benefits from modeling contamination as a multidimensional probe time phenomenon. 
+
+5.5 Practical Deployment on the TIME Benchmark Candidate Non-leak rate 95% LB 
+
+Chronos 96 .0% 87 .9% 
+
+Kairos 100 .0% 94 .2% 
+
+Moirai1 92 .0% 82 .6% 
+
+Moirai2 100 .0% 94 .2% 
+
+TiRex 96 .0% 87 .9% 
+
+TimesFM2.0 100 .0% 94 .2% 
+
+Pooled 97 .33% 95 .24% 
+
+Table 5: TIME Benchmark deployment check. We finally answer Q4 by testing whether the audit can be used in a realistic setting where the target benchmark has no contamination labels available for fitting or threshold selection. We use the TIME Benchmark Qiao et al. [2026], a recent external benchmark whose datasets were collected and organized after the release of the audited TSFMs. We therefore use TIME as a ground-truth negative-control benchmark with 100% non-leakage labels for these candi-dates. The All Ref scorer and FP-0 threshold are inherited from the main experiment and applied directly to TIME without retraining or recalibration; further protocol details are in Appendix C.5. Table 5 shows consistently high non-leakage rates on TIME. The pooled one-sided lower bound remains above 95% , and the candidate-level lower bounds remain high despite using only 50 TIME datasets per model. Thus, under the fixed auditor, TIME does not show evidence of leakage for these TSFMs. This result supports TIME’s claim as a fresh benchmark built from recent data, and gives 9a positive answer to Q4: even without labels for the target datasets, the calibrated TSFMA UDIT 
+
+pipeline can be applied directly and still produce useful audit decisions. 
+
+## 6 Conclusion 
+
+In this paper, we formalize the problem of pretraining contamination auditing for TSFMs and introduce TSFMA UDIT , a method based on probe time adaptation dynamics. Experiments on 6 TSFMs and 187 datasets show that this dynamic view provides a stronger contamination signal than static-loss, LiRA-inspired, and frequency-based baselines, and that reference-based debiasing further improves audit decisions. To the best of our knowledge, this work is the first systematic study of contamination auditing for TSFMs and the first dedicated framework tailored to this setting. While the task remains challenging, our results establish probe time dynamics as a promising foundation for reliable contamination auditing in time series. 
+
+## References 
+
+Taha Aksu, Gerald Woo, Juncheng Liu, Xu Liu, Chenghao Liu, Silvio Savarese, Caiming Xiong, and Doyen Sahoo. Gift-eval: A benchmark for general time series forecasting model evaluation. arXiv preprint arXiv:2410.10393 , 2024. Abdul Fatir Ansari, Lorenzo Stella, Caner Turkmen, Xiyuan Zhang, Pedro Mercado, Huibin Shen, Oleksandr Shchur, Syama Sundar Rangapuram, Sebastian Pineda Arango, Shubham Kapoor, et al. Chronos: Learning the language of time series. Transactions on Machine Learning Research , 2024. URL https://openreview.net/forum?id=gerNCVqqtR .Andreas Auer, Patrick Podest, Daniel Klotz, Sebastian Böck, Günter Klambauer, and Sepp Hochreiter. TiRex: Zero-shot forecasting across long and short horizons with enhanced in-context learning. In The Thirty-Ninth Annual Conference on Neural Information Processing Systems , 2025. URL 
+
+https://arxiv.org/abs/2505.23719 .Leo Breiman. Random forests. Machine Learning , 45(1):5–32, 2001. doi: 10.1023/A:1010933404324. URL https://link.springer.com/article/10.1023/A:1010933404324 .Tom B. Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared Kaplan, Prafulla Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, et al. Language models are few-shot learners. Advances in Neural Information Processing Systems (NeurIPS) , 33:1877–1901, 2020. Nicholas Carlini, Florian Tramèr, Eric Wallace, Matthew Jagielski, Ariel Herbert-Voss, Katherine Lee, Adam Roberts, Tom B. Brown, Dawn Song, Úlfar Erlingsson, Alina Oprea, and Colin Raffel. Extracting training data from large language models. In 30th USENIX Security Symposium (USENIX Security 21) , pages 2633–2650, 2021. URL https://www.usenix.org/conference/ usenixsecurity21/presentation/carlini-extracting .Nicholas Carlini, Steve Chien, Milad Nasr, Shuang Song, Andreas Terzis, and Florian Tramer. Membership inference attacks from first principles. In 2022 IEEE Symposium on Security and Privacy (SP) , pages 1897–1914, 2022. doi: 10.1109/SP46214.2022.9833649. Nicholas Carlini, Daphne Ippolito, Matthew Jagielski, Katherine Lee, Florian Tramèr, and Chiyuan Zhang. Quantifying memorization across neural language models. In The Eleventh International Conference on Learning Representations , 2023. URL https://openreview.net/forum?id= TatRHT_1cK .Mouxiang Chen, Lefei Shen, Zhuo Li, Xiaoyun Joy Wang, Jianling Sun, and Chenghao Liu. VisionTS: Visual masked autoencoders are free-lunch zero-shot time series forecasters. In Proceedings of the 42nd International Conference on Machine Learning , 2025. URL https://openreview.net/ forum?id=5DSj3MfWrB .Hyeong Kyu Choi, Maxim Khanov, Hongxin Wei, and Yixuan Li. How contaminated is your benchmark? measuring dataset leakage in large language models with kernel divergence. In 
+
+Proceedings of the 42nd International Conference on Machine Learning , 2025. URL https: //openreview.net/forum?id=wVDR2qmE28 .10 Abhimanyu Das, Weihao Kong, Rajat Sen, and Yichen Zhou. A decoder-only foundation model for time-series forecasting. In Proceedings of the 41st International Conference on Machine Learning ,volume 235 of Proceedings of Machine Learning Research , pages 10148–10167. PMLR, 2024. URL https://proceedings.mlr.press/v235/das24c.html .Jasper Dekoninck, Mark Niklas Mueller, and Martin Vechev. Constat: Performance-based contamina-tion detection in large language models. In The Thirty-eighth Annual Conference on Neural Infor-mation Processing Systems , 2024. URL https://openreview.net/forum?id=ALISPmDPCq .Yihong Dong, Xue Jiang, Huanyu Liu, Zhi Jin, Bin Gu, Mengfei Yang, and Ge Li. Generalization or memorization: Data contamination and trustworthy evaluation for large language models. In Find-ings of the Association for Computational Linguistics: ACL 2024 , pages 12039–12050, 2024. doi: 10.18653/v1/2024.findings-acl.716. URL https://aclanthology.org/2024.findings-acl. 716/ .Vitaly Feldman and Chiyuan Zhang. What neural networks memorize and why: Discovering the long tail via influence estimation. In Advances in Neural Information Processing Systems 33 (NeurIPS 2020) , 2020. URL https://proceedings.neurips.cc/paper/2020/hash/ 1e14bfe2714193e7af5abc64ecbd6b46-Abstract.html .Kun Feng, Shaocheng Lan, Yuchen Fang, Wenchao He, Lintao Ma, Xingyu Lu, and Kan Ren. Kairos: Towards adaptive and generalizable time series foundation models, 2025. URL https: //arxiv.org/abs/2509.25826 .Jonathan Frankle, David J. Schwab, and Ari S. Morcos. The early phase of neural network training. In International Conference on Learning Representations , 2020. URL https://openreview. net/forum?id=Hkl1iRNFwS .Azul Garza, Cristian Challu, and Max Mergenthaler-Canseco. Timegpt-1, 2024. URL https: //arxiv.org/abs/2310.03589 .Rakshitha Wathsadini Godahewa, Christoph Bergmeir, Geoffrey I. Webb, Rob Hyndman, and Pablo Montero-Manso. Monash time series forecasting archive. In Thirty-fifth Conference on Neural Information Processing Systems Datasets and Benchmarks Track (Round 2) , 2021. URL https: //openreview.net/forum?id=wEc1mgAjU-.Mononito Goswami, Konrad Szafer, Arjun Choudhry, Yifu Cai, Shuo Li, and Artur Dubrawski. MOMENT: A family of open time-series foundation models. In Forty-first International Conference on Machine Learning , 2024. URL https://openreview.net/forum?id=FVvf69a5rx .Jamie Hayes, Ilia Shumailov, Christopher A. Choquette-Choo, Matthew Jagielski, George Kaissis, Mi-lad Nasr, Sahra Ghalebikesabi, Meenatchi Sundaram Mutu Selva Annamalai, Niloofar Mireshghal-lah, Igor Shilov, Matthieu Meeus, Yves-Alexandre de Montjoye, Katherine Lee, Franziska Boenisch, Adam Dziedzic, and A. Feder Cooper. Exploring the limits of strong membership inference attacks on large language models. In The Thirty-Ninth Annual Conference on Neural Infor-mation Processing Systems , 2025. URL https://openreview.net/forum?id=x0i7wvRLHK .Rob J. Hyndman and George Athanasopoulos. Forecasting: Principles and Practice . OTexts, Melbourne, Australia, 3 edition, 2021. URL https://otexts.com/fpp3/ .Minhao Jiang, Ken Ziyu Liu, Ming Zhong, Rylan Schaeffer, Siru Ouyang, Jiawei Han, and Sanmi Koyejo. Investigating data contamination for pre-training language models, 2024. URL https: //arxiv.org/abs/2401.06059 .Hao Li, Bowen Deng, Chang Xu, ZhiYuan Feng, Viktor Schlegel, Yu-Hao Huang, Yizheng Sun, Jingyuan Sun, Kailai Yang, Yiyao Yu, and Jiang Bian. MIRA: Medical time series foundation model for real-world health data. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2026. URL https://openreview.net/forum?id=Auy2DmlJBO .Zhe Li, Xiangfei Qiu, Peng Chen, Yihang Wang, Hanyin Cheng, Yang Shu, Jilin Hu, Chenjuan Guo, Aoying Zhou, Christian S. Jensen, et al. Tsfm-bench: A comprehensive and unified benchmark of foundation models for time series forecasting. In Proceedings of the 31st ACM SIGKDD Conference on Knowledge Discovery and Data Mining V. 2 , pages 5595–5606, 2025. 11 Chenghao Liu, Taha Aksu, Juncheng Liu, Xu Liu, Hanshu Yan, Quang Pham, Silvio Savarese, Doyen Sahoo, Caiming Xiong, and Junnan Li. Moirai 2.0: When less is more for time series forecasting. 
+
+arXiv preprint arXiv:2511.11698 , 2025. Yiyong Liu, Zhengyu Zhao, Michael Backes, and Yang Zhang. Membership inference attacks by exploiting loss trajectory. In Proceedings of the 2022 ACM SIGSAC Conference on Computer and Communications Security , pages 2085–2098, 2022. doi: 10.1145/3548606.3560684. URL 
+
+https://dblp.org/rec/conf/ccs/Liu00022 .Ilya Loshchilov and Frank Hutter. Decoupled weight decay regularization. In International Conference on Learning Representations , 2019. URL https://openreview.net/forum?id= Bkg6RiCqY7 .Spyros Makridakis, Evangelos Spiliotis, and Vassilios Assimakopoulos. The m4 competition: 100,000 time series and 61 forecasting methods. International Journal of Forecasting , 36(1):54–74, 2020. doi: 10.1016/j.ijforecast.2019.04.014. B. W. Matthews. Comparison of the predicted and observed secondary structure of T4 phage lysozyme. Biochimica et Biophysica Acta (BBA) - Protein Structure , 405(2):442–451, 1975. doi: 10.1016/0005-2795(75)90109-9. URL https://www.sciencedirect.com/science/ article/abs/pii/0005279575901099 .Marcel Meyer, Sascha Kaltenpoth, Kevin Zalipski, and Oliver Müller. Rethinking evaluation in the era of time series foundation models: (un)known information leakage challenges, 2026. URL 
+
+https://arxiv.org/abs/2510.13654 .OpenAI. GPT-4 technical report. Technical report, OpenAI, 2023. URL https://arxiv.org/ abs/2303.08774 .Yonatan Oren, Nicole Meister, Niladri Chatterji, Faisal Ladhak, and Tatsunori Hashimoto. Proving test set contamination in black-box language models. In The Twelfth International Conference on Learning Representations , 2024. URL https://openreview.net/forum?id=KS8mIvetg2 .Javier Pulido and Filipe Rodrigues. Time series foundation models as strong baselines in transporta-tion forecasting: A large-scale benchmark analysis. arXiv preprint arXiv:2602.24238 , 2026. Zhongzheng Qiao, Sheng Pan, Anni Wang, Viktoriya Zhukova, Yong Liu, Xudong Jiang, Qingsong Wen, Mingsheng Long, Ming Jin, and Chenghao Liu. It’s time: Towards the next generation of time series forecasting benchmarks, 2026. URL https://arxiv.org/abs/2602.12147 .Xiangfei Qiu, Jilin Hu, Lekui Zhou, Xingjian Wu, Junyang Du, Buang Zhang, Chenjuan Guo, Aoying Zhou, Christian S. Jensen, Zhenli Sheng, and Bin Yang. TFB: Towards comprehensive and fair benchmarking of time series forecasting methods. Proceedings of the VLDB Endowment , 17(9): 2363–2377, 2024. doi: 10.14778/3665844.3665863. URL https://www.vldb.org/pvldb/ vol17/p2363-hu.pdf .Eghbal Rahimikia, Hao Ni, and Weiguan Wang. Re(visiting) time series foundation models in finance. 
+
+arXiv preprint arXiv:2511.18578 , 2025. Oscar Sainz, Jon Ander Campos, Iker García-Ferrero, Julen Etxaniz, Oier Lopez de Lacalle, and Eneko Agirre. NLP evaluation in trouble: On the need to measure LLM data contamination for each benchmark. In Findings of the Association for Computational Linguistics: EMNLP 2023 , pages 10776–10787, 2023. doi: 10.18653/v1/2023.findings-emnlp.722. URL https: //aclanthology.org/2023.findings-emnlp.722/ .Weijia Shi, Anirudh Ajith, Mengzhou Xia, Yangsibo Huang, Daogao Liu, Terra Blevins, Danqi Chen, and Luke Zettlemoyer. Detecting pretraining data from large language models. In The Twelfth International Conference on Learning Representations , 2024. URL https://openreview.net/ forum?id=zWqr3MQuNs .Reza Shokri, Marco Stronati, Congzheng Song, and Vitaly Shmatikov. Membership inference attacks against machine learning models. In 2017 IEEE Symposium on Security and Privacy (SP) , pages 3–18, 2017. doi: 10.1109/SP.2017.41. URL https://dblp.org/rec/conf/sp/ShokriSSS17 .12 Swabha Swayamdipta, Roy Schwartz, Nicholas Lourie, Yizhong Wang, Hannaneh Hajishirzi, Noah A. Smith, and Yejin Choi. Dataset cartography: Mapping and diagnosing datasets with training dynamics. In Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing (EMNLP) , pages 9275–9293, 2020. doi: 10.18653/v1/2020.emnlp-main.746. Gerald Woo, Chenghao Liu, Akshat Kumar, Caiming Xiong, Silvio Savarese, and Doyen Sahoo. Unified training of universal time series forecasting transformers. In Proceedings of the 41st International Conference on Machine Learning , volume 235 of Proceedings of Machine Learning Research , pages 53140–53164. PMLR, 2024. URL https://proceedings.mlr.press/v235/ woo24a.html .Haixu Wu, Jiehui Xu, Jianmin Wang, and Mingsheng Long. Autoformer: Decomposition transformers with auto-correlation for long-term series forecasting. In Advances in Neural Information Pro-cessing Systems , volume 34, pages 22419–22430, 2021. URL https://proceedings.neurips. cc/paper_files/paper/2021/file/bcc0d400288793e8bdcd7c19a8ac0c2b-Paper.pdf .Shifeng Xie, Vasilii Feofanov, Jianfeng Zhang, Themis Palpanas, and Ievgen Redko. Cauker: Classification time series foundation models can be pretrained on synthetic data. In The Fourteenth International Conference on Learning Representations , 2026. URL https://openreview.net/ forum?id=xBW2FIfswU .Cheng Xu, Shuhao Guan, Derek Greene, and M-Tahar Kechadi. Benchmark data contamination of large language models: A survey, 2024. URL https://arxiv.org/abs/2406.04244 .Shuo Yang, Wei-Lin Chiang, Lianmin Zheng, Joseph E. Gonzalez, and Ion Stoica. Rethinking benchmark and contamination for language models with rephrased samples, 2023. URL https: //arxiv.org/abs/2311.04850 .Chiyuan Zhang, Samy Bengio, Moritz Hardt, Benjamin Recht, and Oriol Vinyals. Understand-ing deep learning requires rethinking generalization. In International Conference on Learning Representations (ICLR) , 2017. URL https://openreview.net/forum?id=Sy8gdB9xx .13 A Benchmark Scope and Contamination Labels 
+
+This appendix supports the main experimental benchmark used throughout the paper, which consists of six candidate TSFMs and 137 audited datasets after the uniform loading and filtering procedure in Section A.1. This 137 dataset collection is the evaluated benchmark used in the quantitative experiments. Unless stated otherwise, all performance tables, figures, and candidate–dataset labels in this appendix refer to this same six-candidate, 137-dataset benchmark. Throughout, we follow the notation of the main paper: fθ denotes the candidate TSFM, D the audited dataset, Dpt the candidate’s pretraining corpus, and R the reference suite. The basic audit unit is the candidate dataset pair (fθ , D).
+
+A.1 Dataset Pool and Filtering 
+
+The evaluated dataset pool combines (i) benchmark datasets from GIFT-Eval and (ii) datasets from GIFT-Eval Pretrain. After the uniform filtering and loading protocol described below, the final evaluated benchmark contains 137 datasets. This is the same dataset collection used in the quantitative experiments of the main paper. 
+
+Filtering rules. A dataset is retained only if it satisfies all of the following conditions: • it contains at least 30 valid series; • each retained series contains at least L + H = 128 + 24 = 152 time steps; • nearly constant series with standard deviation below 10 −6 are removed; • at most 50 series are used per dataset in order to bound probe cost. Datasets are converted to Arrow format for unified loading. This conversion is only an implementation convenience and does not alter the underlying series values. 
+
+A.2 From Idealized Contamination to Observable Supervision 
+
+Section 3 defines the idealized contamination ratio 
+
+C D, Dpt  ∈ [0 , 1] ,
+
+which depends on exact sample overlap between the audited dataset and the hidden pretraining corpus. In realistic TSFM settings, however, the pretraining corpus Dpt is usually only partially documented. As a result, the ground truth quantity C(D, Dpt ) is generally unobservable. In addition, the available documentary evidence depends on the candidate model under consideration. The same audited dataset may therefore receive different observable labels for different candidates. We therefore define the observable proxy at the level of the audit pair (fθ , D), rather than at the level of the dataset alone. For evaluation, we use the binary proxy label 
+
+eC(fθ , D) ∈ { 0, 1},
+
+defined for each audit pair (fθ , D). We set 
+
+eC(fθ , D) = 1 
+
+only when official sources associated with the candidate, including the paper, model card, dataset card, or official repository documentation, explicitly state that pretraining used the audited dataset. Otherwise, we set eC(fθ , D) = 0 .
+
+A zero label should be interpreted as no documented evidence in official sources, rather than as evidence that overlap is absent. This proxy label records documented exposure to the audited corpus. It should not be interpreted as direct evidence of benchmark test leakage. In particular, official documentation may establish shared provenance across renamed, rescaled, or repackaged variants even when exact sample overlap cannot be established from public documentation alone. Accordingly, the proxy label is intentionally broader 14 than exact sample overlap, which serves in the main paper only as an idealized conceptual starting point. Appendix A.3 returns to this issue through a representative normalized-duplicate analysis. To make this candidate dependence concrete, we briefly summarize how official sources describe the training data of each audited candidate: • Chronos. Official sources describe training on large collections of public datasets together with synthetic data [Ansari et al., 2024]. • TiRex. The official model card lists autogluon/chronos_datasets and 
+
+Salesforce/GiftEvalPretrain among the training sources [Auer et al., 2025]. • Moirai1. Official sources state that Moirai 1 is pretrained on LOTSA [Woo et al., 2024]. • Moirai2. The official model card states that Moirai 2 uses a subset of the GIFT-Eval Pretrain and Train datasets as non-leaking historical context, together with additional synthetic and internal operational data [Liu et al., 2025]. • TimesFM2.0. Official documentation states that TimesFM 2.0 uses the TimesFM 1.0 pretraining set together with a listed subset of LOTSA datasets [Das et al., 2024]. • Kairos. The official project page, repository, and paper describe Kairos as pretrained on the Predictability-Stratified Time Series corpus, which is stated to contain real-world observations from Chronos and Moirai together with synthetic data [Feng et al., 2025]. 
+
+A.3 Contamination Semantics Beyond Exact Overlap 
+
+Section 3 introduces exact sample overlap as an idealized conceptual starting point for contamination. It also notes that, in time series, contamination can be more subtle than literal reuse of identical values: the same underlying signal may reappear after rescaling, renaming, reindexing, or related preprocessing changes. We therefore examine a stricter semantic question: should contamination-relevant repetition be limited to exact overlap, or should transformed variants of the same underlying signal also be treated as leakage-relevant? To probe this boundary directly, we construct a transformed-duplicate setting in which repeated datasets are first normalized in value and then passed through the same audit pipeline. All other components of the protocol are unchanged, including the candidate models, the reference suite, the repeated split construction, and the FP-0 calibration rule. If contamination-relevant repetition required literal value-level identity, then this normalization step would be expected to substantially weaken the audit signal. Table 6 shows that this does not happen. Under the candidate-only baseline, the normalized setting still yields Pair-MICRO MCC 0.274 and Macro-F1 0.473 . Reference-based variants remain clearly above this baseline. For example, ScratchCNN reaches Pair-MICRO MCC 0.389 and Macro-F1 
+
+0.628 , while All Ref reaches Pair-MICRO MCC 0.415 and Macro-F1 0.642 . The same pattern also appears at the Model-MACRO level: the no-reference baseline attains MCC 0.101 and Macro-F1 
+
+0.434 , whereas All Ref reaches MCC 0.128 and Macro-F1 0.508 .These results indicate that contamination-relevant repetition in TSFM auditing is not limited to exact raw-value overlap. When normalization preserves the underlying signal structure and provenance, the audit signal often remains detectable. This does not imply invariance to arbitrary preprocessing, nor does it collapse all transformed variants into the same contamination event. Rather, it shows that exact overlap is too narrow as the sole operational notion of leakage in time series. This is consistent with the broader proxy semantics adopted in Section A.2, where documented shared provenance can remain contamination-relevant even when public documentation does not establish literal sample identity. 
+
+A.4 Candidate Dataset Proxy Labels 
+
+Full candidate dataset proxy labels are listed in Table 7. To reduce space, datasets with identical labels and contiguous naming patterns are merged into grouped entries. In grouped rows, the reported labels apply to all datasets in the indicated range. Here, “Y” denotes documented exposure in official sources, and “N” denotes no documented evidence in official sources. 15 Table 6: Representative results in the normalized-duplicate setting under the same FP-0 protocol and family-aware splits. Useful audit signal remains after value normalization, which suggests that contamination-relevant repetition is not limited to exact raw-value overlap. 
+
+Reference Model-MACRO Model-MACRO Pair-MICRO Pair-MICRO Macro-F1 ↑ MCC ↑ Macro-F1 ↑ MCC ↑
+
+None 0.434 ±0.175 0.101 ±0.124 0.473 0.274 ScratchCNN 0.492 ±0.095 0.101 ±0.108 0.628 0.389 Stat 0.481 ±0.130 0.123 ±0.092 0.559 0.337 All Ref 0.508 ±0.110 0.128 ±0.121 0.642 0.415 
+
+Table 7: Full candidate–dataset proxy labels for the evaluated benchmark. Column abbreviations: Ch = Chronos, Ka = Kairos, M1 = Moirai1, M2 = Moirai2, TF = TimesFM2.0, Ti = TiRex. 
+
+Dataset Ch Ka M1 M2 TF Ti Dataset Ch Ka M1 M2 TF Ti 
+
+alibaba_cluster_trace_2018 N Y Y Y N N azure_vm_traces_2017 N Y Y Y N Nbdg-2_bear N Y Y Y N N bdg-2_fox N Y Y Y N Nbdg-2_panther N Y Y Y N N bdg-2_rat N Y Y Y N NBEIJING_SUBWAY_30MIN N Y Y Y N N bitbrains_fast_storage/H N N N N N Nbitbrains_rnd/H N N N N N N borg_cluster_data_2011 N Y Y Y N Nbuildings_900k N Y Y Y N N bull N Y Y Y N Ncdc_fluview_ilinet N Y Y Y N N cdc_fluview_who_nrevss N Y Y Y N Nchina_air_quality N Y Y Y N N cmip6_1850–2010 N Y Y Y N Ncovid_deaths Y N Y N N Y covid_mobility N Y Y Y N Nelectricity/H Y N N N Y Y electricity/W Y N N N Y Yera5_1989–2018 N Y Y Y N N extended_web_traffic_with_missing N Y Y Y Y Nfavorita_sales N Y Y Y Y N favorita_transactions N Y Y Y N Nfred_md Y Y Y Y N Y hierarchical_sales/D N N Y N N NHZMETRO N Y Y Y N N ideal N Y Y Y N Nkdd_cup_2018_with_missing/D N N Y N N N kdd_cup_2018_with_missing/H N N Y N N Nkdd2022 N Y Y Y N N largest_2017–2021 N Y Y Y N Nlcl N Y Y Y N N london_smart_meters_with_missing N Y Y Y N NLOOP_SEATTLE/H N N Y N N N LOS_LOOP N Y Y Y N NM_DENSE/H N N Y N N N m4_daily Y N Y N Y Ym4_hourly Y N Y N Y Y m4_monthly Y N Y N Y Ym4_quarterly Y N Y N Y Y m4_weekly Y N Y N N Ym4_yearly Y N Y N Y Y m5 Y Y Y Y N Ynn5_daily_with_missing Y Y Y Y N Y pedestrian_counts Y Y Y Y N YPEMS_BAY N Y Y Y N N PEMS03 N Y Y Y N NPEMS04 N Y Y Y N N PEMS07 N Y Y Y N NPEMS08 N Y Y Y N N project_tycho N Y Y Y N NQ-TRAFFIC N Y Y Y Y N residential_load_power N Y Y Y N Nresidential_pv_power N Y Y Y N N restaurant N N Y N N Nrideshare_with_missing N Y Y Y N N SHMETRO N Y Y Y N Nsolar/D Y N N N N Y subseasonal N Y Y Y N Nsubseasonal_precip N Y Y Y N N SZ_TAXI/H N N Y N N Ntaxi_30min Y Y Y Y N Y temperature_rain_with_missing N N Y N N Ntourism_monthly Y Y Y Y N Y traffic_hourly N Y Y Y Y Nuber_tlc_daily Y Y Y Y N Y uber_tlc_hourly Y Y Y Y N Yvehicle_trips_with_missing N Y Y Y N N weather Y Y Y Y Y Ywiki-rolling_nips N Y Y Y N N wind_farms_with_missing N Y Y Y N N
+
+A.5 Family Grouping and Aggregation Levels 
+
+For data splitting, we retain family metadata that records which datasets belong to the same benchmark family. Under group_split=family , datasets from the same family are assigned to the same split. Under group_split=none , this grouping constraint is removed. We use the family split by default because it keeps closely related datasets on the same side of the split and reduces cross-split transfer through renamed or lightly transformed variants. We report both Pair-MICRO and Model-MACRO summaries. Pair-MICRO pools all candidate– dataset test decisions and then computes the evaluation metric on the pooled set. Model-MACRO first computes the metric separately for each candidate TSFM and then averages across candidates. Pair-MICRO reflects pooled behavior over all audit pairs, whereas Model-MACRO avoids overweighting candidates with larger numbers of auditable datasets. 16 B Experimental Protocol and Implementation Details 
+
+B.1 Audit Protocol and FP-k Calibration 
+
+This subsection complements Sections 4 and 4.3 by specifying how the audit protocol is instantiated in the evaluation code. In particular, it records the repeated split construction, calibration-set composition, epoch selection rule, and the operational form of FP-k threshold calibration used throughout the appendix. 
+
+Repeated calibration/test splits. The atomic label-bearing example is the candidate–dataset pair 
+
+(fθ , D). Evaluation is performed over repeated calibration/test splits of these audit pairs. In the default setting, we use 30 repeated splits, random seed 0, and group_split=family . For repeat index r, the random generator is initialized with seed 0 + 10007 r. Split generation is retried until both proxy-label classes appear in the calibration split. 
+
+Calibration-set composition. The calibration split is constructed to prioritize clean audit pairs. By default, it targets approximately 80% of the clean calibration pairs and then samples positive pairs at a 1:1 ratio relative to the number of clean calibration pairs. This design reflects the conservative role of calibration under the FP-k protocol, where the threshold is determined from clean calibration scores. 
+
+Shared split manifests across methods. For a fixed candidate and protocol setting, all baselines and all TSFMA UDIT variants are evaluated on the same repeated split manifests. This includes the candidate-only baseline, the single-reference variants, and the all-reference variants. As a result, appendix comparisons isolate differences in the scoring rule rather than differences in split construction or threshold calibration. 
+
+Epoch selection within each repeat. For each repeated split, we evaluate the epochwise scorers 
+
+{gt}Tprobe  
+
+> t=1
+
+and select the epoch with the highest calibration MCC, following Section 4.3. Unless otherwise stated, this selection is performed separately within each repeat. The default epochwise scorer is logistic regression. 
+
+FP-k threshold calibration. Let S(fθ , D) denote the selected continuous score for an audit pair under the chosen epoch. The threshold is determined only from clean calibration pairs, 
+
+Vclean =
+
+n
+
+(fθ , D) : eC(fθ , D) = 0 
+
+o
+
+.
+
+Under FP-0, the threshold is set to the largest clean calibration score. Under FP-1, it is set to the second-largest clean calibration score. More generally, FP-k uses the (k + 1) -st largest clean calibration score as the threshold. The final binary decision is 
+
+bS(fθ , D) = I[S(fθ , D) > τ k] .
+
+The main paper uses FP-0 unless otherwise stated. 
+
+B.2 Reference Suite and Baseline Scope 
+
+The six audited candidates are Chronos, TiRex, Moirai1, Moirai2, TimesFM2.0, and Kairos. The reference suite used throughout the main experiments is 
+
+R = {ScratchCNN , ScratchTransformer , Stat , VisionTS }.
+
+Appendix comparisons include the candidate-only baseline, the single-reference variants, and the all-reference variants defined from this reference suite. We use the same all-reference abbreviations as Section 5.1: All Ref concatenates the difference and ratio features over all references, while All Ref+Det additionally appends the direct candidate dynamics (Det), i.e., the candidate trace summary. 
+
+Default scorer implementation. Unless otherwise stated, the default epochwise scorer is logis-tic regression with a standard-scaling front end, liblinear solver, balanced class weights, and 
+
+max_iter=1000 . In addition to this default scorer, the appendix reports detector-family ablations with random forests Breiman [2001] and gradient-boosted trees. These ablations are included to assess detector sensitivity and are not part of the default protocol. 17 Evaluation metrics. The evaluation code reports AUROC, AUPRC, Macro-F1, MCC, and balanced accuracy. The main paper emphasizes MCC, Macro-F1, AUROC, and balanced accuracy. We additionally report AUPRC in the appendix because the class balance is often highly skewed. 
+
+Frequency-domain baseline. We additionally report a frequency-domain heuristic baseline, de-noted ts_mink_fft_* . Given residuals rt = yt − ˆyt, we compute the frequency energy spectrum 
+
+|FFT( r)|2 and define a series-level score as the mean energy of the top-K% frequency components, with K ∈ { 10 , 20 , 30 }. The dataset-level score is obtained by averaging these series-level scores over the audited dataset. This baseline is included as a time-series analogue of Min-K% style Shi et al. [2024] tests and is evaluated under the same six-candidate protocol as the main comparison. 
+
+B.3 Probe Hyperparameters and Trace Construction 
+
+This subsection records the shared probe settings and the implementation choices used to construct the trace summaries in Section 4. Table 8 summarizes the protocol and implementation choices that are fixed throughout the experiments. 
+
+Shared defaults. Unless otherwise stated, we use Tprobe = 10 probe epochs, batch size 4, and the context–horizon pair (L, H ) = (128 , 24) following GIFT-Eval. The default learning rate is 10 −3,while TimesFM2.0 uses 10 −4 for stability. 
+
+Window-level preprocessing. Each context–target window (Hi, Yi) is normalized using the mean and standard deviation of the context segment Hi. Concretely, the context is standardized by its own statistics, and the target is normalized using the same context statistics. This keeps the probe dynamics comparable across datasets with substantially different scales. 
+
+Optimization details. The probing procedure uses AdamW Loshchilov and Hutter [2019], mean squared forecasting loss, weight decay 0.01 , and gradient clipping with maximum norm 1.0. The initial loss ℓ0 is recorded before any parameter updates, and subsequent losses are recorded after each probe epoch. The parameter displacement wt is computed as the ℓ2 norm between the current parameter state and the checkpoint state at probe start. Before auditing a new dataset, the model is reset to the same initial checkpoint so that all candidate–dataset traces are measured from a common origin. 
+
+Trace summaries. At each probe epoch t, the implementation records the loss ℓt and parameter displacement wt, and then computes the relative loss drop 
+
+dt = ℓ0 − ℓt
+
+ℓ0 + εℓ
+
+,
+
+and the adaptation efficiency 
+
+at = dt
+
+wt + εae 
+
+.
+
+These quantities define the candidate and reference trace summaries used in the main method, 
+
+x(D) = [ wt, d t, a t]1≤t≤Tprobe , x(r)(D) = [ w(r) 
+
+> t
+
+, d (r) 
+
+> t
+
+, a (r) 
+
+> t
+
+]1≤t≤Tprobe .
+
+The reference-based features are then constructed from the per-epoch differences and ratios defined in Section 4.2. Additional recorded quantities such as gradient norm are used only in auxiliary implementation diagnostics and are not part of the default trace representation. 
+
+## C Additional Main Results 
+
+C.1 Sensitivity to FP Budget and Group Splits 
+
+Figures 4 and 5 examine sensitivity to two protocol choices: the false-positive budget, com-paring FP-0 and FP-1, and the split grouping strategy, comparing group_split=family and 
+
+group_split=none . The two figures report the same comparison under Model-MACRO and Pair-MICRO aggregation, respectively. 18 Item Value 
+
+Audit unit candidate–dataset pair (fθ , D)
+
+Split repeats 30 Default split seed 0Family-aware split group_split=family 
+
+Calibration clean fraction 0.8 Calibration leaked:clean ratio 1.0 Main threshold rule FP-0 Default epochwise scorer Logistic regression + standard scaling Logistic-regression settings liblinear , balanced class weights, max_iter=1000 
+
+Probe length Tprobe = 10 
+
+Batch size 4Default context / horizon (128 , 24) 
+
+Window normalization context-wise z-score Probe optimizer AdamW Weight decay 0.01 Gradient clipping max norm 1.0 Per-dataset model reset yes Efficiency stabilizer εae 10 −6
+
+Reference ratio stabilizer εref 10 −6
+
+Table 8: Protocol and implementation details fixed throughout the experiments. 0.35        
+
+> 0.40
+> 0.45
+> 0.50
+> 0.55
+> Macro-F1
+> No
+> Ref
+> Scratch
+> CNN
+> Scratch
+> Transformer Stat Vision
+> TS
+> All
+> Ref
+> 0.00
+> 0.03
+> 0.06
+> 0.09
+> 0.12
+> 0.15
+> MCC
+> No
+> Ref
+> Scratch
+> CNN
+> Scratch
+> Transformer Stat Vision
+> TS
+> All
+> Ref
+> FP-0 family FP-0 none FP-1 family FP-1 none
+
+Figure 4: Sensitivity to the false-positive budget and split grouping on Model-MACRO aggregation. Bars report mean Macro-F1 and MCC over repeated splits. FP-0 uses the most conservative clean-score threshold, while FP-1 allows one clean calibration exceedance. Family grouping is slightly more stringent than dataset-level splitting, but the advantage of reference-based debiasing remains stable across all protocol variants. 
+
+Findings. The main qualitative conclusions remain stable under both FP budgets and both grouping rules. Reference-based variants consistently improve over the candidate-only baseline under both FP-0 and FP-1. The strongest single-reference choice depends on the aggregation level: VisionTS remains particularly strong on Pair-MICRO, while ScratchCNN remains competitive on Model-MACRO MCC under family-aware splits. Although group_split=family is slightly more stringent than group_split=none , it better matches the intended unknown-dataset setting because related benchmarks are kept in the same split. Figures 4 and 5 plot Macro-F1 and MCC separately for readability. 
+
+C.2 Loss-Based Restricted Variant 
+
+We additionally evaluate a restricted variant of TSFMA UDIT that uses only loss-based trace quan-tities. This variant retains features derived from the loss trajectory and the relative loss drop, and removes parameter-displacement quantities and adaptation-efficiency quantities. Table 9 compares this restricted variant against the default full trace representation under the same FP-0 protocol and family-aware splits used in the main appendix tables. 
+
+Findings. The loss-based restricted variant remains informative, but it generally underperforms the full trace representation. The size of the gap depends on the reference model. With ScratchCNN as 19 0.45        
+
+> 0.50
+> 0.55
+> 0.60
+> 0.65
+> 0.70
+> 0.75
+> Macro-F1
+> No
+> Ref
+> Scratch
+> CNN
+> Scratch
+> Transformer Stat Vision
+> TS
+> All
+> Ref
+> 0.25
+> 0.30
+> 0.35
+> 0.40
+> 0.45
+> 0.50
+> 0.55
+> MCC
+> No
+> Ref
+> Scratch
+> CNN
+> Scratch
+> Transformer Stat Vision
+> TS
+> All
+> Ref
+> FP-0 family FP-0 none FP-1 family FP-1 none
+
+Figure 5: Sensitivity to the false-positive budget and split grouping on Pair-MICRO aggregation. Bars report Macro-F1 and MCC after pooling all candidate–dataset pairs. FP-0 uses the most conservative clean-score threshold, while FP-1 allows one clean calibration exceedance. Across all protocol variants, reference-based methods consistently outperform the candidate-only baseline, with VisionTS and All Ref remaining particularly strong. Table 9: Loss-based restricted variant under FP-0 auditing with family-aware splits. Each cell reports Macro-F1 / MCC. The restricted variant remains informative, but the full trace representation is generally stronger, with the largest gap appearing for VisionTS on Pair-MICRO. 
+
+Reference MACRO (full) MACRO (loss-based) MICRO (full) MICRO (loss-based) 
+
+No ref 0.411 / 0.032 0.371 / 0.003 0.509 / 0.309 0.432 / 0.242 ScratchCNN 0.453 / 0.087 0.436 / 0.108 0.530 / 0.319 0.469 / 0.275 ScratchTransformer 0.420 / 0.045 0.399 / 0.045 0.486 / 0.270 0.446 / 0.245 Stat 0.420 / 0.046 0.383 / 0.015 0.489 / 0.275 0.442 / 0.248 VisionTS 0.458 / 0.056 0.380 / -0.006 0.597 / 0.383 0.452 / 0.247 All Ref 0.521 / 0.125 0.515 / 0.117 0.712 / 0.498 0.683 / 0.372 
+
+reference, the restricted variant slightly improves Model-MACRO MCC from 0.087 to 0.108 , while the corresponding Pair-MICRO MCC decreases from 0.319 to 0.275 . By contrast, the gap is larger for VisionTS, where Pair-MICRO MCC drops from 0.383 to 0.247 . Taken together, these results suggest that loss-based quantities alone retain useful audit signal, but the default full representation is more reliable overall 
+
+C.3 Per-Candidate Reference Effects 
+
+Figure 6 reports candidate-specific MCC under FP-0 calibration with family-aware splits. The aggregate results reported elsewhere in the appendix average over substantial heterogeneity across candidates, and this figure makes that heterogeneity explicit. 
+
+Findings. The benefit of reference-based debiasing is not uniform across candidates. TiRex shows the largest gain, with ScratchCNN increasing MCC from approximately −0.02 under the no-reference baseline to about 0.27 . Moirai2 benefits most from VisionTS, which improves over the no-reference baseline by a smaller but consistent margin. By contrast, Chronos and Moirai1 show only modest differences across references, and TimesFM2.0 does not exhibit a stable average gain from any single reference. Kairos also does not benefit on average from the current references, with the clearest degradation appearing under ScratchTransformer relative to the no-reference baseline. Taken together, these patterns indicate that reference quality is candidate dependent: a useful reference is one whose probe-time behavior provides a plausible counterfactual for the candidate under audit. 
+
+Interpretation under label imbalance. This candidate-level heterogeneity should be interpreted together with proxy-label balance. Under strict FP-0 calibration, threshold selection depends only on clean calibration pairs, so candidates with very few documented-clean audit pairs can show higher across-split variance. This is particularly relevant for Moirai1 under the current proxy labels. For this reason, the candidate-level patterns in Figure 6 should be read together with the FP-0 and FP-1 sensitivity results in Figures 4 and 5. 20 0.2 0.0 0.2 0.4 0.6 
+
+> MCC
+> Chronos
+> TiRex
+> Moirai1
+> Moirai2
+> TimesFM2.0
+> Kairos
+> Candidate TSFM
+> Per-Candidate Reference Ablation (FP-0, MCC)
+> No Reference
+> VisionTS
+> ScratchCNN
+> ScratchTF
+> Stat
+
+Figure 6: Per-candidate reference ablation under FP-0 calibration with family-aware splits. Reference utility is candidate dependent: ScratchCNN yields the clearest gain for TiRex, VisionTS is strongest for Moirai2, while several candidates show only modest or inconsistent changes across references. 
+
+C.4 Probe Length Sensitivity 
+
+Figure 7 reports Model-MACRO MCC and Pair-MICRO MCC as functions of probe length Tprobe ∈{2, 4, 6, 8, 10 } under FP-0 calibration with family-aware splits. The goal is to determine whether useful audit signal already appears under short probing, and whether longer probes materially change the relative ranking of representative reference configurations. 
+
+Findings. Useful audit signal appears early, but very short probes can leave part of that signal unrecovered. In Figure 7, the candidate-only baseline increases from approximately 0.19 at Tprobe =2 to about 0.31 at Tprobe = 6 , and then remains essentially unchanged through Tprobe = 8 and 10 
+
+in Pair-MICRO MCC. A similar stabilization is visible for ScratchCNN, whose Pair-MICRO MCC changes only slightly across the full range. The configurations that benefit most from longer probes are VisionTS and All Ref. VisionTS improves steadily in Pair-MICRO MCC from about 0.25 at Tprobe = 2 to about 0.41 at Tprobe = 8 , after which it is effectively flat. The All Ref variant shows the same pattern, increasing from about 0.41 at 
+
+Tprobe = 2 to about 0.50 at Tprobe = 8 , with no material gain at Tprobe = 10 . This indicates that the main pooled detection gains are usually realized by moderate probe lengths rather than by the longest probe considered here. The same figure shows a similar but less monotone pattern at the Model-MACRO level. ScratchCNN is comparatively stable across probe lengths, while VisionTS and Stat improve more substantially from short to moderate probes. At the same time, the All Ref variant remains the strongest overall configuration across all tested probe lengths, even though its Model-MACRO MCC varies only within a relatively narrow range. Taken together, these results suggest that Tprobe = 10 is a stable default that lies near the performance plateau, rather than a finely tuned optimum. 
+
+C.5 TIME Benchmark Practical Evaluation Details 
+
+This subsection records the implementation details of the deployment-oriented evaluation on the TIME Benchmark Qiao et al. [2026] reported in Section 5.5. The guiding principle is that no part 21 2 4 6 8 10 
+
+Probe length Tprobe 
+
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> MCC
+
+(a) Pair-MICRO MCC     
+
+> 246810
+
+Probe length Tprobe 
+
+> 0.00
+> 0.05
+> 0.10
+> 0.15
+> MCC
+
+(b) Model-MACRO MCC 
+
+> No Ref (none)
+> ScratchCNN
+> ScratchTransformer
+> VisionTS
+> ALL_REFS
+
+Figure 7: Probe length sensitivity under FP-0 calibration with family-aware splits. The combined figure reports Model-MACRO MCC and Pair-MICRO MCC as functions of Tprobe . Useful audit signal appears early, while most configurations change only modestly beyond moderate probe lengths. of the audit pipeline is re-fit to TIME: the selected scorer and threshold are inherited from the main experiment, and TIME serves only as the deployment target. 
+
+Scorer and threshold reuse. We adopt the All Ref configuration, which is the strongest aggregate setting in Table 2. The selected scorer g∗ is the epochwise logistic-regression scorer chosen by the calibration-MCC rule of Section 4.3, with the standard-scaling front end and solver settings recorded in Appendix B.2. The threshold τ0 is its FP-0 threshold, obtained on the main-experiment validation set from the clean calibration scores under the protocol of Appendix B.1. Before applying (g∗, τ 0)
+
+to TIME, we verify on the same validation set that this fixed pair reproduces the All Ref behavior reported in Table 2. The same pair is then applied to TIME without any further fitting; in particular, no TIME data enters scorer training or threshold calibration. 
+
+Probing on TIME. For each candidate TSFM fθ and each TIME dataset D, we run the same fine tuning protocol used in the main experiment. Concretely, we use Tprobe = 10 probe epochs, batch size 4, context–horizon pair (L, H ) = (128 , 24) , AdamW with the candidate-specific learning rate listed in Appendix B.3, context-wise z-score normalization of each window, and per-dataset model reset to the same initial checkpoint used in the main experiment. Each reference model 
+
+fθ(r) ∈ R = {ScratchCNN , ScratchTransformer , Stat , VisionTS } is probed on TIME under identical settings. Trace summaries x(D) and x(r)(D) and the debiased features {∆(r) 
+
+> t
+
+(D), ρ(r) 
+
+> t
+
+(D)}|R|  
+
+> r=1
+
+are constructed exactly as in Section 4.2. The previously calibrated (g∗, τ 0) then produces a binary audit decision bS(fθ , D) for each audit pair. 
+
+Evaluation set and confidence bounds. Each of the six candidates is audited on 50 TIME datasets, yielding 300 audit pairs (fθ , D) in total. The per-candidate rates and one-sided 95% Clopper–Pearson lower bounds in Table 5 are computed under the standard binomial model on the 50 decisions per candidate; the pooled lower bound is computed analogously over the 300 pooled decisions. As noted in Section 5.5, the independence assumption underlying these bounds holds only approximately because the 50 TIME datasets share a common evaluation protocol, so the bounds should be read as descriptive rather than as a formal coverage guarantee. 22

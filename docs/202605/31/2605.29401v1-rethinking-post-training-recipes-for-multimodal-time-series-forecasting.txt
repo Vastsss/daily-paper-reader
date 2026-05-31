@@ -1,0 +1,436 @@
+Title: Rethinking Post-Training Recipes for Multimodal Time-Series Forecasting
+
+URL Source: https://arxiv.org/pdf/2605.29401v1
+
+Published Time: Fri, 29 May 2026 00:39:54 GMT
+
+Number of Pages: 20
+
+Markdown Content:
+# Rethinking Post-Training Recipes for Multimodal Time-Series Forecasting 
+
+Haoxin Liu †,§ ∗
+
+, Yichen Zhou §, Rajat Sen §, B. Aditya Prakash †, Abhimanyu Das §
+
+> †
+
+Georgia Institute of Technology §Google Research 
+
+# Abstract 
+
+Time-Series Foundation Models (TSFMs) excel at zero-shot unimodal forecast-ing using numerical data, but unlike LLMs they cannot consume multimodal, non-numerical context that often shape real-world trajectories. In this work, we bridge this gap and argue for a multimodal time-series forecasting approach that post-trains LLMs to act as context-guided revisors over strong numerical TSFM priors. We introduce P OST TIME , a post-training recipe combining Supervised Fine-Tuning (SFT) and Reinforcement Learning with Verifiable Rewards (RLVR), along with a methodology to generate automated reasoning traces for forecast revisions. P OST TIME teaches an LLM to generate context-conditioned forecast interventions—decisions to revise, preserve, or ignore the TSFM prior based on the multimodal context. We evaluate this approach on the TimesX multimodal forecasting benchmark using a Gemma-3-4B LLM and TimesFM-2.5 TSFM, and show that it significantly outperforms standalone TSFMs, LLM-only baselines, and existing multimodal forecasting approaches. 
+
+# 1 Introduction 
+
+Time series forecasting (TSF) [Liu and Kamarthi, 2024] is a foundational problem across diverse domains, from climate modeling and healthcare to finance and supply chain management. Historically reliant on domain-specific statistical models or task-specific neural architectures, the field has recently undergone a paradigm shift with the advent of Time-Series Foundation Models (TSFMs). TSFMs such as Moirai [Woo et al., 2024], TimesFM [Das et al., 2023] and Chronos [Ansari et al., 2025] are pre-trained on vast, diverse corpora of temporal data, allowing them to capture complex temporal dynamics and patterns purely from historical numerical inputs and achieve state-of-the-art, zero-shot performance on unimodal forecasting benchmarks. Despite the remarkable success of TSFMs, real-world forecasting is rarely a strictly unimodal endeavor. Future trajectories are frequently shaped by non-numerical, exogenous factors—such as breaking news events, sudden policy changes, shifting metadata, or domain-specific textual descriptions. TSFMs are structurally constrained by their unimodal inputs and cannot directly consume this multimodal non-numeric context. This highlights an urgent need for multimodal forecasting approaches capable of seamlessly fusing raw numerical histories with rich semantic context. At the same time, modern Large Language Models (LLMs) have demonstrated an unprecedented ability to understand and process complex multimodal data and execute sophisticated reasoning paths. This makes them natural candidates for ingesting and interpreting the unstructured semantic context in multimodal forecasting. However LLMs have been found to be unsuited for raw numerical predictive tasks, and significantly underperform TSFMs as standalone numerical forecasters [Tan et al., 2024, Merrill et al., 2024].  
+
+> ∗Correspondence to: hliu763@gatech.edu . This work was done while the author was a Student Researcher at Google Research. Preprint.
+> arXiv:2605.29401v1 [cs.LG] 28 May 2026
+
+This mismatch highlights the following question: how can we systematically unify the numerical performance of TSFMs with the multimodal reasoning capabilities of modern LLMs for robust multimodal forecasting? In recent years, there have been several approaches to building multimodal forecasting models within the design space spanned by TSFMs and LLMs (see Liu et al. [2025a] for a comprehensive survey), ranging from converting the temporal modality into other modalities, fusing temporal and non-temporal modalities at the input embedding stage, or at the output of modality-specific models, and pretraining from scratch on a multimodal time series corpus [Wu et al., 2025]. In this paper, we focus on a different paradigm: post-training off-the-shelf LLMs in the presence of TSFM priors. This paradigm requires us to define precisely how and what an LLM should learn during post-training, when provided access to a strong numerical TSFM prior. We evaluate and propose various design decisions for this post-training recipe, and showcase how some standard LLM post-training design choices are not as appropriate for multimodal forecasting. Our methodology (that is supported by various ablation studies) starts with the thesis that treating the LLM as a standalone numerical forecaster on multimodal inputs is suboptimal - the LLM is better positioned as a context-guided reviser over the TSFM prior. However, we observe that simply using an out-of-the-box LLM to perform raw revision of a TSFM prior does not yield good performance. Post-training the LLM in the presence of the TSFM prior, using Supervised Fine Tuning (SFT) or Reinforcement Learning (RL), is critical to unlocking its context-guided revision capabilities. This then opens up several design questions around this post training methodology: (1) how can we scalably generate good quality SFT traces, (2) how do we ensure our post-training data covers the full spectrum of the revision policy including when to revise and how to revise the TSFM prior, and (3) how can we construct suitable reward functions for RL to further reinforce successful revision policies and improve the final multimodal forecasting accuracy. In this work, we address these questions and propose a generic post-training recipe for multimodal forecasting using context-guided revision called P OST TIME . This recipe involves a supervised-fine-tuning stage (SFT) followed by a reinforcement-learning-with-verifiable-rewards stage (RLVR). The post-training recipe does not just train a base LLM to perform direct imitation of the ground truth forecasts, but instead encourages the base LLM to produce effective forecast interventions: context-conditioned decisions that revise, or preserve the strong numerical prior depending on the relative strength of the prior versus the non-numeric context. We design and evaluate a specific instantiation of P OST TIME involving Gemma-3-4B as the LLM to be post-trained, TimesFM-2.5 as the TSFM prior provider. This is coupled with an automated approach (no human-in-the-loop) for generating reasoning traces using a frontier LLM (Gemini-3.1-Flash-Lite) on multimodal examples from a refresh of the TimesX dataset[Liu et al., 2026a]. Our paper evaluates this post-training recipe with a comprehensive set of experiments on the refreshed TimesX benchmark that includes both ablations on the design choices mentioned earlier, and multi-modal forecasting accuracy comparisons against a spectrum of forecasting approaches (including strong supervised models, TSFMs, LLM-only models, out-of-the-box LLM + TSFM revision and ensembling methods, recent time-series reasoning models and other multimodal forecasting models. The dataset, code, and models will be released upon acceptance of the paper. 
+
+# 2 Preliminaries 
+
+Problem Formulation. We focus on multimodal forecasting of univariate time series. Let x1: T
+
+denote the historical time series where T is the length of the history, c the text context (without leakage) available before the forecast horizon, and y1: H the future horizon where H is the length of the horizon. The goal is to produce an accurate forecast ˆy1: H using information from both modalities. The most direct approach is to post-train an LLM policy πθ that takes x1: T and c as inputs and generates the forecast end-to-end, 
+
+(τ, ˆy1: H ) = πθ (x1: T , c ),
+
+where τ is a reasoning trace (e.g. thoughts for reasoning models). However, a potentially better strategy could be to explicitly leverage a strong numerical prior from a base forecaster, for instance, a TSFM. The base forecaster produces a forecast prior (a base forecast) using only the numerical history, 
+
+˜y1: H = fTSFM (x1: T ),
+
+2and the LLM policy then revises this base forecast using both x1: T and c,
+
+(τ, ˆy1: H ) = πθ (x1: T , c, ˜y1: H )
+
+where τ is a reasoning trace and ˆy1: H is the final forecast. Intuitively, ˜y1: H anchors the prediction to a specialized numerical model, while the LLM focuses on incorporating textual information and making calibrated adjustments. Note that we will drop the temporal subscripts when clear from context and with some abuse of notation use a subscript index like i to denote the i-th post-training example. We will show in Section 3.1 that the second strategy is empirically better. Implementation wise, for both strategies the LLM is prompted to output some reasoning trace before a final forecast. See Appendix C.3 for the templates. 
+
+Dataset and Setting. We use a refreshed version of T IMES X [Liu et al., 2026a] built with its public dataset agent. This refresh aligns numerical time-series values with rich textual context, including metadata, calendar signals, covariates, and time-stamped events, covering 99 variables from 2022 to 2025. Following T IMES X, we use a forecast history length T = 96 and a horizon length of H = 12 .We choose a rolling window shift of 4 for weekly data and 12 for daily data to obtain to obtain equal numbers of weekly and daily examples. To prevent LLM knowledge leakage and future information leakage, we split the data by Jan. 30, 2025, a common knowledge-cutoff date used for training recent LLMs. Our post-training uses samples whose prediction windows end before this cutoff, while evaluation uses samples whose prediction windows start after this cutoff. We further randomly select 88 variables for training and in-domain (ID) evaluation, and hold out the remaining 11 variables for out-of-domain (OOD) evaluation. Appendix C.2 provides a concrete data example, and Appendix C lists all variables in each split. We use the standard MAE (mean absolute error) and MSE (mean squared error) metrics to measure forecast accuracy. For making fair comparisons across and aggregations over different variables we also normalize them, when applicable, by the same metrics of the seasonal naive forecast which repeats the last period in the history. nMAE (ˆ y, y |x) = 
+
+PHt=1 |yt − ˆyt|
+
+PHt=1 yt − ˆyseasonal naive 
+
+> t
+
+, nMSE (ˆ y, y |x) = 
+
+PHt=1 (yt − ˆyt)2
+
+PHt=1 
+
+ yt − ˆyseasonal naive 
+
+> t
+
+2 .
+
+LLM Post-Training. In this work, LLM post-training refers to updating the weights of a pretrained LLM to strengthen task-specific capabilities. Early LLM post-training recipes mainly rely on SFT, where the model imitates curated prompt-response pairs [Ouyang et al., 2022, Chung et al., 2024, Wei et al., 2021]. Recent recipes start to use Chain-of-Thought (CoT) SFT as a warm-up stage, training the model to produce useful intermediate reasoning before the final answer [Wei et al., 2022, Zelikman et al., 2022], followed by RL, often with GRPO-style optimization and rule-based rewards, to push the model beyond imitation [Shao et al., 2024, Guo et al., 2025]. Under this general post-training paradigm there are design choices further made for solving domain specific tasks such as mathematics, coding, and logic. In this work we would like to rethink these practices in the context of multimodal forecasting and come up with a streamlined post-training recipe for the same. 
+
+# 3 Systemic Rethinking of Post-Training Recipes 
+
+This section systemically rethinks post-training recipes for multimodal TSF. We organize the design space into three stages: the role assigned to the LLM, the construction of CoT-SFT supervision, and the RL objective used to refine the resulting policy. For each stage, we contrast current practice with our design point and then provide empirical evidence that motivates the final P OST TIME recipe. 
+
+3.1 The Role of LLMs: Reviser is a Better Starting Point Current practice. The first post-training decision is the role assigned to the LLM. The most direct solution is to equip the LLM to generate the forecast conditioned on the time-series history and the 3Table 1: Direct forecasting versus revising a T IMES FM-2.5 prior on ID evaluation. Revising improves nMAE in 6/8 LLMs and nMSE in 7/8 LLMs. Underlines mark the better value within each LLM pair. Direct nMAE ↓ Direct nMSE ↓ Revising nMAE ↓ Revising nMSE ↓                                    
+
+> TIMES FM-2.5 0.788 0.729 ––GPT-5 0.843 1.299 0.783 0.725 Gemini-3.1-Pro 0.917 8.890 0.949 9.375 Gemini-3.1-Flash-Lite 0.812 3.101 0.820 2.966 Gemini-3-Flash 1.022 10.014 0.950 7.349 Gemini-2.5-Flash 1.261 13.445 1.151 6.716 Qwen-3-VL-32B 0.947 1.122 0.915 1.026 GPT-OSS-120B 0.930 2.762 0.794 0.787 Gemma-3-4B 1.486 11.434 0.877 0.878
+
+text context. This is the paradigm taken by most prior works that post-train an LLM for multimodal forecasting or reasoning [Guan et al., 2025, Kong et al., 2025, Zhou et al., 2026]. It forces the LLM to solve numerical extrapolation, context use, and strict forecast-format compliance all at once. 
+
+Our point and design. We argue that the LLM is better suited as a reviser of a base forecast generated by a TSFM from the time-series history. Given history x, text context c, and an initial forecast ˜y, the LLM decides whether the context warrants a structural revision of the numerical prior. This design simplifies the LLM’s reasoning task while retaining the strong numerical prior of capable TSFM models such as Chronos-2 [Ansari et al., 2025] and T IMES FM-2.5 [Das et al., 2023]. 
+
+Empirical evidence. To establish that revising is a better starting point, we evaluate several powerful LLMs under two zero-shot settings: direct forecasting, ˆy = πθ (x, c ), and revising, ˆy = πθ (x, c, ˜y).The results are summarized in Table 1. Revising improves nMAE for 6 of 8 LLMs and nMSE for 7 of 8 LLMs, with both metrics improving for 6 of 8 LLMs. The nMSE gains are especially diagnostic because nMSE is sensitive to large numerical failures: GPT-OSS-120B drops from 2.762 to 0.787, Gemma-3-4B from 11.434 to 0.878, and Gemini-2.5-Flash from 13.445 to 6.716. Revising also improves the valid-window rate from 0.77 for direct forecasting to 0.96 for revising, where the LLM is said to return a valid window when it returns at least as many forecasted points as in the horizon. Thus, a TSFM prior does not only improve numerical stability; it also gives the LLM a more structured output contract for post-training. Zero-shot revising, however, is not enough. Even the strongest commercial LLMs do not make zero-shot revising a reliable solution: GPT-5 revising slightly improves over T IMES FM-2.5 on both ID metrics, but most revisers still trail the T IMES FM-2.5 prior. Zero-shot revising exposes the right role for the LLM, but it does not reliably internalize the text conditioned policy for when to revise, how to revise, and when not to revise. In order to really solve the problem we therefore need to post-train an LLM for the revising role and the subsequent sections narrow down on the best practices for that very task. 
+
+3.2 The CoT-SFT Stage: Include Diverse Reasoning Traces and Preserve Hard Cases 
+
+In order to kick start a better instruction following behavior for the forecasting revision task, we need to create high quality traces for the SFT phase of post-training. CoT-SFT data construction for multimodal forecasting involves two key decisions: which reasoning traces should be used as imitation targets and which source samples should be kept. 
+
+3.2.1 Reasoning-Trace Annotations: Include Diverse Reasoning Traces Current practice. The common recipe treats CoT-SFT as imitation of a strictly verifiable reasoning path, which is suitable for domains such as coding, mathematics, and logic where an answer is either correct or wrong. Current recipes for multimodal TSF follow this idea. Time-R1 uses the observed horizon of the prediction window as an input hint for the trace generator [Zhou et al., 2026], while Time-Omni [Guan et al., 2025] requires human-in-the-loop traces. 4Our point. However for multimodal TSF the observed horizon is usually a noisy realization of some ground truth, and one can only hope to reduce this uncertainty in the forecast by conditioning on the context - it is hard to imitate a trace with a retrospective view. Moreover, a single reasoning trace conflicts with the open-ended nature of the future. Therefore, we hide the observed horizon from the trace generator and keep multiple “valid” reasoning traces, where validity is defined by whether the final revised forecast improves over the initial forecast. Table 2: Imitating the observed horizon hurts performance.          
+
+> CoT-SFT target nMAE nMSE Direct observed horizon fitting 0.881 1.266 Observed horizon hinted traces 0.789 0.748 Forecast-time traces 0.781 0.716 TIMES FM-2.5 0.788 0.729
+
+Empirical evidence. Table 5 supports using the ob-served horizon as a verifier rather than an imitation tar-get. Direct fitting the observed horizon is much worse than the T IMES FM-2.5 prior, and observed-horizon-guided hindsight still trails the prior in nMSE. In con-trast, forecast-time traces improve over the prior on both nMAE and nMSE. 
+
+3.2.2 Data Sampling: Preserve Hard Cases Current practice. Current data sampling practice often keeps only “easy” samples. For example, Time-Omni Guan et al. [2025] selects samples with a relatively low mean absolute error. 
+
+Our point. In multimodal TSF, hard cases are not merely noisy labels. They often reflect ambiguous or misleading context, where the best action may even be to keep the TSFM prior. A robust reviser must learn when to revise cautiously, and when to preserve the unimodal forecast. To expose this structure, we sample five independent forecast-time revisions for each source sample and count how many of them improve over the T IMES FM-2.5 initial forecast. A 5/5 bucket indicates an easy revision case with clear contextual signal; 1/5–3/5 indicates a hard or ambiguous case where only some reasoning trajectories find a useful intervention; 0/5 indicates a non-revisable case where fallback is the appropriate supervised action. Table 3: Revision utility is polarized. Buckets count how many of the five runs of revisions improve over the initial unimodal forecast for each sample within our ID test set.        
+
+> Validity Bucket 0/5 1/5 2/5 3/5 4/5 5/5 Percent 29.17% 9.92% 7.76% 7.96% 10.09% 35.10%
+
+Table 3 shows why clean-sample filtering is risky. Many examples are easy, but the ambiguous 1/5 and 2/5 buckets already account for over 17% of the data, and 0/5 non-revisable cases account for 29.17%. Dropping them would remove pre-cisely the cases useful to learn robust context use and greatly reduce data utilization. 
+
+3.2.3 Our CoT-SFT Design with No Human in the Loop 
+
+We would like to start from a T IMES X example and have a trace that has a good reasoning strategy for a revision and then the revised forecast that follows from that strategy. The gold standard for this would be human feedback but that is prohibitively expensive. Therefore we employ a high-quality and cost-effective frontier LLM - Gemini-3.1-Flash-Lite in particular - as a reasoning trace generator. We start by appending all T IMES X training examples with their base TimesFM-2.5 forecasts. The examples are then prepared as prompts to query the trace generator for 5 independent traces per example. These traces are mandated to contain both the reasoning and a final candidate forecast. Our proposed next step is to apply a filter to the initial SFT corpus to (1) encourage diversity and (2) preserve hard cases. For trace j on example i, let ˆyij be the candidate forecast and τij its native decision trace. We classify a candidate as effective by comparing it against the forecast prior: 
+
+uij = ⊮[MAE(ˆ yij , y i) < MAE(˜ yi, y i)] . (1) Among effective candidates, we retain at most K = 3 traces with the lowest candidate MAE: 
+
+Si = TopK  
+
+> j:uij =1
+
+(−MAE(ˆ yij , y i)) , K = 3 . (2) If no trace improves over the forecast prior, we insert one fallback target (τ fb  
+
+> i
+
+, ˜yi), where the trace states that the context does not support a reliable revision and the forecast remains the forecast prior. 5When none of the revisions are an improvement over the forecast prior it is a learning opportunity for the policy πθ to leave the base forecast unchanged under such situations. The resulting filtered SFT dataset is 
+
+DSFT = [
+
+> i
+
+{(xi, c i, ˜yi, τ ij , ˆyij ) : j ∈ S i}, |S i| > 0,
+
+{(xi, c i, ˜yi, τ fb  
+
+> i
+
+, ˜yi)}, |S i| = 0 . (3) 
+
+3.2.4 Empirical Evidence 
+
+We show the empirical validation of our design choices when applying P OST TIME to training an LLM reviser, whose details we later present in Section 4. Table 4: CoT-SFT data selection designs analysis. CoT-SFT data selection nMSE ↓ p50 ↓ p75 ↓ p90 ↓ p95 ↓ p99 ↓
+
+High-validity (4/5-5/5) buckets 0.772 0.576 0.946 1.292 1.764 3.704 All revisable buckets (1/5-5/5) 0.665 0.558 0.862 1.229 1.584 1.808 All Buckets (0/5-5/5;fallback traces for 0/5) 0.650 0.525 0.862 1.187 1.267 1.742 
+
+TIMES FM-2.5 0.729 0.600 0.956 1.303 1.471 2.616 Table 5: Ground truth (GT) is a verifier, not an imitation target.           
+
+> CoT-SFT target nMAE nMSE Direct GT fitting 0.881 1.266 GT hinted traces 0.789 0.748 Forecast-time traces 0.781 0.716 TIMES FM-2.5 0.788 0.729
+
+Table 6: Trace selection trades off SFT quality and token cost.                      
+
+> Trace selection nMAE ↓nMSE ↓Tokens ↓
+> Top1 effective 0.781 0.716 12.4M Random3 of 5 0.767 0.684 53.6M Top3 effective 0.761 0.665 32.6M All effective 0.758 0.665 47.2M TIMES FM-2.5 0.788 0.729 –
+
+The downside of fitting ground truth. Table 5 supports using ground truth as a verifier rather than an imitation target. Direct ground-truth fitting is much worse than the T IMES FM-2.5 prior, and ground-truth-guided hindsight still trails the prior in nMSE. In contrast, forecast-time traces improve over the prior on both nMAE and nMSE. 
+
+The value of hard cases. Table 4 shows that high-validity filtering improves some typical quantiles but harms the tail: the high-positive recipe reaches a p99 nMSE of 3.704, worse than the T IMES FM prior. Adding all revisable cases reduces the mean nMSE to 0.665 and the p99 nMSE to 1.808. Adding fallback supervision for the hardest cases, namely the 0/5 bucket, further improves the mean nMSE to 0.650 and the p99 nMSE to 1.742, outperforming the prior in both mean and tail behavior. 
+
+The superiority of diverse reasoning traces. Table 6 reports input plus output tokens under the Gemma-3-4B tokenizer and shows that a single selected path is not enough. Raw revising is worse than the prior, and Top1 effective gives only a modest gain. Multiple traces improve substantially: Top3 effective almost matches All effective while reducing SFT tokens from 47.2M to 32.6M, a 31.0% reduction. 
+
+3.3 The RL Stage: Reward Improvement Instead of Accuracy Current practice. The RL stage is commonly framed as verifiable optimization of final forecast accuracy. Given ground-truth labels, a natural reward maps the model’s absolute forecast error to a scalar score. For example, current practice uses Eq. 4, an exponentially decayed MAE (denoted as ExpMAE) as the verifiable reward. 
+
+R(ˆ y, y ) = exp 
+
+
+
+− MAE(ˆ y, y )
+
+γ
+
+
+
+, γ = 10 . (4) However, such a reward can provide weak preference signals under common RL setups such as group-normalized GRPO. With multiple completions sampled for the same prompt, the effective 6advantage is determined by the reward differences within that prompt group, 
+
+Ai = Ri − μgroup 
+
+σgroup + ϵstd 
+
+. (5) Thus a directionally correct reward can still lack distinguishing power if it assigns nearly identical scores to multiple completions. Eq. 4 is not scale-free, so the exponential decay can numerically collapse several candidates when they all have high MAEs regardless of their actual forecast quality. 
+
+Our point and RL design. For a model revising over a strong TSFM prior, an objective based solely on final forecast accuracy is incomplete. The reviser is not forecasting from scratch; it is deciding whether the context justifies changing the base forecast. The reward should therefore measure how much a revision improves over the base forecast. For a generated forecast ˆy, we define an improvement ratio against the base forecast as 
+
+ImpRatio = 1 − MAE(ˆ y, y )MAE(˜ y, y ) + ϵ , ϵ > 0, (6) and an ImpRatio based reward as 
+
+R(ˆ y, y ) = clip [0 ,1] (0 .5 + 0 .5 × ImpRatio) . (7) This reward is centered at 0.5 when the reviser ties with the base forecast. It also linearly separates the final forecasts once they are better than the base forecast, which ensures better resolution for the RL algorithm. 
+
+Empirical evidence. Table 7 demonstrates ImpRatio is a better reward. The ExpMAE reward has mean group reward standard deviation of only 0.0171, with 27.97% of prompt groups having near zero variance. In contrast, ImpRatio increases the mean reward standard deviation to 0.0719, and reduces the near-zero-variance group fraction to 4.66%. ExpMAE also has 16 instances where at least half of the prompt groups provide almost no preference signal, while ImpRatio has none. Table 7: Distinguishing power of ExpMAE and ImpRatio during GRPO training. ImpRatio preserves stronger same-prompt preference signals. Reward STD is computed across completions within the same prompt group. Mean zero-STD frac is the fraction of groups with near-zero reward variance. Collapse steps count logging steps where at least half of prompt groups have near-zero variance. Reward Scaling Revision Driven Mean STD ↑ Zero-STD frac ↓ Collapses ↓
+
+ExpMAE fixed, global No 0.0171 0.2797 16 ImpRatio instance base Yes 0.0719 0.0466 0
+
+# 4 Our Post-Training Recipe for Multimodal Time-Series Forecasting 
+
+Based on the findings in the rethinking sections, we propose a two-stage recipe for training an LLM to revise unimodal forecasts. In the CoT-SFT stage, we train the model to imitate diverse reasoning traces that reflect multiple plausible future trajectories. We suggest to include all validity buckets with fallback for unrevisable cases, so that the model learns when and how to use textual context robustly. In the RL stage, we use improvement over the unimodal prior, rather than absolute accuracy, to reduce reward collapse and encourage effective revision behavior. Unless otherwise specified, we use Gemini-3.1-Flash-Lite as the reasoning-trace generator and Gemma-3-4B as the target revisor LLM. 
+
+# 5 Main Results 
+
+We benchmark our proposed post-training recipe against the following modern multimodal forecasting solutions. • TSFMs: We query unimodal time series foundation models that do not use textual context, including TimesFM-2.5 [Das et al., 2023], Moirai-2 [Woo et al., 2024], and Sundial [Liu et al., 2025c]. 7• Supervised methods: We use advanced supervised models, TTS [Li et al., 2026], which fuse LMs with TSF models, with 5 specific model combinations. • Zero-shot LLMs: We directly prompt frontier LLMs with the numerical history and textual context to perform multimodal forecasting. • Training-free LLM–TSFM integrations: We consider two common ways to combine pretrained LLMs and TSFMs without post-training: ensembling (ENS), which averages forecasts from an LLM and a TSFM, and revision (REV), which uses zero-shot prompting to let an LLM revise a TSFM forecast. • TSLMs: Finally, we query continuously pretrained time series language models, including TimeOmni-1-7B [Guan et al., 2025], Aurora [Wu et al., 2025], and ChatTS-8B[Xie et al., 2025]. The knowledge-cutoff dates of all considered LLMs are before our dataset cutoff, Jan. 30, 2025, which prevents information leakage during evaluation. Our experiments were conducted on a dual-A100 (80GB) server. We reran the experiments three times to report the average. Table 8: Main results on T IMES X, combining ID (88 variables) and OOD (11 variables) test splits. Metrics are computed per example then averaged. Lower is better. Bold font marks the full P OST TIME 
+
+recipe and the best metric per column. 
+
+Group Method ID nMAE ↓ ID nMSE ↓ OOD nMAE ↓ OOD nMSE ↓
+
+Supervised 
+
+TTS (iTransformer + GPT2) 1.289 2.980 1.188 1.508 TTS (FiLM + GPT2) 1.441 3.580 1.637 2.186 TTS (DLinear + GPT2) 1.513 3.464 1.836 2.766 TTS (PatchTST + GPT2) 1.531 6.212 1.705 3.819 TTS (Crossformer + GPT2) 2.037 6.300 3.347 19.938 
+
+Training-free 
+
+ENS (GPT-5 + T IMES FM) 0.760 0.791 0.769 0.660 ENS (Qwen-3-VL-32B + T IMES FM) 0.795 0.753 0.901 1.083 ENS (GPT-OSS-120B + T IMES FM) 0.794 1.154 0.857 0.787 ENS (MiMo-V2-Flash + T IMES FM) 0.818 1.237 0.863 0.739 ENS (Gemma-4-31B + T IMES FM) 0.802 1.925 0.828 0.801 ENS (Gemini-3.1-Pro + T IMES FM) 0.807 2.715 0.742 0.637 ENS (Gemini-2.5-Flash + T IMES FM) 0.944 3.905 0.856 0.852 REV (GPT-5 + T IMES FM) 0.783 0.725 0.836 0.737 REV (GPT-OSS-120B + T IMES FM) 0.794 0.787 0.950 1.331 REV (Qwen-3-VL-32B + T IMES FM) 0.915 1.026 1.356 4.222 REV (Gemini-2.5-Flash + T IMES FM) 1.151 6.716 0.967 1.380 REV (Gemini-3.1-Pro + T IMES FM) 0.949 9.375 0.787 0.659 REV (Gemma-3-4B + T IMES FM) 0.877 0.878 0.894 0.883 
+
+TSLMs TimeOmni-1-7B 1.088 1.417 0.777 0.673 Aurora 1.084 1.387 1.025 1.113 ChatTS-8B 1.189 1.689 1.117 1.394 
+
+LLMs 
+
+GPT-5 0.843 1.299 0.846 0.809 Qwen-3-VL-32B 0.947 1.122 1.163 2.395 GPT-OSS-120B 0.930 2.762 1.027 1.177 MiMo-V2-Flash 0.969 3.039 1.037 1.068 Gemma-4-31B 0.955 5.717 0.999 1.239 Gemini-3.1-Pro 0.917 8.890 0.771 0.702 Gemini-2.5-Flash 1.261 13.445 1.056 1.447 Gemma-3-4B 1.486 11.434 1.306 1.944 
+
+TSFMs TIMES FM-2.5 0.788 0.729 0.777 0.673 Moirai-2.0 0.800 0.731 0.942 0.905 Sundial 1.121 3.144 1.057 1.211 POST TIME SFT (Gemma-3-4B + T IMES FM) 0.739 0.650 0.772 0.623 
+
+SFT+RL (Gemma-3-4B + T IMES FM) 0.738 0.638 0.746 0.597 
+
+Table 8 demonstrates the main benchmark results, while extended results involving more baselines can be found in Appendix D. Despite its minimal 4B size, the P OST TIME Gemma-3-4B model outperforms on both the ID and the OOD fronts almost all other baseline methods, some of which involve the most advanced commercial LLMs and cutting-edge TSLMs. In terms of measuring the revising power, the P OST TIME Gemma-3-4B improves the nMAE and the nMSE of base TimesFM-2.5 forecasts by 6.38% and 12.43% on the ID test split, and 3.93% and 11.24% on the OOD test split respectively. Besides, both the SFT and SFT+RLVR Gemma-3-4B achieve 100% success rate in terms of always generating a valid final forecast during our benchmarking. 8These benchmark results empirically support our choice of building a LLM reviser, and the decisions made regarding SFT data collection and RL reward design. 
+
+# 6 Further Analysis 
+
+The main results show that P OST TIME improves over strong TSFMs on both ID and OOD evaluations. We next ask whether these gains depend on a particular trace generator or a particular base LLM. 
+
+6.1 Generalizing P OST TIME to other trace generator 
+
+In our main results we had used Gemini-3.1-Flash-Lite as the trace generator. Here we show that our findings do not rely on that choice. Table 9 compares two commercial LLMs as trace generators: Gemini-3.1-Flash-Lite (G3.1) and Gemini-3-Flash (G3) .Direct revising (without post-training) is highly unstable, especially on ID nMSE: G3.1 reaches 2.966 and G3 reaches 7.349. After effective-trace selection and SFT, however, both trace generators produce substantially stronger models. With G3.1 traces, P OST TIME SFT reaches 0.739 nMAE / 0.650 nMSE on ID and 0.772 nMAE / 0.623 nMSE on OOD. With G3 traces, it still reaches 0.760 / 0.695 on ID and improves OOD nMAE to 0.746. This suggests that in both cases our SFT recipe helps the base LLM move beyond the zero-shot revising capability of the trace generator, thus highlighting the robustness of our recipe to this choice. At the same time, the trace generator is not irrelevant: G3.1 traces are stronger on ID, whereas G3 traces are better on OOD nMAE. Table 9: Impact of two trace generators: Gemini-3.1-Flash-Lite (G3.1) vs. Gemini-3-Flash (G3). Method ID nMAE ↓ ID nMSE ↓ OOD nMAE ↓ OOD nMSE ↓
+
+Zero-shot REV (G3.1) 0.820 2.966 0.827 0.752 POST TIME SFT on G3.1 Traces 0.739 0.650 0.772 0.623 Zero-shot REV (G3) 0.950 7.349 0.801 0.698 POST TIME SFT on G3 Traces 0.760 0.695 0.746 0.671 
+
+6.2 Generalizing P OST TIME to other base LLMs 
+
+Table 10: Impact of changing the base LLM. P OST TIME delivers the same performance progression when applied to Qwen3-4B. Method ID nMAE ↓ ID nMSE ↓ OOD nMAE ↓ OOD nMSE ↓
+
+Qwen3-4B 1.054 1.400 1.625 3.029 POST TIME SFT 0.760 0.739 0.766 0.634 POST TIME SFT+RL 0.747 0.651 0.745 0.609 Table 10 replaces the base LLM Gemma-3-4B with Qwen3-4B. The initial Qwen3-4B model is a weak reviser, with 1.054 nMAE / 1.400 nMSE on ID and 1.625 nMAE / 3.029 nMSE on OOD. CoT-SFT provides the main capability jump, reducing the OOD error to 0.766 nMAE / 0.634 nMSE. RL then further improves the already trained model to 0.747 / 0.651 on ID and 0.745 / 0.609 on OOD. While we observe the monotonic progression from initial to SFT to SFT+RL on Gemma-3-4B, observing this same progression pattern on Qwen3-4B supports the view of P OST TIME as a recipe-level post-training approach rather than a base LLM specific result. 
+
+6.3 Falling back to TSFM priors 
+
+A post-trained reviser should have the ability to judge what parts of the context are relevant for the forecasting task. The textual context can be weak, stale, or only loosely related to the prediction window, therefore a robust reviser should also know when to preserve the base TSFM forecast. 9Table 12: Characteristics of final SFT+RL decisions. Fallback cases have weaker textual evidence and smoother histories; lower rMAFD means less nonstationary historical trajectories.          
+
+> Action Context words Closest event gap Nonstationarity (rMAFD) Fallback 1.2k 21.0 days 0.007 Revision 1.3k 15.0 days 0.013
+
+We inspect inference-time fallbacks, where the generated forecast equals the TSFM prior (detailed definitions are provided in Appendix C.8). Table 11: Fallback rate after post-training.       
+
+> Split SFT SFT+RL ID 22.90% 21.76% OOD 23.11% 17.45%
+
+Table 11 shows that fallback remains below roughly one quarter of all cases, so both model after either SFT or SFT+RL stages usually attempt a revision rather than preserving the prior. RL makes the model revise more often, especially under distribution shift: on OOD cases, fallback drops from 23.11% to 17.45%. However, the fallback rate is not vanishingly small i.e the models do learn to not intervene in some case. Now lets analyze these cases in more detail. Table 12 asks where the final SFT+RL model still chooses not to intervene, pooling ID and OOD outputs. Fallback cases have shorter contexts, less temporally proximate event evidence, and lower rMAFD, indicating smoother histories (see Appendix C.8). This provides further evidence that the post-training recipe indeed teaches the LLM to not intervene under some reasonable circumstances, for instance when the textual context is of low quality. 
+
+# 7 Conclusions 
+
+In this paper we introduced P OST TIME , a post-training recipe for building an LLM reviser to provide context-guided revision of a TSFM prior in order to solve multimodal time series forecasting tasks. We have provided detailed discussions regarding the design choices made when creating P OST TIME ,and have empirically shown that applying P OST TIME to a Gemma-3-4B model revising TimesFM-2.5 priors achieves outstanding multimodal forecasting performance. While P OST TIME focuses on the thesis that LLMs play the role of a textual reviser, there are many other potential interaction mechanisms between an LLM and a TSFM to together deliver a multimodal solution. Despite its limitations (see Appendix A), we believe P OST TIME is a good reference when considering the design choices for any of such interactions when post-training an LLM is required. 
+
+# Acknowledgment 
+
+This work was partly supported by the NSF (Expeditions CCF-1918770, CAREER IIS-2028586, Medium IIS-1955883, Medium IIS-2403240, Medium IIS-2106961), NIH (1R01HL184139), Meta, Modal.com and Dolby faculty gifts. 10 References 
+
+A. F. Ansari, O. Shchur, J. Küken, A. Auer, B. Han, P. Mercado, S. S. Rangapuram, H. Shen, L. Stella, X. Zhang, et al. Chronos-2: From univariate to universal forecasting. arXiv preprint arXiv:2510.15821 , 2025. H. W. Chung, L. Hou, S. Longpre, B. Zoph, Y. Tay, W. Fedus, Y. Li, X. Wang, M. Dehghani, S. Brahma, et al. Scaling instruction-finetuned language models. Journal of Machine Learning Research , 25(70):1–53, 2024. A. Das, W. Kong, R. Sen, and Y. Zhou. A decoder-only foundation model for time-series forecasting. 
+
+arXiv preprint arXiv:2310.10688 , 2023. T. Guan, Z. Meng, D. Li, S. Wang, C.-H. H. Yang, Q. Wen, Z. Liu, S. M. Siniscalchi, M. Jin, and S. Pan. Timeomni-1: Incentivizing complex reasoning with time series in large language models. 
+
+arXiv preprint arXiv:2509.24803 , 2025. D. Guo, D. Yang, H. Zhang, J. Song, P. Wang, Q. Zhu, R. Xu, R. Zhang, S. Ma, X. Bi, et al. Deepseek-r1: Incentivizing reasoning capability in llms via reinforcement learning. arXiv preprint arXiv:2501.12948 , 2025. H. Kamarthi and B. A. Prakash. Large pre-trained time series models for cross-domain time series analysis tasks. Advances in Neural Information Processing Systems , 37:56190–56214, 2024. Y. Kong, Y. Yang, Y. Hwang, W. Du, S. Zohren, Z. Wang, M. Jin, and Q. Wen. Time-mqa: Time series multi-task question answering with context enhancement. arXiv preprint arXiv:2503.01875 ,2025. ACL 2025 (Main). Z. Li, X. Lin, Z. Liu, J. Zou, Z. Wu, L. Zheng, D. Fu, Y. Zhu, H. Hamann, H. Tong, and J. He. Language in the flow of time: Time-series-paired texts weaved into a unified temporal narrative. In The Fourteenth International Conference on Learning Representations , 2026. URL https: //openreview.net/forum?id=a1zBg9cBvt .H. Liu and H. Kamarthi. Lingkai kong, zhiyuan zhao, chao zhang, and b aditya prakash. time-series forecasting for out-of-distribution generalization using invariant learning. In Proceedings of the 41st International Conference on Machine Learning , pages 31312–31325, 2024. H. Liu, S. Xu, Z. Zhao, L. Kong, H. Kamarthi, A. B. Sasanur, M. Sharma, J. Cui, Q. Wen, C. Zhang, et al. Time-mmd: Multi-domain multimodal dataset for time series analysis. Advances in Neural Information Processing Systems , 37:77888–77933, 2024. H. Liu, H. Kamarthi, Z. Zhao, S. Xu, S. Wang, Q. Wen, T. Hartvigsen, F. Wang, and B. A. Prakash. How can time series analysis benefit from multiple modalities? a survey and outlook. arXiv preprint arXiv:2503.11835 , 2025a. H. Liu, C. Liu, and B. A. Prakash. A picture is worth a thousand numbers: Enabling LLMs reason about time series via visualization. In L. Chiruzzo, A. Ritter, and L. Wang, editors, 
+
+Proceedings of the 2025 Conference of the Nations of the Americas Chapter of the Association for Computational Linguistics: Human Language Technologies (Volume 1: Long Papers) , pages 7486– 7518, Albuquerque, New Mexico, Apr. 2025b. Association for Computational Linguistics. ISBN 979-8-89176-189-6. doi: 10.18653/v1/2025.naacl-long.383. URL https://aclanthology. org/2025.naacl-long.383/ .H. Liu, Y. Zhou, R. Sen, B. A. Prakash, and A. Das. Rethinking multimodal time-series forecasting evaluation. In 1st ICLR Workshop on Time Series in the Age of Large Models , 2026a. J. Liu, S. Chen, Z. Wang, Z. Zeng, J. Guo, L. Hu, L. Yin, S. Huang, W. Hao, Y. Yang, et al. Futurex-pro: Extending future prediction to high-value vertical domains, 2026. URL https://arxiv. org/abs/2601.12259 , 2026b. Y. Liu, G. Qin, Z. Shi, Z. Chen, C. Yang, X. Huang, J. Wang, and M. Long. Sundial: A family of highly capable time series foundation models. In International Conference on Machine Learning ,pages 39295–39317. PMLR, 2025c. 11 M. A. Merrill, M. Tan, V. Gupta, T. Hartvigsen, and T. Althoff. Language models still struggle to zero-shot reason about time series. In Findings of the Association for Computational Linguistics: EMNLP 2024 , pages 3512–3533, 2024. L. Ouyang, J. Wu, X. Jiang, D. Almeida, C. Wainwright, P. Mishkin, C. Zhang, S. Agarwal, K. Slama, A. Ray, et al. Training language models to follow instructions with human feedback. Advances in neural information processing systems , 35:27730–27744, 2022. Z. Shao, P. Wang, Q. Zhu, R. Xu, J. Song, X. Bi, H. Zhang, M. Zhang, Y. Li, Y. Wu, et al. Deepseekmath: Pushing the limits of mathematical reasoning in open language models. arXiv preprint arXiv:2402.03300 , 2024. M. Tan, M. A. Merrill, V. Gupta, T. Althoff, and T. Hartvigsen. Are language models actually useful for time series forecasting? Advances in Neural Information Processing Systems , 37:60162–60191, 2024. J. Wei, M. Bosma, Y. Vincent, K. Wu, M.-W. Chang, A. Salvucci, D. Lou, V. Vasudevan, T. Ni, L. Hou, A. M. Dai, and Q. V. Le. Finetuned language models are zero-shot learners. arXiv preprint arXiv:2109.01652 , 2021. URL https://arxiv.org/abs/2109.01652 .J. Wei, X. Wang, D. Schuurmans, M. Bosma, F. Xia, E. Chi, Q. V. Le, D. Zhou, et al. Chain-of-thought prompting elicits reasoning in large language models. Advances in neural information processing systems , 35:24824–24837, 2022. A. R. Williams, A. Ashok, É. Marcotte, V. Zantedeschi, J. Subramanian, R. Riachi, J. Requeima, A. Lacoste, I. Rish, N. Chapados, and A. Drouin. Context is key: A benchmark for forecasting with essential textual information. In Forty-second International Conference on Machine Learning ,2025. URL https://openreview.net/forum?id=ih2WuBT1Fn .G. Woo, C. Liu, A. Kumar, C. Xiong, S. Savarese, and D. Sahoo. Unified training of universal time series forecasting transformers. In Forty-first International Conference on Machine Learning ,2024. X. Wu, J. Jin, W. Qiu, P. Chen, Y. Shu, B. Yang, and C. Guo. Aurora: Towards universal generative multimodal time series forecasting. arXiv preprint arXiv:2509.22295 , 2025. Z. Xie, Z. Li, X. He, L. Xu, X. Wen, T. Zhang, J. Chen, R. Shi, and D. Pei. Chatts: Aligning time series with llms via synthetic data for enhanced understanding and reasoning. Proceedings of the VLDB Endowment , 18(8):2385–2398, 2025. E. Zelikman, Y. Wu, J. Mu, and N. Goodman. Star: Bootstrapping reasoning with reasoning. 
+
+Advances in Neural Information Processing Systems , 35:15476–15488, 2022. Y. Zhou, Y. Luo, M. Cheng, Q. Liu, J. Wang, D. Wang, and E. Chen. Time series forecasting as reasoning: A slow-thinking approach with reinforced llms, 2026. URL https://arxiv.org/ abs/2506.10630 .12 A Limitations and Future Work 
+
+We have demonstrated that P OST TIME represents a performant post-training recipe to make a base LLM an adept multimodal forecaster by potentially revising the forecasts of a TSFM after incorporating the textual context into its reasoning. We have also shown that the recipe is robust to the choice of various base LLMs and trace generators. However several options remain open for future work in this direction: (1) Both the benchmark and the methods discussed here do not explore how the conclusions changes in the presence of even more modalities like images for instance the ones in financial reports that could be relevant for asset price forecasting. That is an interesting direction which is beyond the scope of this paper, even though the key steps in the recipe could be adapted to such a setting. (2) There could be many other ways in which the LLM could be used to revise a forecast. For instance, in this work we do not explore modifying the forecasts through code execution or other forms of tool use. This is partly because the revising setting forms a clean test bed for our ablation studies and the salient points in the design of our recipe can also be applied under more general environments in future efforts. (3) Future work could also look into building systems which can query the web or knowledge graph to gather more contexts when the LLM decides that the existing is not good enough for the revising task. (4) Future work also includes extending to other time-series reasoning tasks [Liu et al., 2025b], as well as general event forecasting tasks [Liu et al., 2026b]. But these tasks are beyond the scope of time-series forecasting. 
+
+# B Related Work 
+
+B.1 Time-Series Foundation Models 
+
+Time-series foundation models (TSFMs) have recently become strong zero-shot forecasters for numerical time series. Models such as TimesFM [Das et al., 2023], Moirai [Woo et al., 2024], Chronos-2 [Ansari et al., 2025], and Sundial [Liu et al., 2025c] are trained on large collections of temporal data and can produce competitive forecasts from numerical histories alone. These models are especially useful when no task-specific supervised training data [Kamarthi and Prakash, 2024] are available, which makes them a natural starting point for broad forecasting benchmarks. 
+
+B.2 Multimodal Time-Series Forecasting and Benchmarks 
+
+Real-world forecasting often depends on information beyond the observed numerical history [Liu et al., 2025a]. Early multimodal forecasting benchmarks start to expose this need by pairing time series with textual context. For example, CiK [Williams et al., 2025] contains real-world time series with manually crafted textual contexts that are critical for forecasting. Time-MMD [Liu et al., 2024] further provides a context-enriched benchmark constructed through keyword-based web search, covering nine domains with one variable per domain. More recently, T IMES X [Liu et al., 2026a] expands this direction by incorporating multiple types of forecast-time context, including metadata, calendar information, covariates, and time-stamped events. It also identifies leakage issues in existing multimodal forecasting evaluations and expands the benchmark scale. Our work builds on the public TIMES X dataset agent and extends its original evaluation suite into a post-training corpus for learning context-conditioned forecast revision. Several recent methods train or adapt models to consume both time-series and language inputs. TTS [Li et al., 2026] studies language-time-series paired data and supervised multimodal forecasting. Aurora [Wu et al., 2025] studies generative multimodal time-series forecasting through multimodal pretraining. ChatTS [Xie et al., 2025] aligns time series with LLMs through synthetic data for temporal understanding and reasoning, while Time-MQA [Kong et al., 2025] studies multi-task question answering with time-series context. More recent reasoning-oriented systems, such as Time-R1 [Zhou et al., 2026] and TimeOmni [Guan et al., 2025], further introduce CoT-style supervision and RL to improve time-series reasoning ability. 13 C Implementation Details for the Post-Training Recipe 
+
+C.1 Forecasting Suite Construction 
+
+The post-training data are derived from a T IMES X forecasting suite rather than from standalone text-response annotations. The T IMES X dataset agent aligns numerical time-series values with forecast-time multimodal context over 2022–2025. Each forecasting instance stores the historical values, requested prediction timestamps, context available at the forecast origin, the initial forecast from the time-series foundation model, and the realized future. The realized future is used only for candidate verification, SFT target selection, reward computation, and evaluation; it is never included in the student prompt at forecast time. Table 13: Data split protocol for the forecasting suite. Splits are defined by prediction windows, so held-out evaluation windows are not exposed during post-training.             
+
+> Split Variables Prediction-window rule Use Post-training Seen variables Starts after Jan. 1, 2023; ends before Feb. 1, 2025 Proposal, SFT, RL IID evaluation 88 seen variables Starts after Jan. 30, 2025 Held-out IID test OOD evaluation 11 unseen variables Starts after Jan. 30, 2025 Out-of-domain test
+
+This protocol separates three possible leakage channels. The prompt context is restricted to infor-mation available at the forecast origin, the post-training corpus does not contain held-out evaluation target windows, and OOD evaluation additionally changes the variable set while retaining the later forecast horizon. 
+
+ID variables. The ID evaluation uses the following seen-variable set: 
+
+food_wine_festivals, national_football_league, polypropylene_cny_t, copper_usd_lbs, beef_brl_kg, salmon_nok_kg, palladium_usd_t_oz, heavy_rainfall, naphtha_usd_t, global_warming, gold_usd_t_oz, canola_cad_t, animal_rescue, major_league_baseball, usdtomxn_exchangerate, indium_cny_kg, heatwave, gallium_cny_kg, usdtocad_exchangerate, nickel_usd_t, unemployment_rate, butter_eur_t, drug_overdose, urea_usd_t, cobalt_usd_t, pest_control, polyvinyl_cny_t, film_festivals, lumber_usd_1000_board_feet, usdtokrw_exchangerate, molybdenum_cny_kg, infectious_disease, lithium_cny_t, beekeeping, ethanol_usd_gal, corn_usd_bu, uranium_usd_lbs, water_scarcity, usdtoaud_exchangerate, silver_usd_t_oz, sugar_usd_lbs, rubber_usd_cents_kg, cost_of_living, cocoa_usd_t, propane_usd_gal, magnesium_cny_t, platinum_usd_t_oz, coffee_usd_lbs, music_festivals, milk_usd_cwt, oat_usd_bu, potatoes_eur_100kg, drought, national_basketball_association, pet_adoption, wheat_usd_bu, carbon_emissions, cheese_usd_lbs, inflation, neodymium_cny_t, brent_usd_bbl, usdtobrl_exchangerate, rhodium_usd_t_oz, barley_inr_t, food_safety, esports, diabetes, usdtogbp_exchangerate, poultry_brl_kgs, meta_platforms, deforestation, aluminum_usd_t, soybeans_usd_bu, invasive_species, hiv_aids, diammonium_usd_t, usdtohkd_exchangerate, animal_migration, coal_usd_t, marine_pollution, gasoline_usd_gal, rapeseed_eur_t, wool_aud_100kg, lead_usd_t, tin_usd_t, cotton_usd_lbs, methanol_cny_t, climate_change 
+
+OOD variables. The OOD evaluation uses the following held-out variable set: 
+
+comic_con, zinc_usd_t, biodiversity, steel_cny_t, usdtoinr_exchangerate, endangered_species, rice_usd_cwt, germanium_cny_kg, air_pollution, tellurium_cny_kg, polyethylene_cny_t 
+
+Version-C construction note. The main benchmark and main results use the 88-variable seen set above. Some Version-C trusted SFT construction artifacts contain 87 variables because the variable food_wine_festivals did not have trusted annotation in that construction branch. This construction detail does not change the main IID evaluation scope. 
+
+C.2 Example T IMES X Forecasting Instance 
+
+14 We provide below an example from T IMES X corresponding to the GAS_PRICE time series, follow-ing the dataset demo prepared in the original T IMES X paper. The example illustrates how numerical history, metadata, calendar information, covariates, and event context are aligned to the same forecast origin. 
+
+Time series : See Fig. 1. Metadata : This time series records gasoline price (USD/GAL) in the Commodity Price domain, with daily frequency. Prediction target period: from 2024-09-01 to 2024-09-15. Date : Upcoming holidays in the prediction window: Labor Day (2024-09-02). Covariates :from 2024-06-01 to 2024-08-31: Brent Crude Oil (USD/BBL) reached a maximum value of 87.43 on July 4 and then showed an overall downward trend, alongside other related energy and commodity covariates. Events : On June 2, 2024, OPEC+ agreed to extend deep oil output cuts; the cut of 2.2 million bpd would be extended until September 2024, after which it would be gradually phased out. 
+
+Figure 1: Numerical example from the GAS_PRICE variable in the T IMES X data demo. 
+
+C.3 Prompt and Output Format 
+
+We use two prompt families. The direct-forecast prompt asks the LLM to forecast from the history and context alone. The revising prompt additionally provides an initial forecast from a time-series foundation model and asks the LLM to revise it only when the context supports a reliable change. For revising, the forecast block must follow the requested timestamp order. Fallback examples use the same format, but the forecast equals the initial forecast and the analysis states that the available context does not justify modifying the numerical prior. 
+
+C.4 Top-3/Fallback Dataset Construction 
+
+Candidate proposals are verified independently for each source example. A proposal is retained if its MAE is lower than the MAE of the base forecast for the same target window, as in Eq. 1. If at least one proposal is effective, we retain up to three candidates with the lowest MAE. If no proposal is effective, we add exactly one fallback example. The test split is never used for SFT construction. Table 14: Scale of the top-3/fallback SFT corpus. Token counts are measured with the Gemma-3-4B-PT tokenizer over prompt plus assistant answer.        
+
+> Item Value Training source samples 4,587 SFT rows after top-3/fallback 10,073 Verified intervention rows 8,798 Fallback rows 1,275 Prompt tokens 57.94M Answer tokens 4.58M
+
+15 You are an expert forecaster. Here is some context about the task. Please consider this information when making the forecast: <context> {background information, metadata, calendar signals, covariates, recent events, and other forecast-time context} </context> Here is the historical time series in (timestamp, value) format: <history> {historical data points} </history> Requested timestamps: {future timestamps to forecast} Please produce the forecast for the requested timestamps. Return the forecast in (timestamp, value) format between <forecast> and </forecast> tags. Do not include any other information outside the tags. Example format: <forecast> (2024-01-01 00:00:00, 123.45) (2024-01-02 00:00:00, 125.67) </forecast> 
+
+Figure 2: Direct forecast prompt template. The prompt provides context and history, but no initial TSFM forecast. Before filtering, the all-five proposal pool contains 38 ,160 candidate traces over successful examples. This pool is used to expose the verification stage to diverse teacher interventions; the SFT corpus is the compact subset retained after utility filtering and fallback insertion. 
+
+C.5 SFT Training Details 
+
+Table 15: SFT hyperparameters for the verified intervention student. 
+
+Hyperparameter Value Base model Gemma-3-4B-PT Training stage SFT Finetuning type LoRA LoRA rank / alpha / dropout 8 / 16 / 0.05 LoRA target all modules Template Gemma-3 Cutoff length 8192 Epochs 3.0 Per-device train batch size 1Gradient accumulation steps 16 Learning rate 1.3 × 10 −4
+
+C.6 Sample-Normalized Trace-and-Forecast SFT Loss 
+
+Each retained SFT row contains a prompt (xm, c m, y 0
+
+> m
+
+) and a target response zm = ( rm, ¯ym). The trace rm is serialized inside the analysis span, and ¯ym is serialized inside the forecast span. Let 
+
+T rm and T ym denote their supervised positions and let Tm = T rm ∪ T ym. The row loss is the mean 16 You are an expert forecaster tasked with refining a statistical forecast by applying contextual reasoning. Follow this workflow: 1. Study the contextual information and historical values to identify relevant drivers , constraints, or anomalies. 2. Compare the initial forecast against these signals and decide whether the context supports a reliable change. 3. Summarize your reasoning inside <analysis></analysis>, explaining any adjustments or why the values should stay the same. 4. Output the final forecast inside <forecast></forecast> using (timestamp, value) lines in the same order as the requested timestamps. <context> {background information, metadata, calendar signals, covariates, recent events, and other forecast-time context} </context> <history> {historical data points} </history> <initial_forecast> {initial forecast from the time-series foundation model} </initial_forecast> Requested timestamps: {future timestamps to forecast} Example format: <analysis> - Context driver A points to stronger demand in the first half of the horizon. - I adjust the early timestamps upward while keeping later timestamps close to the initial forecast. - If the context is weak or conflicting, I keep the initial forecast unchanged. </analysis> <forecast> (2024-01-01 00:00:00, 123.45) (2024-01-02 00:00:00, 125.67) </forecast> 
+
+Figure 3: Revising prompt template. The prompt provides the initial TSFM forecast, and preserving that forecast is a valid action when context is not sufficiently reliable. next-token cross entropy over this full supervised response: 
+
+ℓm(θ) = 1
+
+|T m| + ϵ
+
+X
+
+> t∈T m
+
+CE m,t (θ), CE m,t (θ) = − log pθ (zm,t | xm, c m, y 0
+
+> m
+
+, z m,<t ). (8) The dataset objective in Eq. 8 averages this row loss over retained SFT rows. The main imple-mentation sets analysis_loss_weight=1.0 and forecast_loss_weight=1.0 , so no additional span reweighting is applied. The sample normalization prevents longer traces from receiving larger aggregate weight solely because they contain more tokens. 
+
+C.7 RL Training Details 
+
+The RL stage uses the I MP RATIO reward in Eq. 7. We train with a group-based policy optimization setup and LoRA adapters. The reward is computed from parsed forecasts aligned to the requested timestamps. Invalid or unparsable completions receive zero reward, which preserves the strict output contract learned during SFT. 17 Table 16: RL hyperparameters for baseline-relative intervention calibration.                       
+
+> Hyperparameter Value RL objective family GRPO Reward IMP RATIO
+> Finetuning type LoRA LoRA rank / alpha / dropout 8 / 32 / 0.05 Max sequence length 10240 Max completion length 1024 Per-device train batch size 4Gradient accumulation steps 2Learning rate 1.0×10 −5
+> Weight decay 0.01 Epochs 8Warmup ratio 0.03 Max gradient norm 0.3 Number of generations 4Steps per generation 5Temperature / top-p/ top-k0.9 / 0.9 / 50 KL beta 0.04 Clipping epsilon 0.2
+
+C.8 Inference-Time Fallback Behavior Metrics 
+
+The fallback analysis in Section 6.3 measures the behavior of trained SFT and SFT+RL models at inference time. This is distinct from the fallback examples inserted during SFT data construction in Appendix C.4. 
+
+Actual fallback. Actual fallback checks whether the generated <forecast> block equals the initial TSFM forecast in the input prompt after the existing forecast parser and post-processing. This is the fallback metric reported in Table 11: it measures whether the model’s final forecasting action preserves the numerical prior. 
+
+Context words. Context length is the word count of the input <context> block. We use it as a simple proxy for the amount of textual evidence available to the model. 
+
+Closest event gap. We extract the forecast start date from the prompt and event dates from the recent-events section. The closest event gap is the minimum absolute distance in days between the forecast start date and any extracted event date. Larger values indicate that the nearest event evidence is less temporally proximate to the prediction window. 
+
+Historical nonstationarity. For a historical sequence x1: T , we compute relative mean absolute first difference: 
+
+rMAFD( x1: T ) =  
+
+> 1
+> T−1
+
+PTt=2 |xt − xt−1|
+
+> 1
+> T
+
+PTt=1 |xt| . (9) Lower rMAFD indicates a smoother, less nonstationary historical trajectory. In Table 12, fallback cases have lower rMAFD than revision cases, supporting the interpretation that no-op decisions are more common when the numerical prior is already stable. 
+
+Terminology. Inference-time fallback is a trained-model behavior: the model decides not to revise the initial TSFM forecast. Training-data fallback is a construction rule used before SFT when no teacher candidate improves over the base forecast. Evaluator fallback is an engineering recovery used when generated outputs are invalid or unparsable. The RQ3 analysis uses only the first notion. 
+
+# D Extended Results 
+
+See more methods and metric in Table 17 and 18. 18 Table 17: ID main results on 88 in-domain variables. The SFT-only P OST TIME variant is inserted immediately above the final RL-refined P OST TIME , which achieves the best average rank and improves over T IMES FM-2.5 by 6.38% nMAE and 12.43% nMSE. Rows are grouped by the leftmost category column; lower is better, and bold marks the final P OST TIME and metric bests. 
+
+Group Method n MAE ↓ n MSE ↓ Avg. Rank ↓
+
+Supervised 
+
+TTS(iTransformer+GPT2) 1.289 2.980 30.5 TTS(FiLM+GPT2) 1.441 3.580 34.5 TTS(DLinear+GPT2) 1.513 3.464 35.0 TTS(Informer+GPT2) 1.660 3.360 35.5 TTS(Transformer+GPT2) 1.758 5.341 38.5 TTS(PatchTST+GPT2) 1.531 6.212 38.5 TTS(FEDformer+GPT2) 2.224 10.530 44.0 TTS(Autoformer+GPT2) 2.373 12.238 45.5 TTS(Crossformer+GPT2) 2.037 6.300 40.5 
+
+Training-free 
+
+ENS(GPT-5+T IMES FM) 0.760 0.791 6.0 ENS(Qwen-3-VL-32B+T IMES FM) 0.795 0.753 7.5 ENS(GPT-OSS-120B+T IMES FM) 0.794 1.154 10.0 ENS(MiMo-V2-Flash+T IMES FM) 0.818 1.237 14.0 ENS(Gemini-3.1-Flash-Lite+T IMES FM) 0.755 1.234 8.0 ENS(Gemma-4-26B-A4B+T IMES FM) 0.827 1.634 17.0 ENS(Gemma-4-31B+T IMES FM) 0.802 1.925 15.5 ENS(Gemini-3.1-Pro+T IMES FM) 0.807 2.715 16.5 ENS(Gemini-3-Flash+T IMES FM) 0.846 2.992 21.5 ENS(Gemini-2.5-Flash+T IMES FM) 0.944 3.905 27.5 REV(GPT-5+T IMES FM) 0.783 0.725 4.0 REV(GPT-OSS-120B+T IMES FM) 0.794 0.787 7.0 REV(Gemini-3.1-Flash-Lite+T IMES FM) 0.820 2.966 19.0 REV(Qwen-3-VL-32B+T IMES FM) 0.915 1.026 15.0 REV(Gemini-3-Flash+T IMES FM) 0.950 7.349 32.5 REV(Gemini-2.5-Flash+T IMES FM) 1.151 6.716 36.0 REV(Gemini-3.1-Pro+T IMES FM) 0.949 9.375 33.0 Rev(Gemma-3-4B+T IMES FM) 0.877 0.878 14.0 
+
+TSLMs TimeOmni-1-7B 1.088 1.417 24.5 Aurora 1.084 1.387 23.5 ChatTS-8B 1.189 1.689 27.0 
+
+LLMs 
+
+GPT-5 0.843 1.299 16.0 Qwen-3-VL-32B 0.947 1.122 17.5 GPT-OSS-120B 0.930 2.762 22.0 MiMo-V2-Flash 0.969 3.039 27.0 Gemini-3.1-Flash-Lite 0.812 3.101 20.0 Gemma-4-26B-A4B 0.997 4.605 31.0 Gemma-4-31B 0.955 5.717 31.0 Gemini-3.1-Pro 0.917 8.890 30.5 Gemini-3-Flash 1.022 10.014 36.0 Gemini-2.5-Flash 1.261 13.445 41.0 Gemma-3-4B 1.486 11.434 41.5 
+
+TSFMs TIMES FM-2.5 0.788 0.729 5.0 Moirai-2.0 0.800 0.731 7.5 Sundial 1.121 3.144 30.5 
+
+Ours POST TIME SFT (Gemma-3-4B) 0.739 0.650 2.0 
+
+POST TIME (Gemma-3-4B+T IMES FM) 0.738 0.638 1.0 
+
+Summary Imp. over T IMES FM-2.5 6.38% 12.43% –
+
+19 Table 18: OOD main results on 11 out-of-domain variables. The SFT-only P OST TIME variant is inserted immediately above the final RL-refined P OST TIME , which improves over T IMES FM-2.5 by 3.93%nMAE and 11.24%nMSE, reaches the bestnMSE, and achieves the best average rank. Rows are grouped by the leftmost category column; lower is better, and bold marks the final P OST TIME 
+
+and metric bests. 
+
+Group Method n MAE ↓ n MSE ↓ Avg. Rank ↓
+
+Supervised 
+
+TTS(iTransformer+GPT2) 1.188 1.508 35.0 TTS(FiLM+GPT2) 1.637 2.186 38.0 TTS(DLinear+GPT2) 1.836 2.766 40.0 TTS(Informer+GPT2) 1.995 5.064 43.0 TTS(Transformer+GPT2) 1.963 3.497 41.0 TTS(PatchTST+GPT2) 1.705 3.819 40.5 TTS(FEDformer+GPT2) 2.342 5.923 44.0 TTS(Autoformer+GPT2) 2.432 7.429 45.0 TTS(Crossformer+GPT2) 3.347 19.938 46.0 
+
+Training-free 
+
+ENS(GPT-5+T IMES FM) 0.769 0.660 4.0 ENS(Qwen-3-VL-32B+T IMES FM) 0.901 1.083 23.0 ENS(GPT-OSS-120B+T IMES FM) 0.857 0.787 16.0 ENS(MiMo-V2-Flash+T IMES FM) 0.863 0.739 14.5 ENS(Gemini-3.1-Flash-Lite+T IMES FM) 0.795 0.780 11.5 ENS(Gemma-4-26B-A4B+T IMES FM) 0.877 0.879 19.0 ENS(Gemma-4-31B+T IMES FM) 0.828 0.801 14.5 ENS(Gemini-3.1-Pro+T IMES FM) 0.742 0.637 2.0 ENS(Gemini-3-Flash+T IMES FM) 0.802 0.743 11.5 ENS(Gemini-2.5-Flash+T IMES FM) 0.856 0.852 17.0 REV(GPT-5+T IMES FM) 0.836 0.737 12.0 REV(GPT-OSS-120B+T IMES FM) 0.950 1.331 27.5 REV(Gemini-3.1-Flash-Lite+T IMES FM) 0.827 0.752 12.5 REV(Qwen-3-VL-32B+T IMES FM) 1.356 4.222 40.0 REV(Gemini-3-Flash+T IMES FM) 0.801 0.698 9.0 REV(Gemini-2.5-Flash+T IMES FM) 0.967 1.380 28.5 REV(Gemini-3.1-Pro+T IMES FM) 0.787 0.659 6.0 Rev(Gemma-3-4B+T IMES FM) 0.894 0.883 20.0 
+
+TSLMs TimeOmni-1-7B 0.777 0.673 6.0 Aurora 1.025 1.113 26.5 ChatTS-8B 1.117 1.394 33.0 
+
+LLMs 
+
+GPT-5 0.846 0.809 16.0 Qwen-3-VL-32B 1.163 2.395 36.5 GPT-OSS-120B 1.027 1.177 27.5 MiMo-V2-Flash 1.037 1.068 26.5 Gemini-3.1-Flash-Lite 0.900 1.325 25.0 Gemma-4-26B-A4B 1.090 1.523 34.0 Gemma-4-31B 0.999 1.239 27.5 Gemini-3.1-Pro 0.771 0.702 6.5 Gemini-3-Flash 0.913 0.994 22.5 Gemini-2.5-Flash 1.056 1.447 32.0 Gemma-3-4B 1.306 1.944 36.5 
+
+TSFMs TIMES FM-2.5 0.777 0.673 6.0 Moirai-2.0 0.942 0.905 22.5 Sundial 1.057 1.211 29.5 
+
+Ours POST TIME SFT (Gemma-3-4B) 0.772 0.623 3.5 
+
+POST TIME (Gemma-3-4B+T IMES FM) 0.746 0.597 1.5 
+
+Summary Imp. over T IMES FM-2.5 3.93% 11.24% –
+
+20

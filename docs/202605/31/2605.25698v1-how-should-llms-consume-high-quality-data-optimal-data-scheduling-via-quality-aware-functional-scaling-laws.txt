@@ -1,0 +1,3990 @@
+Title: How Should LLMs Consume High-Quality Data? Optimal Data Scheduling via Quality-Aware Functional Scaling Laws
+
+URL Source: https://arxiv.org/pdf/2605.25698v1
+
+Published Time: Tue, 26 May 2026 02:07:44 GMT
+
+Number of Pages: 28
+
+Markdown Content:
+## How Should LLMs Consume High-Quality Data? Optimal Data Scheduling via Quality-Aware Functional Scaling Laws 
+
+Zhitao Zhu *
+
+Peking University 
+
+> zhuzt@pku.edu.cn
+
+Xili Wang *† 
+
+Peking University 
+
+> xiliwang@stu.pku.edu.cn
+
+Shizhe Wu 
+
+Meituan 
+
+> wushizhe@meituan.com
+
+Jiawei Fu †
+
+Meituan 
+
+> fujiawei06@meituan.com
+
+Xiaoqing Liu 
+
+Meituan 
+
+> liuxiaoqing02@meituan.com
+
+Abstract 
+
+High-quality data is scarce in large language model (LLM) training, yet how to schedule its use jointly with training dynamics lacks theoretical guidance. We extend functional scaling laws (Li et al., 2026) by incorporating a data-quality dimension, and solve the joint data-quality and batch-size scheduling prob-lem in asymptotic closed form. The solution reveals two regimes and a dual role of high-quality data. In the noise-limited regime, high-quality data should be used as a signal ampli-fier: lowering the batch size converts cleaner data into more signal without amplifying noise. In the signal-limited regime, it should be used as a noise suppressor: late placement reduces terminal noise without sacrificing signal accu-mulation. Existing curriculum-style pipelines primarily exploit the second role by placing cleaner data late, but miss the first role because conventional decay schedules reduce update in-tensity exactly when high-quality data becomes available. Guided by this, we propose Drop-Stable-Rampup for LLM midtraining: upon the quality transition, drop the batch size, hold it stable to accumulate signal, then ramp up to suppress terminal noise. On a 15B Mixture-of-Experts model midtrained on 108B tokens, Drop-Stable-Rampup improves average accu-racy over Warmup-Stable-Decay (WSD) by +1.70 and over Cosine-decay by +2.98, with particularly large gains on mathematical rea-soning benchmarks such as GSM8K (+4.23) and MATH (+2.80). 
+
+1 Introduction 
+
+High-quality data, such as textbooks, mathematical proofs and expert-curated code, is the scarcest re-source in LLM training. Multi-stage training has become the standard paradigm: models are pre-trained on massive noisy web data, then midtrained on a limited curated corpus to sharpen capabilities 
+
+> *This work was done during the internship at Meituan.
+> †Correspondence to: Xili Wang and Jiawei Fu.
+
+such as mathematical reasoning, code generation and agentic capabilities (AI@Meta, 2024; Qwen Team, 2025; Kimi Team, 2026). Given a fixed bud-get of high-quality tokens, a fundamental question arises: how should LLMs consume high-quality data? Specifically, at what training stage should it be introduced, and what batch-size or learning-rate schedule should accompany the transition? A natural intuition from curriculum learn-ing (Bengio et al., 2009) suggests placing high-quality data late in training, when the model has sufficient capacity to exploit it. However, Luo et al. (2026) identified a key conflict: conventional sched-ules simultaneously decay the learning rate in later stages, so the model encounters its best data pre-cisely when its learning intensity (effective update magnitude per token) is weakest. This reveals that data scheduling and training dynamics cannot be optimized in isolation—they must be considered jointly. Yet existing theoretical frameworks do not characterize this coupled scheduling problem. We fill this gap by developing a quality-aware functional scaling law (Section 3) that extends Li et al. (2026) to time-varying data quality. In our framework, the excess risk decomposes into a signal-learning term and a noise-accumulation integral that is jointly controlled by the data-quality schedule p(t) and the batch-size schedule b(t). We formulate the joint optimization as a variational problem and derive asymptotic closed-form opti-mal schedules (Theorem 4.3). The solution exhibits two regimes— noise-limited and signal-limited —depending on whether the learning bottleneck is noise accumulation or signal acquisition. Together, the two regimes reveal two complementary uses of high-quality data: late placement and terminal batch-size ramp-up use it as a noise suppressor ,while pairing it with low batch size (or higher learn-ing intensity) uses it as a signal amplifier . Existing curriculum-style schedules mainly exploit the for-mer and miss the latter. 1
+
+> arXiv:2605.25698v1 [cs.LG] 25 May 2026
+
+Translating these theoretical insights into prac-tice, we propose Drop-Stable-Rampup (DSR) for LLM midtraining (Section 5): upon the qual-ity transition, drop the batch size; hold it stable at a low level to accumulate signal; then ramp up to suppress noise. Midtraining is a natural testbed because its limited corpus size makes low batch sizes feasible—a prerequisite that pretrain-ing’s hardware-utilization constraints typically pre-vent. On a 15B Mixture-of-Experts model with 108B tokens, DSR improves average accuracy over WSD (Hu et al., 2024) by +1.70 and over Cosine-decay (Loshchilov and Hutter, 2017) by +2.98. Our contributions are threefold: we derive a quality-aware functional scaling law for time-varying data quality; solve the resulting joint data-quality and batch-size scheduling problem in asymptotic closed form, revealing a noise/signal di-chotomy that resolves the curriculum-versus-decay conflict; and translate the theory into Drop-Stable-Rampup, which improves midtraining of a 15B MoE model across 14 benchmarks. 
+
+2 Preliminaries 
+
+Notation. For two nonnegative functions f, g of an index variable, we write f ≍ g if there exist constants C1, C 2 > 0, independent of the index variable, such that C1f ≤ g ≤ C2f in the relevant range. 
+
+2.1 Feature-space linear regression 
+
+Let x ∈ X be sampled from a distribution D. Let 
+
+ϕ : X → RN be a feature map such that 
+
+ϕ(x) ∼ N (0, H),
+
+where H ∈ RN ×N is the feature covariance ma-trix. We consider the feature-space linear regres-sion model 
+
+f ⋆(x) = ⟨ϕ(x), θ⋆⟩, f (x; θ) = ⟨ϕ(x), θ⟩.
+
+Without loss of generality, we assume that H is diagonalized. Let λ1 ≥ λ2 ≥ · · · ≥ 0 denote its eigenvalues, ordered non-increasingly. This assumption is due to the rotation equivariance of stochastic gradient descent (SGD). 
+
+Assumption 2.1 (Power-law capacity and source conditions) . There exist β > 1 and s > 0 such that 
+
+λj ≍ j−β , |θ⋆j |2 ≍ j−1λs−1 
+
+> j
+
+.
+
+The capacity exponent β controls the decay rate of the eigenvalues. The source exponent s mea-sures the alignment of the target function with the eigenstructure: smaller s corresponds to harder learning problems. These capacity and source con-ditions are standard in the analysis of kernel meth-ods and have recently been adopted in scaling-law studies (Paquette et al., 2024; Lin et al., 2024; Bor-delon et al., 2025; Li et al., 2026). 
+
+2.2 Two-level data-quality model 
+
+We assume that the label is generated as 
+
+y = f ⋆(x) + ϵ, 
+
+where ϵ is a zero-mean noise term that captures la-bel corruption. In practice, training data are drawn from heterogeneous sources of varying reliability. For instance, in large-scale language model train-ing, curated corpora (e.g., textbooks, encyclope-dias) produce labels that are closely aligned with the target distribution, whereas noisy web-crawled text introduces substantially larger deviations. We model this quality heterogeneity through the vari-ance of the label noise: high-quality data corre-spond to small noise variance, and low-quality data correspond to large noise variance. Concretely, the label noise ϵ comes from a two-component mixture: 
+
+ϵ ∼
+
+(N (0 , σ 2good ), high-quality data ,
+
+N (0 , σ 2bad ), low-quality data ,
+
+where 
+
+0 < σ 2good < σ 2bad .
+
+Let p(t) ∈ [0 , 1] be the proportion of high-quality data used at continuous training time t. Then the effective label-noise variance at time t is 
+
+σ2eff (t) := p(t)σ2good + (1 − p(t)) σ2bad .
+
+2.3 One-pass SGD 
+
+The parameter θ is trained by minimizing the pop-ulation risk 
+
+R(θ) := 12 Ex,y 
+
+(f (x; θ) − y)2
+
+via SGD in the one-pass regime: each data point is seen exactly once. We fix a constant learn-ing rate η > 0 and allow the batch size to vary across iterations. Denote the batch-size schedule 
+
+by (B1, B 2, . . . , B K ). We write t = kη for the 2continuous training time and b(t) for the contin-uous interpolation of Bk, i.e., b(kη ) = Bk. At iteration k, a mini-batch of Bk samples is drawn and the parameter is updated as 
+
+θk+1 = θk − ηBkBkX
+
+> i=1
+
+∇θ
+
+12
+
+ f (xk,i ; θk) − yk,i 
+
+2.
+
+(1) This can be decomposed into a population gradient plus noise: 
+
+θk+1 = θk − η ∇R(θk) + ξk
+
+,
+
+where the gradient noise ξk satisfies E[ξk] = 0
+
+and E[ξkξ⊤ 
+
+> k
+
+] = Σ(θk)/B k. Here Σ(θ) denotes the per-sample gradient-noise covariance at θ. We measure performance by the excess risk 
+
+E(θ) := R(θ) − 12 E[ϵ2] = 12 ∥θ − θ⋆∥2 
+
+> H
+
+.
+
+Beyond the batch-size schedule, our setting intro-duces a second control: the data-quality schedule 
+
+p(t) ∈ [0 , 1] ( pk = p(kη )) , governing the frac-tion of high-quality samples at each time in train-ing. The joint schedule (b(t), p (t)) is the object we seek to optimize. The discrete update (1) can be modeled by the following Itô stochastic differen-tial equation (SDE) (Li et al., 2019; Orvieto and Lucchi, 2019; Ankirchner and Perko, 2024): 
+
+d ¯θt = −∇ R( ¯θt) d t+
+
+r ηb(t) Σ( ¯θt)1/2 dWt, (2) where Wt ∈ RN is a standard Brownian motion. The noise covariance satisfies Σ(θ) ≍ (E(θ) + 
+
+σ2eff (t)) H, i.e., it is proportional to H with a scalar prefactor depending only on the excess risk and the effective noise level (Lemma A.1 in Appendix A). This anisotropic noise alignment has been identi-fied in (Mori et al., 2022; Wu et al., 2022; Wang and Wu, 2023); our contribution is the extension to the quality-mixture setting. 
+
+3 Quality-Aware Functional Scaling Law 
+
+3.1 Quality-aware functional scaling law Theorem 3.1 (Quality-aware functional scaling law) . Suppose Assumption 2.1 holds. Assume that 
+
+b(t) ≥ Bmin ≥ 1, p(t) ∈ [0 , 1] is measurable, and the learning rate η > 0 is sufficiently small. Define 
+
+K(t) := ( t + 1) −(2 −1/β ).
+
+Then, for sufficiently large t,
+
+E[E( ¯θt)] ≍ t−s
+
+|{z} 
+
+> signal learning
+
++ η
+
+Z t
+
+> 0
+
+K(t − τ ) σ2eff (τ )
+
+b(τ ) dτ
+
+| {z }
+
+> noise accumulation
+
+.
+
+The proof is in Appendix B, and empirical veri-fication is given in Appendix E.1. 
+
+Remark 3.2 (Relation to prior work) . The above theorem extends the functional scaling law (FSL) of Li et al. (2026) to the data-quality scheduling set-ting. In their original formulation, the label-noise variance σ2 is a fixed constant. Our contribution is to replace the constant σ2 by the time-dependent effective variance σ2eff (t), which couples the data-quality schedule p(t) into the loss dynamics. 
+
+3.2 Variational formulation 
+
+The quality-aware FSL (Theorem 3.1) suggests minimizing the end-of-training excess risk over the training horizon T , batch-size schedule b(t),and data-quality schedule p(t). Let D be the continuous-time total data budget, ρ ∈ (0 , 1) the fraction of high-quality data, r := σ2good /σ 2bad ∈
+
+(0 , 1) the variance ratio, and Bmin ≥ 1 a hardware lower bound on the batch size (e.g., the number of parallel devices). The fully joint scheduling prob-lem is 
+
+min  
+
+> T > 0, b, p
+
+T −s + η
+
+Z T
+
+> 0
+
+K(T − t) σ2eff (t)
+
+b(t) dt
+
+s.t.
+
+Z T
+
+> 0
+
+b(t) d t = D, 
+
+Z T
+
+> 0
+
+p(t)b(t) d t = ρD, b(t) ≥ Bmin , 0 ≤ p(t) ≤ 1.
+
+(3) Define the critical exponent scrit := 1 − 1/β .As we show below, the structure of the optimal schedule depends sharply on whether s > s crit 
+
+(noise-limited regime) or s < s crit (signal-limited regime). 
+
+4 Optimal Data Schedule 
+
+4.1 Optimal data-quality schedule 
+
+We first optimize the data-quality schedule p(t)
+
+with the training horizon T and batch-size sched-ule b(t) fixed. Since σ2eff (t) = p(t)σ2good + (1 −
+
+p(t)) σ2bad is affine in p and the p-independent part 3of the objective is constant, the problem reduces to 
+
+max 
+
+> 0≤p≤1
+
+Z T
+
+> 0
+
+K(T − t) p(t)
+
+b(t) dt
+
+s.t.
+
+Z T
+
+> 0
+
+p(t)b(t) d t = ρD. 
+
+Theorem 4.1 (Optimal quality schedule for fixed batch-size schedule) . Fix T > 0 and b(t) ≥
+
+Bmin . Define the quality-allocation score Sb(t) := 
+
+K(T − t)/b (t)2. Then an optimal data-quality schedule is bang-bang: 
+
+p⋆(t) = 
+
+(
+
+1, Sb(t) > λ, 
+
+0, Sb(t) < λ, 
+
+where λ is the unique threshold satisfying R T 
+
+> 0
+
+p⋆(t)b(t) d t = ρD (fractional values arise only on the level set {t : Sb(t) = λ}). In words, high-quality data should be allocated to the time region where K(T − t)/b (t)2 is largest. 
+
+The proof is given in Appendix C. 
+
+Corollary 4.2 (Quality placement depends on batch-size shape) . The quality-allocation score 
+
+Sb(t) = K(T − t)/b (t)2 determines whether qual-ity placement is determinate or degenerate :(i) If b(t) = D/T is constant, then Sb(t) ∝
+
+K(T − t), which is largest near t = T . The optimal quality schedule is late : high-quality data should be saved for the end of training. (ii) If b(t) = CpK(T − t) with C =
+
+D/ R T
+
+> 0
+
+pK(T − t) d t (the optimal batch-size schedule of Wang et al. (2026) in the noise-limited regime), then Sb(t) = 1 /C 2 is constant. The quality placement is degener-ate : any allocation satisfying the budget con-straint is optimal. 
+
+Corollary 4.2(i) implies that under a constant batch size, high-quality data should be placed late—yet conventional training simultaneously de-cays the learning rate in this phase, reducing the model’s ability to exploit the high-quality data. This is consistent with the empirical finding of Luo et al. (2026) that learning rate decay conflicts with curriculum-based data scheduling. Empirical verification of Corollary 4.2 (constant batch and b(t) = CpK(T − t)) is provided in Appendix E.2. 
+
+4.2 Main theory 
+
+We now solve the fully joint problem (3) , opti-mizing T , b(t), and p(t) simultaneously. Write 
+
+B := Bmin , γ := 2 − 1/β , and define 
+
+κ := σ2good σ2bad 
+
+(1 − ρ)σ2good + ρσ 2bad 
+
+.
+
+Let IT := R T
+
+> 0
+
+pK(u) d u.
+
+Theorem 4.3 (Asymptotically optimal joint sched-ule) . Suppose Assumption 2.1 holds. The following schedules are asymptotically optimal as D → ∞ .
+
+(I) Noise-limited regime ( s > 1 − 1/β ). The con-straint b(t) ≥ B is asymptotically inactive. The optimal quality schedule is bang-bang: 
+
+p⋆(t) = 1S (t)
+
+for a measurable set S ⊂ [0 , T ⋆] satisfying 
+
+Z
+
+> S
+
+pK(T ⋆ −t) d t = ρκ σ2good 
+
+IT ⋆ .
+
+Any such S is equally optimal (quality placement is degenerate). The optimal batch-size schedule is 
+
+b⋆(t) = 
+
+(
+
+CpK(T ⋆ −t), t / ∈ S, rC pK(T ⋆ −t), t ∈ S, 
+
+where C = Dσ 2bad /(κ I T ⋆ ). The optimal training horizon satisfies 
+
+T ⋆ =
+
+ sD 
+
+4βηκ 
+
+ 1
+
+> s+1 /β
+
+(1 + o(1)) ,
+
+and the optimal excess risk satisfies 
+
+E[E( ¯θT ⋆ )] ≍ D− sβ  
+
+> 1+ sβ
+
+.
+
+(II) Signal-limited regime ( s < 1 − 1/β ). The con-straint b(t) ≥ B is active. The optimal schedule has the strict-switching form: 1. Low-quality, flat : p⋆ = 0 , b⋆ = B for t ∈
+
+[0 , T ⋆ 
+
+> 1
+
+).2. High-quality, flat : p⋆ = 1 , b⋆ = B for t ∈
+
+[T ⋆ 
+
+> 1
+
+, T ⋆ 
+
+> 1
+
++T ⋆ 
+
+> 3
+
+).3. High-quality, ramp-up (duration T ⋆ 
+
+> 4
+
+:= T ⋆ −
+
+T ⋆ 
+
+> 1
+
+−T ⋆ 
+
+> 3
+
+): p⋆ = 1 , b⋆(t) = B  T ⋆−t+1   
+
+> T⋆
+> 4+1
+
+1/(2 β)−1
+
+for t ∈ [T ⋆ 
+
+> 1
+
++T ⋆ 
+
+> 3
+
+, T ⋆].
+
+4The phase durations are determined as follows. Phase 1 exhausts all low-quality data: 
+
+T ⋆ 
+
+> 1
+
+= (1 − ρ) DB .
+
+Phase 3 (the ramp-up) has duration 
+
+T ⋆ 
+
+> 4
+
+= ησ 2good 
+
+sB s+2 
+
+!1/γ 
+
+D s+1  
+
+> γ
+
+(1 + o(1)) .
+
+Phase 2 occupies the remainder: T ⋆ 
+
+> 3
+
+= T ⋆ − T ⋆ 
+
+> 1
+
+−
+
+T ⋆ 
+
+> 4
+
+, where the total horizon satisfies 
+
+T ⋆ = DB − (2 β − 1) T ⋆ 
+
+> 4
+
++ o(T ⋆ 
+
+> 4
+
+).
+
+The optimal excess risk satisfies 
+
+E[E( ¯θT ⋆ )] ≍ BsD−s.
+
+The proof is in Appendix D; the critical case s =1 − 1/β , which lies outside the regime dichotomy above, is discussed separately in Remark D.2. We verify Theorem 4.3 by comparing four strategies that share the same total data budget D and high-quality fraction ρ:• Constant b + uniform p: b(t) = D/T ,
+
+p(t) = ρ (naive baseline). • Constant b + late p: b(t) = D/T , bang-bang quality placed late. • Uniform p + optimal b: p(t) = ρ, b(t) = max( CpK(T −t), B ).• Joint optimal : simultaneously optimal (b, p )
+
+from Theorem 4.3. Figure 1 confirms that the joint optimal strategy achieves the lowest final risk in both regimes. In the noise-limited regime, the joint schedule outperforms batch-only optimization by exploit-ing the batch-size drop at the quality transition; in the signal-limited regime, it outperforms the other three strategies through the three-phase struc-ture. Full experimental details are given in Ap-pendix E.3. 
+
+Scaling-law verification. Theorem 4.3 predicts that the optimal excess risk scales as E[E( ¯θT ⋆ )] ≍
+
+D−sβ/ (1+ sβ ) in the noise-limited regime and 
+
+E[E( ¯θT ⋆ )] ≍ BsD−s in the signal-limited regime. To verify this, we sweep the total data budget 
+
+D and measure the final excess risk achieved by each strategy. The signal-limited regime uses a smaller data range because its signal-constrained dynamics require longer per-sample training hori-zons ( T ∝ D/B ), making large budgets computa-tionally expensive. Figure 2 shows that the joint optimal strategy closely tracks the predicted power-law exponent in both regimes ( −0.81 vs. theory 
+
+−0.80 for noise-limited; −0.51 vs. theory −0.50 
+
+for signal-limited), while suboptimal strategies ex-hibit shallower scaling. 
+
+4.3 Interpreting the joint optimum 
+
+The key difference from original FSL is that the quality-aware FSL introduces data quality as an additional control variable. Instead of treating the noise level as fixed, the schedule can decide when to allocate high-quality, low-noise data through 
+
+p(t). This extra degree of freedom can be used in two dual ways: it can be converted into more optimization steps at a comparable noise scale, or into a lower noise scale at a comparable number of optimization steps. 
+
+Noise-limited regime ( s > 1 − 1/β ): qual-ity as more signal. In this regime, the noise-accumulation integral is the bottleneck. The batch-only optimum (Wang et al., 2026) controls noise by ramping up the batch size, but it treats all data as having the same noise level. Once high-quality data is available, the joint optimum lowers the batch size during the low-noise phase. In particular, when en-tering the high-quality region S, the optimal batch size drops by a factor r = σ2good /σ 2bad , so that 
+
+σ2good /b ⋆|S = σ2bad /b ⋆|Sc .
+
+Thus, the local noise-injection rate remains compa-rable across quality phases, but the smaller batch size yields more optimization steps. In the noise-limited regime, high-quality data is therefore used to obtain more signal at roughly the same noise scale. 
+
+Signal-limited regime ( s < 1 − 1/β ): quality as lower noise. In this regime, the signal term t−s
+
+is the bottleneck, so the optimal schedule must pre-serve as many optimization steps as possible. Both the batch-only and joint optima therefore spend most of training at the minimum batch size Bmin .Since the update count is already maximized, the joint optimum uses high-quality data in a different way: it places low-noise data late in training. This curriculum placement lowers the noise scale of late-stage updates without changing the leading-order signal-accumulation mechanism. In the signal-limited regime, high-quality data is therefore used to reduce noise at comparable signal accumulation. 50.0 0.5 1.0 1.5 2.0 
+
+> 1e5
+
+10 6
+
+10 5
+
+10 4
+
+10 3
+
+10 2
+
+10 1           
+
+> Excess Risk
+> Easy regime ( s= 2 ,= 2 )
+> Constant b+ uniform p
+> Constant b+ late p
+> Uniform p+ optimal b
+> Joint optimal
+
+0.00 0.25 0.50 0.75 1.00 
+
+10 2
+
+10 3
+
+10 4         
+
+> Batch size  b(t)
+> Constant b+ uniform p
+> Constant b+ late p
+> Uniform p+ optimal b
+> Joint optimal
+
+0.00 0.25 0.50 0.75 1.00 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0                
+
+> Quality  p(t)
+> Constant b+ uniform p
+> Constant b+ late p
+> Uniform p+ optimal b
+> Joint optimal
+> Const b
+> unif p
+> Const b
+> late p
+> Unif p
+> opt b
+> Joint
+> optimal
+
+10 6
+
+10 5
+
+> Final Excess Risk
+
+0.00 0.25 0.50 0.75 1.00   
+
+> Cumulative samples D1e4
+
+10 2
+
+10 1           
+
+> Excess Risk
+> Hard regime ( s= 0.5 ,= 3 )
+> Constant b+ uniform p
+> Constant b+ late p
+> Uniform p+ optimal b
+> Joint optimal
+
+0.00 0.25 0.50 0.75 1.00  
+
+> Normalized time t/T
+
+10 1
+
+10 2              
+
+> Batch size  b(t)
+> Bmin
+> 0.95 0.96 0.97 0.98 0.99 1.00
+> 10 1
+> 10 2
+> Constant b+ uniform p
+> Constant b+ late p
+> Uniform p+ optimal b
+> Joint optimal
+
+0.00 0.25 0.50 0.75 1.00  
+
+> Normalized time t/T
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0                
+
+> Quality  p(t)
+> Constant b+ uniform p
+> Constant b+ late p
+> Uniform p+ optimal b
+> Joint optimal
+> Const b
+> unif p
+> Const b
+> late p
+> Unif p
+> opt b
+> Joint
+> optimal
+> Strategy
+
+0.000 
+
+0.002 
+
+0.004 
+
+0.006 
+
+0.008 
+
+0.010 
+
+0.012 
+
+> Final Excess Risk
+
+Figure 1: Verification of Theorem 4.3. Top: noise-limited ( s = 2 , β = 2 ); bottom: signal-limited ( s = 0 .5, β = 3 ). Four strategies share the same total data budget D and high-quality fraction ρ: (1) constant b + uniform p (baseline), (2) constant b + late p, (3) uniform p + optimal b, (4) joint optimal (Theorem 4.3). Columns show loss dynamics, batch-size schedules, data-quality schedules, and final excess risk. The joint optimal strategy achieves the lowest final risk in both regimes. 50k 100k 200k 400k                                    
+
+> Total data budget D
+> 10 6
+> 10 5
+> 10 4
+> Final Excess Risk  E(T )
+> Easy regime ( s= 2 ,= 2 )
+> D0.8 (theory)
+> Constant b+ uniform p
+> Constant b+ late p
+> Uniform p+ optimal b
+> Joint optimal
+> 2k 5k 10k 20k
+> Total data budget D
+> 10 2
+> Final Excess Risk  E(T )
+> Hard regime ( s= 0.5 ,= 3 )
+> D0.5 (theory)
+> Constant b+ uniform p
+> Constant b+ late p
+> Uniform p+ optimal b
+> Joint optimal
+
+Figure 2: Scaling-law verification of Theorem 4.3. Final excess risk vs. total data budget D (log-log scale). Left: noise-limited regime ( s = 2 , β = 2 , theory: D−0.8); right: signal-limited regime ( s = 0 .5, β = 3 , theory: 
+
+D−0.5). The joint optimal strategy matches the pre-dicted power-law scaling in both regimes. 
+
+Unifying principle. The two regimes show the same signal-noise trade-off from opposite sides. When noise is the bottleneck, high-quality data is converted into more signal without increasing noise. When signal is the bottleneck, high-quality data is converted into lower noise without sacrificing signal. As we will detail in Section 5, this duality motivates Drop-Stable-Rampup: drop the batch size after the quality transition to exploit low-noise data for more updates, keep it low to accumulate signal, and ramp up at the end to suppress terminal noise. 
+
+5 From Theory to Practice: Large-Scale LLM Experiments 
+
+5.1 The Drop-Stable-Rampup recipe 
+
+Building on Section 4.3, we instantiate the joint optimum at the pretraining-to-midtraining qual-ity transition. A single LLM training run must serve capabilities that may fall into different em-pirical regimes: general knowledge and fluency often behave as noise-limited, whereas mathemati-cal reasoning and some code-generation tasks ex-hibit signal-limited trajectories. Since midtrain-ing uses a much smaller curated corpus than pre-training, low-batch training is feasible on exist-ing hardware. This allows us to go beyond con-ventional curriculum learning with learning rate decay—which exploits high-quality data only for noise reduction. We additionally accumulate signal through increased update intensity. This leads to 
+
+Drop-Stable-Rampup :1. Drop : cut the batch size at the quality transition—accumulating signal via more gra-dient steps under low-noise conditions. 2. Stable : hold Bmin for a period—maximizing signal acquisition for signal-limited capabili-ties. 3. Rampup : linearly grow the batch size (equiv-alently decay the learning rate (Smith et al., 2018))—suppressing accumulated noise for final convergence. 6Setup. We evaluate on a Mixture-of-Experts (MoE) model with 15B total parameters and 2.4B active parameters, adopting the shortcut-connected MoE architecture of Cai et al. (2025). All experi-ments are initialized from a checkpoint pretrained on 1.2T tokens and conducted under a fixed budget of 108B tokens. All schedules are token-budget matched. Detailed model architecture, optimizer settings, and data composition are provided in Ap-pendix F. We structure our evaluation into three parts: (1) verifying the batch-size drop effect across data corpora, (2) determining the optimal stable-phase ratio, (3) comparing Drop-Stable-Rampup (DSR) schedule against conventional baselines. 
+
+5.2 Verifying the effectiveness of dropping batch size 
+
+Theorem 4.3(I) predicts that when transitioning to low-noise data, the batch size should drop propor-tionally. To test whether this structural prediction transfers to LLMs, we compare three batch-size schedules: (1) Constant 4k, (2) Ramp-up 4k →8k, and (3) Drop 1k →8k (i.e., dropping from the pre-training batch size of 4k down to 1k at the tran-sition, then ramping to 8k). We test each on two corpora: pretraining data and midtraining data (see Appendix F.2 for details). 40 20 0 20 40 60 80 100            
+
+> Tokens consumed (B)
+> 1024
+> 2048
+> 3072
+> 4096
+> 5120
+> 6144
+> 7168
+> 8192
+> Global batch size
+> Pretrain
+> (tail)
+> Midtraining
+> Batch-size schedules
+> Const 4k
+> Ramp 4k 8k
+> Drop 1k 8k 020 40 60 80 100
+> Tokens consumed (B)
+> 30.0
+> 32.5
+> 35.0
+> 37.5
+> 40.0
+> 42.5
+> 45.0
+> 47.5
+> 50.0
+> Overall accuracy (%)
+> Const 4k (pretrain)
+> Ramp 4k 8k (pretrain)
+> Drop 1k 8k (pretrain)
+> Const 4k (midtrain)
+> Ramp 4k 8k (midtrain)
+> Drop 1k 8k (midtrain)
+
+Figure 3: Batch-size schedules and overall accuracy curves for pretraining and midtraining corpora. 
+
+As shown in Table 1 and Figure 3, the results exhibit a sharp dichotomy that aligns with our the-oretical predictions. On the pretraining corpus, the monotonic Ramp-up achieves the best overall per-formance (33.79), with Drop trailing slightly at 33.24. This is consistent with our theory: on pre-training data, the noise level σ2eff remains uniformly high, so the signal-accumulation benefit of smaller batch sizes cannot compensate for the increased noise injection. Without a quality transition, the Ramp-up remains preferable. However, on the high-quality midtraining corpus—where the transition from pretraining to curated data creates precisely the noise drop our theory addresses—the trend reverses. Drop 1k →8k achieves the best overall score (49.07), outper-forming the Ramp-up baseline by +1.36. The gains are broad-based, with notable improvements on GSM8K (+4.85), MATH (+3.86), and CRUX-O (+2.25), consistent with the prediction that drop-ping the batch size at a quality transition yields more gradient steps for signal accumulation under low-noise conditions. 
+
+5.3 Determining the optimal stable-phase ratio 0.0% 12.4% 24.9% 37.3% 49.7% 62.1%           
+
+> stable-phase token ratio
+> 0.785
+> 0.790
+> 0.795
+> 0.800
+> 0.805
+> 0.810
+> final validation loss
+> MMLU
+> CMMLU
+> Average 40 20 020 40 60 80 100
+> Tokens consumed (B)
+> 512
+> 1024
+> 2048
+> 3072
+> 4096
+> Global batch size
+> Pretrain (tail) Midtraining
+> Stable phase Rampup phase Decay phase
+> Batch size & learning rate across midtraining schedules
+> Cosine-decay
+> WSD
+> Drop-Stable-Rampup
+> solid = batch size
+> dashed = learning rate
+> 0
+> 4.2e-05
+> 3.25e-04
+> 6.51e-04
+> Learning rate
+
+Figure 4: The final validation loss vs. stable-phase ratio (top) and schedule trajectories (bottom). 
+
+Theorem 4.3(II) predicts the existence of a flat low-batch-size phase before the terminal ramp-up, with an asymptotic duration that depends on problem-dependent constants ( s, β, σ2good ) not di-rectly observable in LLM training. We therefore tune the stable-phase ratio empirically, scaling the batch-size bounds to [512, 4096] and varying the 7Table 1: Unified 15B MoE ablation results. Bold indicates the best result within each comparison block.                                                                                                                                                      
+
+> Category Benchmark Pretraining Corpus Midtraining Corpus Midtraining Schedule
+> 4k 4k →8k 1k →8k 4k 4k →8k 1k →8k Cos WSD DSR Knowledge MMLU 54.29 56.05 54.92 64.90 65.35 66.40 65.88 66.58 67.27
+> MMLU-Pro 23.61 24.21 26.29 38.11 37.46 39.07 40.04 40.96 41.89
+> CMMLU 59.25 60.57 60.00 66.02 66.07 67.01 67.43 67.61 68.59
+> C-Eval 57.89 59.96 59.99 65.61 66.71 67.37 67.84 68.09 68.24
+> Reasoning ARC-c 67.50 69.50 67.00 74.50 76.00 77.50 78.50 80.50 81.00
+> BBH 36.70 38.03 38.34 51.68 50.30 49.60 48.13 52.19 53.92
+> Math GSM8K 27.56 29.72 26.64 61.74 61.89 66.74 62.97 65.59 69.82
+> MATH 9.20 9.38 9.74 30.48 32.22 36.08 33.98 36.86 39.66
+> Code HE+ 20.12 21.95 21.95 41.46 45.12 43.90 43.29 46.95 49.39
+> BCB 21.23 23.95 22.46 35.09 37.02 39.04 40.00 35.79 38.60 LCB 3.30 3.30 3.74 11.01 12.33 12.78 9.47 12.33 13.88
+> CRUX-I 30.38 28.12 28.75 36.12 37.38 38.50 36.88 38.25 39.75
+> CRUX-O 28.12 28.62 27.25 35.62 37.50 39.75 40.38 40.00 40.88
+> MultiPL-E 17.26 19.74 18.34 41.11 42.54 43.30 43.95 44.87 47.53 Overall 32.60 33.79 33.24 46.68 47.71 49.07 48.48 49.76 51.46
+
+token ratio allocated to the stable phase (0%–62%) under the fixed 108B budget. The schedule has three phases: stable (batch size fixed at 512), ramp-up (linear increase 512 →4096), and decay (learn-ing rate linear decay equivalent to batch size linear growth (Smith et al., 2018)). We fix equal token allocation for the ramp-up and decay phases and sweep only the stable ratio. We select the stable ratio using validation loss on MMLU and CMMLU. As shown in Figure 4, vali-dation loss exhibits a U-shaped curve with optimal performance at a stable ratio of 24.9%. A too-short stable phase skips the signal-accumulation phase; a too-long stable phase leaves insufficient budget for the terminal ramp-up needed for noise suppression. The two validation sets also exhibit different prefer-ences: MMLU benefits from a longer stable phase, suggesting stronger signal-accumulation sensitiv-ity, whereas CMMLU degrades under overly long stable phases, suggesting greater reliance on noise suppression. Notably, every stable-ratio configura-tion in this sweep exceeds both WSD and Cosine-decay baselines on overall accuracy, demonstrating the robustness of the Drop-Stable-Rampup strategy (see Figure 8 for details). 
+
+5.4 Main results: schedule comparison 
+
+In this section, the Drop-Stable-Rampup schedule (with the optimal 24.9% stable ratio) is compared against two widely adopted baselines: Cosine-decay (Loshchilov and Hutter, 2017) and WSD (Hu et al., 2024). Both baselines use a constant batch size of 4096, consuming the same 108B token bud-get (see Figure 4 for schedule trajectories). Results are summarized in Table 1, with further trajectory details provided in Figure 9. Drop-Stable-Rampup achieves the highest over-all score of 51.46, outperforming WSD (49.76) and Cosine-decay (48.48). The largest gains appear on mathematical reasoning and algo-rithmic code generation: GSM8K (+4.23 over WSD), MATH (+2.80), HumanEval+ (+2.44), and MultiPL-E (+2.66). These benchmarks also exhibit the smallest early-phase gaps—DSR stays close to WSD during the stable phase and overtakes it during ramp-up—suggesting that the extended low-batch-size phase accumulates latent capacity that manifests after noise suppression. We provide a detailed per-benchmark analysis in Appendix G. 
+
+6 Conclusion 
+
+We study how LLMs should consume scarce high-quality data. By solving the joint data-quality and batch-size scheduling problem in asymptotic closed form, we show that optimal training schedules must jointly coordinate data quality and batch size. The resulting joint optimum reveals two regimes, but 8a shared principle: low-batch training after a qual-ity transition accumulates signal, while late high-quality placement and terminal batch-size ramp-up suppress noise. This principle leads to Drop-Stable-Rampup, which improves LLM midtraining over standard schedules. More broadly, our results sug-gest that high-quality data should not merely be added to training; it should change how compute is allocated. 
+
+Limitations 
+
+Theoretical simplification. Our analysis is built on feature-space linear regression with Gaussian features and power-law spectral decay. While this modeling framework is standard in the scaling-law literature and has been useful for deriving qualita-tive predictions about training dynamics, it does not capture key aspects of LLM training: nonlinear fea-ture learning, multi-layer compositional representa-tions, and attention-based context dependence. Fur-thermore, the two-level data-quality model ( σ2good 
+
+vs. σ2bad ) is a stylized abstraction; real training cor-pora exhibit a continuous quality spectrum, and what constitutes “quality” is itself task-dependent. Extending the theory to richer noise models and nonlinear dynamics remains an important direction. 
+
+Multi-task heterogeneity. Our framework mod-els data quality as a single scalar dimension (low-noise vs. high-noise), but LLM training is inher-ently multi-task: different data domains (math, code, knowledge) correspond to distinct subtasks with potentially different optimal schedules. As our empirical trajectory analysis shows (Appendix G), benchmarks differ substantially in their early-phase gaps and delayed gains, and a single schedule must compromise across these heterogeneous dynamics. A more fine-grained theory that jointly optimizes per-domain data mixtures {pi(t)} together with the batch-size b(t) (or learning rate η(t)) schedule would better capture this heterogeneity, but remains an open problem. 
+
+Scale dependence of optimal hyperparameters. 
+
+Our theory and experiments are conducted at a sin-gle model scale. As model size grows, the balance between signal accumulation and noise suppression may shift, potentially requiring different drop mag-nitudes, stable-phase durations, or ramp-up rates. Whether the specific hyperparameter choices (e.g., the batch-size drop factor, the 24.9% stable ratio) transfer to larger models, or how they should be adapted, remains an open question that our current framework does not address. 
+
+Experimental scope and overhead. We validate Drop-Stable-Rampup on a single architecture (15B MoE with 2.4B active parameters) under one mid-training setting (108B tokens from a fixed pre-train checkpoint); full details are in Appendix F. Whether the gains transfer to dense architectures, different model scales, or substantially different data budgets has not been tested. Additionally, the low-batch-size stable phase reduces hardware uti-lization in our setup, incurring a 1.1× wall-clock overhead. This overhead is specific to our infras-tructure configuration (Appendix F); different par-allelism strategies or hardware may yield different ratios. In the midtraining regime, this trade-off may be acceptable when curated data is the binding constraint rather than compute, but its practical-ity depends on the available hardware and training infrastructure. 
+
+References         
+
+> AI@Meta. 2024. The Llama 3 herd of models. arXiv preprint arXiv:2407.21783 .Stefan Ankirchner and Stefan Perko. 2024. A compari-son of continuous-time approximations to stochastic gradient descent. Journal of Machine Learning Re-search , 25(13):1–55. Yoshua Bengio, Jérôme Louradour, Ronan Collobert, and Jason Weston. 2009. Curriculum learning. In In-ternational Conference on Machine Learning , pages 41–48. Blake Bordelon, Alexander Atanasov, and Cengiz Pehle-van. 2025. How feature learning can improve neural scaling laws. Journal of Statistical Mechanics: The-ory and Experiment , 2025(8):084002. Weilin Cai, Juyong Jiang, Le Qin, Junwei Cui, Sunghun Kim, and Jiayi Huang. 2025. Shortcut-connected expert parallelism for accelerating mixture of experts. In International Conference on Machine Learning .Federico Cassano, John Gouwar, Daniel Nguyen, Syd-ney Nguyen, Luna Phipps-Costin, Donald Pinckney, Ming-Ho Yee, Yangtian Zi, Carolyn Jane Anderson, Molly Q. Feldman, Arjun Guha, Michael Greenberg, and Abhinav Jangda. 2023. MultiPL-E: A scalable and polyglot approach to benchmarking neural code generation. IEEE Transactions on Software Engi-neering , 49(7):3675–3691. Peter Clark, Isaac Cowhey, Oren Etzioni, Tushar Khot, Ashish Sabharwal, Carissa Schoenick, and Oyvind Tafjord. 2018. Think you have solved question an-swering? try ARC, the AI2 reasoning challenge.
+> arXiv preprint arXiv:1803.05457 .
+
+9Karl Cobbe, Vineet Kosaraju, Mohammad Bavarian, Mark Chen, Heewoo Jun, Lukasz Kaiser, Matthias Plappert, Jerry Tworek, Jacob Hilton, Reiichiro Nakano, Christopher Hesse, and John Schulman. 2021. Training verifiers to solve math word prob-lems. arXiv preprint arXiv:2110.14168 .Alex Gu, Baptiste Roziere, Hugh James Leather, Ar-mando Solar-Lezama, Gabriel Synnaeve, and Sida Wang. 2024. CRUXEval: A benchmark for code reasoning, understanding and execution. In Interna-tional Conference on Machine Learning .Dan Hendrycks, Collin Burns, Steven Basart, Andy Zou, Mantas Mazeika, Dawn Song, and Jacob Steinhardt. 2021a. Measuring massive multitask language under-standing. In International Conference on Learning Representations .Dan Hendrycks, Collin Burns, Saurav Kadavath, Akul Arora, Steven Basart, Eric Tang, Dawn Song, and Jacob Steinhardt. 2021b. Measuring mathematical problem solving with the MATH dataset. In Ad-vances in Neural Information Processing Systems Datasets and Benchmarks Track .Shengding Hu, Yuge Tu, Xu Han, Ganqu Cui, Chaoqun He, Weilin Zhao, Xiang Long, Zhi Zheng, Yewei Fang, Yuxiang Huang, Xinrong Zhang, Zhen Leng Thai, Chongyi Wang, Yuan Yao, Chenyang Zhao, Jie Zhou, Jie Cai, Zhongwu Zhai, Ning Ding, and 5 oth-ers. 2024. MiniCPM: Unveiling the potential of small language models with scalable training strategies. In 
+
+Conference on Language Modeling .Yuzhen Huang, Yuzhuo Bai, Zhihao Zhu, Junlei Zhang, Jinghan Zhang, Tangjun Su, Junteng Liu, Chuancheng Lv, Yikai Zhang, Jiayi Lei, Yao Fu, Maosong Sun, and Junxian He. 2023. C-Eval: A multi-level multi-discipline chinese evaluation suite for foundation models. In Advances in Neural Infor-mation Processing Systems .Naman Jain, King Han, Alex Gu, Wen-Ding Li, Fanjia Yan, Tianjun Zhang, Sida Wang, Armando Solar-Lezama, Koushik Sen, and Ion Stoica. 2025. Live-codebench: Holistic and contamination free evalua-tion of large language models for code. In Interna-tional Conference on Learning Representations .Kimi Team. 2026. Kimi K2.5: Visual agentic intelli-gence. arXiv preprint arXiv:2602.02276 .Binghui Li, Fengling Chen, Zixun Huang, Lean Wang, and Lei Wu. 2026. Functional scaling laws in kernel regression: Loss dynamics and learning rate sched-ules. Advances in Neural Information Processing Systems , 38:101211–101269. Haonan Li, Yixuan Zhang, Fajri Koto, Yifei Yang, Hai Zhao, Yeyun Gong, Nan Duan, and Timothy Bald-win. 2024. CMMLU: Measuring massive multitask language understanding in chinese. In Findings of the Association for Computational Linguistics: ACL 2024 , pages 11260–11285. Qianxiao Li, Cheng Tai, and Weinan E. 2019. Stochas-tic modified equations and dynamics of stochas-tic gradient algorithms I: Mathematical foundations. 
+
+Journal of Machine Learning Research , 20(40):1–47. Licong Lin, Jingfeng Wu, Sham M Kakade, Peter L Bartlett, and Jason D Lee. 2024. Scaling laws in linear regression: Compute, parameters, and data. 
+
+Advances in Neural Information Processing Systems ,37:60556–60606. Jiawei Liu, Chunqiu Steven Xia, Yuyao Wang, and Lingming Zhang. 2023. Is your code generated by ChatGPT really correct? rigorous evaluation of large language models for code generation. Advances in Neural Information Processing Systems , 36:21558– 21572. Ilya Loshchilov and Frank Hutter. 2017. SGDR: Stochastic gradient descent with warm restarts. In In-ternational Conference on Learning Representations .Ilya Loshchilov and Frank Hutter. 2019. Decoupled weight decay regularization. In International Confer-ence on Learning Representations .Kairong Luo, Zhenbo Sun, Haodong Wen, Xinyu Shi, Jiarui Cui, Chenyi Dang, Kaifeng Lyu, and Wen-guang Chen. 2026. How learning rate decay wastes your best data in curriculum-based LLM pretraining. In International Conference on Learning Representa-tions .Takashi Mori, Liu Ziyin, Kangqiao Liu, and Masahito Ueda. 2022. Power-law escape rate of SGD. In In-ternational Conference on Machine Learning , pages 15959–15975. Antonio Orvieto and Aurelien Lucchi. 2019. Continuous-time models for stochastic optimization algorithms. Advances in Neural Information Processing Systems , 32. Elliot Paquette, Courtney Paquette, Lechao Xiao, and Jeffrey Pennington. 2024. 4+3 phases of compute-optimal neural scaling laws. Advances in Neural Information Processing Systems , 37:16459–16537. Qwen Team. 2025. Qwen3 technical report. arXiv preprint arXiv:2505.09388 .Mohammad Shoeybi, Mostofa Patwary, Raul Puri, Patrick LeGresley, Jared Casper, and Bryan Catan-zaro. 2019. Megatron-LM: Training multi-billion parameter language models using model parallelism. 
+
+arXiv preprint arXiv:1909.08053 .Samuel L. Smith, Pieter-Jan Kindermans, Chris Ying, and Quoc V. Le. 2018. Don’t decay the learning rate, increase the batch size. In International Conference on Learning Representations .Mirac Suzgun, Nathan Scales, Nathanael Schärli, Se-bastian Gehrmann, Yi Tay, Hyung Won Chung, Aakanksha Chowdhery, Quoc Le, Ed Chi, Denny Zhou, and Jason Wei. 2023. Challenging Big-Bench 
+
+10 tasks and whether Chain-of-Thought can solve them. In Findings of the Association for Computational Linguistics: ACL 2023 , pages 13003–13051. Jinbo Wang, Binghui Li, Zhanpeng Zhou, Mingze Wang, Yuxuan Sun, Jiaqi Zhang, Xunliang Cai, and Lei Wu. 2026. Fast catch-up, late switching: Optimal batch size scheduling via functional scaling laws. In Inter-national Conference on Learning Representations .Mingze Wang and Lei Wu. 2023. A theoretical analy-sis of noise geometry in stochastic gradient descent. 
+
+arXiv preprint arXiv:2310.00692 .Yubo Wang, Xueguang Ma, Ge Zhang, Yuansheng Ni, Abhranil Chandra, Shiguang Guo, Weiming Ren, Aaran Arulraj, Xuan He, Ziyan Jiang, Tianle Li, Max Ku, Kai Wang, Alex Zhuang, Rongqi Fan, Xiang Yue, and Wenhu Chen. 2024. MMLU-Pro: A more robust and challenging multi-task language understanding benchmark. Advances in Neural Information Pro-cessing Systems , 37:95266–95290. Lei Wu, Mingze Wang, and Weijie Su. 2022. The align-ment property of SGD noise and how it helps select flat minima: A stability analysis. Advances in Neural Information Processing Systems , 35:4680–4693. Terry Yue Zhuo, Minh Chien Vu, Jenny Chim, Han Hu, Wenhao Yu, Ratnadira Widyasari, Imam Nur Bani Yusuf, Haolan Zhan, Junda He, Indraneil Paul, Si-mon Brunner, Chen Gong, Thong Hoang, Armel Zebaze, Xiaoheng Hong, Wen-Ding Li, Jean Kad-dour, Ming Xu, Zhihan Zhang, and 14 others. 2025. BigCodeBench: Benchmarking code generation with diverse function calls and complex instructions. In 
+
+International Conference on Learning Representa-tions .
+
+11 A Gradient-Noise Covariance 
+
+Let 
+
+e = θ − θ⋆.
+
+For one sample, the stochastic gradient is 
+
+g(θ; x, y ) =  ⟨ϕ(x), θ⟩ − yϕ(x)=  ⟨ϕ(x), e⟩ − ϵϕ(x).
+
+Taking expectation over x and ϵ, and using 
+
+E[ϕ(x)] = 0, we obtain E[g(θ; x, y )] = He , con-firming that the stochastic gradient is unbiased. The covariance of the single-sample gradient noise at time t is 
+
+Σ(θ) = Cov  (⟨ϕ(x), e⟩ − ϵ)ϕ(x).
+
+Since the label noise is independent of x,
+
+Σ(θ) = Cov  ⟨ϕ(x), e⟩ϕ(x) + σ2eff (t)H.
+
+Lemma A.1 (Quality-aware anisotropic noise) .
+
+For any θ ∈ RN and any time t, the single-sample gradient-noise covariance satisfies 
+
+v⊤ 
+
+> j
+
+Σ(θ)vj ≍ λj
+
+ E(θ) + σ2eff (t),
+
+where vj is the eigenvector of H with eigenvalue 
+
+λj , and the constants are independent of j, t, and 
+
+θ.Proof. Since ϕ(x) ∼ N (0, H), Wick’s formula gives 
+
+Eϕ(x)ϕ(x)⊤ee ⊤ϕ(x)ϕ(x)⊤
+
+= 2 Hee ⊤H + ( e⊤He )H.
+
+Therefore, 
+
+Cov  ⟨ϕ(x), e⟩ϕ(x) =Eϕϕ ⊤ee ⊤ϕϕ ⊤
+
+− Hee ⊤H
+
+=Hee ⊤H + ( e⊤He )H.
+
+Since e⊤He = 2 E(θ), we have 
+
+Σ(θ) = Hee ⊤H + 2 E(θ)H + σ2eff (t)H.
+
+The lower bound follows from Hee ⊤H ⪰ 0. For the upper bound, we have 
+
+Hee ⊤H ⪯ (e⊤He )H = 2 E(θ)H.
+
+Hence 
+
+Σ(θ) ⪯  4E(θ) + σ2eff (t)H.
+
+This proves the lemma. 
+
+B Proof of Theorem 3.1 
+
+Proof. Let et = ¯θt−θ⋆. Without loss of generality, assume zero initialization ¯θ0 = 0, so that e0 =
+
+−θ⋆ and e20,j = |θ⋆j |2. Since ∇R( ¯θt) = He t,the SDE (2) decouples coordinate-wise: each et,j 
+
+satisfies a scalar Ornstein-Uhlenbeck equation with decay rate λj . Integrating via Duhamel’s formula yields 
+
+et,j = e−λj te0,j 
+
++
+
+Z t
+
+> 0
+
+e−λj (t−τ )
+
+r ηb(τ )
+
+Σ( ¯θτ )1/2 dWτ
+
+ 
+
+> j
+
+.
+
+By Itô isometry, 
+
+E[e2 
+
+> t,j
+
+] = e−2λj te20,j 
+
++
+
+Z t
+
+> 0
+
+e−2λj (t−τ ) ηb(τ ) Eqj (τ ) dτ, 
+
+where 
+
+qj (τ ) := v⊤ 
+
+> j
+
+Σ( ¯θτ )vj .
+
+Therefore 
+
+2E[E( ¯θt)] = X
+
+> j≥1
+
+λj e−2λj te20,j 
+
++ X
+
+> j≥1
+
+λj
+
+Z t
+
+> 0
+
+e−2λj (t−τ ) ηb(τ ) E[qj (τ )] d τ. 
+
+By Lemma A.1, 
+
+E[qj (τ )] ≍ λj
+
+ E[E( ¯θτ )] + σ2eff (τ ).
+
+Hence, if 
+
+f (t) := E[E( ¯θt)] ,
+
+then f satisfies the Volterra-type relation 
+
+f (t) ≍ e(t)+ 
+
+Z t
+
+> 0
+
+η K (t − τ )
+
+b(τ )
+
+ f (τ )+ σ2eff (τ ) dτ, 
+
+where 
+
+e(t) := X
+
+> j≥1
+
+λj |θ⋆j |2e−2λj t, K (t) := X
+
+> j≥1
+
+λ2 
+
+> j
+
+e−2λj t.
+
+Under the power-law assumptions λj ≍ j−β and 
+
+|θ⋆j |2 ≍ j−1λs−1 
+
+> j
+
+≍ j−(1+( s−1) β), the sums defin-ing e(t) and K(t) can be approximated by integrals via Euler-Maclaurin comparison. Substituting the continuous variable x = λj t and using j ≍ λ−1/β j ,one obtains 
+
+e(t) = X
+
+> j≥1
+
+λj |θ⋆j |2e−2λj t
+
+≍
+
+Z ∞
+
+> 0
+
+xs−1e−2x dx · t−s ≍ t−s,
+
+12 and similarly 
+
+K(t) = X
+
+> j≥1
+
+λ2 
+
+> j
+
+e−2λj t
+
+≍
+
+Z ∞
+
+> 0
+
+x1−1/β e−2x dx · t−(2 −1/β )
+
+≍ (t + 1) −(2 −1/β ).
+
+Now define 
+
+g(t) := e(t) + η
+
+Z t
+
+> 0
+
+K(t − τ ) σ2eff (τ )
+
+b(τ ) dτ, 
+
+and define the linear Volterra operator 
+
+(T f )( t) := η
+
+Z t
+
+> 0
+
+K(t − τ ) f (τ )
+
+b(τ ) dτ. 
+
+With this notation, the preceding relation admits the compact representation 
+
+f = g + T f
+
+up to universal multiplicative constants. Formally, 
+
+f = ( I − T )−1g =
+
+> ∞
+
+X
+
+> m=0
+
+T mg. 
+
+It remains to check that the higher-order terms gen-erated by the multiplicative part of the gradient noise do not change the leading scaling. Since 
+
+K(t) ≍ (t + 1) −(2 −1/β ) is nonincreasing and inte-grable for β > 1,
+
+(K ∗ K)( t) = 
+
+Z t
+
+> 0
+
+K(t − τ )K(τ ) d τ ≲ K(t).
+
+Using b(t) ≥ Bmin ≥ 1, we obtain 
+
+T 2g(t) ≲ η T g(t).
+
+Iterating this estimate and taking η small enough yields 
+
+f (t) ≍ g(t) + T g(t).
+
+Moreover, because σ2good ≤ σ2eff (t) ≤ σ2bad , the term T g(t) is bounded by the same two leading quantities contained in g(t). Indeed, 
+
+T e(t) ≲ η
+
+Z t
+
+> 0
+
+K(t − τ ) 1
+
+b(τ ) dτ
+
+≲ η
+
+Z t
+
+> 0
+
+K(t − τ ) σ2eff (τ )
+
+b(τ ) dτ, 
+
+and 
+
+T
+
+
+
+η
+
+Z ·
+
+> 0
+
+K(· − r) σ2eff (r)
+
+b(r) dr
+
+
+
+(t)
+
+≲ η
+
+Z t
+
+> 0
+
+K(t − r) ησ 2eff (r)
+
+b(r) dr. 
+
+Thus T g(t) ≲ g(t), and consequently 
+
+f (t) ≍ e(t) + η
+
+Z t
+
+> 0
+
+K(t − τ ) σ2eff (τ )
+
+b(τ ) dτ. 
+
+Substituting e(t) ≍ t−s proves the theorem. 
+
+C Proof of Theorem 4.1 
+
+Proof. The optimization problem is 
+
+max 
+
+> 0≤p≤1
+
+Z T
+
+> 0
+
+K(T − t)
+
+b(t) p(t) d t
+
+subject to 
+
+Z T
+
+> 0
+
+p(t)b(t) d t = ρD. 
+
+Introduce the measure dμ(t) := b(t) d t. Then the constraint becomes R T 
+
+> 0
+
+p(t) d μ(t) = ρD , and the objective becomes 
+
+Z T
+
+> 0
+
+Sb(t)p(t) d μ(t).
+
+This is a continuous knapsack problem. The opti-mizer fills the high-quality budget on the set where 
+
+Sb(t) is largest, giving the stated bang-bang struc-ture. 
+
+D Proof of Theorem 4.3 
+
+Throughout this section we write σ21 := σ2good and 
+
+σ22 := σ2bad for brevity, and denote the objective of (3) by E[T, b, p ].For data budget D > 0, define the feasible set 
+
+BD := (T, b, p ) : T > 0, b ∈ L1(0 , T ),p ∈ L∞(0 , T ),b(t) ≥ B, 0 ≤ p(t) ≤ 1 a.e. ,
+
+R T 
+
+> 0
+
+b(t) d t = D, 
+
+R T 
+
+> 0
+
+b(t)p(t) d t = ρD .
+
+We consider 
+
+E⋆(D) := min 
+
+> (T,b,p )∈B D
+
+E[T, b, p ],
+
+where 
+
+E[T, b, p ] := T −s + η
+
+Z T
+
+> 0
+
+K(T − t) σ2eff (t)
+
+b(t) dt. 
+
+For the power kernel K(u) = ( u + 1) −γ with 
+
+γ := 2 − 1/β > 0, the horizon is bounded by 
+
+T ≤ D/B (from b ≥ B) and bounded away from zero by the bias term T −s, so the problem is well posed and the standard pointwise Lagrangian char-acterization for decomposable integral programs applies. 13 Lemma D.1 (Canonical structure of an optimal joint schedule) . Assume 
+
+B > 0, D > 0, 0 < ρ < 1, σ1 < σ 2.
+
+Write w(t) := K(T ⋆ − t). Then an optimal solu-tion can be chosen to have the following canonical form. 1. Strict-switching case. There exist Ts ∈
+
+[0 , T ⋆] and constants C0, C 1 > 0 such that 
+
+p⋆(t) = 
+
+(
+
+0, 0 ≤ t < T s,
+
+1, Ts ≤ t ≤ T ⋆,
+
+and 
+
+b⋆(t) = 
+
+(max B, C 0
+
+pw(t) , t < T s,
+
+max B, C 1
+
+pw(t) , t ≥ Ts.
+
+2. Terminal-tie case. There exist Ts ∈ [0 , T ⋆]
+
+and C > 0 such that p⋆(t) = 0 for t < T s,while on Is := [ Ts, T ⋆] both labels are point-wise optimal and p⋆(t) ∈ { 0, 1} may be cho-sen measurably subject to 
+
+Z T ⋆
+
+> 0
+
+b⋆(t)p⋆(t) d t = ρD. 
+
+The batch schedule is 
+
+b⋆(t) = 
+
+(max B, C pw(t) , t < T s,rp⋆(t) Cpw(t), t ∈ Is,
+
+where r = σ21 /σ 22 , with rC pw(t) ≥ B on 
+
+Is.Proof. Fix an optimal solution and write it as 
+
+(T ⋆, b ⋆, p ⋆).
+
+Since (T ⋆)−s is a constant, it suffices to minimize the noise integral over (b, p ) at this fixed horizon. Recall w(t) = K(T ⋆ − t), which is nondecreasing in t.Introduce Lagrange multipliers μ, ν for the data and quality constraints. Since the integrand is point-wise separable in t, the optimizer satisfies the fol-lowing pointwise condition for a.e. t:
+
+(b⋆(t), p ⋆(t)) ∈ arg min 
+
+> b≥B
+> 0≤p≤1
+
+ w(t)
+
+b
+
+ σ22
+
+− (σ22 − σ21 )p + μb + νbp 
+
+
+
+.
+
+Let 
+
+∆ := σ22 − σ21 > 0.
+
+For i = 0 , 1, define 
+
+a0 := μ, c0 := σ22 ,
+
+and 
+
+a1 := μ + ν, c1 := σ21 .
+
+For a fixed t, b , the two endpoint label costs are 
+
+L0(t, b ) := c0w(t)
+
+b + a0b, 
+
+and 
+
+L1(t, b ) := c1w(t)
+
+b + a1b. 
+
+The pointwise Lagrangian can be written as 
+
+(1 − p)L0(t, b ) + pL 1(t, b ).
+
+Define the reduced endpoint costs 
+
+Φi(w) := min 
+
+> b≥B
+
+n ciwb + aib
+
+o
+
+, i = 0 , 1.
+
+Then pointwise optimality gives 
+
+p⋆(t) = 0 if Φ0(w(t)) < Φ1(w(t)) ,
+
+and 
+
+p⋆(t) = 1 if Φ1(w(t)) < Φ0(w(t)) .
+
+Indeed, if Φ0(w) < Φ1(w), then for every b ≥ B
+
+and p > 0,
+
+(1 − p)L0(t, b ) + pL 1(t, b ) > Φ0(w),
+
+while p = 0 and a minimizer of L0 achieve Φ0(w).The case Φ1(w) < Φ0(w) is symmetric. Thus non-endpoint choices of p can only occur on tie sets where 
+
+Φ0(w(t)) = Φ 1(w(t)) .
+
+On such tie sets, possible fractional values of p
+
+may be removed without changing feasibility or the objective. Indeed, let 
+
+F := {t : 0 < p ⋆(t) < 1}.
+
+On F , the first-order condition in p gives 
+
+∆ w(t)
+
+b⋆(t) = νb ⋆(t).
+
+Since the measure b⋆(t) d t is nonatomic, there ex-ists a measurable set S ⊆ F such that 
+
+Z
+
+> S
+
+b⋆(t) d t =
+
+Z
+
+> F
+
+b⋆(t)p⋆(t) d t. 
+
+14 Define 
+
+˜p(t) = 
+
+
+
+1, t ∈ S, 
+
+0, t ∈ F \ S, p⋆(t), t / ∈ F. 
+
+Then Z T ⋆
+
+> 0
+
+b⋆(t)˜ p(t) d t =
+
+Z T ⋆
+
+> 0
+
+b⋆(t)p⋆(t) d t. 
+
+Moreover, the objective change on F is 
+
+− ∆
+
+Z
+
+> F
+
+w(t)
+
+b⋆(t) (˜ p(t) − p⋆(t)) d t
+
+= −ν
+
+Z
+
+> F
+
+b⋆(t)(˜ p(t) − p⋆(t)) d t = 0 .
+
+Hence we may choose an optimal solution with 
+
+p⋆(t) ∈ { 0, 1} a.e. We next show that 
+
+ν > 0.
+
+Suppose ν ≤ 0. For any t with w(t) > 0 and any 
+
+b ≥ B,
+
+L1(t, b ) − L0(t, b ) = − ∆w(t)
+
+b + νb < 0.
+
+Hence p⋆(t) = 1 for a.e. t ∈ [0 , T ⋆], contradicting 
+
+Z T ⋆
+
+> 0
+
+b⋆(t)(1 − p⋆(t)) d t = (1 − ρ)D > 0.
+
+Therefore 
+
+ν > 0.
+
+Consequently, 
+
+a1 > a 0, c1 < c 0.
+
+Moreover, the endpoint reduced costs are finite and attained only if a0 > 0 and a1 > 0.We now prove that the p = 1 region is terminal (i.e., corresponds to late training times) and identify the two possible canonical structures. A direct calculation gives 
+
+Φi(w) = 
+
+
+
+aiB + ciwB , 0 < w ≤ wi,
+
+2√aiciw, w ≥ wi,
+
+where wi := aiB2/c i. Since a1 > a 0 and c1 < c 0,we have w0 < w 1.
+
+Claim. The ratio R(w) := Φ 1(w)/Φ0(w) is non-increasing on (0 , ∞), with 
+
+lim  
+
+> w↓0
+
+R(w) = a1
+
+a0
+
+> 1, lim  
+
+> w→∞
+
+R(w) = 
+
+r a1c1
+
+a0c0
+
+.
+
+Proof of Claim. We verify the monotonicity on the three regions determined by 0 < w 0 < w 1.
+
+Region 0 < w ≤ w0 (both constrained): 
+
+R(w) = a1B + c1w/B a0B + c0w/B .
+
+Differentiating, the numerator of R′(w) is propor-tional to a0c1 − a1c0 < 0. Hence R is strictly decreasing. 
+
+Region w0 ≤ w ≤ w1 (Φ0 unconstrained, Φ1
+
+constrained): 
+
+R(w) = a1B + c1w/B 
+
+2√a0c0w
+
+= a1B
+
+2√a0c0
+
+w−1/2 + c1
+
+2B√a0c0
+
+w1/2.
+
+Differentiating, the sign of R′(w) is that of 
+
+c1w/B − a1B, which is negative for w < w 1.Hence R is strictly decreasing. 
+
+Region w ≥ w1 (both unconstrained): 
+
+R(w) = 2√a1c1w
+
+2√a0c0w =
+
+r a1c1
+
+a0c0
+
+,
+
+which is constant. Continuity at w0 and w1 is veri-fied by direct substitution. Since R is nonincreasing with R(0 +) > 1, the set {w : R(w) ≤ 1} is either empty or a termi-nal half-line. Because w(t) = K(T ⋆ −t) is non-decreasing in t, the preimage {t : p⋆(t) = 1 }
+
+is a terminal interval in time (up to the threshold level set, on which the split may be chosen measur-ably). The structure depends on lim w→∞ R(w) = pa1c1/(a0c0).
+
+Case 1: a1c1 > a 0c0. Then R(w) > 1 for all 
+
+w > 0, so pointwise optimality forces p⋆(t) = 0 
+
+a.e., contradicting R T ⋆ 
+
+> 0
+
+b⋆(t)p⋆(t) d t = ρD > 0.This case is excluded. 
+
+Case 2: a1c1 < a 0c0 (strict-switching). Then 
+
+R(∞) < 1. From the proof of claim, the equation 
+
+R(w) = 1 has a unique solution. Hence there exists Ts ∈ [0 , T ⋆] such that 
+
+p⋆(t) = 
+
+(
+
+0, 0 ≤ t < T s,
+
+1, Ts ≤ t ≤ T ⋆.
+
+On each region, the optimal batch size is obtained by minimizing Li(t, b ) = ciw(t)/b + aib over 15 b ≥ B, giving b⋆(t) = max {B, pci/a i
+
+pw(t)}.Writing 
+
+C0 := 
+
+q c0 
+
+> a0
+
+=
+
+r 
+
+> σ22
+> μ
+
+,C1 := 
+
+q c1 
+
+> a1
+
+=
+
+r 
+
+> σ21
+> μ+ν
+
+,
+
+we obtain 
+
+b⋆(t) = 
+
+(max {B, C 0
+
+pw(t)}, 0 ≤ t < T s,
+
+max {B, C 1
+
+pw(t)}, Ts ≤ t ≤ T ⋆.
+
+Case 3: a1c1 = a0c0 (terminal-tie). Then 
+
+R(w) ≥ 1 for all w, with R(w) = 1 exactly on 
+
+[w1, ∞) (since R is strictly decreasing on (0 , w 1)
+
+and constant on [w1, ∞)). The corresponding tie interval in time is Is := [ Ts, T ⋆]. Before Is, we have p⋆(t) = 0 . On Is, both labels are pointwise optimal, and p⋆(t) ∈ { 0, 1} may be chosen mea-surably subject to R T ⋆ 
+
+> 0
+
+b⋆(t)p⋆(t) d t = ρD .From a1c1 = a0c0, i.e., (μ + ν)σ21 = μσ 22 , we obtain C1 = rC 0 where r = σ21 /σ 22 ∈ (0 , 1) . Writ-ing C := C0:
+
+b⋆(t) = 
+
+
+
+max B, C pw(t) , t < T s,Cpw(t), t ∈ Is, p ⋆ = 0 ,rC pw(t), t ∈ Is, p ⋆ = 1 .
+
+Since Is lies in the unconstrained region w ≥ w1,we have rC pw(t) ≥ B on Is.After excluding Case 1, only the strict-switching and terminal-tie canonical forms remain. This proves the lemma. 
+
+Proof of Theorem 4.3. We prove the noise-limited regime ( s > 1−1/β ) and the signal-limited regime (s < 1 − 1/β ) separately. Throughout, write δ := 1/(2 β).
+
+Step 1: the unconstrained problem. First ig-nore the lower-bound constraint b(t) ≥ B. Fix 
+
+T > 0. By Lemma D.1, an optimizer can be cho-sen with 
+
+p(t) ∈ { 0, 1}
+
+a.e. Let 
+
+S := {t : p(t) = 1 }, Sc := {t : p(t) = 0 }.
+
+For fixed S, Cauchy-Schwarz gives 
+
+Z
+
+> S
+
+K(T − t)
+
+b(t) dt ≥
+
+R
+
+> S
+
+pK(T −t) d t
+
+2
+
+R 
+
+> S
+
+b(t) d t ,
+
+and similarly on Sc. Equality holds iff b(t) ∝pK(T −t) on each region. Let 
+
+A1 := 
+
+Z
+
+> S
+
+pK(T −t) d t, A0 := 
+
+Z
+
+> Sc
+
+pK(T −t) d t, 
+
+and A(T ) := A0 + A1 = R T
+
+> 0
+
+pK(T −t) d t. The data constraints give 
+
+Z
+
+> S
+
+b(t) d t = ρD, 
+
+Z
+
+> Sc
+
+b(t) d t = (1 − ρ)D. 
+
+Thus, for fixed T , the unconstrained variance term 
+
+σ22
+
+Z
+
+> Sc
+
+K(T −t)
+
+b(t) dt + σ21
+
+Z
+
+> S
+
+K(T −t)
+
+b(t) dt
+
+is at least σ22 A20
+
+(1 − ρ)D + σ21 A21
+
+ρD .
+
+Minimizing over A0 + A1 = A(T ) gives 
+
+A⋆ 
+
+> 0
+
+= (1 − ρ)σ21
+
+(1 − ρ)σ21 + ρσ 22
+
+A(T ),A⋆ 
+
+> 1
+
+= ρσ 22
+
+(1 − ρ)σ21 + ρσ 22
+
+A(T ).
+
+The minimized variance term is 
+
+η κ A (T )2
+
+D , κ = σ21 σ22
+
+(1 − ρ)σ21 + ρσ 22
+
+.
+
+Hence the unconstrained problem reduces to 
+
+min 
+
+> T > 0
+
+
+
+T −s + η κ A (T )2
+
+D
+
+
+
+.
+
+The first-order condition is 
+
+−sT −s−1 + 2η κ D A(T )A′(T ) = 0 .
+
+Since 
+
+A′(T ) = ( T + 1) δ−1
+
+and 
+
+A(T ) = T δ
+
+δ (1 + o(1)) ,
+
+we obtain 
+
+Tunc =
+
+ sD 
+
+4β η κ 
+
+ 1
+
+> s+1 /β
+
+(1 + o(1)) .
+
+At this optimum, 
+
+η κ A (Tunc )2
+
+D = sβT −s
+
+> unc
+
+(1 + o(1)) .
+
+Therefore 
+
+E⋆
+
+> unc
+
+(D) = (1 + sβ )T −s
+
+> unc
+
+(1 + o(1)) .
+
+16 Step 2: the noise-limited regime. We first record the explicit form of the unconstrained opti-mal batch profile. From the Cauchy-Schwarz step in Step 1, equality requires b(t) ∝ pK(T − t)
+
+on each of the two regions S and Sc. Hence the unconstrained optimizer at horizon Tunc takes the piecewise form 
+
+b⋆(t) = 
+
+(C0
+
+pK(Tunc −t), t ∈ Sc (p⋆ = 0) ,C1
+
+pK(Tunc −t), t ∈ S (p⋆ = 1) ,
+
+where C0, C 1 are the same constants as in Lemma D.1, evaluated at T = Tunc . They are de-termined by the data constraints R 
+
+> Sc
+
+b⋆ = (1 −ρ)D
+
+and R 
+
+> S
+
+b⋆ = ρD :
+
+C0 = (1 − ρ)DA⋆
+
+> 0
+
+, C1 = ρD A⋆
+
+> 1
+
+.
+
+Substituting the optimal split (A⋆
+
+> 0
+
+, A ⋆
+
+> 1
+
+) found in Step 1 yields 
+
+C0 = (1 −ρ)σ21 +ρσ 22
+
+σ21
+
+· DA(Tunc ) ,C1 = (1 −ρ)σ21 +ρσ 22
+
+σ22
+
+· DA(Tunc ) .
+
+Since σ1 < σ 2, we have C1 < C 0; since K is decreasing, pK(Tunc −t) is minimized at t = 0 ,and consequently so is b⋆(t). Hence 
+
+min  
+
+> t∈[0 ,T unc ]
+
+b⋆(t) = C1(Tunc + 1) δ−1.
+
+Using A(Tunc ) ≍ T δ
+
+> unc
+
+/δ together with the explicit form of C1, this gives 
+
+min  
+
+> t
+
+b⋆(t) ≍ DTunc 
+
+.
+
+If s > 1 − 1/β , then s + 1 /β > 1 and so Tunc =
+
+o(D) by Step 1. Therefore 
+
+min  
+
+> t
+
+b⋆(t) → ∞ as D → ∞ .
+
+For any fixed B, the constraint b(t) ≥ B is there-fore inactive for all sufficiently large D, and the unconstrained solution is also the constrained opti-mum. The ratio C1/C 0 = σ21 /σ 22 = r places this regime in the terminal-tie case in Lemma D.1, with Ts = 0 and tie interval Is = [0 , T ⋆]: the entire horizon lies in the unconstrained branch, and 
+
+S ⊆ [0 , T ⋆] may be chosen as any measurable set satisfying R 
+
+> S
+
+b⋆(t) d t = ρD . This proves the noise-limited regime. 
+
+Step 3: the signal-limited regime and the strict-switching class. Now assume 
+
+β > 1, 0 < s < 1 − 1
+
+β .
+
+Recall γ := 2 − 1/β , so that K(u) = ( u + 1) −γ .By Step 1, the unconstrained optimizer satisfies 
+
+Tunc ≍
+
+ sD 
+
+4β η κ 
+
+ 1
+
+> s+1 /β
+
+.
+
+Since s + 1 /β < 1, we have 
+
+Tunc 
+
+D → ∞ ,
+
+i.e., Tunc grows faster than linearly in D. On the other hand, every feasible schedule satisfies 
+
+D =
+
+Z T
+
+> 0
+
+b(t) d t ≥ BT, 
+
+so 
+
+T ≤ Tmax := DB .
+
+Thus the unconstrained optimizer is infeasible, and the lower-bound constraint is active. We first solve the problem asymptotically within the strict-switching canonical family. This does not assume that this family is globally optimal; it only computes the best comparison value among strict-switching schedules. A strict-switching schedule has, in chronological order, up to four possible phases: phase 1 2 3 4
+
+(p, b ) (0 , B ) (0 , >B ) (1 , B ) (1 , >B )
+
+duration T1 T2 T3 T4
+
+That is, Ti denotes the length of phase i, so that 
+
+T = T1 + T2 + T3 + T4. The p = 0 flat (resp. unconstrained) phase has length T1 (resp. T2); the 
+
+p = 1 flat (resp. unconstrained) phase has length 
+
+T3 (resp. T4). Any of the Ti may be zero. 
+
+Step 3a: optimization of the T2 = 0 strict-switching family. We first solve the strict-switching subfamily with T2 = 0 , so that only phases 1, 3, 4 are present. The p = 0 data con-straint forces 
+
+T1 = (1 − ρ)DB = (1 − ρ)Tmax .
+
+Parametrize phase 4 by terminal age u := T −
+
+t ∈ [0 , T 4]. On phase 4 take p(t) = 1 and 
+
+b(T −u) = B
+
+ u + 1 
+
+T4 + 1 
+
+δ−1
+
+, 0 ≤ u ≤ T4.
+
+17 Since δ < 1, this satisfies b(T − u) ≥ B, and it matches the lower bound at u = T4.The amount of p = 1 data consumed in phase 4 is 
+
+D4 =
+
+Z T4
+
+> 0
+
+B
+
+ u + 1 
+
+T4 + 1 
+
+δ−1
+
+du
+
+= Bδ
+
+(T4 + 1) − (T4 + 1) 1−δ.
+
+The remaining p = 1 data is carried by phase 3, so 
+
+ρD = BT 3 + D4,
+
+and hence 
+
+T3 = ρD B − (T4 + 1) − (T4 + 1) 1−δ
+
+δ .
+
+For the optimizer found below, T4 = o(D), so 
+
+T3 > 0 for all sufficiently large D.The total horizon is T = T1 + T3 + T4, and therefore 
+
+T = DB −
+
+ 1
+
+δ − 1
+
+
+
+T4 + O(T 1−δ 
+
+> 4
+
+).
+
+Consequently, in the regime 1 ≪ T4 ≪ D,
+
+T −s = BsD−s + αDT4
+
++ O(D−s−1T 1−δ 
+
+> 4
+
+) + O(D−s−2T 24 ),
+
+where 
+
+αD := s
+
+ 1
+
+δ − 1
+
+
+
+Bs+1 D−s−1.
+
+We next compute the leading variance correction. Phase 3 corresponds to terminal ages u ∈ [T4, T 4 +
+
+T3]. Its contribution is 
+
+V3(T4) = η σ 21
+
+B
+
+Z T4+T3
+
+> T4
+
+(u + 1) −γ du. 
+
+Since T3 = O(D) and T4 = o(D),
+
+V3(T4) = η σ 21
+
+B(γ − 1) T −(γ−1) 4 (1 + o(1)) .
+
+Phase 4 contributes 
+
+V4(T4) = 
+
+Z T4
+
+> 0
+
+η σ 21 (u + 1) −γ
+
+B  u+1 
+
+> T4+1
+
+δ−1 du. 
+
+Using 
+
+γ = 2 − 1
+
+β = 2 − 2δ, 
+
+we obtain 
+
+V4(T4) = η σ 21
+
+B (T4 +1) δ−1
+
+Z T4
+
+> 0
+
+(u+1) δ−1 du
+
+= η σ 21
+
+Bδ T −(γ−1) 4 (1 + o(1)) .
+
+Thus 
+
+V3(T4) + V4(T4) = ξ T −(γ−1) 4 (1 + o(1)) ,
+
+where 
+
+ξ := η σ 21
+
+B
+
+ 1
+
+γ − 1 + 1
+
+δ
+
+
+
+.
+
+Hence the leading correction to BsD−s in the 
+
+T2 = 0 strict-switching family is 
+
+αDT4 + ξT −(γ−1) 4 .
+
+Minimizing this expression gives 
+
+αD = ( γ − 1) ξT −γ 
+
+> 4
+
+.
+
+Since 
+
+(γ − 1) 
+
+ 1
+
+γ − 1 + 1
+
+δ
+
+
+
+= 1
+
+δ − 1,
+
+we obtain the optimal phase-4 length within the 
+
+T2 = 0 strict-switching family: 
+
+T4 =
+
+ η σ 21
+
+sB s+2 
+
+1/γ 
+
+D s+1  
+
+> γ
+
+.
+
+Since s < γ − 1, T4 = o(D), confirming the assumption T4 ≪ D used above. This family achieves 
+
+E⋆T2=0 (D) = BsD−s + O
+
+
+
+D− (s+1)( γ−1) 
+
+> γ
+
+
+
+.
+
+In particular, 
+
+E⋆T2=0 (D) = BsD−s + o(D−s).
+
+Step 3b: elimination of T2 and conclusion for the strict-switching class. We now show that no asymptotically optimal strict-switching schedule can have a nontrivial p = 0 unconstrained phase. Let (T, b, p ) be any strict-switching schedule. Since b(t) ≥ B, every feasible schedule satisfies 
+
+T ≤ Tmax . Moreover, the variance term is nonneg-ative, and hence 
+
+E[T, b, p ] ≥ T −s ≥ T −s 
+
+> max
+
+= BsD−s.
+
+18 On the other hand, Step 3a constructs a T2 = 0 
+
+strict-switching schedule with value 
+
+BsD−s + o(D−s).
+
+Therefore, any strict-switching schedule that can be asymptotically optimal must satisfy 
+
+T = Tmax (1 + o(1)) .
+
+Indeed, if T ≤ (1 − c)Tmax along a subsequence for some c > 0, then 
+
+T −s ≥ (1 − c)−sBsD−s,
+
+whose leading constant is strictly larger than the value achieved in Step 3a. Consequently, 
+
+Tmax − T = o(Tmax ).
+
+Using 
+
+D =
+
+Z T
+
+> 0
+
+b(t) d t = BT +
+
+Z T
+
+> 0
+
+(b(t) − B) d t, 
+
+we get 
+
+1
+
+B
+
+Z T
+
+> 0
+
+(b(t) − B) d t = Tmax − T = o(Tmax ).
+
+Thus the total excess data above the lower bound is o(D).Splitting b = B + ( b − B) on {p = 1 } and using that the total excess above the lower bound is o(D),the p = 1 data constraint gives 
+
+ρD =
+
+Z
+
+> {p=1 }
+
+b(t) d t
+
+= B
+
+Z
+
+> {p=1 }
+
+dt +
+
+Z
+
+> {p=1 }
+
+(b − B) d t
+
+= B
+
+Z
+
+> {p=1 }
+
+dt + o(D),
+
+so the total time occupied by the p = 1 phases satisfies Z
+
+> {p=1 }
+
+dt ≥ ρT max − o(Tmax ).
+
+Hence the p = 0 unconstrained phase, if present, lies at terminal ages 
+
+u ≥ ρT max − o(Tmax ) = O(D).
+
+On this phase, 
+
+K(u) = ( u + 1) −γ ≤ CD −γ
+
+for some constant C > 0 independent of D.Suppose the p = 0 unconstrained phase has pos-itive excess data. Define 
+
+∆2 := 1
+
+B
+
+Z T1+T2
+
+> T1
+
+(b(t) − B) d t. 
+
+Replace this phase by a p = 0 , b = B segment carrying the same amount of p = 0 data. This preserves both data constraints and increases the total horizon by ∆2.The modification takes place only at terminal ages O(D). Therefore the variance can increase by at most 
+
+CD −γ ∆2.
+
+On the other hand, since the original horizon sat-isfies T = Tmax (1 + o(1)) , the increase of the horizon decreases the bias term by at least 
+
+cD −s−1∆2
+
+for some constant c > 0 independent of D, and for all sufficiently large D. In the signal-limited regime, s < 1 − 1/β , and hence 
+
+s + 1 < γ. 
+
+Therefore 
+
+D−s−1 ≫ D−γ .
+
+The bias improvement strictly dominates the pos-sible variance loss. Thus any positive p = 0 un-constrained phase can be removed to improve the objective for all sufficiently large D. Hence an asymptotically optimal strict-switching schedule must satisfy 
+
+T2 = 0 .
+
+Therefore the T2 = 0 family optimized in Step 3a is asymptotically exhaustive within the strict-switching class. The corresponding phase dura-tions and objective value are given by Step 3a; their explicit forms are recorded in Step 5 below. 
+
+Step 4: exclusion of terminal-tie schedules. It remains to show that terminal-tie schedules cannot improve on the strict-switching value. Consider any feasible terminal-tie schedule. All 
+
+p = 1 data lies in a terminal tie interval. Let L be the length of this interval and write u = T − t ∈
+
+[0 , L ]. Whenever p = 1 in this interval, 
+
+b(T − u) = rC (u + 1) δ−1.
+
+19 Since the tie interval is contained in the region where the p = 1 unconstrained branch is active, 
+
+rC (L + 1) δ−1 ≥ B. 
+
+Therefore, on the p = 1 part of the tie interval, 
+
+b(T − u)
+
+B ≥
+
+ u + 1 
+
+L + 1 
+
+δ−1
+
+.
+
+Let 
+
+S := {u ∈ [0 , L ] : p(T − u) = 1 }, m := |S|.
+
+The p = 1 data constraint gives 
+
+ρT max =
+
+Z
+
+> S
+
+b(T − u)
+
+B du. 
+
+Hence 
+
+ρT max ≥
+
+Z
+
+> S
+
+ u + 1 
+
+L + 1 
+
+δ−1
+
+du. 
+
+The integrand f (u) :=   u+1 
+
+> L+1
+
+δ−1 is decreasing in u. By the rearrangement inequality, for any measurable S ⊆ [0 , L ] with |S| = m,
+
+Z
+
+> S
+
+f (u) d u ≥
+
+Z LL−m
+
+f (u) d u
+
+= L + 1 
+
+δ
+
+"
+
+1 −
+
+
+
+1 − mL + 1 
+
+δ#
+
+.
+
+(Since f is decreasing, replacing S by the right-most subset of equal measure can only reduce the integral.) Combining with the previous inequality gives 
+
+ρT max ≥ L + 1 
+
+δ
+
+"
+
+1 −
+
+
+
+1 − mL + 1 
+
+δ#
+
+.
+
+Solving for m,
+
+m ≤ (L + 1) 
+
+"
+
+1 −
+
+
+
+1 − δρT max 
+
+L + 1 
+
+1/δ #
+
+.
+
+We now bound this uniformly over L ≤ T ≤
+
+Tmax . If 
+
+L + 1 ≤ δρT max ,
+
+then m ≤ L + 1 ≤ δρT max , which is already strictly smaller than ρT max by a linear amount. Oth-erwise the function 
+
+x 7 → x
+
+"
+
+1 −
+
+
+
+1 − δρT max 
+
+x
+
+1/δ #
+
+is increasing for x > δρT max . Indeed, with z =
+
+δρT max /x , it equals 
+
+δρT max 
+
+1 − (1 − z)1/δ 
+
+z ,
+
+and the last ratio is decreasing in z, because 
+
+z 7 → 1 − (1 − z)1/δ 
+
+is concave and vanishes at 0. Hence, since L + 1 ≤
+
+Tmax + 1 ,
+
+m ≤ Tmax 
+
+h
+
+1 − (1 − δρ )1/δ i
+
++ o(Tmax ).
+
+Define 
+
+cρ,δ := ρ −
+
+h
+
+1 − (1 − δρ )1/δ i
+
+.
+
+Because 0 < ρ < 1 and 0 < δ < 1,
+
+(1 − δρ )1/δ > 1 − ρ. 
+
+Thus 
+
+cρ,δ > 0,
+
+and 
+
+m ≤ ρT max − cρ,δ Tmax + o(Tmax ).
+
+The time spent on p = 0 is at most 
+
+(1 − ρ)Tmax ,
+
+because b ≥ B. Hence any terminal-tie schedule satisfies 
+
+T ≤ (1 −ρ)Tmax + ρT max −cρ,δ Tmax +o(Tmax ),
+
+and therefore 
+
+T ≤ (1 − cρ,δ )Tmax + o(Tmax ).
+
+Its bias term is therefore bounded below by 
+
+T −s ≥ (1 − cρ,δ )−sBsD−s(1 + o(1)) .
+
+Since cρ,δ > 0, the leading prefactor of BsD−s is strictly larger than 1. Therefore every terminal-tie schedule has objective strictly larger, at the leading constant level, than 
+
+BsD−s + o(D−s),
+
+which is achieved by the strict-switching family. Thus terminal-tie schedules are not asymptotically optimal. 20 Step 5: conclusion for the signal-limited regime. 
+
+By Lemma D.1, every optimal schedule may be chosen in either the strict-switching case or the terminal-tie case. Step 4 excludes the terminal-tie case. Hence the global asymptotic optimum is given by the strict-switching optimum computed in Step 3. Therefore 
+
+T ⋆ 
+
+> 1
+
+= (1 − ρ)DB ,T ⋆ 
+
+> 4
+
+=
+
+ ησ 21
+
+sB s+2 
+
+1/γ 
+
+D s+1  
+
+> γ
+
+(1 + o(1)) ,
+
+and 
+
+T ⋆ 
+
+> 3
+
+= ρD B − (T ⋆ 
+
+> 4
+
++ 1) − (T ⋆ 
+
+> 4
+
++ 1) 1−δ
+
+δ + o(T ⋆ 
+
+> 4
+
+).
+
+Moreover, 
+
+T ⋆ = DB −
+
+ 1
+
+δ − 1
+
+
+
+T ⋆ 
+
+> 4
+
++ O (T ⋆ 
+
+> 4
+
+)1−δ,
+
+or equivalently, 
+
+T ⋆ = DB − (2 β − 1) T ⋆ 
+
+> 4
+
++ O
+
+
+
+(T ⋆ 
+
+> 4
+
+)1− 12β
+
+
+
+.
+
+Finally, every feasible schedule satisfies 
+
+E[T, b, p ] ≥ T −s ≥ BsD−s,
+
+because T ≤ D/B . Together with the strict-switching upper bound, this gives 
+
+E⋆(D) = BsD−s + O
+
+
+
+D− (s+1)( γ−1) 
+
+> γ
+
+
+
+,
+
+which, expanded in β, reads 
+
+(s + 1)( γ − 1) 
+
+γ = (s + 1)(1 − 1/β )2 − 1/β .
+
+This is the claimed signal-limited regime expansion. The proof is complete. 
+
+Remark D.2 (Critical regime) . The proof deliber-ately excludes the critical case 
+
+s = 1 − 1
+
+β .
+
+At criticality, the subcritical balance gives T4 ≍
+
+c D for some constant c > 0, so the terminal bound-ary layer is no longer sublinear. The expansion used to derive the signal-limited schedule therefore no longer applies. The argument forcing the p = 0 unconstrained phase to vanish uses 
+
+s + 1 < 2 − 1
+
+β .
+
+At criticality this becomes equality, so the bias loss from shortening the training horizon and the vari-ance gain from extra batching are of the same order. Similarly, the argument excluding the terminal-tie form is no longer decisive, because different canon-ical forms may differ only at the level of leading constants. Nevertheless, Lemma D.1 still applies. Thus, if an optimal solution exists, it may be chosen in one of the canonical forms described there. Determin-ing which canonical form is selected, and which phase proportions vanish, requires solving the cor-responding finite-dimensional constant-level prob-lem. 
+
+E Experiments Details 
+
+E.1 Experimental details for Theorem 3.1 verification 
+
+We verify Theorem 3.1 by running one-pass SGD in the diagonal feature space, where the assump-tions hold exactly. We test both the noise-limited regime and the signal-limited regime with four schedules satisfying the same total high-quality data budget PKk=1 pkBk = ρ PKk=1 Bk, where 
+
+ρ ∈ (0 , 1) is the fraction of high-quality data: • Early / Late / Middle : bang-bang quality placement ( p = 1 on the first, last, or central 
+
+ρK steps) with constant batch. • Sinusoidal : jointly varying quality p(t) ∝
+
+ρ + 0 .25 sin(8 πt/T ) and oscillating-upward batch b(t) ∝ 1 + 3 t/T + 0 .8 sin(12 πt/T ),both rescaled to satisfy the budget constraints. Figure 5 shows the results. In each panel, the mea-sured excess risk (colored, averaged over 10 seeds) closely tracks the scaled quality-aware FSL predic-tion (black) throughout training. Inset plots dis-play the schedules p(t) and b(t). The theory accu-rately tracks all schedule-dependent differences— including the complex Sinusoidal case where both controls vary simultaneously—confirming that the forgetting kernel K(t − τ ) correctly weights 
+
+σ2eff (τ )/b (τ ) at each τ .
+
+Parameter settings. Throughout, we fix dimen-sion N = 500 , capacity exponent β = 2 , learning rate η = 0 .01 , and high-quality data fraction ρ =0.3, with critical exponent scrit = 1 − 1/β = 0 .5.21 0.0 0.5 1.0 1.5                                 
+
+> 1e4
+> 10 4
+> 10 3
+> 10 2
+> 10 1
+> Excess Risk
+> Early
+> 0.0
+> 0.5
+> 1.0
+> p(t)
+> b(t)/ bmax
+> SGD (measured)
+> QA FSL (scaled)
+> 0.0 0.5 1.0 1.5
+> 1e4
+> 10 5
+> 10 4
+> 10 3
+> 10 2
+> 10 1
+> Late
+> 0.0
+> 0.5
+> 1.0
+> p(t)
+> b(t)/ bmax
+> SGD (measured)
+> QA FSL (scaled)
+> 0.0 0.5 1.0 1.5
+> 1e4
+> 10 5
+> 10 4
+> 10 3
+> 10 2
+> 10 1
+> Middle
+> 0.0
+> 0.5
+> 1.0
+> p(t)
+> b(t)/ bmax
+> SGD (measured)
+> QA FSL (scaled)
+> 0.0 0.5 1.0 1.5
+> 1e4
+> 10 4
+> 10 3
+> 10 2
+> 10 1
+> Sinusoidal
+> 0.0
+> 0.5
+> 1.0
+> p(t)
+> b(t)/ bmax
+> SGD (measured)
+> QA FSL (scaled)
+> 012345
+
+Step k 1e4       
+
+> 10 1
+> 10 0
+> Excess Risk
+> 0.0
+> 0.5
+> 1.0
+> p(t)
+> b(t)/ bmax
+> SGD (measured)
+> QA FSL (scaled)
+> 012345
+
+Step k 1e4       
+
+> 10 1
+> 10 0
+> 0.0
+> 0.5
+> 1.0
+> p(t)
+> b(t)/ bmax
+> SGD (measured)
+> QA FSL (scaled)
+> 012345
+
+Step k 1e4       
+
+> 10 1
+> 10 0
+> 0.0
+> 0.5
+> 1.0
+> p(t)
+> b(t)/ bmax
+> SGD (measured)
+> QA FSL (scaled)
+> 012345
+
+Step k 1e4  
+
+> 10 1
+> 10 0
+> 0.0
+> 0.5
+> 1.0
+> p(t)
+> b(t)/ bmax
+> SGD (measured)
+> QA FSL (scaled)
+
+Figure 5: Verification of Theorem 3.1. Top: noise-limited ( s = 2 ). Bottom: signal-limited ( s = 0 .4). Colored curves: measured SGD risk (averaged over 10 seeds). Black curves: quality-aware FSL theory (scaled). 
+
+Noise-limited setting (s = 2 ): total iterations 
+
+K = 15 ,000 (T = 150 ), reference batch size B =32 , noise variances σ2good = 0 .1, σ2bad = 1 .0.
+
+Signal-limited setting (s = 0 .4): total iterations 
+
+K = 50 ,000 (T = 500 ), reference batch size B =4, noise variances σ2good = 0 .1, σ2bad = 10 .0. In the signal-limited regime, the bias term t−s decays slowly and dominates unless the noise strength is sufficiently large. We therefore use a smaller batch size and a larger bad-noise variance to ensure that the noise integral is comparable to the bias T −s,so that the effect of different quality schedules is visible. 
+
+Schedule construction. The Early, Late, and Middle schedules use a constant batch size b(t) = 
+
+B and bang-bang quality schedules that place 
+
+p(t) = 1 on the first, last, or central ρK steps respectively. The Sinusoidal schedule uses a joint non-constant design: 
+
+braw (t) = 1 + 3 tT + 0 .8 sin 
+
+ 2π · 6 tT
+
+
+
+,praw (t) = ρ + 0 .25 sin 
+
+ 2π · 4 tT
+
+
+
+.
+
+The batch schedule is rescaled so that PKk=1 Bk =
+
+BK (matching the total data budget of the constant-batch schedules), and the quality schedule is rescaled so that PKk=1 pkBk = ρ PKk=1 Bk,with values clipped to [0 , 1] . This produces an oscillating-upward batch curve (6 cycles) and a si-nusoidal quality curve (4 cycles) that jointly satisfy the budget constraints. 
+
+Theoretical prediction curve. For the the-oretical prediction, we compute the kernel 
+
+K(t) = PNj=1 λ2
+
+j e−2λj t and the bias term 
+
+e(t) = PNj=1 λj |θ⋆j |2e−2λj t exactly in the finite-dimensional setting (rather than using the asymp-totic power-law approximation). The noise integral R t
+
+0 K(t−τ )σ2eff (τ )/b (τ ) d τ is discretized with step size η. Since b(τ ) and p(τ ) now vary across sched-ules, the integrand σ2eff (τ )/b (τ ) is evaluated point-wise at each discrete time step. 
+
+Fitting procedure. Since the theorem establishes an asymptotic equivalence ( ≍) rather than an exact equality, we fit a single global multiplicative con-stant (via the median of measured/predicted ratios) to align the theory curve with the measurement. All experimental curves are averaged over 10 indepen-dent random seeds. 
+
+E.2 Experimental details for Corollary 4.2 verification Constant-batch experiment (Corollary 4.2(i)). 
+
+We use the same settings as in Appendix E.1: noise-limited ( s = 2 , B = 32 , σ2bad = 1 , K = 15 ,000 )and signal-limited ( s = 0 .4, B = 4 , σ2bad = 10 ,
+
+K = 50 ,000 ), with N = 500 , β = 2 , η = 0 .01 ,
+
+σ2good = 0 .1, and ρ = 0 .3 throughout. All results are averaged over 10 seeds. When b(t) is constant, the score reduces to 
+
+Sb(t) ∝ K(T − t), which is monotonically in-creasing in t: noise injected late is remembered 22 0.00 0.25 0.50 0.75 1.00 1.25 1.50                                           
+
+> 1e4
+> 10 5
+> 10 4
+> 10 3
+> 10 2
+> 10 1
+> Excess Risk
+> (a) Risk curves (constant b= 32 )
+> Uniform
+> Early
+> Late
+> Middle
+> Uniform Early Late Middle
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> 1.25
+> 1.50
+> Final Excess Risk  E(T) 1e 4
+> (b) Final risk (lower is better)
+> 0.00 0.25 0.50 0.75 1.00 1.25 1.50
+> 1e2
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Sb(t) =  K(T t)/ b2
+> 1e 3
+> (c) Quality-allocation score
+> Late phase start
+> 012345
+> Step k1e4
+> 10 1
+> Excess Risk
+> (a) Risk curves (constant b= 4 )
+> Uniform
+> Early
+> Late
+> Middle
+> Uniform Early Late Middle
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> Final Excess Risk  E(T) 1e 2
+> (b) Final risk (lower is better)
+> 012345
+> Training time t=k1e2
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> Sb(t) =  K(T t)/ b2
+> 1e 2
+> (c) Quality-allocation score
+> Late phase start
+
+Figure 6: Corollary 4.2(i): constant batch. Top: noise-limited ( s = 2 ); bottom: signal-limited ( s = 0 .4). (a) Risk curves: Late achieves the lowest final risk. (b) Final excess risk bar chart. (c) Score Sb(t) ∝
+
+K(T − t) is monotonically increasing; shaded region marks where Late places high-quality data. 
+
+most strongly, so the optimal quality schedule con-centrates high-quality data at the end of training. Figure 6 confirms the prediction in both the noise-limited and signal-limited regimes. The Late sched-ule achieves the lowest final risk, with a consis-tent ranking Late < Uniform < Middle < Early. Panel (c) shows that Sb(t) is monotonically increas-ing, and the Late schedule places its high-quality data precisely in the region where Sb(t) is largest. 0.00 0.25 0.50 0.75 1.00 1.25 1.50                                                 
+
+> 1e4
+> 10 5
+> 10 4
+> 10 3
+> 10 2
+> 10 1
+> Excess Risk
+> (a) Risk curves ( b(t)K(Tt))
+> Uniform
+> Early
+> Late
+> Middle
+> Uniform Early Late Middle
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> 2.0
+> 2.5
+> 3.0
+> 3.5
+> Final Excess Risk  E(T) 1e 6
+> (b) Final risk (nearly equal)
+> 0.00 0.25 0.50 0.75 1.00 1.25 1.50
+> 1e2
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> 1.25
+> 1.50
+> Sb(t) =  K(T t)/ b(t)2
+> 1e 9
+> (c) Quality-allocation score
+> 1/ C2= 5.40 e10
+> 012345
+> Step k1e4
+> 10 1
+> Excess Risk
+> (a) Risk curves ( b(t)K(Tt))
+> Uniform
+> Early
+> Late
+> Middle
+> Uniform Early Late Middle
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> 2.0
+> 2.5
+> 3.0
+> Final Excess Risk  E(T) 1e 2
+> (b) Final risk (nearly equal)
+> 012345
+> Training time t=k1e2
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> 2.0
+> 2.5
+> 3.0
+> Sb(t) =  K(T t)/ b(t)2
+> 1e 9
+> (c) Quality-allocation score
+> 1/ C2= 1.09 e09
+
+Figure 7: Corollary 4.2(ii): batch b(t) = CpK(T − t).Top: noise-limited ( s = 2 ); bottom: signal-limited (s = 0 .4). (a) Risk curves for the four schedules are nearly identical. (b) Final excess risks are equal within standard error. (c) Score Sb(t) ≈ 1/C 2 is approxi-mately constant, confirming degeneracy. 
+
+Optimal-batch experiment (Corollary 4.2(ii)). 
+
+We use the same eigenstructure, learning rate, and quality parameters as above, with total data bud-get D = 200 ,000 . For the noise-limited set-ting ( s = 2 , σ2bad = 1 , K = 15 ,000 ) and the signal-limited setting ( s = 0 .4, σ2bad = 10 , K =50 ,000 ), we replace the constant batch with the schedule Bk = max {CpK(T − kη ), 1}, where 
+
+C = D/ R T
+
+0
+
+pK(T − t) d t.Because the batch size now varies across time, a fixed number of high-quality steps would no longer guarantee equal high-quality data budgets across schedules. We therefore construct budget-aware quality schedules: for the Early schedule, we set pk = 1 on the first nearly steps such that Pnearly 
+
+k=1 Bkη = ρD ; for the Late schedule, we set 
+
+pk = 1 on the last nlate steps satisfying the same budget; and similarly for Middle. This ensures that all schedules consume exactly the same total num-ber of high-quality samples, so any performance difference can be attributed solely to the timing of quality placement. When b(t) = CpK(T − t) (the rate-optimal schedule of Wang et al. (2026)), the score becomes 
+
+Sb(t) = 1 /C 2, a constant independent of t, so quality placement is degenerate. Figure 7 confirms this: unlike the constant-batch case, the four qual-ity schedules produce nearly indistinguishable risk curves in both the noise-limited and signal-limited settings, with final excess risks equal within stan-dard error. Panel (c) shows that Sb(t) is approxi-mately flat, confirming degeneracy. 
+
+E.3 Experimental details for Theorem 4.3 verification Parameter settings. We fix dimension N = 500 ,high-quality fraction ρ = 0 .3, and σ2good /σ 2bad < 1
+
+throughout. All results are averaged over 10 inde-pendent random seeds. 
+
+Noise-limited regime (s = 2 , β = 2 ): learn-ing rate η = 0 .01 , noise variances σ2good = 0 .1,
+
+σ2bad = 1 .0 (variance ratio r = 0 .1), total data budget D = 200 ,000 .
+
+Signal-limited regime (s = 0 .5, β = 3 ): learn-ing rate η = 0 .05 , noise variances σ2good = 0 .25 ,
+
+σ2bad = 1.0 (variance ratio r = 0.25 ), total data budget D = 10 ,000 , minimum batch size 
+
+Bmin = 4 .
+
+Strategy construction. All four strategies share the same total data budget D and high-quality data budget ρD .1. Constant b + uniform p: b(t) = D/T ,
+
+p(t) = ρ. In the noise-limited regime, the training horizon is set to the joint optimal T ⋆
+
+from Strategy 4. In the signal-limited regime, the constant batch is b = Bmin , which forces 
+
+T = D/B min (the maximum feasible hori-zon). 2. Constant b + late p: same batch size and horizon as Strategy 1; quality is bang-bang 23 with p = 1 on the last ρT /η steps and p = 0 
+
+otherwise, satisfying the high-quality budget constraint. 3. Uniform p + optimal b: p(t) = ρ throughout; batch size b(t) = max( CpK(T −t), B min )
+
+with the constant C determined by bisection so that R T 
+
+> 0
+
+b(t) d t = D. The training hori-zon T ⋆ is independently optimized by mini-mizing the FSL objective T −s + η R T 
+
+> 0
+
+K(T −
+
+t)σ2eff /b (t) d t over T using bounded scalar minimization. 4. Joint optimal : implements Theorem 4.3 di-rectly. In the noise-limited regime (Part I), the training horizon T ⋆ is optimized over T ; the batch schedule is b(t) = CpK(T ⋆ −t) on low-quality steps and b(t) = rC pK(T ⋆ −t)
+
+on high-quality steps, with quality placement chosen as late (one valid choice among the de-generate family). In the signal-limited regime (Part II), the three-phase structure is con-structed: Phase 1 ( p = 0 , b = Bmin ) ex-hausts all low-quality data over T ⋆ 
+
+> 1
+
+= (1 −
+
+ρ)D/B min ; Phase 3 ( p = 1 , ramp-up) uses 
+
+b(t) = Bmin 
+
+ (T ⋆ −t+1) /(T ⋆ 
+
+> 4
+
++1) 1/(2 β)−1;Phase 2 ( p = 1 , b = Bmin ) occupies the re-mainder T ⋆ 
+
+> 3
+
+= T ⋆ − T ⋆ 
+
+> 1
+
+− T ⋆ 
+
+> 4
+
+. The ramp-up duration T ⋆ 
+
+> 4
+
+is optimized numerically by min-imizing the quality-aware FSL objective over 
+
+T4, which implicitly determines the total hori-zon T ⋆ = T ⋆ 
+
+> 1
+
++ T ⋆ 
+
+> 3
+
++ T ⋆ 
+
+> 4
+
+.
+
+F LLM Experiment Details 
+
+F.1 Model architecture and training infrastructure 
+
+We use a Mixture-of-Experts (MoE) model with 15B total parameters and 2.4B active parameters, following the shortcut-connected MoE architecture of Cai et al. (2025). The model has 12 transformer layers with a hidden dimension of 2304, 24 atten-tion heads with 8-way grouped-query attention, and 112 experts per MoE layer with top-8 routing. The sequence length is 8192. All experiments are ini-tialized from the same checkpoint pretrained on 1.2T tokens of general web data. Training uses BF16 mixed precision with the AdamW optimizer (Loshchilov and Hutter, 2019) (β1=0 .9, β2=0 .95 , ϵ=10 −12 , weight decay 0.1). We use the standard Megatron-style hybrid paral-lelism (tensor parallelism × pipeline parallelism). The peak learning rate is η=6 .51 ×10 −4 with a min-imum of 4.2×10 −5, configured per-schedule (see below). The total token budget for all midtraining experiments is 108B tokens. 
+
+F.2 Data composition Pretraining corpus. The pretraining corpus con-sists of a large-scale proprietary dataset serving as general pretraining data. It covers a broad and di-verse distribution of topics, domains, and languages to establish the model’s foundational capabilities. Similar to standard web corpora, this general data is diverse but inherently noisy with respect to spe-cific downstream task distributions, corresponding to high σ2bad in our theoretical framework. All mid-training experiments fork from a single checkpoint pretrained on this corpus at 1.2T tokens. 
+
+Midtraining corpus. The midtraining corpus is specifically curated for reasoning and coding en-hancement, designed to align closely with complex downstream evaluation benchmarks. It primarily consists of: • Reasoning enhancement data : high-quality question-answering pairs, chain-of-thought annotations, and step-by-step mathematical proof trajectories to bolster logical deduction and problem-solving capabilities. • Coding enhancement data : carefully filtered proprietary code datasets and high-quality repositories with documentation, covering al-gorithmic problem-solving across multiple programming languages. This focused corpus exhibits significantly lower noise variance σ2good with respect to downstream reasoning and coding benchmarks, as it is tightly aligned in both format and distribution. 
+
+F.3 Batch-size schedule configurations 
+
+All schedules below use the same 108B token budget, sequence length 8192, peak learning rate 
+
+η=6 .51 × 10 −4, and minimum learning rate 4.2 ×
+
+10 −5. Steps are reported in units of 1k. 
+
+Batch-size schedule comparison (the first two sets of Table 1). Three schedules are compared under identical token budgets: • Constant 4k : global batch size held at 4096 throughout the 108B midtraining span ( ≈
+
+3.2k steps). • Ramp-up 4k →8k : batch size steps through 
+
+{4096 , 5120 , 6144 , 7168 } over the first 86B tokens (Megatron’s equal-sample ramp with increment 1024), then stays at 8192 for the remaining 22B ( ≈ 2.3k steps). 24 • Drop 1k →8k : batch size drops to 1024 at the start of midtraining, steps through 
+
+{1024 , 2048 , . . . , 7168 } over 94B tokens, then stays at 8192 for the remaining 14B (≈ 4.3k steps). All three schedules consume the same total tokens. Drop spends more gradient updates in the early phase (when the model first sees the midtraining distribution shift), consistent with our theoretical prediction that smaller batch sizes at the quality transition preserve more gradient signal. 
+
+Stable-phase ratio experiment (Figure 4). To finely sweep the duration of the low-batch stable phase, we instantiate the DSR recipe with batch-size bounds [512 , 4096] and vary the stable-phase ratio: • Drop : at the start of midtraining, the batch size drops from the pretraining value of 4096 to 512. • Stable : batch size held at 512 with learning rate fixed at η.• Rampup : batch size steps through 
+
+{512 , 1024 , . . . , 3584 } in equal-sample increments of 512 with learning rate fixed at 
+
+η, then held at 4096 with learning rate linearly decayed from η to 4.2 × 10 −5 (equivalent to continuing the batch-size ramp-up by Smith et al. (2018)). We fix the ramp-up and decay phases to re-ceive equal token shares of the midtraining budget after the stable phase, and sweep the stable-phase ratio from 0% to 62.14% (cor-responding to stable-phase entry points of 
+
+{0, 3200 , 6400 , 9600 , 12800 , 16000 } steps in the parent run). 
+
+Schedule comparison (the last set of Table 1). 
+
+Three schedules are compared: • Cosine-decay : Constant batch size 4096, learning rate follows a cosine decay schedule from 6.51 × 10 −4 to 4.2 × 10 −5.• WSD (Hu et al., 2024): Constant batch size 4096, learning rate held at 6.51 × 10 −4 for the first 72B tokens, then linearly decayed to 
+
+4.2 × 10 −5 over the final 36B tokens. • Drop-Stable-Rampup : Our proposed sched-ule with batch size [512, 4096], 24.9% stable ratio, followed by linear ramp-up and learning rate decay. All three schedules consume the same 108B token budget. 
+
+Training infrastructure and MFU accounting. 
+
+All experiments are conducted on 384 accelera-tors using the Megatron framework (Shoeybi et al., 2019), configured with pipeline parallelism pp = 6 
+
+and tensor parallelism tp = 1 . Relative to the constant-batch baseline at batch size 4096, batch size 512 achieves approximately 0.78 × MFU, re-flecting lower hardware saturation at small batches. Accounting for the measured MFU at each batch-size bucket and the corresponding token allocation in the schedule, Drop-Stable-Rampup incurs a 1.1 × wall-clock/device-time overhead compared to constant-batch baselines such as Cosine-decay and WSD, which operate at batch size 4096 through-out. Since all schedules consume the same 108B token budget, this overhead reflects reduced hard-ware utilization rather than additional algorithmic FLOPs. 
+
+F.4 Evaluation benchmarks 
+
+We evaluate on 14 benchmarks spanning four cate-gories: • Knowledge : MMLU (Hendrycks et al., 2021a), MMLU-Pro (Wang et al., 2024), CMMLU (Li et al., 2024), C-Eval (Huang et al., 2023). • Reasoning : ARC-Challenge (Clark et al., 2018), BIG-Bench Hard (BBH) (Suzgun et al., 2023). • Math : GSM8K (Cobbe et al., 2021), MATH (Hendrycks et al., 2021b). • Code : HumanEval+ (HE+) (Liu et al., 2023), BigCodeBench (BCB) (Zhuo et al., 2025), LiveCodeBench (LCB) (Jain et al., 2025), CRUX-I, CRUX-O (Gu et al., 2024), MultiPL-E (Cassano et al., 2023). All benchmarks are evaluated in zero-shot or few-shot settings following standard protocols. For MMLU, CMMLU, and C-Eval, we report 5-shot accuracy. For GSM8K and MATH, we use 8-shot chain-of-thought prompting. For code benchmarks, we use pass@1 with greedy decoding. 
+
+G Heterogeneous training dynamics across benchmarks 
+
+Our theory predicts that the optimal schedule de-pends on whether training is signal-limited or noise-limited, determined by the exponents s and β in the linear regression model. In practice, we do not have direct access to these parameters for LLM training, nor do we know a priori whether different 25 tasks exhibit uniform or divergent dynamics. In this section, we analyze the accuracy trajectories of 14 benchmarks and report three findings. First, different benchmarks exhibit clearly diver-gent dynamics during the stable phase. We define the early-phase gap as the average accuracy differ-ence between WSD and Drop-Stable-Rampup over all checkpoints within the stable phase (Figure 9). Since the stable phase uses a much smaller batch size (512 vs. 4096), all benchmarks suffer from increased gradient noise and DSR generally trails WSD during this phase. However, the magnitude of this deficit varies substantially across benchmarks: some show a large early-phase gap (DSR falls far behind WSD), while others show a negligible gap (DSR remains close to WSD despite the small batch size). Second, consistent with our theoretical pre-diction, benchmarks with smaller early-phase gaps achieve larger final gains from Drop-Stable-Rampup. A small early gap indicates that the increased noise from reducing the batch size is largely offset by the signal accumulated through additional gradient steps—this signal remains la-tent during the stable phase but manifests after the ramp-up. Conversely, a large early gap indicates that the noise cost of small batch size dominates, and the ramp-up phase can only partially recover the deficit. Third, from the perspective of task content, benchmarks with small early-phase gaps cor-respond to mathematical reasoning (GSM8K, MATH) and algorithmic code generation (Hu-manEval+, MultiPL-E)—capabilities that require compositional, multi-step inference. A notable ex-ception is BigCodeBench: despite being a code benchmark, it exhibits a large early-phase gap. Big-CodeBench emphasizes diverse library/function calls and complex instructions; in our trajectories, its behavior suggests that the tested capabilities may be more sensitive to API/library knowledge than to the compositional signal accumulation ob-served in HumanEval+ and MultiPL-E. 
+
+Benchmarks with small early-phase gaps. 
+
+These benchmarks show that DSR remains close to WSD during the stable phase despite using a much smaller batch size (Figure 9). The noise penalty of small batch size is largely absorbed, and DSR overtakes WSD during the ramp-up/decay stage, ultimately achieving the largest final gains. This is consistent with the interpretation that extra gradient steps at low batch size accumulate latent capacity that only manifests once noise is suppressed during ramp-up. • GSM8K (+4.23): Tests multi-step arithmetic reasoning requiring chaining 2–8 sequential operations. The training curve shows near-zero early gap, with a sharp separation emerg-ing only during the ramp-up/decay phase. • MATH (+2.80): Probes competition-level mathematical problem-solving across preal-gebra, algebra, number theory, counting and probability, geometry, intermediate algebra, and precalculus. The curve shows minimal early gap, with gains accumulating gradually during ramp-up. • HumanEval+ (+2.44): Evaluates Python code generation with rigorous test cases. Vir-tually no early-phase gap; the performance separation emerges only in the later ramp-up/decay stage. • MultiPL-E (+2.66): Assesses code genera-tion across multiple programming languages. Small early gap combined with large final gain. 
+
+Benchmarks with large early-phase gaps. 
+
+These benchmarks show that DSR falls substan-tially behind WSD during the stable phase. The ramp-up phase partially closes this deficit, but the final gains are smaller than the small-gap group, and in one case DSR underperforms a baseline. • CMMLU (+0.98): The Chinese counterpart of MMLU, it shows the most pronounced early-phase gap among all benchmarks—DSR trails WSD by a large margin throughout the stable phase, and only partially recovers dur-ing ramp-up. • BigCodeBench (BCB) (+2.81 over WSD, but −1.40 vs. Cosine-decay): Despite be-ing a code benchmark, BCB exhibits a very large early-phase gap. BigCodeBench empha-sizes practical code generation with diverse li-brary/function calls and complex instructions. In our trajectories, its large early gap suggests that the tested capabilities may be more sen-sitive to API/library knowledge and function-call conventions than to the delayed signal accumulation observed in algorithmic code-generation benchmarks such as HumanEval+ and MultiPL-E. Notably, BCB is the only benchmark where Drop-Stable-Rampup un-derperforms Cosine-decay, suggesting that for 26 0.0% 
+
+12.4% 
+
+24.9% 
+
+37.3% 
+
+49.7% 
+
+62.1% 
+
+stable-phase token ratio 
+
+66.00 
+
+66.25 
+
+66.50 
+
+66.75 
+
+67.00 
+
+67.25 
+
+67.50 
+
+> Acc (%)
+
+Knowledge: MMLU 
+
+0.0% 
+
+12.4% 
+
+24.9% 
+
+37.3% 
+
+49.7% 
+
+62.1% 
+
+stable-phase token ratio 
+
+40.0 
+
+40.5 
+
+41.0 
+
+41.5 
+
+42.0 
+
+42.5 
+
+> Acc (%)
+
+Knowledge: MMLU-Pro 
+
+0.0% 
+
+12.4% 
+
+24.9% 
+
+37.3% 
+
+49.7% 
+
+62.1% 
+
+stable-phase token ratio 
+
+67.4 
+
+67.6 
+
+67.8 
+
+68.0 
+
+68.2 
+
+68.4 
+
+68.6 
+
+> Acc (%)
+
+Knowledge: CMMLU 
+
+0.0% 
+
+12.4% 
+
+24.9% 
+
+37.3% 
+
+49.7% 
+
+62.1% 
+
+stable-phase token ratio 
+
+66.5 
+
+67.0 
+
+67.5 
+
+68.0 
+
+68.5 
+
+69.0 
+
+69.5 
+
+> Acc (%)
+
+Knowledge: C-Eval 
+
+0.0% 
+
+12.4% 
+
+24.9% 
+
+37.3% 
+
+49.7% 
+
+62.1% 
+
+stable-phase token ratio 
+
+79 
+
+80 
+
+81 
+
+82 
+
+83 
+
+> Acc (%)
+
+Reasoning: ARC-c 
+
+0.0% 
+
+12.4% 
+
+24.9% 
+
+37.3% 
+
+49.7% 
+
+62.1% 
+
+stable-phase token ratio 
+
+48 
+
+49 
+
+50 
+
+51 
+
+52 
+
+53 
+
+54 
+
+> Acc (%)
+
+Reasoning: BBH 
+
+0.0% 
+
+12.4% 
+
+24.9% 
+
+37.3% 
+
+49.7% 
+
+62.1% 
+
+stable-phase token ratio 
+
+64 
+
+66 
+
+68 
+
+70 
+
+> Acc (%)
+
+Math: GSM8K 
+
+0.0% 
+
+12.4% 
+
+24.9% 
+
+37.3% 
+
+49.7% 
+
+62.1% 
+
+stable-phase token ratio 
+
+34 
+
+36 
+
+38 
+
+40 
+
+> Acc (%)
+
+Math: MATH 
+
+0.0% 
+
+12.4% 
+
+24.9% 
+
+37.3% 
+
+49.7% 
+
+62.1% 
+
+stable-phase token ratio 
+
+42 
+
+44 
+
+46 
+
+48 
+
+> Acc (%)
+
+Code: HE+ 
+
+0.0% 
+
+12.4% 
+
+24.9% 
+
+37.3% 
+
+49.7% 
+
+62.1% 
+
+stable-phase token ratio 
+
+36 
+
+37 
+
+38 
+
+39 
+
+40 
+
+41 
+
+> Acc (%)
+
+Code: BCB 
+
+0.0% 
+
+12.4% 
+
+24.9% 
+
+37.3% 
+
+49.7% 
+
+62.1% 
+
+stable-phase token ratio 
+
+10 
+
+11 
+
+12 
+
+13 
+
+14 
+
+> Acc (%)
+
+Code: LCB 
+
+0.0% 
+
+12.4% 
+
+24.9% 
+
+37.3% 
+
+49.7% 
+
+62.1% 
+
+stable-phase token ratio 
+
+37.0 
+
+37.5 
+
+38.0 
+
+38.5 
+
+39.0 
+
+39.5 
+
+> Acc (%)
+
+Code: CRUX-I 
+
+0.0% 
+
+12.4% 
+
+24.9% 
+
+37.3% 
+
+49.7% 
+
+62.1% 
+
+stable-phase token ratio 
+
+40.0 
+
+40.5 
+
+41.0 
+
+41.5 
+
+42.0 
+
+> Acc (%)
+
+Code: CRUX-O 
+
+0.0% 
+
+12.4% 
+
+24.9% 
+
+37.3% 
+
+49.7% 
+
+62.1% 
+
+stable-phase token ratio 
+
+44 
+
+45 
+
+46 
+
+47 
+
+48 
+
+> Acc (%)
+
+Code: MultiPL-E 
+
+0.0% 
+
+12.4% 
+
+24.9% 
+
+37.3% 
+
+49.7% 
+
+62.1% 
+
+stable-phase token ratio 
+
+48.5 
+
+49.0 
+
+49.5 
+
+50.0 
+
+50.5 
+
+51.0 
+
+51.5 
+
+> Acc (%)
+
+Overall (mean) 
+
+Drop-Stable-Rampup WSD Cosine-decay Figure 8: Final checkpoint evaluation results across different schedule configurations, demonstrating the robustness of the Drop-Stable-Rampup strategy. 0 20 40 60 80 100 
+
+Tokens (B) 
+
+54 
+
+56 
+
+58 
+
+60 
+
+62 
+
+64 
+
+66 
+
+> Acc (%)
+
+Knowledge: MMLU 
+
+0 20 40 60 80 100 
+
+Tokens (B) 
+
+25.0 
+
+27.5 
+
+30.0 
+
+32.5 
+
+35.0 
+
+37.5 
+
+40.0 
+
+42.5 
+
+> Acc (%)
+
+Knowledge: MMLU-Pro 
+
+0 20 40 60 80 100 
+
+Tokens (B) 
+
+54 
+
+56 
+
+58 
+
+60 
+
+62 
+
+64 
+
+66 
+
+68 
+
+> Acc (%)
+
+Knowledge: CMMLU 
+
+0 20 40 60 80 100 
+
+Tokens (B) 
+
+54 
+
+56 
+
+58 
+
+60 
+
+62 
+
+64 
+
+66 
+
+68 
+
+> Acc (%)
+
+Knowledge: C-Eval 
+
+0 20 40 60 80 100 
+
+Tokens (B) 
+
+65 
+
+70 
+
+75 
+
+80 
+
+> Acc (%)
+
+Reasoning: ARC-c 
+
+0 20 40 60 80 100 
+
+Tokens (B) 
+
+37.5 
+
+40.0 
+
+42.5 
+
+45.0 
+
+47.5 
+
+50.0 
+
+52.5 
+
+> Acc (%)
+
+Reasoning: BBH 
+
+0 20 40 60 80 100 
+
+Tokens (B) 
+
+30 
+
+35 
+
+40 
+
+45 
+
+50 
+
+55 
+
+60 
+
+65 
+
+70 
+
+> Acc (%)
+
+Math: GSM8K 
+
+0 20 40 60 80 100 
+
+Tokens (B) 
+
+10 
+
+15 
+
+20 
+
+25 
+
+30 
+
+35 
+
+40 
+
+> Acc (%)
+
+Math: MATH 
+
+0 20 40 60 80 100 
+
+Tokens (B) 
+
+30 
+
+35 
+
+40 
+
+45 
+
+50 
+
+> Acc (%)
+
+Code: HE+ 
+
+0 20 40 60 80 100 
+
+Tokens (B) 
+
+22.5 
+
+25.0 
+
+27.5 
+
+30.0 
+
+32.5 
+
+35.0 
+
+37.5 
+
+40.0 
+
+> Acc (%)
+
+Code: BCB 
+
+0 20 40 60 80 100 
+
+Tokens (B) 
+
+2
+
+4
+
+6
+
+8
+
+10 
+
+12 
+
+14 
+
+> Acc (%)
+
+Code: LCB 
+
+0 20 40 60 80 100 
+
+Tokens (B) 
+
+24 
+
+26 
+
+28 
+
+30 
+
+32 
+
+34 
+
+36 
+
+38 
+
+40 
+
+> Acc (%)
+
+Code: CRUX-I 
+
+0 20 40 60 80 100 
+
+Tokens (B) 
+
+26 
+
+28 
+
+30 
+
+32 
+
+34 
+
+36 
+
+38 
+
+40 
+
+> Acc (%)
+
+Code: CRUX-O 
+
+0 20 40 60 80 100 
+
+Tokens (B) 
+
+20 
+
+25 
+
+30 
+
+35 
+
+40 
+
+45 
+
+> Acc (%)
+
+Code: MultiPL-E 
+
+0 20 40 60 80 100 
+
+Tokens (B) 
+
+35.0 
+
+37.5 
+
+40.0 
+
+42.5 
+
+45.0 
+
+47.5 
+
+50.0 
+
+> Acc (%)
+
+Overall (mean) 
+
+Cosine-decay WSD Drop-Stable-Rampup 
+
+Figure 9: Per-benchmark accuracy curves for Cosine-decay, WSD, and Drop-Stable-Rampup across all 14 evaluation benchmarks. 
+
+tasks with this trajectory pattern, the extended low-batch-size phase is unnecessary and a smoother schedule may be preferable. 
+
+Benchmarks with moderate early-phase gaps. 
+
+Several benchmarks fall between the two groups, exhibiting a moderate deficit during the stable phase that is largely recovered during ramp-up. • MMLU (+0.69): Measures broad factual knowledge across 57 subjects. A moderate early-phase gap, with the final gain being mod-est but positive. • MMLU-Pro (+0.93): An extended version of MMLU with harder distractors and 10-way multiple choice. Similar moderate early gap and final gain. • BBH (+1.73): Tests diverse compositional rea-soning (logical deduction, causal reasoning, disambiguation). The moderate gap likely re-flects a mixture of subtask types with different noise sensitivities. 
+
+Summary. The key empirical finding is a nega-tive correlation between the early-phase gap (how much DSR trails WSD during the stable phase) and the final gain from Drop-Stable-Rampup. Benchmarks where the small batch size causes little performance deficit during the stable phase (GSM8K, MATH, HumanEval+, MultiPL-E) ul-timately achieve the largest final improvements (+2.44 to +4.23). These correspond to composi-tional reasoning and algorithmic code generation. 27 Benchmarks where the small batch size causes a large deficit (CMMLU, BCB) achieve smaller or negative final gains—the noise cost of the extended stable phase is not fully compensated by signal accumulation. This pattern is consistent with our theoretical prediction: tasks where signal accumu-lation is the bottleneck tolerate the noise of small batch size and benefit from extra gradient steps; tasks where noise dominates are harmed by the extended low-batch-size phase. 
+
+Implications for future work. The divergence in dynamics across tasks suggests a natural direction: 
+
+task-aware data scheduling . If the early-phase gap can be estimated from a small pilot run, one could tailor the data mixture to the schedule phase— prioritizing compositional data (math, code, chain-of-thought) during the stable phase to maximize sig-nal accumulation, and shifting toward distributional content (world knowledge, encyclopedic text) dur-ing ramp-up. We leave the formal optimization of such per-domain scheduling as future work. 28
