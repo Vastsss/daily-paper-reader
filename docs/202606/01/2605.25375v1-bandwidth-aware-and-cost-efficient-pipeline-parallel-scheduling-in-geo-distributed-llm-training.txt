@@ -1,0 +1,737 @@
+Title: Bandwidth-Aware and Cost-Efficient Pipeline Parallel Scheduling in Geo-Distributed LLM Training
+
+URL Source: https://arxiv.org/pdf/2605.25375v1
+
+Published Time: Tue, 26 May 2026 01:42:38 GMT
+
+Number of Pages: 13
+
+Markdown Content:
+# Bandwidth-Aware and Cost-Efficient Pipeline Parallel Scheduling in Geo-Distributed LLM Training 
+
+Han Zhang, Jianchun Liu, Hongli Xu 
+
+Abstract —The rapid evolution of large language models (LLMs) has made geographically distributed training necessary due to GPU scarcity within a single cloud region. In such cross-region settings, Pipeline Parallelism (PP) is communication-efficient, yet scheduling PP remains challenging under hetero-geneous inter-region bandwidth and regional electricity prices. Existing schedulers are either delay-first, incurring high electric-ity cost, or cost-first, relying on rigid resource allocation that prolongs Job Completion Time (JCT). They are also ineffective at optimizing execution order in multi-tenant environments, where long-running and bandwidth-intensive jobs can cause head-of-line (HoL) blocking and degrade overall performance. To this end, we propose BACE-Pipe, a bandwidth-aware and cost-efficient pipeline scheduling framework for LLM training across geo-distributed clusters. BACE-Pipe first introduces adynamic job prioritization mechanism that optimizes execution order by jointly considering job characteristics (e.g., computa-tion time) and real-time network utilization. It then employs a bandwidth-aware pathfinder to identify feasible cross-region pipeline paths that satisfy communication constraints, thereby preventing communication from stalling the pipeline. Among all feasible paths, a cost-minimizing allocator determines the optimal GPU placement strategy by preferentially assigning resources to regions with lower electricity prices. Consequently, BACE-Pipe mitigates HoL blocking, improves resource utilization, and simultaneously reduces both JCT and total electricity cost. Extensive simulations show that BACE-Pipe reduces average JCT by 27.9%–64.7% and total electricity cost by 12.6%–30.6% compared with state-of-the-art baselines. 
+
+Index Terms —Large Language Models, Pipeline Parallelism, Geo-distributed Cloud, Cross-Region Scheduling 
+
+I. I NTRODUCTION 
+
+The rapid advancement of deep learning has led to the rise of large language models (LLMs) with billions of parameters, such as GPT-4 [1] and DeepSeek [2]. These models have become central to a wide range of natural language and multimodal applications, delivering remarkable capabilities in language understanding, generation, and human-like interac-tion [3], [4]. However, training such models is extremely resource-intensive, often requiring thousands of GPUs running for weeks [5]. For instance, MegaScale uses 1,024 NVIDIA Ampere GPUs for nearly 20 days to train a 175-billion-parameter model on 300 billion tokens [5]. Such enormous training costs place large-scale model development beyond the reach of many research institutions. As a result, cloud providers such as Amazon Web Services [6] have increasingly offered deep learning training (DLT) services, allowing users to train models on distributed cloud infrastructures. While cloud-based DLT services relieve users from man-aging training infrastructure, their widespread adoption has sharply increased GPU demand and intensified cloud resource scarcity [7]. For instance, Strati et al. [8] report that a request for eight NVIDIA A100 GPUs in a single Google Cloud region often receives only one GPU or none at all. To avoid wide-area communication overhead, existing cloud schedulers typically bind each training job to a single region [9]. This region-bound design reduces cross-region traffic, but it fragments the global GPU pool into isolated regional clusters. Consequently, a job can be delayed in a congested region while GPUs remain idle in other regions, resulting in low global utiliza-tion and prolonged Job Completion Time (JCT) [10]. This motivates cross-region scheduling, which treats geographically distributed clusters as a unified resource pool to better utilize scarce GPUs and reduce job waiting time. A recent empirical study [8] compares data parallelism (DP) and pipeline parallelism (PP) for cross-region LLM training. In DP, each worker maintains a replicated model and processes a different subset of data, requiring periodic syn-chronization of full model parameters or gradients [11]–[13]. Such synchronization often involves gigabytes of data and becomes prohibitively expensive over bandwidth-constrained wide-area networks (WANs). In contrast, PP partitions the model into sequential stages across GPUs [14], and only exchanges activations and gradients between adjacent stages during forward and backward propagation [15], [16]. Since these intermediate tensors are typically much smaller than full-model synchronization traffic, PP incurs lower cross-region communication overhead and has been shown to achieve shorter training time than DP in geo-distributed settings [8]. Despite the advantage of PP in cross-region training, scheduling PP jobs efficiently remains challenging because it must jointly account for bandwidth heterogeneity and re-gional electricity-price differences. First, inter-region band-width varies significantly due to differences in network infras-tructure, Internet service providers, and geographic distance. According to Cisco’s 2018–2023 report [17], the average fixed broadband bandwidth reached 87.7 Mbps in Central and East-ern Europe by 2023, compared with 157.1 Mbps in the Asia-Pacific region. In cross-region PP training, limited bandwidth on bottleneck links can significantly increase communication latency, leading to pipeline bubbles and longer JCT. For ex-ample, consider training a Llama-3.1-70B model using GPUs allocated from two distant regions. If each GPU requires about 50 ms of computation per micro-batch, while the inter-region bandwidth is only 200 Mbps, transferring activations or gradients of about 30 MB would take roughly 1200 ms. This communication delay is more than an order of magnitude larger than the computation time, leaving GPUs idle for nearly 
+
+> arXiv:2605.25375v1 [cs.DC] 25 May 2026
+
+96% of the training process. As a result, severe communica-tion bottlenecks can degrade pipeline efficiency substantially, causing up to a 24 × increase in overall training time compared with high-bandwidth intra-cluster environments. Second, electricity prices also vary substantially across regions. Given the long duration and massive scale of LLM training, even moderate price differences can translate into significant cost variation. For example, industrial electricity rates [18] in the United Kingdom can reach $0 .35 /kWh, whereas the average rates in the United States and China are much lower, around $0 .12 /kWh and $0 .08 /kWh, respectively. Allocating an entire training job within a high-cost region such as the UK simplifies resource orchestration and avoids WAN bottlenecks, but it can also incur excessive electricity cost. In contrast, distributing pipeline stages across lower-cost regions, such as the US and China, can significantly reduce the total electricity bill. If the cross-region pipeline paths are carefully designed to avoid bandwidth bottlenecks, such placement can preserve the same training performance while reducing electricity cost by approximately 65% to 77% in this example. Therefore, cross-region multi-job scheduling fundamentally requires jointly optimizing two competing objectives: minimiz-ing electricity cost by exploiting regional price disparities, and maintaining high pipeline efficiency through bandwidth-aware path construction. However, existing scheduling frameworks still cannot fully address these requirements simultaneously. Existing schedulers [9], [19]–[29] can be broadly divided into two categories: Delay-First (e.g., Crux [20] and CASSINI [19]) and Cost-First (e.g., TanGo [9]). Delay-First schedulers mainly aim to accelerate training by alleviating communication contention among concurrent jobs. For example, Crux adopts a priority-based traffic ordering, while CASSINI employs an interleaved communication to mitigate inter-job communica-tion contention. However, these approaches focus primarily on training speed and can incur high electricity costs in cross-region settings, as they do not account for regional electricity price differences. In contrast, cost-first schedulers such as TanGo [9] exploit regional price disparities to reduce monetary cost, but they typically assume simplified job models with fixed resource requirements, limiting their ability to exploit residual GPUs and dynamically adjust placements for PP jobs. Regardless of their optimization objectives, existing frameworks also do not optimize execution order effectively for concurrent LLM jobs. In multi-job settings, a large job with long computation time and high bandwidth demand can occupy many GPUs and scarce WAN links for an extended period. This can cause severe head-of-line (HoL) blocking, delaying subsequent jobs that could otherwise be completed earlier and more efficiently, thereby increasing the average JCT at the cluster level. To address these limitations, we propose BACE-Pipe ,a Bandwidth-Aware and Cost-Efficient Pipe line scheduling framework for geo-distributed LLM training, which reduces average JCT and total electricity cost. BACE-Pipe consists of a control plane and a data plane. The control plane is responsible for centralized scheduling, including a State Collector, a Job Parser, and a Job Scheduler. The State Collector continuously monitors real-time cluster status, such as the available GPUs, inter-region bandwidth, and regional electricity prices, while the Job Parser profiles submitted jobs to extract execution metadata (e.g., computation time and communication de-mand). Based on these inputs, the Job Scheduler coordinates multi-job execution through a three-stage decision process. 
+
+First , the scheduler determines the execution order of pend-ing jobs by computing a weighted priority score for each job. This score jointly captures computation intensity and bandwidth sensitivity, with the weighting factor dynamically adjusted according to real-time network utilization. As a result, long-running or bandwidth-intensive jobs are less likely to trigger HoL blocking under network contention. Second , once a job is selected, the scheduler invokes a bandwidth-aware 
+
+Pathfinder to identify feasible cross-region pipeline paths. This step considers available GPU capacity, inter-region link band-width, and the job’s communication requirement, ensuring that the resulting path can support efficient pipeline execu-tion without severe communication bottlenecks. Third , given the feasible path candidates, the scheduler applies a Cost-Min Allocator to finalize GPU placement by preferentially assigning resources in lower-cost regions. In this way, BACE-Pipe reduces electricity cost while preserving the pipeline efficiency guaranteed by the previous step. The data plane consists of multiple GPU clusters distributed across regions and executes training jobs according to the placement deci-sions generated by the control plane. Consequently, BACE-Pipe jointly optimizes execution order, pipeline path selection, and GPU allocation, thereby improving resource utilization while reducing both training time and electricity cost. The main contributions of this paper are summarized as follows:  
+
+> •
+
+We propose BACE-Pipe, a scheduling framework for geo-distributed LLM pipeline training that jointly optimizes average JCT and total electricity cost.  
+
+> •
+
+We design a dynamic job prioritization mechanism that captures both computation intensity and bandwidth sen-sitivity, and adapts to real-time network utilization to mitigate HoL blocking in multi-job settings.  
+
+> •
+
+We develop a joint resource provisioning strategy con-sisting of a bandwidth-aware Pathfinder and a Cost-Min Allocator, which together construct feasible cross-region pipeline paths and place GPUs in lower-cost regions while preserving pipeline efficiency.  
+
+> •
+
+We conduct extensive simulations with six global regions, diverse LLM models (14B–101B parameters), and real-world electricity prices. Experimental results show that BACE-Pipe achieves 27.9%-64.7% shorter average JCT and 12.6%-30.6% lower total electricity cost compared to state-of-the-art baselines. II. B ACKGROUND AND MOTIVATION 
+
+A. Related Works and Limitations 
+
+The proliferation of deep learning has led to a surge in train-ing jobs submitted to cloud platforms, motivating extensive research on efficient workload scheduling. According to their primary optimization goals, existing efforts can be broadly categorized into two classes. 
+
+Delay-First Schedulers [19]–[27] are designed with the primary goal of minimizing JCT. A common approach is to reduce resource contention, especially communication con-tention, in multi-job environments. For instance, MiCS [22] incorporates bandwidth heterogeneity into scheduling and re-duces communication overhead by decreasing the number of participants in each collective operation. Similarly, CASSINI [19] and Muri [24] improve training efficiency through inter-leaved job execution, which temporally staggers concurrent jobs to alleviate contention and enable non-blocking training. Other systems, such as StellaTrain [21], directly accelerate training through cache-aware gradient compression and CPU-based sparse optimization, thereby improving GPU utilization and reducing time-to-accuracy. Although these approaches are effective at reducing JCT, they generally assume uniform electricity pricing. When deployed in geo-distributed envi-ronments with substantial regional price variation, they can therefore incur prohibitively high electricity costs despite their performance benefits. 
+
+Cost-First Schedulers [9], [28], [29] incorporate regional electricity price diversity to minimize electricity costs. For ex-ample, TanGo [9] proposes a cost-aware job placement frame-work for geo-distributed clouds, assigning jobs to lower-cost regions while satisfying constraints such as latency require-ments. However, existing cost-aware approaches often rely on simplified job models that assume fixed resource requirements per job (e.g., a fixed number of GPUs). Such rigidity prevents schedulers from dynamically leveraging additional available resources to accelerate training. More importantly, it does not capture the distinctive communication pattern of PP-based LLM training, where pipeline stages exchange activations and gradients only along adjacent stages and are highly sensitive to bottleneck links. As a result, a placement that is cost-effective for a generic cloud task may still suffer from long JCT when used for cross-region PP training. Beyond the above performance-cost trade-off, existing schedulers rarely optimize the execution order of concurrent LLM jobs. Under a fixed FCFS order, a job that arrives slightly earlier may occupy scarce GPUs or bottleneck inter-region links for a long period, even when another pending job could finish faster or use the current resources more efficiently. Such queue-level coupling is particularly harmful in geo-distributed PP training: a placement that is locally reasonable for one job can fragment resources and reduce the feasible path choices for subsequent jobs, thereby increasing average JCT and total cost. This limitation motivates our proposed method to jointly consider job prioritization, bandwidth-aware path construction, and cost-min GPU allocation. 
+
+B. Motivation Example 
+
+To better illustrate the limitations of existing approaches and motivate our design, we analyze a representative scheduling scenario in geo-distributed infrastructures. In practice, public 1000Mbps             
+
+> 300Mbps
+> 400Mbps
+> Region A
+> Price: 0.230 $/kWh
+> 200Mbps
+> Region C
+> Price: 0.191 $/kWh
+> 700Mbps
+> Region B
+> Price: 0.222$/kWh
+> 300Mbps
+> Region D
+> Price: 0.291$/kWh
+> Fig. 1: Illustration of job placement strategies across geo-distributed regions. The bottom shows the job placement decisions of each strategy and the overall cost. The notation X(x/n )indicates that
+> xout of ntotal pipeline stages of Job Xare allocated to the corresponding region.
+
+cloud providers mainly adopt two job placement strategies to manage distributed resources [9]: Lowest-Delay-First (LDF), which prioritizes performance by selecting regions with higher computing capacity, and Lowest-Cost-First (LCF), which pri-oritizes economic efficiency by allocating jobs to regions with lower electricity prices. In this example, LCF and LDF follow the first-come, first-served (FCFS) job order, whereas our proposed method can reorder pending jobs according to their priority scores before making placement decisions. This setting allows us to isolate the impact of execution order in addition to the impact of resource placement. As illustrated in Fig. 1, a cloud provider manages four geo-graphically dispersed regions (A, B, C, D) with varying GPU capacities, bandwidth, and electricity costs. To ensure data authenticity, the electricity prices for these regions are derived from real-time statistics of four international cities via Glob-alPetrolPrices [18]: Region A (4 GPUs, $0.230/kWh), Region B (3 GPUs, $0.222/kWh), Region C (2 GPUs, $0.191/kWh), and Region D (2 GPUs, $0.291/kWh). Two LLM training jobs are waiting in the scheduling queue in FCFS order: Job P (Qwen2.5-14B) followed by Job Q (Llama-3.1-70B), both utilizing the Alpaca-52k dataset. We show the placement decisions of LCF and LDF along with our solutions as follows.  
+
+> •
+
+LCF : LCF preserves the FCFS order and first assigns Job P to Region C (2 GPUs) because Region C offers the lowest electricity price ($0.191/kWh) among all regions. It then assigns Job Q to Region B (3 GPUs) among the remaining feasible regions. Although LCF assigns Job P to the lowest-cost region, the limited GPU capacity re-stricts training parallelism. This results in a long average JCT of 1.50 hours and a total electricity cost of $0.53.  
+
+> •
+
+LDF : LDF also follows the FCFS order. It first as-signs Job P to Region A, which possesses the largest computing capacity (4 GPUs), and then assigns Job Q to Region B (3 GPUs), which has the next largest residual capacity. Although LDF achieves higher training parallelism than LCF, this local choice ignores electricity price variations and precludes exploiting high-bandwidth inter-region paths, yielding an average JCT of 1.32 hours and a high electricity cost of $0.56.  
+
+> •
+
+Ours (FCFS) : Maintaining the FCFS order, this strategy schedules Job P first and aggregates resources across Regions A and C (4 in A and 2 in C, denoted as P (4 /6) 
+
+and P (2 /6) ) to leverage the high-bandwidth link (1000 Mbps). However, only Regions B and D remain for the subsequent Job Q. Given the low inter-region bandwidth (200 Mbps) between them, which is insufficient for the large activation size of Job Q in a cross-region scenario, Job Q is forced to run on a single region (Region B with 3 GPUs). Consequently, the average JCT is 1.27 hours and the total electricity cost is $0.55.  
+
+> •
+
+Ours (Reordered) : This strategy explores reordering the scheduling sequence by scheduling Job Q first and Job P second. Under this reordered sequence, Job Q is allocated across the high-bandwidth Regions A and C ( Q(4 /6) 
+
+and Q(2 /6) ) to support its large activation size, while Job P is placed across Regions B and D ( P (3 /4) and 
+
+P (1 /4) ). Given that the small activation size of Job P is highly tolerant of the 200 Mbps low bandwidth, both jobs achieve a high degree of parallelism, leading to a JCT of 0.75 hours and an electricity cost of $0.52. These results demonstrate that existing industrial strategies (LDF and LCF) are structurally limited in geo-distributed clusters. More importantly, comparing the two cross-region execution orders highlights that spatial pathfinding alone is insufficient when throttled by a rigid queue order. Specifically, while Ours (FCFS) achieves an average JCT of 1.27 hours and a cost of $0.55, Ours (Reordered) dramatically reduces the average JCT to 0.75 hours (a 40.9% reduction) and lowers the cost to $0.52. This crucial observation inspires us to design a dynamic, multi-dimensional priority scoring mechanism that systematically optimizes job ordering instead of relying on a rigid queue. These observations highlight the practical importance of intelligent cross-region resource aggregation. Motivated by this insight, we propose BACE-Pipe, an efficient scheduling framework designed to minimize JCT while reducing electricity cost. 
+
+C. System Overview 
+
+As illustrated in Fig. 2, BACE-Pipe is architected as a decoupled control and data plane to coordinate geo-distributed LLM training. Specifically, the data plane comprises heteroge-neous GPU clusters geographically dispersed across multiple regions, while the control plane drives end-to-end scheduling decisions through a hierarchical, four-stage workflow: 1 ⃝ The 
+
+State Collector periodically gathers dynamic system states, including active inter-region network bandwidth, residual GPU capacities, and regional electricity prices. 2⃝ Concurrently, the Job Parser profiles submitted training jobs to extract execution metadata, such as activation sizes and per-GPU Job  
+
+> Parser
+> State Collector
+> Control Plane
+> User Cluster
+> 1
+> 2
+> 3
+> 4
+> Job Scheduler
+> Dynamic
+> Priority
+> Cost-Min
+> Allocator
+> PathFinder
+> Data Plane
+> Fig. 2: The end-to-end workflow of BACE-Pipe, illustrating the interaction between its core components.
+
+computation times under different pipeline parallelism config-urations. 3 ⃝ Utilizing these inputs, the Job Scheduler executes its three-stage scheduling sequence: it first scores pending jobs to determine the optimal execution order, then invokes a bandwidth-aware pathfinder to construct communication-feasible cross-region pipeline paths, and finally applies a cost-minimizing allocator to finalize GPU placements. 4 ⃝ Based on the resulting mapping, the control plane transparently deploys the training jobs onto the data plane for execution. In this way, tenants can submit LLM training jobs to cloud providers without manually managing complex cross-region placements or network bottlenecks. We detail the mathematical formula-tion and algorithmic design of these scheduling components in Section III-B. III. P ROBLEM DEFINITION AND ALGORITHM DESIGN 
+
+A. Problem Definition 
+
+To ensure clarity and consistency throughout the problem formulation, the key notations used in our system model are summarized in Table I. 
+
+System Model. We consider a geo-distributed cloud in-frastructure consisting of K regions, denoted by R =
+
+{1, 2, . . . , K }. Each region r ∈ R is characterized by its GPU capacity Gr , and a regional electricity price Pr , which represents the electricity cost per unit time. The available inter-region bandwidth from region u to region v (u, v ∈ R )is denoted by Bu,v . Note that our model naturally supports asymmetric network bandwidth (i.e., Bu,v can differ from 
+
+Bv,u ), which reflects the routing and traffic asymmetries typical of WANs. The cloud hosts a set of N LLM training jobs, J =
+
+{1, 2, . . . , N }. Each job j ∈ J is parallelized across Lj stages TABLE I: Summary of Key Notations 
+
+Notation Description 
+
+J , R Set of training jobs and set of regions 
+
+Gr , P r GPU capacity and electricity price of region rBu,v Available network bandwidth from region u to 
+
+vLj Number of pipeline stages for job jMj Number of micro-batches for job jtj
+
+> comp
+
+(Lj ) Computation time for a micro-batch of job j
+
+under the configuration of Lj GPUs 
+
+tj
+
+> comm
+
+(s) Communication time between adjacent pipeline stages s and s + 1 
+
+Aj Activation/gradient data size of job jSj Decision variable: pipeline path and GPU al-location for job jnj,r Number of GPUs allocated to job j in region 
+
+rEj Active execution duration of job jWj Queuing delay (waiting time) of job jTj , C j JCT and electricity cost for job jbj The minimum bandwidth requirement for job 
+
+j
+
+(i.e. , Lj GPUs are allocated to job j) using PP with Mj micro-batches. Let tj
+
+> comp
+
+(Lj ) be the computation time for a micro-batch of job j under the configuration of Lj GPUs, and tj
+
+> comm
+
+(s) be the communication latency of job j between adjacent pipeline stages s and s+1 . To capture the pipeline efficiency, we define the bottleneck stage duration ∆j as: 
+
+∆j = max 
+
+
+
+tj
+
+> comp
+
+(Lj ), max 
+
+> 1≤s<L j
+
+tj
+
+> comm
+
+(s)
+
+
+
+Accordingly, the time required for a single training iteration 
+
+tj
+
+> iter
+
+(Lj ) is formulated as: 
+
+tj
+
+> iter
+
+(Lj ) = (  
+
+> Lj−1
+
+X
+
+> s=1
+
+t(s,s +1)  
+
+> comm
+
++Lj ·tj
+
+> comp
+
+(Lj )+( Mj −1)∆ j )·2 (1) Fig. 3 illustrates the execution flow of a 4-stage pipeline with Mj = 4 micro-batches. As shown, the total iteration time 
+
+tj
+
+> iter
+
+(4) consists of the pipeline fill-up latency and the steady-state execution. The overall throughput is constrained by the bottleneck stage duration ∆j . For brevity, only the forward pass is visualized, as the backward pass is symmetric and follows the same scheduling logic. For a training job j requiring Ij total iterations, its active execution duration, denoted as Ej , is given by: 
+
+Ej = Ij · tj
+
+> iter
+
+(Lj ) (2) Due to the limited GPU and bandwidth capacity, a job may wait in the scheduling queue before it can start execution. Let Wj ≥ 0 denote the queuing delay (waiting time) of job j,which is determined by the scheduling sequence. The true JCT, denoted as Tj , is the total time elapsed from job submission to its completion, formulated as: 
+
+Tj = Wj + Ej (3) Computation Communication                      
+
+> 1Stage 1 234123412341234123412341234
+> Forwad Finish
+> Stage 2
+> Stage 3
+> Stage 4
+> (Link 1,2 )
+> (Link 2,3 )
+> (Link 3,4 )
+
+Fig. 3: Schematic of GPipe pipeline execution (Forward pass with 
+
+Lj = 4 stages and Mj = 4 micro-batches). The backward pass is omitted for clarity as it is symmetric to the forward pass. 
+
+Unlike execution delay, the electricity cost is incurred continuously as long as the GPUs are actively allocated to the job, including during pipeline bubbles, but no cost is incurred while the job is waiting in the queue. Thus, the total electricity cost Cj for job j is correctly calculated by integrating the regional GPU prices over the active execution duration Ej :
+
+Cj = Ej · X
+
+> r∈R
+
+(nj,r · Pr ) (4) 
+
+Problem Formulation. Given the multi-region infrastruc-ture and the presence of concurrent jobs, we formulate the scheduling problem as follows. For each job j, the scheduler determines a comprehensive allocation and placement strategy 
+
+Sj . The strategy Sj uniquely defines two aspects: (1) the number of GPUs allocated in each region, denoted as nj,r , and (2) the cross-region pipeline path (i.e., the ordered sequence of regions hosting the pipeline stages). The overall schedul-ing decision is represented by S = {S1, S 2, . . . , S N }. The scheduling decisions are subject to the following constraints: (1) GPU Allocation Constraint : The total GPUs allocated in region r cannot exceed its capacity Gr :X
+
+> j∈J
+
+nj,r ≤ Gr , ∀r ∈ R (5) (2) Regional Bandwidth Constraint : The total bandwidth requirement of all jobs utilizing inter-region links must not exceed the available capacity. To prevent communication from becoming the pipeline bottleneck, the minimum bandwidth requirement for job j is bj = Aj  
+
+> tj
+> comp (Lj)
+
+, where Aj represents the size of activations or gradients transmitted between trans-former layers of job j.Since the cross-region traffic routing is strictly determined by the pipeline path defined in Sj , we introduce a deterministic indicator function Iu→v (Sj ). This function equals 1 if the adjacent pipeline stages of job j span across region u and region v under the strategy Sj , and 0 otherwise. Furthermore, since jobs are executed over time according to their scheduled order and do not all run concurrently, the network bandwidth constraint is an instantaneous physical constraint. Let Jact (t)
+
+be the set of active running jobs at any time t. Thus, the bandwidth constraint is formulated as: X
+
+> j∈J act (t)
+
+Iu→v (Sj ) · bj ≤ Bu,v , ∀u, v ∈ R , u ̸ = v, ∀t (6) Our dual objectives are to minimize the average JCT across all jobs and reduce the total electricity cost: 
+
+min O1 = 1
+
+N
+
+X
+
+> j∈J
+
+Tj (7) 
+
+min O2 = X
+
+> j∈J
+
+Cj (8) 
+
+s.t. (5)(6) 
+
+Since minimizing JCT and electricity cost are potentially conflicting objectives, we model this as a heuristic joint-optimization problem. We primarily prioritize JCT minimiza-tion ( O1) to ensure training performance, while opportunisti-cally minimizing electricity costs ( O2). 
+
+B. Algorithm Design 
+
+The optimization problem is a combinatorial challenge that is fundamentally NP-hard. Specifically, it can be viewed as a variation of the Multi-Dimensional Bin Packing Problem compounded with Constrained Path Selection. The complex-ity arises from three dimensions: (1) resource heterogeneity, where jobs must be mapped to regions with varying GPU capacities and electricity costs, (2) network constraints, where the bandwidth requirement of all jobs utilizing inter-region links must not exceed the available bandwidth, and (3) multi-objective conflict, where minimizing JCT may conflict with minimizing electricity costs. Consequently, finding a global optimum for N jobs across K regions requires exploring an exponential decision space, which is computationally pro-hibitive for real-time scheduling in large-scale clusters. To provide an efficient yet near-optimal solution, we pro-pose BACE-Pipe , a Bandwidth-Aware and Cost-Efficient 
+
+Pipe line scheduling algorithm. BACE-Pipe operates in a three-stage workflow to systematically decouple the scheduling complexity. First, it employs a dynamic job prioritization mechanism to determine the optimal scheduling sequence. Second, for each scheduled job, it invokes a bandwidth-aware pathfinder to construct feasible pipeline chains that satisfy network constraints, aiming to aggregate as many distributed GPU resources as possible across regions to accelerate training process. Third, a cost-minimizing allocator is applied to final-ize the GPU placement, greedily minimizing electricity costs. The overall architecture is explicitly designed to prioritize JCT performance while opportunistically reducing operational expenses. 
+
+1) Dynamic Job Prioritization: In geo-distributed clusters with heterogeneous resources, the scheduling sequence of jobs significantly dictates the overall system efficiency. A conventional FCFS policy often leads to suboptimal perfor-mance due to the HoL blocking effect, where long-running, compute-intensive LLM jobs monopolize GPUs and inter-region bandwidth, forcing smaller, more efficient jobs to wait indefinitely. To maximize global throughput and minimize average JCT, BACE-Pipe employs an adaptive priority-based strategy that balances computational workload with network overhead. Our prioritization logic is guided by two principles. First, inspired by the Shortest Job First (SJF) theorem, prioritizing jobs with lower computation intensity can significantly reduce average JCT by clearing the queue of shorter tasks quickly. Second, under network contention, it is advantageous to defer bandwidth-intensive jobs, as they consume substantial inter-region bandwidth. Scheduling such jobs early may saturate critical inter-region links, restricting the placement flexibility for subsequent jobs. 
+
+Resource Demand Metrics. To mathematically quantify these two principles and evaluate the relative priority of pending jobs, we characterize their resource profiles using two normalized metrics:  
+
+> •
+
+Computation Intensity ( Ij ): This metric represents a job’s baseline workload. Let Ej (1) denote the theoretically estimated execution duration of job j under a single-GPU configuration. The normalized intensity is defined as: 
+
+Ij = Ej (1) max k∈J Ek(1) (9) where a lower Ij indicates a shorter job that can be completed rapidly to improve system-wide throughput.  
+
+> •
+
+Bandwidth Sensitivity ( Dj ): To assess the pressure a job exerts on the network, we define its bandwidth sensitivity 
+
+Dj as its minimum bandwidth requirement bj normalized by the highest such requirement among all jobs in the queue: 
+
+Dj = bj
+
+max k∈J bk
+
+(10) Jobs with a high Dj are particularly sensitive to inter-region link capacities and are more likely to cause severe network congestion. 
+
+Adaptive Priority Scoring. To dynamically balance these two metrics, BACE-Pipe integrates them into a unified priority score using an adaptive weighting factor α ∈ [0 , 1] . This factor intuitively represents the instantaneous network congestion level of the cluster (i.e., the ratio of currently consumed inter-region bandwidth to the aggregate bandwidth capacity). Let 
+
+E = {(u, v ) | u, v ∈ R , u ̸ = v} denote the set of all directed inter-region links, and Jact be the set of currently running jobs. Using the indicator function Iu→v (Sj ) and the minimum bandwidth requirement bj for job j defined in Section III-A, we formally define α as: 
+
+α =
+
+P
+
+> (u,v )∈E
+
+P 
+
+> j∈J act
+
+Iu→v (Sj ) · bj
+
+P 
+
+> (u,v )∈E
+
+Bu,v 
+
+(11) where the numerator sums the bandwidth dynamically oc-cupied by the pipeline paths of all active jobs, and the denominator is the total theoretical bandwidth capacity. The scheduling priority for a pending job j is then formulated as: Priority j = (1 − α) · (1 − Ij ) + α · (1 − Dj ) (12) This adaptive mechanism allows BACE-Pipe to remain robust under varying cluster states. When the network has high headroom ( α → 0), the scheduler prioritizes jobs with lower 
+
+Ij to mitigate HoL blocking and reduce average JCT. As the network nears saturation ( α → 1), the scheduler shifts its focus to 1 − Dj , favoring bandwidth-efficient jobs to prevent further network degradation while maintaining steady progress on the workload. 
+
+2) Bandwidth-Aware Multi-Region Pathfinder: Following the dynamic prioritization described in Section III-B1, BACE-Pipe schedules jobs sequentially according to their priority scores. For each scheduled job j, the scheduler must determine its concrete allocation plan, adhering to the constraints defined in Section III-A. 
+
+Optimal GPU Count and Single-Region Placement. Afundamental consideration is determining the optimal number of GPUs to allocate for a job. While PP accelerates training by distributing model layers, diminishing returns occur as the number of GPUs increases. This is because the computational load per GPU shrinks, potentially leading to lower utilization and increased pipeline bubbles. Consequently, the computation time tj
+
+> comp
+
+(k) does not scale perfectly inversely with the total GPU count k.BACE-Pipe defines the optimal GPU count K∗ as the value that minimizes the overall per-iteration time from Eq. (1): 
+
+K∗ = arg min  
+
+> k
+
+titer (k). (13) Note that the GPU count and the pipeline path are deter-mined by the scheduler prior to the start of training (i.e., at the scheduling boundary). Once a job is deployed, its PP size remains fixed throughout its lifetime, which avoids the significant checkpoint re-sharding and process re-initialization overheads associated with dynamic runtime adjustments. Detailed in Alg. 1, the allocation process first attempts this single-region placement (Lines 1-4). If a region r has sufficient GPU capacity ( Gr ≥ K∗), placing the entire job within region 
+
+r eliminates inter-region communication overhead. Among all such feasible regions, the one with the lowest electricity price 
+
+Pr is selected. This placement is both JCT-optimal and cost-optimal. 
+
+Multi-Region Path Construction. When no single region can host all K∗ GPUs, a multi-region pipeline becomes necessary. The core challenge is to select and order a sequence of regions such that their aggregate capacity approaches K∗,while ensuring the inter-region links have sufficient bandwidth to prevent pipeline stalls. Our pathfinding strategy is inspired by the greedy expansion of Prim’s algorithm. Starting from an initial region, the algo-rithm iteratively appends a new region connected to the current endpoint via the highest-bandwidth link (Line 10). This greedy expansion prioritizes high-bandwidth connections to minimize communication latency. During expansion, the algorithm tracks the bottleneck band-width bmin of the current path. The expansion continues only if the estimated communication time does not exceed the computation time for the accumulated GPU count (Lines 13-17). The process terminates when the aggregated GPUs reach 
+
+K∗, or when no feasible region can be added. Since the path quality heavily depends on the starting region, the algorithm iterates over all regions as potential 
+
+Algorithm 1 Pathfinder: Bandwidth-Aware Path Construction 
+
+Input: Region set R, GPU capacities {Gr }, electricity prices 
+
+{Pr }, bandwidth matrix B, optimal GPU count K∗,activation size A, computation times tcomp (·).
+
+Output: Optimal pipeline path P∗ and GPU allocation A∗.
+
+// Phase 1: Single-Region Feasibility Check  
+
+> 1:
+
+Candidate set C ← { r ∈ R | Gr ≥ K∗} 
+
+> 2:
+
+if C̸ = ∅ then  
+
+> 3:
+
+r∗ ← arg min r∈C Pr ▷ Select the cheapest region  
+
+> 4:
+
+return P∗ = [ r∗], A∗ = {nr∗ = K∗}
+
+// Phase 2: Multi-Region Path Expansion  
+
+> 5:
+
+Initialize gmax ← 0, cmin ← ∞  
+
+> 6:
+
+for each starting region rs ∈ R do  
+
+> 7:
+
+Path P ← [rs], tail node v ← rs, capacity g ← Grs 
+
+> 8:
+
+Bottleneck bandwidth bmin ← ∞  
+
+> 9:
+
+while |P| < |R| and g < K ∗ do  
+
+> 10:
+
+Find u / ∈ P that maximizes Bv,u with Gu > 0 
+
+> 11:
+
+Tentative bottleneck btmp ← min( bmin , B v,u ) 
+
+> 12:
+
+Tentative capacity g′ ← min( g + Gu, K ∗) 
+
+> 13:
+
+if A/b tmp ≤ tcomp (g′) then  
+
+> 14:
+
+P ← P ∪ [u], v ← u 
+
+> 15:
+
+bmin ← btmp , g ← g′ 
+
+> 16:
+
+else  
+
+> 17:
+
+break  
+
+> 18:
+
+A ← COST ALLOCATOR (P, g ) ▷ Invoke Alg. 2  
+
+> 19:
+
+Compute Average Cost: cavg ← 1
+
+> g
+
+P 
+
+> r∈P
+
+A[r] · Pr
+
+Update Global Best Solution:  
+
+> 20:
+
+if g > g max or (g = gmax and cavg < c min ) then  
+
+> 21:
+
+P∗ ← P , A∗ ← A  
+
+> 22:
+
+gmax ← g, cmin ← cavg  
+
+> 23:
+
+return P∗, A∗
+
+seeds (Line 6). For each candidate path, it evaluates the cost-efficiency by invoking the Cost-Min Allocator (Alg. 2). Among all explored paths, the algorithm selects the one that allocates the most GPUs (closest to K∗ to minimize JCT). If multiple paths yield the same GPU count, it breaks the tie by selecting the one with the lowest average electricity cost. 
+
+3) Cost-Aware Resource Allocator: The Cost-Min Alloca-tor (Alg. 2) is a crucial component that enables optimal GPU allocation within a fixed path to further reduce electricity expenses. Given a candidate path P and a target GPU count 
+
+g, it determines the specific GPU allocation A that minimizes electricity costs under two constraints: (1) at least one GPU must be assigned to each region in the path to maintain pipeline continuity, and (2) the regional allocation cannot exceed the available capacity Gr .The algorithm first satisfies the connectivity constraint by allocating exactly one GPU to each traversed region (Lines 1-3). The remaining surplus GPUs are then greedily allocated to regions sorted by their electricity prices Pr , prioritizing the cheapest regions until the surplus is depleted or capacities are full (Lines 5-10). This exact distribution guarantees the minimum electricity cost per training iteration for the given Algorithm 2 Cost-Min Allocator 
+
+Input: Ordered region path P, total required GPUs g.
+
+Output: GPU allocation mapping A = {nr }r∈P .
+
+// Step 1: Ensure Pipeline Connectivity  
+
+> 1:
+
+for each region r ∈ P do  
+
+> 2:
+
+nr ← 1 ▷ Assign at least 1 GPU per stage  
+
+> 3:
+
+Surplus GPUs grem ← g − |P| 
+
+// Step 2: Cost-Aware Surplus Distribution  
+
+> 4:
+
+Sort regions in P by price Pr in ascending order → P sorted  
+
+> 5:
+
+for each region r ∈ P sorted do  
+
+> 6:
+
+if grem = 0 then  
+
+> 7:
+
+break  
+
+> 8:
+
+nadd ← min( Gr − 1, g rem ) ▷ Fill up to GPU capacity  
+
+> 9:
+
+nr ← nr + nadd  
+
+> 10:
+
+grem ← grem − nadd  
+
+> 11:
+
+return A = {nr }r∈P 
+
+path. 
+
+Summary. BACE-Pipe provides an efficient and practical solution for scheduling LLM training jobs in geo-distributed clusters through its tightly coupled mechanisms: dynamic job prioritization and bandwidth-aware pathfinding with cost-minimizing allocation. By adaptively balancing computation intensity and bandwidth sensitivity during job ordering, and jointly optimizing pipeline performance and electricity costs during resource aggregation, it effectively reduces both the average JCT and total electricity costs. This design enables BACE-Pipe to meet stringent resource constraints while adapt-ing to the real-time scheduling demands of large-scale LLM workloads. IV. P ERFORMANCE EVALUATION 
+
+This section presents a rigorous evaluation of the BACE-Pipe scheduler. We begin by detailing the experimental setup, encompassing the geo-distributed simulation environ-ment, workload characteristics, baseline methodologies, and evaluation metrics. Subsequently, we analyze the primary experimental results, complemented by sensitivity analysis, workload analysis and ablation studies to validate the efficacy of individual components within BACE-Pipe. 
+
+A. Experiment Settings 
+
+Simulation Environment. Drawing on the regional foot-prints of leading cloud providers, we construct a geo-distributed simulation environment spanning six major global regions. As summarized in Table II, the simulation environ-ment is configured with six regions selected from a diverse set of global locations, reflecting the geographically distributed nature of typical public cloud service providers. These loca-tions are strategically chosen to represent major cloud hubs across different continents, thereby capturing the heterogeneity in inter-region bandwidth and fluctuating electricity prices inherent in a worldwide infrastructure. To simulate resource heterogeneity, the number of GPUs (Nvidia A6000) for each region is selected from {16 , 32 , 64 , 128 } [37]. Electricity prices are derived from real-world business electricity rates via GlobalPetrolPrices [18]. For network topology, the bandwidth for each region is randomly sampled from the range of network bandwidths offered by AWS EC2 G4 [6] instances (25-100 Gbps) to reflect typical cloud provider capabilities. The inter-region link bandwidth between region i and j is then modeled as the average of their respective bandwidth, i.e., Bi,j = ( Bi + Bj )/2.
+
+Workload Configuration. Our workload consists of eight LLM training jobs, covering a diverse range of architectures from 14B to 101B parameters. The specific configurations are detailed in Table III. To evaluate the efficacy of our algorithm across diverse data scales and computational intensities, we select three representative benchmark datasets: (1) Alpaca-52k 
+
+[38]: A high-quality instruction-following dataset containing 52,002 samples (approximately 50MB). This serves as asmall-scale benchmark to evaluate the algorithm’s overhead and initial convergence in fine-tuning scenarios. (2) WikiText-103 [39]: A standard language modeling dataset extracted from Wikipedia articles, consisting of 1.81 million samples (approximately 0.5GB). It represents a medium-scale workload focused on long-form, structured text. (3) OpenWebText [40]: An open-source recreation of the WebText corpus, comprising 8.01 million samples (approximately 38GB). This dataset provides a large-scale, diverse web-based corpus. Each job is randomly assigned one of these three datasets to ensure diversity in data scale and workload characteristics. 
+
+Baseline Algorithms. To evaluate the effectiveness of BACE-Pipe, we select four representative scheduling strategies that span the spectrum of practical scheduling philosophies, from single-region resource management to multi-region re-source aggregation. This selection allows us to compare BACE-Pipe against both industry-standard practices and state-of-the-art cross-region adaptations:  
+
+> •
+
+LCF [41] and LDF [41]: These serve as industrial standard baselines . LCF is a cost-first scheduler that allocates the entire job to a single region offering the lowest electricity price, while LDF is a delay-first sched-uler that prioritizes the region with the highest GPU availability. They represent the conventional placement approach commonly used in public clouds.  
+
+> •
+
+Cross-Region LCF (CR-LCF) [9] and Cross-Region LDF (CR-LDF) [42]: These represent comprehensive cross-region extensions of the standard policies. CR-LCF aggregates GPUs from regions sorted by ascending prices to minimize cost, while CR-LDF starts with the largest GPU-capacity region and greedily appends adjacent re-gions with the highest bandwidth to minimize delay. By including these, we evaluate whether existing strategies, even when extended to support multi-region resource ag-gregation, can handle the complexities of geo-distributed LLM training. By comparing against these four baselines, we can dis-sect whether BACE-Pipe’s performance gains stem from its superior pathfinding logic, its dynamic prioritization, or its TABLE II: Configuration of Simulated Geo-distributed Regions 
+
+Region Location GPU Capacity Elec. Price ($/kWh) Bandwidth (Gbps) 
+
+EU-West Ireland 64 0.251 50 US-East-2 New York, USA 64 0.156 90 EU-Central Frankfurt, Germany 16 0.288 30 EA-East Tokyo, Japan 128 0.191 70 SEA-South Singapore 32 0.222 50 OC-East Sydney, Australia 32 0.295 70 
+
+> TABLE III: Model Configurations for LLM Training Jobs
+
+Job ID Model Architecture Parameters Transformer Layers Hidden Size Batch Size 
+
+1 FLM-101B [30] 101B 80 10240 128 2 Solar-Open-100B [31] 100B 48 4096 128 3 Llama-3.1-70B [32] 70B 80 8192 128 4 Falcon-40B [33] 40B 60 8192 256 5 Qwen2.5-32B [34] 32B 64 5120 256 6 Gemma-3-27B [35] 27B 62 5376 256 7 Ministral-3-14B [36] 14B 40 5120 512 8 Qwen2.5-14B [34] 14B 48 5120 512 cost-aware resource distribution. To ensure a fair comparison, all evaluated schedulers impose a strict allocation cap of K∗
+
+GPUs per job, where K∗ is determined via Eq. (13). This consistent upper bound ensures that performance variations stem solely from the placement logic rather than differences in the total resource scale. 
+
+Evaluation Metrics. We evaluate the schedulers based on two primary performance indicators: (1) Average JCT : The mean duration from job submission to the completion of the training process across the entire workload. (2) Total Electricity Cost : The cumulative expenditure on electricity consumption for all GPUs utilized throughout the training duration of all jobs. 
+
+B. Main Results and Performance Analysis 
+
+We first conduct an end-to-end performance evaluation to assess BACE-Pipe’s efficacy in achieving the primary objec-tive O1 (Average JCT) and secondary objective O2 (Cost). The normalized results are summarized in Fig. 4. 
+
+Average JCT Analysis: As summarized in Fig. 4, BACE-Pipe achieves the shortest average JCT, with the baselines incurring 27.9% to 64.7% longer average JCT. Unlike FCFS-based baselines, our dynamic prioritization mechanism effec-tively balances computation intensity and bandwidth sensi-tivity. By prioritizing shorter and more bandwidth-efficient jobs during network congestion, BACE-Pipe maintains high system throughput and prevents small jobs from being stalled by resource-intensive ones. More importantly, compared to single-region methods (LDF and LCF), BACE-Pipe breaks the localized capacity limit by aggregating GPUs across regions, accelerating training but also creating opportunities for reduc-ing electricity costs. Compared to the existing cross-region baselines (CR-LCF and CR-LDF), BACE-Pipe’s Pathfinder employs a bottleneck-aware search. This ensures that every cross-region expansion translates into a genuine speedup rather BACE-Pipe         
+
+> LDF
+> LCF
+> CR-LCF
+> CR-LDF
+> 0.8
+> 1.0
+> 1.2
+> 1.5
+> 1.8
+> Normalized Value
+> Avg. JCT Total Cost
+> Fig. 4: End-to-end performance comparison of BACE-Pipe and baseline policies. The average JCT and total electricity cost are normalized to BACE-Pipe.
+
+than being throttled by suboptimal inter-region links, which the greedy CR-baselines often overlook. 
+
+Electricity Cost Analysis: Regarding the secondary ob-jective of electricity cost, BACE-Pipe maintains its superi-ority, with the baselines incurring 12.6% to 30.6% higher electricity costs. The cost-efficiency of BACE-Pipe stems from our hierarchical optimization strategy. First, our priority-based scheduling favors short-running jobs, enabling them to complete quickly and avoid prolonged occupation of GPU resources in low-price regions. Second, the Pathfinder com-ponent identifies high-bandwidth inter-region routes, while the Cost-Min Allocator strategically places workloads onto regions with lower electricity rates (e.g., US-East-2), jointly achieving cost savings. In contrast, cost-oriented baselines (LCF and CR-LCF) focus entirely on selecting low-cost nodes, while ignoring the critical factor of job training time charac-teristics. 
+
+The Cross-Region Paradox and HoL Blocking: A striking observation from Fig. 4 is the emergence of a Cross-Region Paradox : the cross-region methods (CR-LCF and CR-LDF) actually perform worse than even the single-region methods (LCF and LDF), despite their ability to utilize more GPUs per job. Specifically, CR-LDF and CR-LCF exhibit 28.8% and 13.1% higher average JCT than LDF. This paradox suggests that simply increasing the GPU count via multi-region expansion can be counterproductive in a multi-job environment. The root cause is the HoL blocking effect. In the CR-baselines, large-scale models (e.g., FLM-101B) scheduled early in the queue aggressively acquire a vast number of GPUs and monopolize critical inter-region links. These time-consuming training jobs hold the resources for an extended period, forcing numerous subsequent smaller jobs into a state of starvation. This finding underscores the indispensable value of BACE-Pipe’s Dynamic Job Prioritization . By implementing an SJF-inspired strategy with adaptive bandwidth awareness, BACE-Pipe ensures that the cluster maintains high throughput by clearing short and low-bandwidth jobs quickly. The ex-perimental results confirm that in geo-distributed scenarios, the synergy between a bandwidth-aware Pathfinder and a throughput-oriented Priority strategy is the key to overcoming the Cross-Region Paradox and achieving efficient hierarchical optimization. 
+
+C. Sensitivity Analysis 
+
+To further verify the robustness of BACE-Pipe under dif-ferent resource conditions, we conduct sensitivity tests by varying bandwidth and GPU capacities. Although each exper-iment includes three scaling factors, our discussion focuses on the two endpoint settings because they expose the dominant scheduling mechanisms most clearly. The intermediate settings are retained in the figures for completeness and follow the same trends with smaller magnitudes. 
+
+1) Impact of Bandwidth Fluctuations: To evaluate the resilience of BACE-Pipe against network variations, we scale the default inter-region bandwidth by factors of 
+
+{0.3×, 0.9×, 1.5×} , spanning severe congestion, mild band-width reduction, and bandwidth-abundant environments. Fig. 5 summarizes the performance across all metrics, with val-ues normalized to BACE-Pipe. We analyze the 0.3× and 
+
+1.5× endpoint cases in detail because they represent the two qualitatively different regimes: bandwidth scarcity, where cross-region expansion is heavily restricted, and bandwidth abundance, where aggressive expansion can amplify HoL blocking. The 0.9× case is close to the default configuration and therefore mainly serves as an intermediate reference in the figure. 
+
+Performance under Severe Congestion ( 0.3×): In this regime, bandwidth becomes a critical bottleneck, forcing most schedulers to adopt conservative placement strategies. For average JCT, LDF and CR-LDF exhibit overheads of 10.7% and 26.2%, respectively, compared to BACE-Pipe. The rel-atively narrow gap stems from the fact that the Pathfinder 
+
+module consistently adheres to bandwidth constraints, which 0.3× 0.9× 1.5×       
+
+> Bandwidth Scale
+> 1.0
+> 2.0
+> 3.0
+> Avg. JCT
+> (a) Normalized Avg. JCT
+> 0.3× 0.9× 1.5×
+> Bandwidth Scale
+> 1.0
+> 1.1
+> 1.2
+> 1.3
+> 1.4
+> Total Cost
+> (b) Normalized Total Cost
+> BACE-Pipe LDF LCF CR-LCF CR-LDF
+
+Fig. 5: Sensitivity to inter-region bandwidth. The normalized average JCT and total electricity cost are evaluated under different bandwidth scaling factors. 0.5× 0.75× 1.25×       
+
+> GPU Capacity Scale
+> 1.0
+> 1.2
+> 1.4
+> 1.6
+> 1.8
+> Avg. JCT
+> (a) Normalized Avg. JCT
+> 0.5× 0.75× 1.25×
+> GPU Capacity Scale
+> 1.0
+> 1.1
+> 1.2
+> 1.3
+> 1.4
+> Total Cost
+> (b) Normalized Total Cost
+> BACE-Pipe LDF LCF CR-LCF CR-LDF
+
+Fig. 6: Sensitivity to regional GPU capacity. The normalized average JCT and total electricity cost are evaluated under different GPU capacity scaling factors. 
+
+prevents BACE-Pipe from expanding into paths with bottle-neck bandwidth and effectively makes its behavior converge toward single-region placements. Regarding cost, BACE-Pipe maintains a 29.2% to 34.9% advantage over all baselines. Al-though cross-region allocation is rare under limited bandwidth, BACE-Pipe can still reduce electricity costs by prioritizing shorter jobs and selecting lower-price regions whenever feasi-ble. 
+
+Performance under Bandwidth Abundance ( 1.5×): As bandwidth headroom increases, we observe a counter-intuitive "performance collapse" in the baselines, particularly for CR-LDF. Its average JCT surges to 3.4 × that of BACE-Pipe, while its cost remains 19.0% higher. This behavior highlights the HoL blocking effect exacerbated by resource-greedy ex-pansion. With abundant bandwidth, the constraints in Eq. (6) are more easily satisfied, encouraging CR-LDF to aggres-sively aggregate GPUs for training jobs. Jobs requiring a long training period then monopolize the cluster’s GPUs for extended durations. BACE-Pipe avoids this problem through its Dynamic Job Prioritization , which ensures that shorter jobs are processed rapidly to maintain high system-wide turnover while simultaneously exploiting the high-bandwidth environ-ment. Regarding cost, BACE-Pipe continues to maintain the highest economic efficiency. Despite the greater flexibility in region selection afforded by increased bandwidth, the baselines still incur 14.3% to 28.5% higher costs, failing to translate resource abundance into cost-effective placements. This consistent advantage indicates that BACE-Pipe can use the expanded bandwidth to place jobs in more cost-effective regions without compromising training speed. Notably, the average JCT advantage of BACE-Pipe be-comes substantially more pronounced under bandwidth abun-dance (i.e., the 1.5× bandwidth setting) than under limited-bandwidth regimes (i.e., severe congestion at 0.3× bandwidth and mild bandwidth reduction at 0.9× bandwidth), with the baselines incurring 42.9% to 240.3% longer average JCT. This widening performance gap demonstrates the superior efficacy of the Pathfinder module. As the search space expands with higher bandwidth, our bottleneck-aware search remains adept at identifying optimal paths that maximize global throughput. 
+
+2) Impact of Cluster GPU Capacity: To examine the system’s robustness under varying hardware availability, we scale the total GPU capacity of each region by factors of 
+
+{0.5×, 0.75 ×, 1.25 ×} . This evaluates BACE-Pipe’s ability to manage workloads ranging from extreme resource scarcity to relative abundance. The normalized results for average JCT and cost are detailed in Fig. 6. Similar to the bandwidth study, we focus on the 0.5× and 1.25 × endpoint cases because they reveal the clearest contrast between resource contention and resource abundance. The 0.75 × case represents moderate scarcity and follows the same qualitative trend as the constrained case, so it is shown in the figure but not discussed separately. 
+
+Performance under Constrained GPU Capacity ( 0.5×): 
+
+When the total GPU pool is halved, resource contention reaches its peak. In this scenario, BACE-Pipe demonstrates its most significant performance lead, with baselines exhibiting average JCT inflations ranging from 32.2% to 69.9%. Specifi-cally, the cross-region baselines (CR-LCF and CR-LDF) suffer the most, with average JCT overheads nearing 70%. This confirms that in highly constrained environments, the HoL blocking effect becomes catastrophic. Without an effective priority mechanism, a few large-scale model training jobs can paralyze the limited resource pool. In terms of cost, BACE-Pipe maintains the highest efficiency, while baselines incur 24.1% to 42.5% higher expenditures. It is worth noting that the cost of LCF is even higher than that of LDF, which is largely due to the scheduling order. 
+
+Performance under Abundant GPU Capacity ( 1.25 ×): 
+
+As the GPU capacity increases to 1.25 ×, the performance gap between all methodologies begins to narrow. In this resource-abundant regime, the average JCT of baselines relative to BACE-Pipe drops to between 5.5% and 20.7%. Similarly, the cost disparities also shrink to within 0.2% to 9.4%. This trend is expected, as the abundance of GPU slots alleviates resource contention. When compute resources are no longer the primary bottleneck, the impact of the scheduling order (Priority) and placement logic (pathfinding) naturally diminishes, leading to a convergence in performance across different policies. This indicates that when GPUs are plentiful, even less sophisticated allocators can eventually find reasonably priced resources. Nevertheless, BACE-Pipe still yields the lowest average JCT and total electricity cost among the evaluated schedulers. These results demonstrate that BACE-Pipe is particularly valuable for geo-distributed clusters with constrained comput-ing resources. By intelligently prioritizing workloads and find-8 12 16 20 24         
+
+> Number of Jobs
+> 1.0
+> 1.2
+> 1.4
+> 1.6
+> Avg. JCT
+> (a) Normalized Avg. JCT
+> 812 16 20 24
+> Number of Jobs
+> 1.0
+> 1.1
+> 1.2
+> 1.3
+> 1.4
+> Total Cost
+> (b) Normalized Total Cost
+> BACE-Pipe LDF LCF CR-LCF CR-LDF
+
+Fig. 7: Sensitivity to workload intensity. The normalized average JCT and total electricity cost are evaluated under different numbers of jobs. 
+
+ing the best placements to prevent resource monopolization, it significantly reduces both average JCT and electricity costs, thereby improving cluster throughput and economic efficiency. 
+
+D. Impact of Workload Intensity 
+
+To evaluate the effectiveness of BACE-Pipe under varying levels of system pressure, we scale the number of concurrent LLM training jobs from 8 to 24. This experiment aims to as-sess how the scheduler manages increasing resource contention and whether it can maintain its lead as the cluster approaches saturation. The results for average JCT and cost are illustrated in Fig. 7. As shown in our experimental data, BACE-Pipe consis-tently maintains the lowest average JCT across all workload intensities. However, we observe a narrowing performance gap between BACE-Pipe and the baselines as the number of jobs increases. For instance, the JCT overhead of CR-LDF decreases from 64.7% at 8 jobs to 21.7% at 24 jobs. This trend is a natural consequence of cluster saturation. As the workload intensifies, the cluster’s GPU utilization reaches near-maximum levels across all scheduling policies. In such a "fully-loaded" state, most jobs are forced to wait in the queue for a significant amount of time, which inherently reduces the marginal benefits of optimized scheduling. Nevertheless, the fact that BACE-Pipe still provides a 9.7% to 23.3% JCT improvement even at 24 jobs is significant. It proves that our priority-driven scheduling approach remains effective at maintaining a more rational and efficient scheduling flow even when resources are extremely tight. A similar convergence trend is observed in the total elec-tricity cost. When the workload increases to 20 or 24 jobs, the cost advantage of BACE-Pipe over baselines such as CR-LCF shrinks to nearly 1%. This is because under high workload intensity, almost all GPUs in every region are kept in an active state to process the backlog of jobs. Consequently, the flexibility to choose low-cost regions is severely restricted. When the demand for computing power meets or exceeds the total supply, every available GPU must be utilized, causing the average electricity price across all schedulers to con-verge toward the cluster-wide mean. The experimental results confirm that while the optimization space for cost naturally diminishes under heavy loads, BACE-Pipe consistently stays at the lower bound of electricity cost. The overall stability of BACE-Pipe  
+
+> w/o Priority
+> w/o Pathfinder
+> w/o Cost-Min
+> 0.8
+> 1.0
+> 1.2
+> 1.4
+> 1.6
+> Normalized Value
+> Avg. JCT Total Cost Fig. 8: Ablation study of BACE-Pipe. The results quantify the impact of removing the Priority, Pathfinder, and Cost-Min components on normalized average JCT and total electricity cost.
+
+BACE-Pipe under high-intensity workloads demonstrates its practical viability for large-scale, multi-tenant geo-distributed training environments. 
+
+E. Ablation Study 
+
+To quantify the individual contribution of each core com-ponent in BACE-Pipe, we conduct an ablation study by com-paring the full version of BACE-Pipe against three stripped-down variants: (1) w/o Priority : Replaces the dynamic priority scoring with a standard FCFS strategy. (2) w/o Pathfinder :Substitutes the Pathfinder module with CR-LDF, thereby elim-inating the path selection component. (3) w/o Cost-Min :Allocates GPUs uniformly across the selected path without considering price variations, effectively removing the cost-minimization strategy. The results, normalized to the full BACE-Pipe, are illustrated in Fig. 8. 
+
+Impact of Pathfinder: As depicted in Fig. 8, the Pathfinder 
+
+module is the most critical component for achieving both temporal and economic efficiency. Removing it results in a 52.5% surge in JCT and a 20.5% increase in total electricity cost. The root cause is the restricted search space for optimal pipeline paths. While all methods strictly adhere to the band-width constraint to prevent communication bottlenecks, w/o Pathfinder lacks the global topology awareness to aggregate a larger number of GPUs ( K∗) across multiple regions. Conse-quently, jobs are forced to run at lower parallelism, leading to the highest JCT inflation. Furthermore, without the ability to verify a broader range of inter-region combinations, the sched-uler is often confined to paths with higher electricity rates, which explains the simultaneous spike in cost. This confirms that a sophisticated path search strategy is the foundation for maximizing resource aggregation within stringent networking constraints. 
+
+Impact of Priority: The absence of the priority mech-anism leads to a significant increase of 41.9% in average JCT, whereas the cost only increases by 5.0%. This result highlights that while the scheduling order is the primary lever for mitigating HoL blocking and improving JCT, it is largely decoupled from the GPU placement logic. Even with suboptimal job sequencing, the remaining Pathfinder and Cost-Min modules can still identify valid paths and prioritize lower-cost regions for individual jobs, thereby maintaining relatively stable economic efficiency. 
+
+Impact of Cost-Min Allocator: Removing the cost-optimization logic results in a 13.9% increase in total elec-tricity cost. Interestingly, it also leads to a minor JCT increase of 4.6%. This indicates that the Cost-Min Allocator provides benefits beyond mere price reduction. Compared to uniform allocation, our cost-aware strategy concentrates GPU resources in a small set of low-cost regions. This strategic concentration effectively reduces resource fragmentation across the cluster. By packing workloads tightly into specific locations, the remaining available GPUs in other regions are kept more con-centrated and contiguous. This unfragmented pool of available resources significantly facilitates the placement of subsequent jobs, thereby slightly improving the overall scheduling effi-ciency and reducing the average JCT. This effect is expected to be more pronounced in clusters with a larger number of regions, as uniform allocation would disperse resources across more nodes, exacerbating fragmentation. In conclusion, the ablation study demonstrates that BACE-Pipe’s overall superiority relies on the indispensable synergy of its three components. The Pathfinder is the fundamental en-abler for efficient cross-region scaling, the Priority mechanism is crucial for maintaining global throughput by preventing HoL blocking, and the Cost-Min Allocator guarantees economic efficiency while mitigating resource fragmentation. V. C ONCLUSION 
+
+In this paper, we presented BACE-Pipe, an optimization scheduler designed for efficient and cost-effective LLM train-ing in geo-distributed environments. By addressing the intrin-sic challenges of limited inter-region bandwidth and fluctuat-ing electricity costs, BACE-Pipe provides a holistic solution for large-scale multi-tenant clusters. Our core contributions are three-fold. First, the Pathfinder 
+
+module employs a bottleneck-aware search strategy to identify optimal inter-region pipeline paths, successfully breaking the capacity limitations of single regions while strictly enforcing a communication-computation balance. Second, we identified and analyzed the "Cross-Region Paradox," where naive re-source expansion leads to system-wide performance collapse. To mitigate this, our Dynamic Job Prioritization module incorporates an adaptive bandwidth-aware scoring mechanism to eliminate HoL blocking and maximize job turnover. Finally, the Cost-Min Allocator leverages regional price disparities to minimize electricity expenditure, while its strategic workload concentration inadvertently reduces resource fragmentation, further facilitating efficient scheduling. Experimental evaluations across diverse workload inten-sities and network conditions demonstrate that BACE-Pipe significantly outperforms state-of-the-art baselines. More im-portantly, BACE-Pipe exhibits exceptional robustness under high-load and bandwidth-constrained scenarios, maintaining stable scheduling efficiency. REFERENCES [1] J. Achiam, S. Adler, S. Agarwal, L. Ahmad, I. Akkaya, F. L. Aleman, D. Almeida, J. Altenschmidt, S. Altman, S. Anadkat et al. , “Gpt-4 technical report,” arXiv preprint arXiv:2303.08774 , 2023. [2] D. Guo, D. Yang, H. Zhang, J. Song, R. Zhang, R. Xu, Q. Zhu, S. Ma, P. Wang, X. Bi et al. , “Deepseek-r1: Incentivizing reasoning capability in llms via reinforcement learning,” arXiv preprint arXiv:2501.12948 ,2025. [3] Z. Tang, X. Kang, Y. Yin, X. Pan, Y. Wang, X. He, Q. Wang, R. Zeng, K. Zhao, S. Shi et al. , “Fusionllm: A decentralized llm training system on geo-distributed gpus with adaptive compression,” arXiv preprint arXiv:2410.12707 , 2024. [4] J. Huang, Y. Feng, F.-Q. Cui, X. Zhang, Z. Liu, X. Liu, J. Liu, F. Zhang, and M. Li, “Identifying who you are no matter what you write through abstracting handwriting style,” IEEE Transactions on Dependable and Secure Computing , 2026. [5] Z. Jiang, H. Lin, Y. Zhong, Q. Huang, Y. Chen, Z. Zhang, Y. Peng, X. Li, C. Xie, S. Nong et al. , “Megascale: Scaling large language model training to more than 10,000 gpus,” in 21st USENIX Symposium on Networked Systems Design and Implementation (NSDI 24) , 2024, pp. 745–760. [6] “Aws global infrastructure,” https://aws.amazon.com/about-aws/ global-infrastructure/, accessed: April 27, 2025. [7] Z. Yang, Z. Wu, M. Luo, W.-L. Chiang, R. Bhardwaj, W. Kwon, S. Zhuang, F. S. Luan, G. Mittal, S. Shenker et al. , “Skypilot: An intercloud broker for sky computing,” in 20th USENIX Symposium on Networked Systems Design and Implementation (NSDI 23) , 2023, pp. 437–455. [8] F. Strati, P. Elvinger, T. Kerimoglu, and A. Klimovic, “Ml training with cloud gpu shortages: Is cross-region the answer?” in Proceedings of the 4th Workshop on Machine Learning and Systems , 2024, pp. 107–116. [9] L. Luo, G. Zhao, H. Xu, Z. Yu, and L. Xie, “Tango: A cost optimization framework for tenant task placement in geo-distributed clouds,” in 
+
+IEEE INFOCOM 2023-IEEE Conference on Computer Communications .IEEE, 2023, pp. 1–10. [10] G. Gao, M. Xiao, J. Wu, H. Huang, S. Wang, and G. Chen, “Auction-based vm allocation for deadline-sensitive tasks in distributed edge cloud,” IEEE Transactions on Services Computing , vol. 14, no. 6, pp. 1702–1716, 2021. [11] J. Liu, R. Li, H. Xu, Q. Ma, J. Yan, and L. Huang, “Fedquad: Adaptive layer-wise lora deployment and activation quantization for federated fine-tuning,” IEEE Transactions on Mobile Computing , 2025. [12] S. Shi, Z. Tang, X. Chu, C. Liu, W. Wang, and B. Li, “A quantitative survey of communication optimizations in distributed deep learning,” 
+
+IEEE Network , vol. 35, no. 3, pp. 230–237, 2020. [13] Z. Tang, Y. Zhang, S. Shi, X. Tian, T. Liu, B. Han, and X. Chu, “Fed-impro: Measuring and improving client update in federated learning,” 
+
+arXiv preprint arXiv:2402.07011 , 2024. [14] Y. Huang, Y. Cheng, A. Bapna, O. Firat, D. Chen, M. Chen, H. Lee, J. Ngiam, Q. V. Le, Y. Wu et al. , “Gpipe: Efficient training of giant neu-ral networks using pipeline parallelism,” Advances in neural information processing systems , vol. 32, 2019. [15] R. Yan, Y. Jiang, W. Tao, X. Nie, B. Cui, and B. Yuan, “Flashflex: Accommodating large language model training over heterogeneous environment,” arXiv preprint arXiv:2409.01143 , 2024. [16] Q. Ma, X. Song, J. Zhou, H. Wang, Y. Liao, J. Liu, and H. Xu, “Asynchronous federated learning over non-iid data via over-the-air computation,” IEEE Transactions on Networking , 2025. [17] Cisco, “Cisco annual internet report (2018-2023) white paper,” 2018. [Online]. Available: https://www.cisco.com/c/en/us/solutions/collateral/ executive-perspectives/annual-internet-report/white-paper-c11-741490. html [18] “Globalpetrolprices,” https://zh.globalpetrolprices.com/electricity_ prices, accessed: December 27, 2024. [19] S. Rajasekaran, M. Ghobadi, and A. Akella, “Cassini: Network-aware job scheduling in machine learning clusters,” in 21st USENIX Sym-posium on Networked Systems Design and Implementation (NSDI 24) ,2024, pp. 1403–1420. [20] J. Cao, Y. Guan, K. Qian, J. Gao, W. Xiao, J. Dong, B. Fu, D. Cai, and E. Zhai, “Crux: Gpu-efficient communication scheduling for deep learn-ing training,” in Proceedings of the ACM SIGCOMM 2024 Conference ,2024, pp. 1–15. [21] H. Lim, J. Ye, S. Abdu Jyothi, and D. Han, “Accelerating model training in multi-cluster environments with consumer-grade gpus,” in 
+
+Proceedings of the ACM SIGCOMM 2024 Conference , 2024, pp. 707– 720. [22] Z. Zhang, S. Zheng, Y. Wang, J. Chiu, G. Karypis, T. Chilimbi, M. Li, and X. Jin, “Mics: near-linear scaling for training gigantic model on public cloud,” arXiv preprint arXiv:2205.00119 , 2022. [23] W. Xiao, R. Bhardwaj, R. Ramjee, M. Sivathanu, N. Kwatra, Z. Han, P. Patel, X. Peng, H. Zhao, Q. Zhang et al. , “Gandiva: Introspective cluster scheduling for deep learning,” in 13th USENIX Symposium on Operating Systems Design and Implementation (OSDI 18) , 2018, pp. 595–610. [24] Y. Zhao, Y. Liu, Y. Peng, Y. Zhu, X. Liu, and X. Jin, “Multi-resource interleaving for deep learning training,” in Proceedings of the ACM SIGCOMM 2022 Conference , 2022, pp. 428–440. [25] P. Zheng, R. Pan, T. Khan, S. Venkataraman, and A. Akella, “Shock-wave: Fair and efficient cluster scheduling for dynamic adaptation in machine learning,” in 20th USENIX Symposium on Networked Systems Design and Implementation (NSDI 23) , 2023, pp. 703–723. [26] K. Mahajan, A. Balasubramanian, A. Singhvi, S. Venkataraman, A. Akella, A. Phanishayee, and S. Chawla, “Themis: Fair and efficient gpu cluster scheduling,” in 17th USENIX Symposium on Networked Systems Design and Implementation (NSDI 20) , 2020, pp. 289–304. [27] J. H. Park, G. Yun, M. Y. Chang, N. T. Nguyen, S. Lee, J. Choi, S. H. Noh, and Y.-r. Choi, “Hetpipe: Enabling large dnn training on (whimpy) heterogeneous gpu clusters through integration of pipelined model parallelism and data parallelism,” in 2020 USENIX Annual Technical Conference (USENIX ATC 20) , 2020, pp. 307–321. [28] L. Rao, X. Liu, L. Xie, and W. Liu, “Minimizing electricity cost: Optimization of distributed internet data centers in a multi-electricity-market environment,” in 2010 Proceedings IEEE INFOCOM . IEEE, 2010, pp. 1–9. [29] L. Gu, D. Zeng, A. Barnawi, S. Guo, and I. Stojmenovic, “Optimal task placement with qos constraints in geo-distributed data centers using dvfs,” IEEE Transactions on Computers , vol. 64, no. 7, pp. 2049–2059, 2014. [30] X. Li, Y. Yao, X. Jiang, X. Fang, X. Meng, S. Fan, P. Han, J. Li, L. Du, B. Qin, Z. Zhang, A. Sun, and Y. Wang, “Flm-101b: An open llm and how to train it with $100k budget,” 2023. [31] S. Park, S. Kim, J. Cho, G. Gim et al. , “Solar open technical report,” arXiv preprint arXiv:2601.07022 , 2025. [Online]. Available: https://huggingface.co/papers/2601.07022 [32] A. Grattafiori, A. Dubey, A. Jauhri et al. , “The llama 3 herd of models,” 2024. [Online]. Available: https://arxiv.org/abs/2407.21783 [33] G. Penedo, Q. Malartic, D. Hesslow, R. Cojocaru, A. Cappelli, H. Alobeidli, B. Pannier, E. Almazrouei, and J. Launay, “The RefinedWeb dataset for Falcon LLM: outperforming curated corpora with web data, and web data only,” arXiv preprint arXiv:2306.01116 ,2023. [Online]. Available: https://arxiv.org/abs/2306.01116 [34] Q. Team, “Qwen2.5: A party of foundation models,” September 2024. [Online]. Available: https://qwenlm.github.io/blog/qwen2.5/ [35] G. Team, A. Kamath, J. Ferret et al. , “Gemma 3 technical report,” 2025. [Online]. Available: https://arxiv.org/abs/2503.19786 [36] A. H. Liu, K. Khandelwal, S. Subramanian et al. , “Ministral 3,” 2026. [Online]. Available: https://arxiv.org/abs/2601.08584 [37] Y. Huo, J. Liu, H. Xu, Z. Ma, S. Wang, and L. Huang, “Mitigating catastrophic forgetting with adaptive transformer block expansion in federated fine-tuning,” IEEE Transactions on Mobile Computing , 2026. [38] R. Taori, I. Gulrajani, T. Zhang, Y. Dubois, X. Li, C. Guestrin, P. Liang, and T. B. Hashimoto, “Stanford alpaca: An instruction-following llama model,” https://github.com/tatsu-lab/stanford_alpaca, 2023. [39] S. Merity, C. Xiong, J. Bradbury, and R. Socher, “Pointer sentinel mixture models,” 2016. [40] A. Gokaslan, V. Cohen, E. Pavlick, and S. Tellex, “Openwebtext corpus,” http://Skylion007.github.io/OpenWebTextCorpus, 2019. [41] I. Pelle, J. Czentye, J. Dóka, and B. Sonkoly, “Towards latency sensitive cloud native applications: A performance study on aws,” in 2019 IEEE 12th International Conference on Cloud Computing (CLOUD) , 2019, pp. 272–280. [42] B. Yuan, Y. He, J. Davis, T. Zhang, T. Dao, B. Chen, P. S. Liang, C. Re, and C. Zhang, “Decentralized training of foundation models in heterogeneous environments,” Advances in Neural Information Process-ing Systems , vol. 35, pp. 25 464–25 477, 2022.
