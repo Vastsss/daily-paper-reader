@@ -1,0 +1,986 @@
+Title: Efficient Pre-Training of LLMs through Truncated SVD Layers
+
+URL Source: https://arxiv.org/pdf/2605.28573v1
+
+Published Time: Thu, 28 May 2026 01:25:23 GMT
+
+Number of Pages: 20
+
+Markdown Content:
+# Efficient Pre-Training of LLMs through Truncated SVD Layers 
+
+Kaivan Kamali ∗
+
+Cognizant AI Lab 
+
+kaivan.kamali@cognizant.com 
+
+Kajetan Schweighofer †
+
+Cognizant AI Lab 
+
+kai.schweighofer@gmx.at 
+
+Hormoz Shahrzad †
+
+UT Austin & Cognizant AI Lab 
+
+hormoz@cognizant.com 
+
+Olivier Francon 
+
+Cognizant AI Lab 
+
+olivier.francon@cognizant.com 
+
+Babak Hodjat 
+
+Cognizant AI Lab 
+
+babak.hodjat@cognizant.com 
+
+Risto Miikkulainen 
+
+UT Austin & Cognizant AI Lab 
+
+risto@cs.utexas.edu 
+
+Abstract 
+
+The massive scaling of Large Language Models (LLMs) has made pretraining in-creasingly cost-prohibitive. While low-rank representation and orthonormal weight matrices could in principle reduce parameter counts and computational overhead, most existing methods rely on static rank selection and do not enforce weight orthonormality due to high computational cost. This paper introduces TSVD, a framework that maintains low rank and strict orthonormality throughout the training process. It utilizes a spectral energy-based heuristic for adaptive rank selection, and a caching mechanisms to maintain orthonormality. Theoretical analysis justifies the advantage of the approach in pretraining dynamics and experiments across various model scales demonstrate that it is effective empirically. TSVD matches or exceeds the performance of full-parameter baselines while significantly reducing compute requirements. The approach thus offers a well-founded, practical, and scalable path toward efficient high-performance LLM pretraining. 
+
+1 Introduction 
+
+The parameter count of Large Language Models (LLMs) has grown exponentially in the last few years, scaling from millions to over a trillion [ 16 , 27 , 45 ]. To pretrain such models, immense memory and computational resources are needed [ 18 , 21 ]. To mitigate these costs, various optimization strategies have been developed. In particular, representing LLM weight matrices through low-rank approximations has gained prominence as an effective approach [20, 23, 31, 36, 40]. Representing LLM weight matrices as low-rank products drastically reduces parameter counts and computational overhead. However, this approach typically yields higher training and evaluation loss relative to full-parameter models [ 44 , 36 , 40 ]. Maintaining the orthonormality of low-rank matrices alleviates vanishing and exploding gradients, reduces overfitting, and enhances general-ization. Empirically, this approach leads to higher accuracy and faster convergence rates [ 3, 8 , 4]. However, maintaining orthonormality is computationally expensive and has historically been avoided. Orthogonality regularization is a possible approximation [ 42 ], but it necessitates the tuning of an  
+
+> ∗Corresponding author. Email: kaivan.kamali@cognizant.com
+> †Equal contribution Preprint.
+> arXiv:2605.28573v1 [cs.LG] 27 May 2026
+
+additional hyperparameter to balance the regularization penalty against the primary loss objective. An alternative is to initialize the weight matrices as low-rank products and enforce orthonormality periodically, thus striking a trade-off between computational overhead and model performance [ 28 ]. This paper proposes Truncated Singular Value Decomposition (TSVD) layers as an efficient low-rank approximation for Large Language Model (LLM) weight matrices. Unlike existing low-rank meth-ods, TSVD layers maintain strict orthonormality throughout the training process without incurring prohibitive computational overhead. This preservation of orthonormality yields superior training and evaluation loss compared to other low-rank approximations. Empirically, the performance of models utilizing TSVD layers matches or exceeds that of full-parameter models. Furthermore, the reduced memory and compute footprint make it possible to scale this approximation to larger LLM architectures. The main contributions of this paper are: 1. A mechanism to enforce and maintain orthonormality efficiently throughout the training process. The idea is to employ a caching mechanism that amortizes the cost of orthonormalization across gradient accumulation steps. 2. A mechanism for adaptive rank selection by leveraging spectral energy of the weight matrix. The method results in a better alignment of model capacity with the intrinsic dimensionality of each layer, which in turn improves performance. 3. A theoretical analysis as to why orthonormality is a good approach to low-rank parameterization. 4. A demonstration that together these mechanisms, i.e. the TSVD method, considerably reduces the number of parameters and computational cost of large-scale language modeling. 5. Experiments demonstrating competitive or superior performance of models utilizing TSVD layers relative to dense, full-parameter models, despite significantly fewer parameters. TSVD method is thus a well-founded and practical approach for pretraining of LLMs efficiently. It provides a promising foundation for making pretraining more broadly accessible, as well as for improving LLM performance further with existing resources. 
+
+2 Related Work 
+
+This section reviews existing methods for reducing LLM pre-training costs. Each methodology is discussed in terms of its limitations, followed by an examination of subsequent techniques designed to address those shortcomings. GaLore [ 44 ] reduced the pretraining memory requirements without reducing the number of parameters. The authors showed that the gradient matrix is low-rank during training. They projected the gradient matrix into a low-rank form, substantially reducing the memory cost for the optimizer states. However, during pretraining, the optimizer states only constitute a small proportion of the total memory [ 33 ]. Low-Rank Adaptation (LoRA) [ 19 ] is a popular fine-tuning method that efficiently adapts a pretrained LLM to a specific application or problem. LoRA froze the weights of the pretrained model and added two low-rank trainable matrices; during the forward pass, it multiplied the input by both the frozen weights and the product of the low-rank matrices. Inspired by LoRA, ReLoRA [ 25 ] pretrains an LLM using multiple low-rank updates. Instead of updating the full weights, ReLoRA trained low-rank matrices and periodically merged the low-rank updates into the main weights. It then reinitialized the low-rank matrices and repeated this process. Over time, multiple low-rank updates accumulated into a high-rank update, enabling efficient training without updating all parameters at once. However, ReLoRA requires a "warm start" full-rank training for good performance and depends on an intricate learning-rate schedule. GaLore and ReRola successfully lower memory overhead for optimizer states and gradients but do not decrease the total number of trained parameters. This necessitates approaches that directly address parameter count reduction. Several studies have investigated pre-training models via low-rank weight matrix representations, effectively reducing the total number of trainable parameters [ 20 , 23 , 31 , 36 , 40 ]. While this approach reduced pretraining memory and compute requirements, its training and evaluation loss was usually worse than that of full-rank training [44, 36, 40]. 2Incorporating orthonormality into low-rank representations serves as a strategy to mitigate the per-formance trade-offs typical of low-rank methods [ 14 , 17 , 24 , 42 ]. To enhance the performance of low-rank pre-training, LR-SMS [ 14 ] proposed SVD initialization, wherein low-rank factors are initialized via Singular Value Decomposition (SVD) [ 12 ] to ensure initial orthonormality. SLTrain [ 17 ] and LOST [ 24 ] decomposed each weight matrix into additive low-rank and sparse components. Both methods also utilized SVD initialization to provide a stable starting point, where the sparse component served as a complementary mechanism to recover information lost during compression by capturing salient features within the residual space. While LR-SMS, SLTrain, and LOST utilize SVD to initialize low-rank factors as orthonormal, this property is not preserved during training. Because the parameters remain unconstrained during optimization, they inevitably deviate from the orthonor-mality. To address this limitation, SVD Training [ 42 ] uses orthonormality regularizers to maintain orthonormality during training, though it necessitates the tuning of an additional hyperparameter to balance the regularization penalty against the primary loss objective. The Low-Rank Riemannian Optimizer (LORO) [ 28 ] treated weight matrices as elements of a fixed-rank Riemannian manifold. During each update, low-rank factors were jointly optimized following the Riemannian gradient, facilitating effective descent of the loss function. This retraction-based process involved: (1) projecting the Euclidean gradient onto the tangent space to update the weights, and (2) retracting the updated weights back onto the manifold via SVD. In contrast to SVD Training, LORO eschewed explicit orthonormality regularizers. To maintain computational efficiency, the method bypassed the costly SVD retraction for the majority of iterations, performing the operation only every K steps (e.g., K = 500 ). Consequently, the weight matrices remain off the intended manifold for the bulk of the training process. Distinct from the weight-centric strategies mentioned above, COLA [ 26 ] leverages the low-rank nature of LLM activations by replacing MLP and attention projection layers with low-rank autoencoders. Its memory-efficient variant, COLA-M, further reduces overhead by utilizing low-rank activations for backward-pass reconstructions, while both frameworks preserve the original query, key, and value projection structures. In summary, low-rank weight matrix representations offer the most significant reductions in pre-training memory and computational overhead, while the integration of orthonormality constraints helps mitigate the performance trade-offs typical of low-rank methods. However, due to high computational costs, previous techniques have failed to maintain orthonormality throughout the entire training duration. The proposed method ensures strict orthonormality at every iteration and, to the best of our knowledge, represents the first approach to achieve this. A critical factor in low-rank training is the determination of the appropriate rank for weight matrix representations. LR-SMS [ 14 ] utilized a layer-wise linear schedule, assigning increasing ranks from the input to the output layers. Dynamic-Rank training [ 35 ] interleaved full-rank epochs to restore weight expressivity, while InRank [ 43 ] incrementally expanded the rank by adding rank-one components during optimization. Conversely, CUTTLEFISH [ 34 ] monitored rank stabilization during the early stages of training to automate the transition from full-rank to low-rank reparameterization. While effective, these methodologies often introduce operational complexity due to frequent state transitions, which can complicate the training pipeline. In contrast, the proposed method utilizes the spectral energy of weight matrices across layers as a heuristic for rank selection. This approach allows the rank to be determined prior to training, eliminating the need for dynamic transitions between full-parameter and low-rank states. 
+
+3 The TSVD Method 
+
+This section begins with a review of Singular Value Decomposition (SVD) and its truncated variant (TSVD). It then introduces the TSVD layer architecture and the corresponding training methodology, concluding with our proposed adaptive rank selection strategy. 
+
+3.1 Singular Value Decomposition (SVD) 
+
+Singular Value Decomposition (SVD) [ 12 ] is a fundamental matrix factorization widely used in linear algebra, statistics, and machine learning. At its core, it expresses any matrix as a product of three simpler matrices. For any m × n matrix W , the SVD is 3Algorithm 1 TSVD Training with Caching    
+
+> Require: TSVD model with ranks {rℓ}Lℓ=1 from Alg. 2; optimizer
+
+1: for each TSVD layer ℓ do 
+
+2: initialize AU,ℓ ∈ Rmℓ×rℓ , A V,ℓ ∈ Rnℓ×rℓ , ρ ℓ ∈ Rrℓ
+
+3: end for 
+
+4: for each optimizer step do 
+
+5: for each microbatch do 
+
+6: if cache is populated then 
+
+7: read cached (U ⊤, V, Σ) 
+
+8: else 
+
+9: U ← qf( AU ), V ← qf( AV )
+
+10: Σ ← diag(softplus( ρ)) 
+
+11: cache (U ⊤, V, Σ) 
+
+12: end if 
+
+13: W ← 1√r U ΣV ⊤
+
+14: run forward & backward pass, and gradient accumulation 
+
+15: end for 
+
+16: update {AU , A V , ρ }
+
+17: clear all TSVD caches 
+
+18: end for 
+
+Algorithm 2 Spectral-energy Rank Selection      
+
+> Require: Pretrained full-parameter model with reference weights
+> fWℓ;τ∈(0 ,1]
+
+1: for each transformer encoder layer ℓ do 
+
+2: for each weight matrix in ℓ do 
+
+3: choose reference weight fWℓ
+
+4: run SVD of fWℓ to get ˆσℓ, 1 ≥ ˆσℓ, 2 ≥ · · · 
+
+5: rℓ ← min     
+
+> n
+> k:
+> Pki=1 ˆσ2
+> ℓ,i
+> P
+> jˆσ2
+> ℓ,j
+> ≥τ
+> o
+
+6: end for 
+
+7: end for 
+
+8: return {rℓ}Lℓ=1     
+
+> Note: qf( ·)denotes the Qfactor of a reduced QR decomposition. The cache is recomputed once per optimizer step and reused across microbatches.
+
+W = U ΣV T (1) where U ∈ Rm×m: left singular vectors (orthonormal matrix); Σ ∈ Rm×n: singular values (diagonal matrix with non-negative entries); and V ∈ Rn×n: right singular vectors (orthonormal matrix). SVD decomposes a linear transformation into three distinct geometric operations: first, V T rotates the input into a new coordinate system; second, Σ scales the vector along orthogonal axes; and third, 
+
+U rotates the result into the output’s coordinate system. For any m × n matrix W , Truncated SVD (TSVD) is a low-rank approximation of SVD, defined as 
+
+W ≈ UkΣkV Tk (2) where Uk is the first k columns of U ; Σk is the diagonal matrix with the top k singular values; and 
+
+Vk is the first k columns of V . Thus, the truncated version effectively discards the smaller singular values and their corresponding directions. 
+
+3.2 TSVD Layer 
+
+A TSVD layer approximates a weight matrix W through TSVD ( W ≈ UkΣkV Tk ), where Uk, Σk, and 
+
+V Tk are initialized as unconstrained parameters. A TSVD model is a model that uses TSVD layers. The TSVD training is the process of training a TSVD model. During the forward pass, the TSVD layer enforces the necessary structural constraints: Uk and V Tk are transformed into orthonormal matrices using QR decomposition [7], while Σk is constrained to a positive-valued vector. Low rank approximation of W reduces the number of parameters from mn to mk + k + kn =
+
+k(m + n + 1) ≈ k(m + n). For example, if W is a 1000 by 800 matrix, and k = 128 , the number of parameters reduces from 800 , 000 to 128 ∗ (1000 + 800 + 1) = 230 , 528 , i.e. by approximately 71%. The benefits are twofold: (1) lower memory requirements for storing parameters, gradients, and optimizer states, and (2) reduced computational cost, as measured in FLOPs, because multiplying input by a low-rank approximation of W is less costly than multiplying the input by W (see App. B for details). TSVD layers rely on QR decomposition in the forward pass to enforce orthonormality; The cost, in the number of FLOPS, for a matrix ∈ Rn×k is 
+
+2nk 2 − 2/3k3 (3) To mitigate the computational overhead of QR decomposition, the structure of gradient accumulation can be leveraged [ 15 ]. While larger batch sizes improve training stability for large-scale LLMs, hardware constraints often necessitate splitting an effective batch into smaller micro-batches. For instance, an effective batch of 64 may be processed as four mini-batches of 16, with gradients accumulated before a single parameter update. The TSVD training includes a caching mechanism that 4Learnable Params Input/Intermediate Results Compute in Forward Pass Compute in Backward Pass                                               
+
+> a) Full Rank b)Lo wRan kc) CoLA d) TSVD
+> A→Rr→n
+> B→Rm→r
+> h→Rm
+> ω(Ax )!=diag (ω)
+> U→Rm→r
+> U→U=Ir
+> V→→Rr↑n
+> V→V=Ir
+> W→Rm→n
+> x→Rn
+> h→Rm
+> x→Rn
+> h→Rm
+> x→Rn
+> h→Rm
+> x→Rn
+> A→Rr→n
+> B→Rm→r
+
+Figure 1: Comparison of TSVD Layer with Full-rank, Low-rank, and CoLA Layers computes the QR decomposition during the initial mini-batch and reuses the result for all subsequent sub-steps within the same update. This approach ensures that the expensive orthonormalization occurs only once per parameter update, effectively amortizing the computational cost while preserving the benefits of orthonormality. For related ablation studies, see Appendix 5.3. In a TSVD model, linear layers in the attention and MLP block within the Transformer encoder can be replaced with TSVD layers. Given the high depth of modern LLMs, this significantly reduces the total parameter count without compromising the model’s performance. Comparison of TSVD layer with related layers is provided in Figure 1. 
+
+3.3 Adaptive Rank Selection 
+
+While low-rank representations have been used previously [ 28 , 17 , 44 , 25 ], they typically rely on fixed, predetermined ranks. Such static configurations may be suboptimal: the intrinsic rank required for high performance likely varies across different components of the transformer architecture. The TSVD method employs the spectral energy of weight matrices of pretrained models as a heuristic for rank selection. By performing SVD on the weight matrices of a pretrained model, the diagonal matrix Σ containing singular values σ1, σ 2, . . . , σ k is obtained. The total energy of a full-rank matrix 
+
+W is defined as the sum of all its singular values. To determine the optimal rank for the low-rank approximation, the cumulative energy for a truncated set of ranks is calculated, and the effective rank 
+
+rα(W ) required to preserve a target energy threshold α (e.g., 95% ) is then defined as 
+
+rα(W ) = min 
+
+(
+
+k
+
+Pki=1 σ2
+
+> i
+
+Pnj=1 σ2
+
+> j
+
+≥ α
+
+)
+
+. (4) Applying SVD to a pretrained Llama-60M model across energy thresholds of 0.95 , 0.75 , and 0.50 
+
+revealed a consistent pattern. Within each transformer layer, the query and key matrices shared near identical rank requirements, while the value and output projections required a 50% higher rank to maintain the same energy level. Moreover, the MLP layers exhibited the highest complexity, requiring double the rank of the query and key matrices. These observed proportions can be leveraged as a heuristic for rank allocation when targeting specific model compression ratios. The experimental results comparing uniform static ranks to the proposed adaptive energy-based heuristic are detailed in Section 4.3. Details of TSVD training and adaptive rank selection are provided in Algorithm 1 and 2. 
+
+4 Justification of the Approach 
+
+This section provides conceptual, theoretical, and experimental motivation for the TSVD method presented above. The method of maintaining orthonormality will first be contrasted with previous methods in the literature, and a theoretical justification for it will be given. The heuristic used for adaptive rank selection will then be justified experimentally. 54.1 Comparison to SOTA in Orthonormal Representations 
+
+Existing approaches to maintaining orthonormality fall into 3 categories: (1) initializing weight matrices as orthonormal, though they inevitably deviate from the manifold during unconstrained optimization [ 14 ]; (2) employing soft regularizers [ 42 ], which introduce sensitive hyperparameters for orthogonality; and (3) periodically projecting weights back onto the orthonormal manifold [ 28 ]. The latter approach is most closely related to the TSVD method and is discussed in this subsection. In particular, LORO [ 28 ] utilizes Riemannian optimization to maintain weight constraints. As the mathematical context, a manifold [ 6] is a topological space that is locally flat but could be curved globally, such as a plane, sphere, torus, or saddle-shaped surface. A Riemannian manifold [ 6 ] provides a way to measure distances, angles, etc. using a Riemannian metric. In Riemannian optimization [ 1, 5 ], variables are constrained to lie on a smooth manifold M (such as a sphere), rather than a flat Euclidean space Rn. The core concepts for Riemannian optimization are thus: • The Manifold ( M): The search space. • Tangent Space ( TxM): At any point x ∈ M , the tangent space is a linear approximation of the manifold’s local geometry. Gradients are computed in this space. • Riemannian Gradient: The projection of the standard Euclidean gradient onto the tangent space, denoted as grad f (x) = PTxM(∇f (x)) .• Retraction: A mapping Rx : TxM → M that moves an element from the tangent space back onto the manifold. LORO searches on the low-rank matrix manifold , defined as the set of matrices with a fixed rank r.Each matrix W has a unique representation , eliminating redundancy during the search process, but the retraction operation requires doing an SVD, which is computationally expensive; The cost, in the number of FLOPS, for a matrix W ∈ Rn×m is 
+
+14 mn 2 + 8 n3 (5) To manage this cost, LORO executes the SVD retraction sparingly, typically once every K = 500 
+
+steps. In contrast, TSVD optimizes over the Stiefel manifold , i.e. the set of all matrices with orthonormal columns, denoted as: 
+
+St (n, r ) = {X ∈ Rn×r | X⊤X = Ir } (6) This approach may result in non-unique representations , since different factors ( U, Σ, V ) can represent the same product W , which could be a limitation. However, QR decomposition can be used for the retraction operation, as it is significantly more efficient than SVD; See Equation 3. The assumption in TSVD method is that for LLM pretraining, the computational efficiency of the Stiefel manifold outweighs the theoretical benefits of unique representation on the fixed-rank manifold. Given the massive scale of current and future LLMs, the significant reduction in retraction overhead indeed justifies the inherent redundancy in factorized representation, making it a more practical approach for large-scale optimization than other current methods. 
+
+4.2 Theoretical Justification of Orthonormal Parameterization 
+
+The orthonormal TSVD parameterization W = 1√r U ΣV ⊤ yields four coupled advantages over unconstrained low-rank factorization. First, it cleanly separates subspace and scale: U and V
+
+determine only the left and right rank-r subspaces, while Σ alone determines the spectrum of W .Second, because the basis matrices have orthonormal columns, they have unit gain, which keeps activation and gradient magnitudes controlled by Σ rather than by hidden growth in the factors. Third, the expansion W = 1√r
+
+Pri=1 σiuiv⊤ 
+
+> i
+
+makes the rank-1 modes independent, so each σi directly governs the strength of one orthogonal mode. Fourth, orthonormality is enforced throughout training, eliminating the need for additional orthonormality penalties and their associated hyperparameters. Together, these properties make TSVD method a theoretically well-founded and better-conditioned low-rank parameterization than commonly used low-rank adaptation methods. See App. C for details. 6Table 1: Major Architectural Parameters of Models in the Benchmark Suite. Grey Numbers Denote Multiples Compared to Smallest Model within the Same Model Family. Most Parameters are Scaled Proportionally going from Smaller to Larger Models. Model size / factor 60m 130m × 60m 350m × 60m 1.3B × 60m 
+
+d1 512 768 1.5 1024 2 2048 4
+
+d2 1376 2048 1.5 2736 2 5461 4
+
+nlayers 8 12 1.5 24 3 24 3
+
+nheads 8 12 1.5 16 2 32 40.0 0.2 0.4 0.6 0.8 1.0 1.2 1.4  
+
+> Total parameters (B)
+> 250
+> 500
+> 750
+> 1000
+> 1250
+> 1500
+> Average effective rank
+> 10 −1 10 0
+> Total parameters (B)
+> 0.8
+> 1.0
+> 1.2
+> 1.4
+> 1.6
+> Average rank / out_proj rank
+> Layer type
+> q_proj
+> k_proj
+> v_proj
+> out_proj
+> gate_proj
+> up_proj
+> down_proj
+
+Figure 2: Left: Effective Rank of Different Weight Matrices within a Transformer Layer Averaged over Layers for Different Models within the Benchmark Suite. Right: Effective Rank Normalized by the out projection for Each Model Size. Proportions Remaining Nearly Constant Across Scales. 
+
+4.3 Experimental Derivation of Adaptive Rank Selection Heuristic 
+
+The mechanism in TSVD method on adapting rank selection automatically is based on an experimental discovery of a scaling law, as presented in this section. 
+
+Adaptive rank selection through weight matrix energy Prior work [ 17 , 28 , 26 ] using low-rank representations of weight matrices typically relies on fixed ranks, independent of the role of the weight matrix in the model. However, this choice may be suboptimal, because weight matrices in different components of a transformer decoder layer can require different ranks to perform well. To motivate the adaptive rank selection used for the TSVD method, an analysis of the effective rank is performed (Eq. (4) ) in individual weight matrices of linear transformations within the transformer decoder layer. Those are the query, key, value and out projection within the attention mechanism as well as the gate, up and down projections in the subsequent gated MLP. Effective ranks are first examined in full-parameter models from the experimental suite, spanning various model sizes and training token counts. This analysis is then extended to widely used open-weight model families, demonstrating that the findings remain predictive even in industry-scale settings. The results show that effective ranks determined for small models can be used to determine effective ranks at larger model sizes given the correct scaling of its hyperparameters. Finally, these insights are applied to adaptive rank selection within the TSVD method. 
+
+Effective ranks for benchmark models. The effective ranks for all models in the benchmark suite are provided in Fig. 5 in the Appendix. Across layers, the effective ranks of different projection types (query, key, etc.) are largely consistent, with the exception of the earliest layers, where the ranks are slightly lower. Motivated by this stability, the effective ranks were averaged across layers to enable comparisons between models of different sizes. Fig. 2 (left) shows the effective ranks across the different model sizes in the benchmark. The main observation is that they scale approximately linearly with model size. Notably, the major architectural parameters (Tab. 1), that is, the number of transformer layers nlayers , the number of heads per layer 
+
+nheads , the hidden dimension d1, and the MLP intermediate dimension d2, scale uniformly across the models. When normalizing effective ranks by the out projection (Fig. 2 right), the relative proportions between ranks of different projections are nearly constant across model sizes. Overall, these results indicate that effective ranks measured on smaller models can be used to predict those of larger models, provided that the major architectural parameters are scaled proportionally. 7Table 2: Major Architectural Parameters of Open-weights Model Families. Grey numbers Denote Multiples Compared to Smallest Model within the Same Model Family. Except for LLaMA-2 7B to 13B, parameters change non-proportionally. Most notable, nheads,kv often decrease due to GQA. 
+
+Parameter LLaMA-2 LLaMA-3.1 OLMo 3 num_parameters 7B 13B × 7B 70B × 7B 8B 70B × 8B 7B 32B × 7B 
+
+d1 4096 5120 1.25 8192 2 4096 8192 2 4096 5120 1.25 
+
+d2 11008 13824 1.26 28672 2.6 14336 28672 2 11008 27648 2.5 
+
+nlayers 32 40 1.25 80 2.5 32 80 2.5 32 64 2
+
+nheads,q 32 40 1.25 64 2 32 64 2 32 40 1.25 
+
+nheads,kv 32 40 1.25 8 0.25 8 8 1 32 8 0.25 7B 13B 70B   
+
+> Model size
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> 1.25
+> 1.50
+> Average rank / out_proj rank  Llama 2
+> 8B 70B
+> Model size
+> Llama 3.1
+> 7B 32B
+> Model size
+> OLMo 3
+> Layer type
+> q_proj
+> k_proj
+> v_proj
+> out_proj
+> gate_proj
+> up_proj
+> down_proj
+
+Figure 3: Normalized Effective Rank of Different Model Sizes within Different Model Families. Ranks Remain Similar Except that Key and Value Projection Ranks Often Decrease due to GQA. 
+
+Effective ranks for open-weights model families. To assess the generality of the findings and highlight potential deviations, the analysis was extended to large, publicly available model families: Llama-2 [ 38 ], Llama-3.1 [ 11 ], and Olmo 3 [ 29 ]. Their normalized effective ranks are shown in Fig. 3, and the corresponding architectural parameters are listed in Tab. 2. In these experiments, the query heads and key/value heads were treated separately, because many modern architectures employ grouped query attention (GQA) [2]. For LLaMA-2 7B and 13B, the same consistent scaling behavior was observed as in the previous analysis on the benchmark models. This result was expected given that all major architectural parameters are scaled proportionally. In contrast, the 70B variant adopts GQA, reducing the number of key and value heads by a factor of four. This change is directly reflected in the effective ranks, which decrease accordingly relative to the query and output projections. Additionally, the MLP intermediate dimension is scaled disproportionately, resulting in higher effective ranks for the gate, up, and down projections. For LLaMA-3.1, the number of key and value heads remains constant while most other parameters double from 8B to 70B. Correspondingly, the normalized effective ranks of key and value heads are approximately halved. The transition from OLMo 3 7B to 32B exhibits a similar pattern to that observed between LLaMA-2 13B and 70B. Detailed results for the effective ranks of individual layers are provided in Fig. 6 - 8 in the Appendix. Overall, these results confirm that effective ranks measured on smaller models are predictive of those in larger models. Moreover, deviations from proportional scaling, such as the adoption of GQA, can be systematically accounted for, suggesting that adaptive rank selection remains practical even under architectural changes. The performance of adaptive rank selection is evaluated in the next section. 
+
+5 Experiments 
+
+This section presents an experimental evaluation of TSVD models across a range of transformer model scales and training settings. Pretraining performance is first compared to full-parameter and alternative low-rank baselines, followed by a computational validation of adaptive rank selection. Next, the computational trade-offs of TSVD training are characterized through gradient accumulation, highlighting its efficiency in large-scale training scenarios. 85.1 Pretraining Performance Across Model Scales 
+
+A series of LLaMA-style Large Language Models (LLMs) [ 37 ] were pretrained with scales ranging from 60M to 1.3B parameters. The experimental framework strictly followed the benchmark protocols established in the literature [ 44 , 17 ]. However, the benchmarks were ported to the HuggingFace ecosystem [ 41 ], using accelerate for launching distributed runs across GPUs. Four architectural configurations were evaluated: dense full-parameter baselines, standard low-rank approximations of linear and attention layers, CoLA-based linear layers, and the proposed TSVD layers. This comparative study makes it possible to isolate the performance gains of TSVD layers against both traditional factorization and recent state-of-the-art reparameterization methods. Models were trained on the Colossal Clean Crawled Corpus (C4) [ 30 , 10 ], a massive web-scale dataset derived from Common Crawl. To ensure data quality, C4 employs rigorous heuristic filtering to eliminate low-quality, redundant, and offensive content. Comprising of 365 million documents and 150 billion tokens, C4 serves as a standard benchmark for pretraining prominent models like T5 [ 10 ]. The results are included in Table 3. In terms of perplexity, TSVD models outperformed 60m and 130m full parameter models and matched 350m and 1.3B full parameter models. TSVD models contained between 24% and 51% fewer parameters, yielding a corresponding reduction in the memory footprint for parameters, gradients, and optimizer states. Note that while the full-rank, low-rank, and CoLA experiments were designed to replicate results reported in the literature, the modern Hugging Face implementation yielded significantly improved outcomes. These enhancements may be attributed to several factors, including modernized weight initialization schemes, refined tokenization processes, and the utilization of more stable optimization hyperparameters. 
+
+5.2 Adaptive Rank Selection for TSVD 
+
+The impact of adaptive rank selection in TSVD model pretraining was evaluated by running two pretraining iterations across three model scales: Llama-60m, Llama-130m, and Llama-350m. The first run utilized static ranks of 128, 256, and 256, respectively, following the configurations established in the literature [28]. In the second run, adaptive ranks derived from the energy analysis were used. The results, summarized in Tab. 4, shows that the adaptive rank allocation enhances training performance for Llama-60m and Llama-130m compared to the static baseline. There is a slight degradation for Llama-350m, which can be attributed to a gradient spike in the early phase of training. 
+
+5.3 Gradient Accumulation 
+
+To compare the full-parameter and TSVD versions of the 60M and 130M Llama models, four identical training experiments were run, varying the gradient accumulation steps ( G ∈ { 1, 8, 16 , 32 }). At 
+
+G = 1 (a single mini-step), the TSVD model requires a QR decomposition for every update. Without the benefit of a reused cache, the TSVD model was expected to be slower than the full-parameter baseline. However, as gradient accumulation steps increase, the computational cost of the QR decomposition is amortized across multiple mini-steps. This makes the TSVD model a more practical choice for scaled training, as it outperforms the full-parameter version in wall-clock time. Table 3: Results of Pretraining on the C4 Dataset, Including Validation Perplexity (PPL), Number of Parameters in Millions (Param), and the Estimated Total Memory Cost in GB (Mem), Which Included Memory for Parameters, Gradients, and Activations. The Symbols r, d1, and d2 Denote the Rank Used in Low-rank and CoLA, and the Hidden and Intermediate-dimension of the Model.                                                                             
+
+> Model (# Tokens) LLaMA-60M (1.1B) LLaMA-130M (2.2B) LLaMA-350M (6.4B) LLaMA-1.3B (13.1B)
+> r/d 1/d 2128 / 512 / 1376 256 / 768 / 2048 256 / 1024 / 2736 512 / 2048 / 5461 Method PPL ↓Param Mem ↓PPL ↓Param Mem ↓PPL ↓Param Mem ↓PPL ↓Param Mem ↓
+> Full-rank 15.93 58 0.43 12.07 134 1.00 9.15 368 2.74 7.67 1,339 9.98 Low-rank 14.98 42 0.31 11.72 94 0.70 9.23 185 1.37 7.71 609 4.53
+> CoLA 14.83 45 0.33 11.57 101 0.75 9.22 222 1.65 7.74 760 5.66 TSVD 14.15 44 0.32 11.30 90 0.67 9.16 176 1.31 7.59 650 4.84
+
+9Table 4: Comparison of Static vs. Adaptive Rank Configurations Used During Pretraining. In the ’Adaptive Rank’ Column, the Triplet Represents the Assigned Ranks for the Query/Key, Value/Output Projection, and Linear Layers, Respectively. Values in the ’Static-Rank’ Column are Applied Uniformly Across all Transformer Layers. ’PPL’ Denotes Perplexity. 
+
+Models Static-rank Adaptive-rank Static-rank PPL Adaptive-rank PPL Llama-60m 128 88/132/184 14.43 14.15 Llama-130m 256 136/204/288 11.35 11.30 Llama-350m 256 136/204/288 9.12 9.16 1 8 16 32     
+
+> Gradient Accumulation Steps ( G)
+> 720
+> 740
+> 760
+> 780
+> 800
+> 820
+> 840
+> Training Time in Seconds (Normalized)
+> Training Efficiency (Llama-60m)
+> Full Parameter
+> TSVD
+> 1816 32
+> Gradient Accumulation Steps ( G)
+> 2700
+> 2800
+> 2900
+> 3000
+> 3100
+> 3200
+> 3300
+> Training Time in Seconds (Normalized)
+> Training Efficiency (Llama-130m)
+> Full Parameter
+> TSVD
+> Llama-60m Llama-130m
+> 0
+> 50
+> 100
+> 150
+> 200
+> 250
+> 300
+> 350
+> 400
+> Evaluation Time in Seconds
+> Evaluation Efficiency
+> Full Parameter
+> TSVD
+
+Figure 4: Effect of Gradient Accumulation on Training/Evaluation Runtime These results are detailed in Figure 4. The plots demonstrate that as gradient accumulation steps increase, the TSVD model achieves greater gains in training efficiency compared to the full-parameter model. This trend is further magnified in larger model architectures. 
+
+6 Discussion and Future Work 
+
+The TSVD method opens several avenues for extending orthonormal low-rank training. A natural next step is to evaluate TSVD method on larger LLMs and much larger datasets to assess how its compute and memory efficiency, as well as model performance, scale with model size. Such experiments would also test whether the spectral-energy rank heuristic observed in smaller models remains predictive at larger scales, particularly under architectural variations such as grouped-query attention. A second direction is LLM fine-tuning. After pretraining, a model is further trained on a smaller, task-specific dataset to improve performance on particular tasks. We aim to evaluate how TSVD models compare to full-parameter and other low-rank approaches in terms of fine-tuning performance. A third direction is to investigate potential regularization strategies for Σ, with the goal of driving some singular values to zero during training, thereby enabling further compression beyond the prescribed rank. Finally, we aim to explore whether orthonormal matrices learned in smaller models can be used to initialize the corresponding matrices in larger models, thereby accelerating the training. 
+
+7 Conclusion 
+
+This paper introduced the TSVD method, a novel architectural modification, to reduce parameter count and computational complexity of LLM pretraining. To the best available knowledge, TSVD is the first method to maintain strict weight orthonormality throughout the training trajectory without incurring prohibitive overhead, achieved through an optimized caching mechanism. Empirical results demonstrate that TSVD models consistently match or exceed the performance of their full-parameter counterparts. Furthermore, by analyzing the spectral energy of pretrained models, a rank selection heuristic was derived that frequently outperforms traditional static rank selection strategies. To complement these experimental validations, a theoretical framework illustrates the benefits of orthonormality for stable and efficient language modeling. TSVD method can thus serve as a foundation for more efficient pretraining, and potentially better LLMs. 10 References 
+
+[1] P-A Absil, Robert Mahony, and Rodolphe Sepulchre. Optimization algorithms on matrix manifolds . Princeton University Press, 2008. [2] Joshua Ainslie, James Lee-Thorp, Michiel de Jong, Yury Zemlyanskiy, Federico Lebron, and Sumit Sanghai. GQA: Training generalized multi-query transformer models from multi-head checkpoints. In Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing , pages 4895–4901. Association for Computational Linguistics, 2023. [3] Martin Arjovsky, Amar Shah, and Yoshua Bengio. Unitary evolution recurrent neural networks, 2016. [4] Nitin Bansal, Xiaohan Chen, and Zhangyang Wang. Can we gain more from orthogonality regularizations in training deep cnns?, 2018. [5] Nicolas Boumal. An introduction to optimization on smooth manifolds . Cambridge University Press, 2023. [6] F. E. Burstall. Basic Riemannian geometry , page 1–29. London Mathematical Society Lecture Note Series. Cambridge University Press, 1999. [7] Tony F. Chan. Rank revealing qr factorizations. Linear Algebra and its Applications , 88-89:67– 82, 1987. [8] Michael Cogswell, Faruk Ahmed, Ross Girshick, Larry Zitnick, and Dhruv Batra. Reducing overfitting in deep networks by decorrelating representations, 2016. [9] Daniel Coquelin, Katharina Flügel, Marie Weiel, Nicholas Kiefer, Charlotte Debus, Achim Streit, and Markus Götz. Harnessing Orthogonality to Train Low-Rank Neural Networks . IOS Press, October 2024. [10] Jesse Dodge, Maarten Sap, Ana Marasovi´ c, William Agnew, Gabriel Ilharco, Dirk Groeneveld, Margaret Mitchell, and Matt Gardner. Documenting large webtext corpora: A case study on the colossal clean crawled corpus, 2021. [11] Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Amy Yang, Angela Fan, Anirudh Goyal, Anthony Hartshorn, Aobo Yang, Archi Mitra, Archie Sravankumar, Artem Korenev, Arthur Hinsvark, Arun Rao, Aston Zhang, and Aurelien Rodriguez et al. The llama 3 herd of models. arXiv ,2407.21783, 2024. [12] Carl Eckart and Gale Young. The approximation of one matrix by another of lower rank. 
+
+Psychometrika , 1(3):211–218, Sep 1936. [13] Alan Edelman, Tomás A. Arias, and Steven T. Smith. The geometry of algorithms with orthogonality constraints. SIAM Journal on Matrix Analysis and Applications , 20(2):303–353, 1998. [14] Adriana Fernandez-Lopez, Shiwei Liu, Lu Yin, Stavros Petridis, and Maja Pantic. Full-rank no more: Low-rank weight training for modern speech recognition models, 2024. [15] Ian Goodfellow, Yoshua Bengio, and Aaron Courville. Deep feedforward networks. Deep learning , 1:161–217, 2016. [16] Jiarui Gu. From gpt to llama: Tracing the growth of large language models. Theoretical and Natural Science , 142:144–155, 11 2025. [17] Andi Han, Jiaxiang Li, Wei Huang, Mingyi Hong, Akiko Takeda, Pratik Jawanpuria, and Bamdev Mishra. Sltrain: a sparse plus low-rank approach for parameter and memory efficient pretraining, 2024. 11 [18] Jordan Hoffmann, Sebastian Borgeaud, Arthur Mensch, Elena Buchatskaya, Trevor Cai, Eliza Rutherford, Diego de Las Casas, Lisa Anne Hendricks, Johannes Welbl, Aidan Clark, Tom Hennigan, Eric Noland, Katie Millican, George van den Driessche, Bogdan Damoc, Aurelia Guy, Simon Osindero, Karen Simonyan, Erich Elsen, Jack W. Rae, Oriol Vinyals, and Laurent Sifre. Training compute-optimal large language models, 2022. [19] Edward J. Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean Wang, Lu Wang, and Weizhu Chen. Lora: Low-rank adaptation of large language models, 2021. [20] Siddhartha Rao Kamalakara, Acyr Locatelli, Bharat Venkitesh, Jimmy Ba, Yarin Gal, and Aidan N. Gomez. Exploring low rank training of deep neural networks, 2022. [21] Jared Kaplan, Sam McCandlish, Tom Henighan, Tom B. Brown, Benjamin Chess, Rewon Child, Scott Gray, Alec Radford, Jeffrey Wu, and Dario Amodei. Scaling laws for neural language models, 2020. [22] Mikhail Khodak, Neil Tenenholtz, Lester Mackey, and Nicolo Fusi. Initialization and regular-ization of factorized neural layers. In International Conference on Learning Representations (ICLR) , 2021. [23] Mikhail Khodak, Neil Tenenholtz, Lester Mackey, and Nicolò Fusi. Initialization and regular-ization of factorized neural layers, 2022. [24] Jiaxi Li, Lu Yin, Li Shen, Jinjin Xu, Liwu Xu, Tianjin Huang, Wenwu Wang, Shiwei Liu, and Xilu Wang. Lost: Low-rank and sparse pre-training for large language models, 2025. [25] Vladislav Lialin, Namrata Shivagunde, Sherin Muckatira, and Anna Rumshisky. Relora: High-rank training through low-rank updates, 2023. [26] Ziyue Liu, Ruijie Zhang, Zhengyang Wang, Mingsong Yan, Zi Yang, Paul Hovland, Bogdan Nicolae, Franck Cappello, Sui Tang, and Zheng Zhang. Cola: Compute-efficient pre-training of llms via low-rank activation, 2025. [27] Shervin Minaee, Tomas Mikolov, Narjes Nikzad, Meysam Chenaghlu, Richard Socher, Xavier Amatriain, and Jianfeng Gao. Large language models: A survey, 2025. [28] Zhanfeng Mo, Long-Kai Huang, and Sinno Jialin Pan. Parameter and memory efficient pretraining via low-rank riemannian optimization. In The Thirteenth International Conference on Learning Representations , 2025. [29] Team Olmo, :, Allyson Ettinger, Amanda Bertsch, Bailey Kuehl, David Graham, David Heine-man, Dirk Groeneveld, Faeze Brahman, Finbarr Timbers, Hamish Ivison, Jacob Morrison, Jake Poznanski, Kyle Lo, Luca Soldaini, Matt Jordan, Mayee Chen, Michael Noukhovitch, Nathan Lambert, Pete Walsh, Pradeep Dasigi, Robert Berry, Saumya Malik, Saurabh Shah, Scott Geng, Shane Arora, Shashank Gupta, Taira Anderson, Teng Xiao, Tyler Murray, Tyler Romero, Victoria Graf, Akari Asai, Akshita Bhagia, Alexander Wettig, Alisa Liu, Aman Rangapur, Chloe Anastasiades, Costa Huang, Dustin Schwenk, Harsh Trivedi, Ian Magnusson, Jaron Lochner, Jiacheng Liu, Lester James V. Miranda, Maarten Sap, Malia Morgan, Michael Schmitz, Michal Guerquin, Michael Wilson, Regan Huff, Ronan Le Bras, Rui Xin, Rulin Shao, Sam Skjonsberg, Shannon Zejiang Shen, Shuyue Stella Li, Tucker Wilde, Valentina Pyatkin, Will Merrill, Yapei Chang, Yuling Gu, Zhiyuan Zeng, Ashish Sabharwal, Luke Zettlemoyer, Pang Wei Koh, Ali Farhadi, Noah A. Smith, and Hannaneh Hajishirzi. Olmo 3. arXiv , 2512.13961, 2026. [30] Colin Raffel, Noam Shazeer, Adam Roberts, Katherine Lee, Sharan Narang, Michael Matena, Yanqi Zhou, Wei Li, and Peter J. Liu. Exploring the limits of transfer learning with a unified text-to-text transformer. CoRR , abs/1910.10683, 2019. [31] Dayana Savostianova, Emanuele Zangrando, Gianluca Ceruti, and Francesco Tudisco. Robust low-rank training via approximate orthonormal constraints, 2023. [32] Steffen Schotthöfer, Emanuele Zangrando, Jonas Kusch, Gianluca Ceruti, and Francesco Tudisco. Low-rank lottery tickets: finding efficient low-rank neural networks via matrix differential equations, 2022. 12 [33] Yara Shamshoum, Nitzan Hodos, Yuval Sieradzki, and Assaf Schuster. Compact: Compressed activations for memory-efficient llm training, 2025. [34] Yifan Shen et al. Cuttlefish: Low-rank model training without all the tuning. arXiv preprint arXiv:2305.02538 , 2023. [35] Hyuntak Shin, Aecheon Jung, Sunwoo Lee, and Sungeun Hong. Dynamic rank adjustment for accurate and efficient neural network training. arXiv preprint arXiv:2508.08625 , 2025. [36] Yang Sui, Miao Yin, Yu Gong, Jinqi Xiao, Huy Phan, and Bo Yuan. Elrt: Efficient low-rank training for compact convolutional neural networks, 2024. [37] Hugo Touvron, Thibaut Lavril, Gautier Izacard, Xavier Martinet, Marie-Anne Lachaux, Timo-thée Lacroix, Baptiste Rozière, Naman Goyal, Eric Hambro, Faisal Azhar, Aurelien Rodriguez, Armand Joulin, Edouard Grave, and Guillaume Lample. Llama: Open and efficient foundation language models, 2023. [38] Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amjad Almahairi, Yasmine Babaei, Nikolay Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti Bhosale, Dan Bikel, Lukas Blecher, Cristian Canton Ferrer, Moya Chen, Guillem Cucurull, David Esiobu, Jude Fernandes, Jeremy Fu, Wenyin Fu, Brian Fuller, Cynthia Gao, Vedanuj Goswami, Naman Goyal, Anthony Hartshorn, Saghar Hosseini, Rui Hou, Hakan Inan, Marcin Kardas, Viktor Kerkez, Madian Khabsa, Isabel Kloumann, Artem Korenev, Punit Singh Koura, Marie-Anne Lachaux, Thibaut Lavril, Jenya Lee, Diana Liskovich, Yinghai Lu, Yuning Mao, Xavier Martinet, Todor Mihaylov, Pushkar Mishra, Igor Molybog, Yixin Nie, Andrew Poulton, Jeremy Reizenstein, Rashi Rungta, Kalyan Saladi, Alan Schelten, Ruan Silva, Eric Michael Smith, Ranjan Subramanian, Xiao-qing Ellen Tan, Binh Tang, Ross Taylor, Adina Williams, Jian Xiang Kuan, Puxin Xu, Zheng Yan, Iliyan Zarov, Yuchen Zhang, Angela Fan, Melanie Kambadur, Sharan Narang, Aurelien Rodriguez, Robert Stojnic, Sergey Edunov, and Thomas Scialom. Llama 2: Open foundation and fine-tuned chat models. arXiv , 2307.09288, 2023. [39] Zhengyang Wang, Ziyue Liu, Ruijie Zhang, Avinash Maurya, Paul Hovland, Bogdan Nicolae, Franck Cappello, and Zheng Zhang. Boost: Bottleneck-optimized scalable training framework for low-rank large language models. arXiv preprint arXiv:2512.12131 , 2025. [40] Xiuying Wei, Skander Moalla, Razvan Pascanu, and Caglar Gulcehre. Investigating low-rank training in transformer language models: Efficiency and scaling analysis, 2024. [41] Thomas Wolf, Lysandre Debut, Victor Sanh, Julien Chaumond, Clement Delangue, Anthony Moi, Pierric Cistac, Tim Rault, Remi Louf, Morgan Funtowicz, Joe Davison, Sam Shleifer, Patrick von Platen, Clara Ma, Yacine Jernite, Julien Plu, Canwen Xu, Teven Le Scao, Sylvain Gugger, Mariama Drame, Quentin Lhoest, and Alexander Rush. Transformers: State-of-the-art natural language processing. In Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing: System Demonstrations , pages 38–45, Online, October 2020. Association for Computational Linguistics. [42] Huanrui Yang, Minxue Tang, Wei Wen, Feng Yan, Daniel Hu, Ang Li, Hai Li, and Yiran Chen. Learning low-rank deep neural networks via singular vector orthogonality regularization and singular value sparsification, 2020. [43] Jiawei Zhao, Yifei Zhang, Beidi Chen, Florian Schäfer, and Anima Anandkumar. Inrank: Incremental low-rank learning. arXiv preprint arXiv:2306.11250 , 2023. [44] Jiawei Zhao, Zhenyu Zhang, Beidi Chen, Zhangyang Wang, Anima Anandkumar, and Yuandong Tian. Galore: Memory-efficient llm training by gradient low-rank projection, 2024. [45] Wayne Xin Zhao, Kun Zhou, Junyi Li, Tianyi Tang, Xiaolei Wang, Yupeng Hou, Yingqian Min, Beichen Zhang, Junjie Zhang, Zican Dong, Yifan Du, Chen Yang, Yushuo Chen, Zhipeng Chen, Jinhao Jiang, Ruiyang Ren, Yifan Li, Xinyu Tang, Zikang Liu, Peiyu Liu, Jian-Yun Nie, and Ji-Rong Wen. A survey of large language models, 2026. 13 A Broader Impact 
+
+This work aims to lower the parameter count and the compute resources needed to train large language models of high performance. Furthermore, it also saves costs during inference. However, this may not directly translate in an overall reduction of resource usage, as cheaper access may further drive demand. The contribution of this work lies in the algorithmic foundations of the central building blocks of neural networks; consequently, no particular societal harm is seen as directly arising from it. However, it is acknowledged that any algorithmic advances applicable to generative AI may translate to increased quality of disinformation content or propaganda. 
+
+B Full vs Rank-k Memory and Compute Comparison 
+
+For a weight matrix W ∈ Rm×n, we store mn elements, where each element can take a few bytes depending on the storage (E.g., 4 bytes for FP32, or 2 bytes for FP16, etc.). For W ≈ UkΣkV ⊤ 
+
+> k
+
+with Uk ∈ Rm×k, Σk ∈ Rk×k, and Vk ∈ Rn×k, we store mk , k, and nk 
+
+elements for unconstrained parameters, i.e., k(m + n + 1) ≈ k(m + n), and the same amount for constrained parameters (i.e. QR decomposition on Uk and Vk, and softplus on Σ). Hence, the total memory requirement is 2k(m + n).Hence, rank-k needs less memory than full rank when 
+
+2k(m + n) < mn 
+
+That is 
+
+k < mn/ 2( m + n)
+
+For the input x ∈ Rn and W ∈ Rm×n, computing y = W x costs about mn multiply-adds (i.e., 
+
+≈ 2mn FLOPs if counting one multiply and one add separately). For W ≈ UkΣkV ⊤ 
+
+> k
+
+with Uk ∈ Rm×k, Σk ∈ Rk×k, and Vk ∈ Rn×k, computing y = W x costs 
+
+z = V ⊤ 
+
+> k
+
+x (cost ≈ 2kn ), z′ = Σ kz (cost ≈ k), y = Ukz′ (cost ≈ 2mk ).
+
+The total cost is therefore ≈ 2k(n + m) + k ≈ 2k(n + m) FLOPs. Given a batch size of B, sequence length of S, and number of mini-steps of t, the number of FLOPs for a weight matrix W ∈ Rm×n is 
+
+2tBSmn 
+
+And, the number of FLOPs for For W ≈ UkΣkV ⊤ 
+
+> k
+
+with Uk ∈ Rm×k, Σk ∈ Rk×k, and Vk ∈ Rn×k
+
+is 
+
+2tBSk (m + n) + (2 nk 2 − 2/3k3)
+
+Where the second component is the QR decomposition cost incurred once per training step (we drop the sofplus cost as it is negligible). To compare the number of FLOPs for of full rank and rank-k, suppose B = 256 , S = 512 , k = 256 ,and n = m = 1024 . We calculate the number of FLOPs for 3 number of mini-steps: t = 1 , 15 , 32 .For mini-step t = 1 , we get the following for the matrix multiplication and QR decomposition FLOPs: 
+
+137 .43 E9 + 123 .03 E6
+
+For mini-step t = 16 , we get 
+
+2199 .02 E9 + 123 .03 E6
+
+And, for For mini-step t = 32 , we get 
+
+4398 .04 E9 + 123 .03 E6
+
+14 Table 5: Resource comparison for weight matrix W ∈ Rm×n and W ≈ UkΣkV ⊤ 
+
+> k
+
+with Uk ∈ Rm×k,
+
+Σk ∈ Rk×k, and Vk ∈ Rn×k, where B is the batch size, S is the sequence length, and t is the number of mini-steps in gradient accumulation. 
+
+Full Rank Rank-k
+
+Memory mn 2k(m + n)
+
+Flops 2tBSmn 2tBSk (m + n) + (2 nk 2 − 2/3k3)
+
+A couple of observations: 1) Even for mini-step t = 1 , the QR decomposition FLOPs are much smaller than matrix multiplications FLOPS, and 2) As the number of mini-steps increases to 16 or 32, the QR decomposition flops become a smaller porportion of the overall FLOPs. The formulas for memory and compute comparison of full rank vs rank-k is given in Table 5. 
+
+C Benefits of Orthonormality in TSVD 
+
+Consider a single linear layer with weight matrix 
+
+W ∈ Rm×n,
+
+where m is the output dimension, n is the input dimension, and 
+
+1 ≤ r ≤ min {m, n }
+
+is the chosen rank. The notation Id denotes the d × d identity matrix. For a matrix M , ∥M ∥2 denotes its spectral norm and ∥M ∥F its Frobenius norm; for a vector x, ∥x∥2 denotes the Euclidean norm. For scalars a1, . . . , a r , diag( a1, . . . , a r ) denotes the diagonal matrix with those entries on the diagonal. In TSVD, the layer is parameterized as 
+
+W = 1
+
+√r U ΣV ⊤,
+
+where 
+
+U ∈ Rm×r , V ∈ Rn×r , Σ = diag( σ1, . . . , σ r ),
+
+and the columns of U and V are orthonormal: 
+
+U ⊤U = Ir , V ⊤V = Ir .
+
+Thus U and V are semi-orthogonal matrices. The diagonal entries σ1, . . . , σ r are positive and carry all spectral scaling. To reflect the implementation more explicitly, one may write 
+
+U = orth( AU ), V = orth( AV ), σi = softplus( ρi) + ε, 
+
+where AU ∈ Rm×r , AV ∈ Rn×r , and ρ ∈ Rr are unconstrained trainable parameters, ε > 0 is a small constant, softplus( t) = log(1 + et), and orth( A) denotes the Q factor of a reduced QR decomposition of A. Importantly, the orthonormal object in QR is the Q factor; the triangular factor 
+
+R is not orthonormal in general. In TSVD, orthonormality is carried by U and V , while the diagonal scaling is carried separately by Σ.
+
+Basic structural consequence. Because U ⊤U = Ir and V ⊤V = Ir ,
+
+W ⊤W = 1
+
+r V ΣU ⊤U ΣV ⊤ = 1
+
+r V Σ2V ⊤,
+
+and similarly 
+
+W W ⊤ = 1
+
+r U Σ2U ⊤.
+
+Hence the nonzero eigenvalues of W ⊤W are σ2 
+
+> i
+
+/r , and therefore the nonzero singular values of W
+
+are exactly σ1
+
+√r , . . . , σr
+
+√r .
+
+15 Recall that ∥x∥2 denotes the Euclidean norm for vectors, ∥W ∥2 denotes the spectral norm for matrices, and ∥W ∥F denotes the Frobenius norm. Since the spectral norm equals the largest singular value and the squared Frobenius norm equals the sum of squared singular values, it follows that: 
+
+∥W ∥2 = 1
+
+√r max  
+
+> 1≤i≤r
+
+σi, ∥W ∥2 
+
+> F
+
+= 1
+
+r
+
+> r
+
+X
+
+> i=1
+
+σ2 
+
+> i
+
+.
+
+This shows that the basis matrices U and V specify only the learned input and output subspaces, whereas the size of the layer is controlled entirely by Σ.
+
+Proposition 1 (Signal and gradient stability in orthonormal TSVD) . Let 
+
+W = 1
+
+√r U ΣV ⊤
+
+with U ⊤U = Ir , V ⊤V = Ir , and Σ = diag( σ1, . . . , σ r ) with σi > 0. Define 
+
+σmax = max  
+
+> 1≤i≤r
+
+σi, σmin = min  
+
+> 1≤i≤r
+
+σi.
+
+Then the following statements hold. 1. For every input vector x ∈ Rn,
+
+∥W x ∥2 ≤ σmax 
+
+√r ∥x∥2.
+
+Hence the forward operator norm is controlled exactly by σmax .2. For every backpropagated signal δ ∈ Rm,
+
+∥W ⊤δ∥2 ≤ σmax 
+
+√r ∥δ∥2.
+
+Hence the backward operator norm is controlled by the same quantity. 3. If x lies in the represented input subspace span( V ), then 
+
+σmin 
+
+√r ∥x∥2 ≤ ∥ W x ∥2 ≤ σmax 
+
+√r ∥x∥2.
+
+Likewise, if δ lies in the represented output subspace span( U ), then 
+
+σmin 
+
+√r ∥δ∥2 ≤ ∥ W ⊤δ∥2 ≤ σmax 
+
+√r ∥δ∥2.
+
+Thus, within the learned low-rank subspaces, neither forward signals nor backward signals can explode beyond σmax /√r, and neither can they vanish beyond σmin /√r.4. Let L(W ) be the loss and let 
+
+G = ∇W L(W )
+
+be its gradient with respect to the full weight matrix. If ui and vi denote the i-th columns of 
+
+U and V , then 
+
+W = 1
+
+√r
+
+> r
+
+X
+
+> i=1
+
+σiuiv⊤ 
+
+> i
+
+, ∂L
+
+∂σ i
+
+= 1
+
+√r u⊤ 
+
+> i
+
+Gv i.
+
+Therefore each scalar σi controls one orthogonal rank-one mode uiv⊤ 
+
+> i
+
+, and the mode strengths are learned without ambiguity from the norms of the basis vectors. Proof. For the forward bound, 
+
+W x = 1
+
+√r U ΣV ⊤x. 
+
+Since U ⊤U = Ir , the map z 7 → U z preserves Euclidean norm on Rr , i.e., 
+
+∥U z ∥2 = ∥z∥2 for all z ∈ Rr .
+
+16 Since V ⊤V = Ir , the map x 7 → V ⊤x is a contraction: 
+
+∥V ⊤x∥2 ≤ ∥ x∥2 for all x ∈ Rn.
+
+Therefore, 
+
+∥W x ∥2 = 1
+
+√r ∥U ΣV ⊤x∥2 = 1
+
+√r ∥ΣV ⊤x∥2 ≤ ∥Σ∥2
+
+√r ∥x∥2 = σmax 
+
+√r ∥x∥2.
+
+The backward bound is identical after replacing W by 
+
+W ⊤ = 1
+
+√r V ΣU ⊤.
+
+Now suppose x ∈ span( V ). Then x = V z for some z ∈ Rr , and since V has orthonormal columns, 
+
+∥x∥2 = ∥V z ∥2 = ∥z∥2.
+
+Hence 
+
+∥W x ∥2 = 1
+
+√r ∥U Σz∥2 = 1
+
+√r ∥Σz∥2.
+
+Since Σ is diagonal with positive diagonal entries, 
+
+σmin ∥z∥2 ≤ ∥ Σz∥2 ≤ σmax ∥z∥2,
+
+which yields σmin 
+
+√r ∥x∥2 ≤ ∥ W x ∥2 ≤ σmax 
+
+√r ∥x∥2.
+
+The same argument applies to W ⊤δ when δ ∈ span( U ).Finally, the expansion 
+
+W = 1
+
+√r
+
+> r
+
+X
+
+> i=1
+
+σiuiv⊤
+
+> i
+
+follows by columnwise multiplication of U ΣV ⊤. Differentiating with respect to σi gives 
+
+∂W ∂σ i
+
+= 1
+
+√r uiv⊤ 
+
+> i
+
+.
+
+Therefore, by the Frobenius inner-product identity, 
+
+∂L
+
+∂σ i
+
+=
+
+
+
+G, ∂W ∂σ i
+
+
+
+> F
+
+= 1
+
+√r ⟨G, u iv⊤ 
+
+> i
+
+⟩F = 1
+
+√r u⊤ 
+
+> i
+
+Gv i.
+
+Benefits in Preventing Gradient Explosion and Vanishing. Proposition 1 makes the role of orthonormality explicit. The basis factors U and V are unit-gain maps on the represented rank-r
+
+subspaces, so they do not create extra amplification or attenuation. All gain is concentrated in the diagonal matrix Σ. Consequently: 1. No hidden explosion in signal propagation. Forward activations and backward signals can only grow in proportion to σmax /√r.2. No hidden vanishing inside the represented subspace. As long as σmin is not too small, the layer cannot collapse the represented input and output subspaces by more than the factor 
+
+σmin /√r.3. The only unavoidable information loss is the intended rank constraint. Components orthog-onal to span( V ) are discarded by any rank-r model. Orthonormality does not remove this fundamental low-rank bottleneck, but it does prevent additional instability caused by badly scaled basis factors. 17 Consider an unconstrained low-rank parameterization 
+
+W = AB ⊤, A ∈ Rm×r , B ∈ Rn×r .
+
+This representation is not identifiable: for every invertible matrix M ∈ Rr×r,
+
+AB ⊤ = ( AM )( BM −T )⊤.
+
+In particular, for every scalar c > 0,
+
+AB ⊤ = ( cA )( c−1B)⊤.
+
+Thus the same weight matrix can be represented by arbitrarily imbalanced factors. If L(W ) is the loss and G = ∇W L(W ), then by the chain rule, 
+
+∇AL = GB, ∇B L = G⊤A. 
+
+After the rescaling A′ = cA , B′ = c−1B, one obtains 
+
+∇A′ L = c−1∇AL, ∇B′ L = c ∇B L.
+
+Hence one factor gradient can become arbitrarily small while the other becomes arbitrarily large, even though the represented matrix W is exactly unchanged. This is a genuine source of vanishing and exploding parameter gradients in unconstrained low-rank training. TSVD removes this hidden scale ambiguity because the basis factors satisfy 
+
+U ⊤U = Ir , V ⊤V = Ir ,
+
+so their norms are fixed by construction and all scaling is isolated in Σ. As a result, the optimizer cannot create pathological cancellations by blowing up one factor and shrinking the other. 
+
+The advantage of exact orthonormality to enforcing orthogonality using regularization. Acommon alternative is to optimize 
+
+L(W ) + λU ∥U ⊤U − Ir ∥2 
+
+> F
+
++ λV ∥V ⊤V − Ir ∥2 
+
+> F
+
+,
+
+where λU , λ V > 0 are regularization coefficients. This approach only encourages orthonormality, and its success depends on a trade-off between task fitting and constraint enforcement. If λU and λV
+
+are too small, the factors drift away from orthonormality; if they are too large, optimization can be dominated by the regularization terms. By contrast, TSVD enforces orthonormality by construction: 
+
+U = orth( AU ), V = orth( AV ).
+
+Therefore every forward pass uses basis matrices that already satisfy the intended constraints. This removes the need to tune separate orthogonality penalties and yields a cleaner optimization problem in which the model is always evaluated on the desired constrained parameterization. 
+
+Interpretation. The main advantage of orthonormal TSVD is therefore not merely that it produces a valid low-rank factorization. Rather, it yields a well-conditioned low-rank parameterization in which 1. the represented subspaces and spectral magnitudes are cleanly separated; 2. signal amplification and attenuation are explicit and easy to control; 3. parameter gradients are not corrupted by arbitrary factor rescalings; and 4. orthonormality is maintained throughout training without introducing additional loss terms. These properties are especially appealing in low-rank pretraining, where optimization is already harder than full-rank training and unnecessary conditioning problems can have a disproportionate effect on final performance. In summary, TSVD is best viewed as a by-construction orthonormal low-rank parameterization whose main theoretical advantage is conditioning : the learned subspaces are orthonormal, the spectral scaling is isolated in Σ, signal growth is explicit, and hidden factor-rescaling pathologies are removed. This makes TSVD conceptually distinct from optimizer-state compression, adapter-style low-rank updates, regularization-based orthogonality, sparse-plus-low-rank hybrids, and more general manifold-based schemes. 18 0 1 2 3 4 5 6 7
+
+> Layer index
+> 280
+> 300
+> 320
+> 340
+> 360
+> 380
+> 400
+> 420
+> Rank @ 95% Energy
+
+60M (8 layers)      
+
+> 0246810
+> Layer index
+> 425
+> 450
+> 475
+> 500
+> 525
+> 550
+> 575
+> 600
+> 625
+> Rank @ 95% Energy
+
+130M (12 layers)     
+
+> 0510 15 20
+> Layer index
+> 550
+> 600
+> 650
+> 700
+> 750
+> 800
+> 850
+> Rank @ 95% Energy
+
+350M (24 layers)     
+
+> 0510 15 20
+> Layer index
+> 600
+> 800
+> 1000
+> 1200
+> 1400
+> 1600
+> Rank @ 95% Energy
+
+1B (24 layers)       
+
+> Layer type
+> q_proj k_proj v_proj out_proj gate_proj up_proj down_proj
+
+Figure 5: Effective Ranks for Different Weight Types Across Transformer Layers for Models of the Benchmark in Sec. 5.1. 0 5 10 15 20 25 30                       
+
+> Layer index
+> 0
+> 500
+> 1000
+> 1500
+> 2000
+> 2500
+> 3000
+> Rank @ 95% Energy
+> 7B (32 layers)
+> 0510 15 20 25 30 35 40
+> Layer index
+> 0
+> 500
+> 1000
+> 1500
+> 2000
+> 2500
+> 3000
+> 3500
+> 4000
+> Rank @ 95% Energy
+> 13B (40 layers)
+> 010 20 30 40 50 60 70 80
+> Layer index
+> 0
+> 1000
+> 2000
+> 3000
+> 4000
+> 5000
+> 6000
+> 7000
+> Rank @ 95% Energy
+> 70B (80 layers)
+> Layer type
+> q_proj k_proj v_proj out_proj gate_proj up_proj down_proj
+
+Figure 6: Effective Ranks for Different Weight Types Across Transformer Layers for Models of the Llama-2 Model Family. 
+
+D Effective Rank Analysis 
+
+Effective ranks are provided for various projections—including query, key, value, and out within the attention mechanism, as well as gate, up, and down within the subsequent gated MLP—across the layers of different models. Fig. 5 shows effective ranks across the Llama-style models trained in the main benchmark in Sec. 5.1. Fig. 6 shows results for Llama-2 7B, 13B and 70B. Fig. 7 shows results for Llama-3.1 8B and 70B. Fig. 8 shows results for OLMo-3 7B and 32B. 
+
+E Licences 
+
+The primary assets used within this work consist of the C4 dataset. [ 30 ], which is available under ODC-BY. 3 The Llama-style models used within the benchmark are not reusing any pretrained weights, and are provided through [44]. Furthermore, the energy analysis was conducted on the Llama-2 models, adhering to the Llama 2 Community License Agreement. 4 Similarly Llama-3.1 was used adhering to the Llama 3.1 Community License Agreement. 5 OLMo 3 is released under Apache License v.2.0. 
+
+3https://huggingface.co/datasets/allenai/c4 
+
+4https://huggingface.co/meta-llama/Llama-2-7b-chat-hf/blob/main/LICENSE.txt 
+
+5https://huggingface.co/meta-llama/Llama-3.1-70B-Instruct/blob/main/LICENSE 
+
+19 0 5 10 15 20 25 30 
+
+> Layer index
+> 500
+> 1000
+> 1500
+> 2000
+> 2500
+> 3000
+> 3500
+> Rank @ 95% Energy
+
+8B (32 layers)         
+
+> 010 20 30 40 50 60 70 80
+> Layer index
+> 0
+> 1000
+> 2000
+> 3000
+> 4000
+> 5000
+> 6000
+> 7000
+> Rank @ 95% Energy
+
+70B (80 layers)       
+
+> Layer type
+> q_proj k_proj v_proj out_proj gate_proj up_proj down_proj
+
+Figure 7: Effective Ranks for Different Weight Types Across Transformer Layers for Models of the Llama-3.1 Model Family. 0 5 10 15 20 25 30 
+
+> Layer index
+> 500
+> 1000
+> 1500
+> 2000
+> 2500
+> 3000
+> Rank @ 95% Energy
+
+7B (32 layers)       
+
+> 010 20 30 40 50 60
+> Layer index
+> 1000
+> 2000
+> 3000
+> 4000
+> Rank @ 95% Energy
+
+32B (64 layers)       
+
+> Layer type
+> q_proj k_proj v_proj out_proj gate_proj up_proj down_proj
+
+Figure 8: Effective Ranks for Different Weight Types Across Transformer Layers for Models of the OLMo-3 Model Family. 
+
+F Compute Resources 
+
+All the experiments were conducted on a node with 8 H200 GPUs, with the exception of the gradient accumulation experiment (Figure 4), which was conducted on a single NVIDIA A100 GPU. Training a Llama-60m model takes about 30 minutes in this configuration, the Llama-130m model takes 2 hours, the Llama-350m model 12 hours and the Llama-1.3B model about 48 hours. Runs for the 7B model take about 150 hours each. 20
