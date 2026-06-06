@@ -1,0 +1,1802 @@
+Title: Knowledge Boundary Probing and Demand-Guided Intervention for LLM-Based Power System Code Generation
+
+URL Source: https://arxiv.org/pdf/2605.31478v1
+
+Published Time: Mon, 01 Jun 2026 01:30:11 GMT
+
+Number of Pages: 43
+
+Markdown Content:
+# Knowledge Boundary Probing and Demand-Guided Intervention for LLM-Based Power System Code Generation 
+
+## Hui Wu ∗
+
+## Department of Engineering, University of Exeter 
+
+## hw865@exeter.ac.uk 
+
+## Xiaoyang Wang Department of Computer Science, University of Exeter 
+
+## x.wang7@exeter.ac.uk 
+
+## Zhong Fan Department of Engineering, University of Exeter 
+
+## z.fan@exeter.ac.uk 
+
+## Preprint version, May 2026 
+
+Abstract 
+
+Large language models (LLMs) increasingly automate power-system analysis, but utilities and energy-research labs typically require on-premise serving for data-confidentiality, regulatory, and operating-cost reasons—a tier where small-to-mid-size open-weight LLMs have often been viewed as too weak for reliable power-system code generation. We show that this view overlooks a different bottleneck: first-pass failures are dominated by API-driven non-execution (hallucinated function names, misused parameters, mishandled result tables) rather than by reasoning, and the failure mode is structured across the model panel—each model’s API-knowledge boundary differs mainly in location—so it can be compensated at deployment time without modifying any model weight. We introduce three connected components: PowerCodeBench , a benchmark in which each task pairs a natural-language operator query with executable pandapower code and a numerical ground-truth scalar (parameterised generator, frozen at 2,000 tasks for release); an L0–L3 documentation-driven probe generator producing per-model API knowledge profiles; and a boundary-aware intervention combining query-side demand estimation with layer-wise proactive documentation injection and a routed reactive correction loop with a value-error branch. Evaluated on ten open-weight LLMs ( 1.5B– 480 B parameters) and four commercial mid-tier APIs (Anthropic, Google, OpenAI, DeepSeek), the method lifts every evaluated ≥ 7B open-weight model and every commercial API by 32 to 56 accuracy points. Open-weight models in the 70 B– 120 B range (Llama-3.1-70B at 57% , GPT-OSS-120B at 
+
+60% ) match the four-vendor commercial mid-tier accuracy range on the full benchmark, and the largest open-weight configurations (Llama-3.1-405B at 69% , Qwen3-Coder-480B at 66% ) lead the panel. Layer-wise injection preserves the full-context accuracy ceiling at 41% of the prompt-token cost. The contribution is an accuracy-side, deployment-time path for privacy-constrained grid-analysis workflows that makes the mid-size open-weight tier viable without fine-tuning or cloud-resident inference. 
+
+Keywords: Large language models; power-system code generation; power-system simulation; API knowledge probing; retrieval-augmented generation; on-premise AI deployment. 
+
+# 1 Introduction 
+
+The transition to high-penetration renewable and integrated energy systems is increasing the volume, diversity, and complexity of analyses that grid operators and energy-research labs must perform — contingency screening under stochastic renewable injection, OPF coordination, time-series simulation across variable distributed resources, post-fault state reconstruction [ 1, 2]. Large language models (LLMs) have emerged as a natural automation layer for this workload [ 3, 4], translating operational questions phrased in natural language into executable Python code over domain libraries such as pandapower [ 5]. This positions LLMs as a candidate enabler for next-generation intelligent energy systems, but introduces a deployment question that does not arise for general code generation: which model, at what scale, run where? 
+
+> ∗
+
+Corresponding authors: Hui Wu ( hw865@exeter.ac.uk ) and Zhong Fan ( z.fan@exeter.ac.uk ). 
+
+1
+
+> arXiv:2605.31478v1 [cs.SE] 29 May 2026
+
+Energy-sector practitioners—utilities, system operators, research labs—typically require on-premise serving for structural reasons: data confidentiality, regulatory compliance, reproducibility, and operating cost [ 6, 7]. Hosted closed-source APIs cannot satisfy these constraints regardless of accuracy. Locally deployable open-weight LLMs can, but the small-to-mid-size variants that fit a typical operator’s hardware budget have been viewed as too weak for reliable power-system code generation, while only the largest open-weight variants ( ≥ 70 B) reach competitive accuracy at a hardware cost most utilities cannot justify. The deployable tier is therefore structurally under-utilised, and the open practitioner question is whether the latent potential of the small-to-mid open-weight tier can be unlocked at deployment time—without expensive fine-tuning (which decays with library evolution and whose knowledge-editing alternatives fall short on the same problem [ 8]) or multi-agent orchestration around a stronger model (which pushes the cost back). This paper argues that the perceived weakness of the deployable tier is not intrinsic — it is a structured, model-specific failure mode at the API-knowledge boundary, measurable and directly compensable at deployment time . On power-system code generation, first-pass failures of LLM assistance are dominated not by reasoning limits alone but by 
+
+API-driven non-execution — hallucinated function names, misused parameters, mishandled result tables, and broken multi-step workflows in a stateful, version-evolving library covering power-flow, OPF, contingency, short-circuit, and time-series analyses [ 9]. Once execution succeeds, a smaller second layer of numerical and result-extraction errors becomes visible. These patterns echo recurrent API hallucination and parameter-misuse documented for general code generation [ 10 – 12 ]; we extend the picture to versioned scientific libraries such as pandapower , where recovery is harder than in stateless Web APIs. These failure modes are not specific to small open-weight models: we observe them in every model we evaluate—from a 1.5B Qwen reference, through the 7B–480B open-weight cohort, to the four mid-tier closed-source APIs. What differs from one model to the next is the location of its API-knowledge boundary, not its existence. We formalize this through the concept of a knowledge boundary : the model-specific frontier at which a model can reliably invoke a domain library’s API. The boundary is layered—recognition, recall, comprehension, application—loosely inspired by revised Bloom-style cognitive levels and adapted to executable API use (formalised in Section 5), and appears across the model classes we evaluate in a structurally diagnosable form. The compensation strategy follows the same logic and is similarly uniform across those classes: probing, profiling, and intervention operate at deployment time on any chat-accessible LLM and require only a structured documentation source for the target library, without modifying any model weight. We instantiate and evaluate this design on pandapower ; extending it to other power-system simulation backends requires regenerating backend-specific contracts and is discussed in Section 8.2. We turn this into a single reliability workflow (Fig. 1) built around three connected components. 
+
+PowerCodeBench is a parameterised, execution-validated benchmark generator: each task pairs a natural-language grid-analysis request with reference pandapower code and a scalar engineering ground truth, frozen at 2,000 tasks for release across 15 power-system task families (power flow, OPF, contingency, short-circuit, state estimation, time-series, and others) and 39 grid networks (Section 4). An L0–L3 documentation-driven probing procedure converts the API specification into a per-model risk profile ρM (f )
+
+that diagnoses where each model’s API knowledge breaks down. Its L1 (signature recall) layer ranks cross-model R0 accuracy at ρs = 0 .93 on our n = 10 open-weight panel (descriptive at this n; scale-confound caveat in Section 7.3), and the profile drives both per-model deployment-time model selection (Section 8.1) and layer-wise prompt compression to roughly 41% of the full-context cost. A boundary-aware intervention combines this profile with a role-reweighted query-side demand predictor— transferring across held-out query styles within ∼ 0.5pp—and library-derived intent and boundary-card contracts: documentation is injected before generation (proactive), and execution feedback is routed to targeted repair prompts including a value-error branch with function-output contracts (reactive). Together these pieces deliver both the accuracy gain reported in Section 7 and the prompt-budget compression reported in Section 7.4. Unlike paradigms that escalate model size with multi-agent orchestration [ 13 , 14 ] or fine-tune small models against rapidly-evolving libraries [ 15 ], this workflow acts at deployment time and—within the LLM classes evaluated below—behaves uniformly across model families and scales. On the full 2,000 -item benchmark, evaluated across ten open-weight LLMs ( 1.5B– 480 B) and four closed-source mid-tier APIs (Anthropic, Google, OpenAI, DeepSeek), the results fall into three deployment regimes. (i) Universal lift across the deployable tier: end-to-end gains of +32 .4 to +55 .6pp across the nine ≥ 7B open-weight models and the four mid-tier APIs, with positive gains for every deployable model; the 1.5B low-end reference is reported only as a capacity-floor marker. (ii) Mid-size open-weight becomes deployable: the 70 B– 120 B class operates inside the mid-tier API range on the full benchmark, and the 14 B– 32 B class becomes competitive on basic single-step and explicit-parameter workloads (Tables 5, 6). (iii) Upper-tier comparison: the largest open-weight configurations (Llama-3.1-405B, Qwen3-Coder-480B) reach the panel’s highest accuracy under the no-reasoning evaluation, and a stratified 200 -item check of higher-reasoning API modes brings the stronger of two probed APIs to statistical parity with Llama-3.1-405B rather than reversal. Together these regimes describe a workload-aware deployment pattern : the 2smallest open-weight tier that covers the operator’s workload mix is brought to its boundary-aware ceiling without fine-tuning or cloud-resident inference. We therefore report an accuracy-side deployment result; hardware-dependent serving metrics (cost, latency, energy) are discussed as deployment considerations in Section 8.1. 1 PowerCodeBench  
+
+> Build Comprehensive Benchmark
+> Difficulty Pyramid
+> Scalar Ground Truth
+> </>
+> Reference
+> Code
+> Scalar
+> Result
+
+2 API Knowledge Probing     
+
+> Quantify What Models Know / Don’t Know
+> Knowledge Ladder
+> L0
+> Recognition
+> L1
+> Recall
+> L2
+> Comprehension
+> L3
+> Application
+> GPT
+> Claude
+> Gemini
+> Qwen
+> Llama
+> L0 L1 L2 L3
+> Low Risk High Risk
+
+3 Task API Demand Modeling   
+
+> From Query → API Demand Vector
+> Perform a three -phase short -circuit
+> calculation at Bus 12 in the IEEE 39 -bus
+> system with a fault at Bus 16.
+> Natural Language Query
+> Ranked API Demand Vector
+> Rank API Demand Score
+> case 39
+> calc_sc
+> net.bus
+> res_bus_sc
+> res_line_sc
+> 0. 92
+> 0.85
+> 0.65
+> 0.32
+> 0.28
+
+4 Boundary -Aware Intervention          
+
+> Layer -Targeted Help & Recovery
+> Proactive (R ound 0)
+> Risk
+> Diagnostics
+> Augment
+> Prompt
+> LLM
+> Generate
+> Reactive (R ound 1-Round n)
+> Error Parse
+> & Route
+> Fix
+> Prompt
+> LLM
+> Regenerate
+> Re -execute
+> (R1 -R3)
+> Universal across LLM classes
+> Schema -shaped ,no fine -tuning
+> +32 –56 pp accuracy at ~41% prompt cost
+> Released Benchmark
+> 2,000
+> items
+> 15
+> Task Families
+> 39
+> Networks
+> Per -Model Risk Profile
+> 1
+> 2
+> 3
+> 4
+> 5
+> Execute
+> Failure or Value
+> Mismatch
+> Explicit Single -step
+> D3
+> D4
+> D1
+> D2
+> Multi -step Semantic
+> hard
+> easy
+> hard
+> easy
+
+Figure 1: Reliability workflow for LLM-based power-system code generation. Data flow per item: natural-language grid-analysis request → LLM-generated program → execution on the target grid case → scalar engineering output. PowerCodeBench provides execution-validated tasks across power-system analyses (contingency, OPF, short-circuit, time-series). L0–L3 probing converts structured API documentation into per-model knowledge profiles. Demand modelling estimates query-side API requirements from natural language. Boundary-aware intervention combines per-model risk and per-query demand to inject targeted documentation for proactive generation and reactive repair. 
+
+# 2 Related Work 
+
+## 2.1 Execution-based and library-grounded code benchmarks 
+
+Execution-based code-generation benchmarks established the practice of judging model outputs by running generated programs rather than by surface similarity: HumanEval, MBPP, and APPS for function synthesis and competitive-programming-style problems [ 16 –18 ], and SWE-bench for repository-level software maintenance [ 19 ]. Scientific and library-grounded variants—DS-1000, SciCode, BigCodeBench, and LibEvolutionEval—move closer to our setting by requiring real-library use, scientific computation, or version-specific code generation, with LibEvolutionEval showing that real-world Python library version drift measurably degrades LLM completion accuracy and that version-aware documentation retrieval partially mitigates the loss [ 9, 20 – 22 ]. None of these benchmarks address the stateful physical models, convergence and feasibility checks, versioned power-system APIs, and scalar engineering outputs required for power-system simulation. PowerCodeBench (Section 4) inherits this lineage but adds three properties: tasks grounded in stateful power-system simulation; ground truth produced by verified reference programs over deterministic grid networks; and a paired documentation-driven probe suite (Section 5) that explains which API-knowledge failures cause downstream code-generation errors. 
+
+## 2.2 LLMs for power systems and energy AI 
+
+Existing LLM work in power systems explores complementary directions: dispatch reasoning (ElecBench), fine-tuned dispatch (GAIA), natural-language grid visualisation (ChatGrid), and agent-orchestration of solver workflows 3(GridMind, PowerAgent) [ 13 –15 , 23 , 24 ]. The closest neighbours ask LLMs to use power-system simulation libraries directly: ChatGPT for OpenDSS, the Daline toolbox, and a feedback-driven multi-agent framework spanning Daline and MATPOWER [ 25 – 27 ]. These show that domain-library use is a real bottleneck, but remain case studies or tool/agent frameworks rather than systematic executable code-generation evaluation paired with API-level diagnosis. The broader energy-AI literature has begun to position foundation models as a layer in the intelligent-energy-system stack [ 28 , 29 ]; within that framing our contribution is a concrete reliability-and-evaluation building block that, on this class of workload, brings locally served open-weight models into the mid-tier API accuracy envelope as a technical (rather than economic) feasibility result (Section 8.1). 
+
+## 2.3 API knowledge, tool use, and retrieval-augmented generation 
+
+Tool-use research treats API invocation as a distinct capability of language models, from learning when to call external tools (Toolformer) through interleaved reasoning-and-acting (ReAct) to large-scale function-calling and tool-use data construction (API-Bank, Gorilla, ToolLLM, ToolACE) [ 12 , 30 –34 ]. Code-specific analyses show that hallucinated APIs and parameter misuse are recurrent, LLM-specific failure modes [ 10 , 11 ], and API-update benchmarks show that updating code LLMs for evolving APIs remains difficult, motivating inference-time mechanisms over weight edits [ 8]. These findings motivate the hierarchical decomposition of API competence into recognition (L0), recall (L1), comprehension (L2), and application (L3) used in Section 5. Retrieval-augmented generation [ 35 ] provides the natural comparison class for proactive injection (RepoCoder, Adaptive-RAG) [ 36 , 37 ], and execution-feedback methods (self-debugging, self-refine) for reactive correction [ 38 , 39 ]. Our intervention sits in both families but adds a model-specific gate: injected evidence is conditioned on the intersection of query-side demand and model-side API risk rather than on query similarity alone, and fix-time evidence is selected by a routing classifier rather than by re-running the similarity retriever. 
+
+# 3 Task and Evaluation Protocol 
+
+We consider the task of scientific code generation for power system analysis . Given a natural-language query q and a target library L (here, pandapower ), a large language model M generates Python code C = M(q). The generated code is executed in a sandboxed environment and evaluated against a scalar reference output g∗ produced by verified reference code. A generated answer is counted as successful only when two conditions hold: 1. Executability : C runs to completion with no runtime exception ( AttributeError , ImportError , TypeError ,
+
+SyntaxError , etc.); and 2. Scalar correctness : the result r(C) extracted from C matches g∗ under the benchmark’s type-specific matching rule: exact match for integer and Boolean outputs, and mixed absolute/relative tolerance for floating-point outputs (concrete thresholds are specified with the reference-validation protocol in Section 4.4). We report accuracy at two endpoints: R0 accuracy (Pass@1 , the fraction of tasks solved on the first unaided generation attempt) and RK accuracy (the cumulative fraction of tasks solved on the first attempt or after any of up to K successive error-feedback fix rounds). We set K = 3 throughout this paper and refer to this endpoint as R3 below; the protocol itself is parametric in K. Both endpoints are primary metrics: R0 isolates proactive injection at generation time, R3 captures the full reactive correction loop. Alongside accuracy we report prompt-token cost —per item and per successful answer— because the method is designed to trade off accuracy and token consumption jointly rather than to maximise one in isolation. This protocol follows the execution-based evaluation tradition in code-generation benchmarks and the later use of execution feedback for self-debugging and iterative repair [16, 18, 38, 39]. We distinguish this model-scoring protocol from the benchmark-construction protocol. During construction, the reference code for each item must pass domain validity checks such as power-flow convergence, feasible OPF solution, voltage limits, and connected-network sanity checks before its scalar output is accepted as g∗. These checks ensure that the benchmark instances are physically meaningful. They are not used as additional filters on free-form model outputs beyond execution and scalar-result matching, which keeps scoring objective and reproducible. This separation between reference-solution validation and model-output scoring is consistent with executable scientific and library-grounded code benchmarks, where ground truth is obtained by running trusted reference programs [20–22]. 
+
+# 4 PowerCodeBench: An Execution-Validated Generator for Power-System Code Benchmarks 
+
+PowerCodeBench is not a fixed hand-written dataset but a configurable benchmark generator: it produces (query, reference code, scalar ground-truth) triples through a parameterised pipeline over grid networks, task families, 4modification operators, and natural-language templates. The 2,000-item suite used throughout this paper is one frozen release of that generator, retained for reproducibility; both the configuration pool and the sampling budget can be extended without changing the rest of the evaluation pipeline. Below we lay out the design principles that shape the generator, the difficulty axes it controls, the coverage of its current configuration, and the reference execution that produces ground truth. 
+
+## 4.1 Design Principles 
+
+PowerCodeBench is constructed around three principles that distinguish it from general-purpose code-generation benchmarks such as HumanEval or MBPP and from existing scientific-code suites. Relevant comparison classes include short-function synthesis, programming challenge, repository-maintenance, data-science, and scientific-code benchmarks [16–21]. 
+
+Stateful, library-grounded simulation tasks. Each task requires constructing a multi-step stateful computation over a network object. Unlike short, stateless function synthesis, these tasks exercise network loading, parameter modification, simulation execution, and result extraction—all mediated by a specific, versioned API. This makes PowerCodeBench closer to realistic library-use benchmarks than to isolated algorithmic function synthesis, while adding a power-system simulation layer absent from existing scientific-code suites [20–22]. 
+
+Controlled stress axes. Benchmark items are not sampled randomly: the generator imposes systematic control over two pressure sources— workflow complexity (single-step versus multi-step or conditional execution) and semantic grounding (whether the modification step states parameters explicitly or requires resolving them from the network state). This 2 × 2 design isolates the failure modes that empirical power-system code generation actually faces, and is operationalised in Section 4.2 as the D1–D4 difficulty taxonomy. The design draws on power-domain natural-language evaluation and simulation-assistant work but makes the semantic-grounding and workflow-composition axes explicit for executable code generation [15, 23, 25–27]. 
+
+Execution-derived scalar ground truth. Each item is paired with a verified Python reference solution. The ground truth g∗ is the scalar output obtained by executing the reference code on a deterministic network. This makes evaluation objective and replicable without human annotation, including for specialised tasks such as time-series simulation and state estimation, for which dedicated reference-code generators construct the required controllers, measurements, and result-extraction logic. The same executable-reference principle underlies HumanEval-style functional correctness and later scientific/data-code benchmarks, but here the reference program must additionally satisfy power-system simulation validity conditions [16, 20, 21]. 
+
+## 4.2 Difficulty Taxonomy 
+
+The four difficulty levels instantiate the 2 × 2 design of Section 4.1 rather than four unrelated labels. One axis controls workflow structure (single-step analysis versus multi-step or conditional execution); the other controls the specification of the modification step (explicit parameter values versus rule-grounded semantic instructions). Thus comparing (D1, D3) against (D2, D4) isolates the effect of workflow complexity, while comparing (D1, D2) against (D3, D4) isolates the effect of semantic grounding; D4 stacks both. “Semantic” here refers specifically to the setup/modification step: the target element is specified by an operating rule (“the most heavily loaded line” , “the highest-voltage bus with load connected” ) that must be resolved against the current network state before the modification is applied. It does not mean every entity in the query is implicit—downstream analysis routines and final extraction indices may still be stated explicitly. The four levels are: 
+
+D1 – Basic Explicit. Single-step analysis with all modification parameters stated explicitly. The model must apply one modification, execute one analysis routine, and extract one scalar result. 
+
+D2 – Multi-step Explicit. Multi-step or conditional analysis with explicit parameters. Tasks require sequential analysis, comparison across scenarios, or conditional branching (e.g. re-dispatch contingency fix); intermediate measurements may be computed deterministically by the workflow itself, but the modification parameters and workflow rules remain explicitly specified. 
+
+D3 – Single-step Semantic. Single-step analysis where the modification is expressed as a rule-grounded semantic instruction. The model must first inspect the network state to identify the target element, then apply the modification and run the analysis. 
+
+D4 – Multi-step Semantic. Combines a semantic setup phase (as in D3) with a deterministic multi-step task skeleton (as in D2): semantic resolution of the modification target, followed by the deterministic workflow. This split preserves executable-reference scoring—a fully semantic multi-step pipeline would require the model’s own intermediate decisions to feed downstream steps, breaking deterministic ground truth. 5Table 1 illustrates representative queries from each level. 
+
+Table 1: Illustrative query examples from PowerCodeBench across difficulty levels. All queries target a scalar numerical result as ground truth. Level Example Query D1 “Set transformer 51 to 2 parallel units, disconnect line 54, execute a power flow on the Illinois 200-bus system, and report the minimum bus voltage (p.u.).” 
+
+GT: 0.9861 (float) D2 “Perform N-1 contingency analysis on the 30-bus case and find the most loaded line. Add a 14 MW generator at bus 9, re-run power flow with that line out of service, and report the new maximum line loading (%).” 
+
+GT: 137.875 (float) D3 “Using the CIGRE HV benchmark, identify the most heavily loaded line under the current operating point and reinforce it by adding one parallel circuit. Run power flow and report the loading (%) of transformer 5.” 
+
+GT: 68.062 (float) D4 “On the PEGASE 1354-bus case, find the online generator with the highest active dispatch and trip it offline. Run power flow; if any line loading exceeds 110.1%, disconnect line 1066 and re-run, reporting the minimum bus voltage (p.u.).” 
+
+GT: 0.9820 (float) 
+
+## 4.3 Generator Coverage and Frozen Release 
+
+The generator’s current configuration samples from a pool of 39 grid networks (ranging from 4-bus examples to PEGASE 9241-bus, RTE 6470-bus, Polish 3120-bus, and GB 2224-bus transmission cases), 15 task families spanning steady-state power flow, DC power flow, OPF, short-circuit studies, contingency analysis, time-series simulation, state estimation, and composed multi-step workflows such as sequential diagnosis, PF–SC composition, and contingency repair, and 17 query-target patterns (point values, extrema, argmax, threshold checks, time-series point queries). These analyses are part of the modelling and simulation scope supported by pandapower [ 5]. The full inventory of modification operators, semantic setup rules, D4 compound wrappers, and feasibility filters is documented in the Supplementary Material, Section S1. The frozen release used throughout this paper instantiates this configuration as 2,000 items , sampled with a fixed seed and a 30%/30%/20%/20% D1–D4 split (Fig. 2 composition statistics). D3 draws on the same 8 single-step task families as D1, and D4 on the same 7 multi-step families as D2: semantic levels are not separate task sets, only controlled rewrites of the explicit levels in which the setup instruction is replaced by a rule-grounded operating description. Because each item is regenerable from the configuration, both the pool and the sampling budget can be extended without changing the rest of the evaluation pipeline. D1 D2 D3 D4              
+
+> 0
+> 100
+> 200
+> 300
+> 400
+> 500
+> 600
+> # items
+> 600 600
+> 400 400
+> (a) Items per difficulty level
+> 020 40 60 80 100 120 140 160
+> # items
+> sequential
+> comparison
+> pf_then_sc
+> parallel
+> power_flow
+> dc_power_flow
+> state_estimation
+> diagnose_and_fix
+> time_series
+> short_circuit_2ph
+> short_circuit_3ph
+> contingency_fix
+> contingency
+> comparison_opf
+> opf
+> 171
+> 168
+> 157
+> 151
+> 140
+> 137
+> 136
+> 130
+> 127
+> 124
+> 123
+> 118
+> 110
+> 105
+> 103
+> (b) Task-type distribution
+> 10 110 210 310 4
+> Network bus count (log scale)
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> # networks
+> (c) Network sizes (23 networks)
+
+Figure 2: Frozen-release composition statistics. (a) Item count per difficulty level (D1–D4). (b) Task-family frequency distribution across the 15 families sampled in this release. (c) Grid network size distribution across the 39 test cases used (bus count). 
+
+64.4 Reference Execution and Validation 
+
+For each item, the ground truth g∗ is produced by executing the verified Python reference solution against a deterministic network snapshot and extracting a single scalar value (float, int, or bool) specified by a structured result-table query (e.g. max of res_line.loading_percent ). The model-scoring protocol is introduced in Section 3; throughout the benchmark, integer and Boolean outputs require exact match, while floating-point outputs use mixed absolute/relative tolerance (absolute tolerance 10 −3, relative tolerance 10 −2). No manual answer annotation enters the loop. Each candidate item passes a hard admission filter before joining the release: the reference code must run to completion, the underlying simulation must converge or be feasible, voltage and topology sanity checks must pass, and the extracted scalar must lie in a plausible range for its task family. Items that fail any of these checks are rejected and regenerated. Separately, for D3 and D4 items, a lexical diagnostic flags semantic-setup instructions that would inadvertently reveal explicit parameter values or indices; this is a release-quality diagnostic rather than a model-scoring input, and flagged candidates can be reviewed or regenerated before a release is frozen. The five-stage construction pipeline (template design, controlled instantiation, reference execution, validation and rejection, semantic diagnostics) is documented in the Supplementary Material, Section S1. Because g∗ is derived entirely from reference-code execution, the benchmark can be regenerated end-to-end when pandapower is upgraded. 
+
+# 5 Documentation-Driven Knowledge Boundary Probing 
+
+The probing component, like PowerCodeBench, is a generator rather than a static question set: it consumes a structured API specification and emits layered probes that test progressively deeper forms of library knowledge. The 
+
+2,080 -probe / 1,100 -snippet release used in this paper is one frozen instantiation of that generator over the documented 
+
+pandapower API corpus. Below we set out the design principles that shape the probe construction, the L0–L3 level design, the coverage of the current configuration, how the probe scores aggregate into a per-model knowledge profile, and the resulting cross-model patterns. 
+
+## 5.1 Design Principles 
+
+The probe generator is constructed around three principles. 
+
+Specification-driven probe construction. The generator consumes a structured API specification (entry name, callable path, signature, parameter metadata, textual description, return information, category, optional examples) and instantiates probes automatically without requiring pandapower -specific synonym tables, entity lists, or hand-crafted distractor vocabularies. The construction logic generalises to documented APIs that expose this structure; we instantiate and evaluate it on pandapower here, with cross-backend transferability left as future work. The schema-level design follows the broader observation that API knowledge, documentation grounding, tool retrieval, and function-call correctness are separable challenges for code-capable LLMs [10, 12, 32–34]. 
+
+Layered decomposition aligned with documentation granularity. Probes are organised into four layers (recognition / recall / comprehension / application) that match the natural granularity of API documentation: a name and short description for L0, a signature for L1, semantic descriptions and return information for L2, and a minimal usage example for L3. An L0 failure therefore calls for a name-and-description injection, an L1 failure for a signature-level injection, and so on; the profile is directly actionable for documentation injection rather than supplying only an aggregate score. The progression is loosely along revised Bloom-style cognitive levels [ 40 ], adapted to executable API use; the familiar distinction between declarative, procedural, and conditional knowledge is used as a supporting analogy [41]. 
+
+Executable validation at the application layer. L3 (Application) is scored by actually executing the model’s generated code against the target API, paralleling PowerCodeBench’s execution-validated principle: scoring at L3 by execution rather than by string matching avoids the pitfalls of pattern-based scoring on free-form generations. 
+
+## 5.2 L0–L3 Probe Design 
+
+L0 – Recognition tests whether the model distinguishes a real API name from plausible fabrications, scored by mean accuracy across paired find_real and find_fake probes (four-choice mechanics in the Supplementary Material, Section S2). This directly targets the fabricated-API and wrong-method failure modes reported in API-call and API-misuse studies [10–12, 32]. 
+
+L1 – Recall prompts the model to produce the call signature and required parameters of f . We report required-parameter Jaccard similarity as the primary L1 metric in Table 2; path correctness is an auxiliary diagnostic. 
+
+L2 – Comprehension is a multiple-choice test on function purpose, parameter semantics, and return information, 7API DOCUMENTATION SOURCE 1
+
+Structured API Docs  
+
+> name
+> callable_path
+> signature
+> description Run power flow calculation
+> for the network.
+> parameters
+> return
+> bool
+> True if the power flow
+> converged, else False.
+
+Aggregate L0 –L3 probe scores 
+
+for model  𝑀  and API  𝑓 
+
+L0    
+
+> 𝑠𝑐𝑜𝑟 𝑒 𝐿 0𝑠𝑐𝑜𝑟 𝑒 𝐿 1𝑠𝑐𝑜𝑟 𝑒 𝐿 2𝑠𝑐𝑜𝑟 𝑒 𝐿 3
+
+𝜌 𝑀  𝑓 = 1 − 𝑚𝑒𝑎𝑛  𝐿 0 … 𝐿 3
+
+per -API risk profile for model 
+
+M
+
+> Low risk
+> (low capability)
+> High risk
+> (low capability)
+
+…
+
+## pp 
+
+> runpp
+> pandapower.runpp
+> runpp(net)
+
+( )    
+
+> net : pandapowerNet
+> calculate_voltage_angle
+> s:bool = True
+> init : str = 'auto'
+> ···
+> →
+> →
+
+L0 -L3 PROBE GENERATOR 2
+
+L0 
+
+L1
+
+L2
+
+L3
+
+> callable path + required
+> parameters
+
+L1 Recall: 
+
+L0 Recognition: 
+
+> real vs fabricated name
+
+L3 Application: 
+
+> executable use in context
+
+L2 Comprehension: 
+
+> purpose + parameter
+> meaning + return info
+
+AGGREGATION TO PER -API RISK 3
+
+L1 L2 L3Figure 3: The L0–L3 probe generator and profile output. Structured API documentation is transformed into recognition, recall, comprehension, and application probes, then aggregated into a model-specific knowledge-risk profile ρM (f ) over the API corpus. 
+
+instantiated from the corresponding documentation fields when available. This tests whether the model can correctly reason about API semantics when the function name is shown, without requiring free recall. 
+
+L3 – Application asks the model to write minimal executable code that invokes the target function. Execution success is the primary L3 score; API validity rate and target-function usage are recorded as auxiliary diagnostics (the Supplementary Material, Section S2). 
+
+## 5.3 Generator Coverage and Frozen Release 
+
+The generator’s current configuration covers a pool of 275 documented public callables drawn from the pandapower API specification, partitioned into module-level analysis routines ( pp.runpp , pp.rundcpp ), sub-module simulation runners (pp.shortcircuit.calc_sc , pp.estimation.estimate ), network-construction helpers, controller and time-series classes, result-table constructors, and plotting/visualisation utilities: 262 functions and 13 callable classes in total. An AST audit of PowerCodeBench reference code maps all core API calls to this corpus; remaining non-corpus calls are generic Python / NumPy / Pandas operations or network-fixture loaders used only to instantiate test grids. Probe coverage therefore spans both the API knowledge required for benchmark solving and a small set of adjacent documented utilities (e.g. plotting functions), the latter deliberately included so that the diagnostic heatmap in Fig. 4 can compare risk across all callable categories. Low-level formatting helpers and developer-facing callables outside this documented corpus would require a probe-corpus refresh through the same generation pipeline. The frozen release used in this paper instantiates this configuration as 2,080 probes and 1,100 documentation snippets , distributed across four layers (L0 550 , L1 275 , L2 980 , L3 275 ). The probes are used for model diagnosis; the snippets are used later by the intervention module (Section 6). This distinction matters for L3: the L3 probe asks the model to write a minimal executable use of the target function and is scored by code execution, while example snippets, when available, are used only as optional L3 intervention material, not as the L3 probe itself. The full construction protocol (per-level probe counts, source-corpus coverage, benchmark linkage diagnostics) is documented in the Supplementary Material, Section S2. 
+
+## 5.4 Knowledge Profile Construction 
+
+For each model M and each function f ∈ F (the API-entry corpus), we aggregate the L0–L3 probe scores into a per-function risk score: 
+
+ρM(f ) = 1 − 1
+
+|{ l : s(l)
+
+> M
+
+(f ) defined }| 
+
+X
+
+> l∈{ 0,1,2,3}
+
+s(l)
+
+> M
+
+(f ), (1) 8where s(l)
+
+> M
+
+(f ) ∈ [0 , 1] is the probe score at level l. A high ρM(f ) indicates that M is likely to misuse f in generated code. The collection {ρM(f )}f ∈F constitutes the knowledge profile of M.The same probe data is retained at two granularities with two complementary roles in the method. The per-function aggregate ρM(f ) acts as a per-function priority signal—which functions are likely to need intervention at all—and is the quantity used for cross-model diagnosis and profile visualisation in Section 5.5. The per-layer scores s(l)
+
+> M
+
+(f ) determine which documentation layer to inject for a function under consideration, feeding the layer-wise injection score in Section 6.3. Both views are the same model-side signal aggregated over different axes. Operationally, the intervention expands the profile back into function–layer candidates: the scalar ρM(f ) is a readable summary for ranking and diagnosis, while the layer-wise deficits and weights select the actual documentation snippets. Thus ρM(f )
+
+should not be read as a separate black-box score that replaces the L0–L3 measurements; it is the collapsed view of the same measurements. We adopt uniform weighting across levels in Eq. (1) as a deliberately simple baseline, and use the same layer weights wℓ in the injection score (Section 6.3). Because a different L0–L3 weighting could change the ordering of injected function–layer snippets, we test it as an end-to-end robustness check rather than as a separate claim about the diagnostic table. A sensitivity sweep over alternative weight settings (uniform, L3-emphasis (0 .0, 0.2, 0.2, 0.6) ,and an intermediate L3-leaning configuration) shifts proactive Round-0 accuracy by at most 1.30 pp on a three-model panel (Qwen2.5-Coder-32B, Llama-3.1-70B, Qwen3-Coder-480B), showing that the intervention is not finely tuned to the uniform L0–L3 weighting; full numbers are in Appendix A.1. 
+
+## 5.5 Probing Results 
+
+Table 2 reports mean probe scores across all 275 pandapower API entries for every open-weight model in the evaluation panel; the category-averaged risk profile derived from ρM(f ) is visualised as a heatmap in Fig. 4.                                                                 
+
+> Table 2: Mean L0–L3 knowledge probe scores across all 275 pandapower API entries, for every open-weight model in the evaluation panel and the four closed-source API models from Section 7.2. L0: recognition accuracy; L1: required-parameter Jaccard similarity; L2: comprehension accuracy; L3: application execution success. Model L0 (Recog.) L1 (Recall) L2 (Comp.) L3 (Apply) Qwen2.5-Coder-1.5B 0.244 0.384 0.357 0.036 Llama-3.1-8B 0.276 0.359 0.755 0.102 Qwen2.5-Coder-7B 0.362 0.653 0.904 0.156 Qwen2.5-Coder-14B 0.407 0.733 0.950 0.324 Qwen2.5-Coder-32B 0.424 0.744 0.960 0.425 Qwen3-Coder-Next 0.393 0.664 0.924 0.258 Llama-3.1-70B 0.396 0.746 0.951 0.200 GPT-OSS-120B 0.509 0.756 0.949 0.353 Llama-3.1-405B 0.536 0.750 0.962 0.385 Qwen3-Coder-480B 0.411 0.817 0.963 0.495
+> Closed-source API models (cross-vendor reference)
+> Gemini-2.5-Flash 0.353 0.741 0.898 0.753 DeepSeek-V4-Flash 0.462 0.771 0.942 0.367 Claude-Haiku-4-5 0.585 0.778 0.954 0.389 GPT-5.4-mini 0.615 0.786 0.952 0.564
+
+L2 (Comprehension) is consistently high ( > 0.90 ) for capable models: given the function name, models recover semantics and parameter intent reliably, so comprehension is not the limiting factor at this scale (the 1.5B low-end reference scores 0.36 on L2, consistent with its near-zero downstream performance). The bottleneck instead lies on L0 and L3. Even the strongest panelled model recognises only about half of real functions under fabricated distractors (Llama-3.1-405B 0.536 , GPT-OSS-120B 0.509 ), which directly predicts hallucination-induced AttributeError and 
+
+ImportError at execution time, and L3 application stays below 0.50 across every open-weight model, leaving substantial headroom for executable-example injection. The four layers therefore play complementary roles rather than competing ones. L1 (signature recall) carries the highest cross-model Spearman correlation with downstream R0 ( ρs = 0 .93 on the n = 10 open-weight panel; see Section 7.3); since rank by L1 closely tracks rank by R0, L1 acts as a cross-model proxy for overall coding reliability and accordingly carries non-zero must-inject floors in the deficit-floor term of Eq. (2) (full formula and constants in the Supplementary Material, Section S3) so that signature-level guidance survives probe saturation. L0 and L3 are the frontier bottlenecks – the layers where every panelled model still has substantial headroom – and they drive the layer-wise documentation choice when probe scores fall below threshold. L2 is saturated and contributes no 9Q2.5-Coder-1.5B                                                                                                                                              
+
+> Llama-3.1-8B
+> Q2.5-Coder-7B
+> Q2.5-Coder-14B
+> Q2.5-Coder-32B
+> Llama-3.1-70B
+> GPT-OSS-120B
+> Llama-3.1-405B
+> Q3-Coder-Next
+> Q3-Coder-480B
+> Claude-Haiku-4-5
+> Gemini-2.5-Flash
+> GPT-5.4-mini
+> DeepSeek-V4-Flash
+> all-model
+> mean
+> power_flow
+> opf
+> short_circuit
+> state_estimation
+> time_series_control
+> topology
+> network_construction
+> io_loading
+> plotting
+> utility_misc
+> 0.74 0.62 0.45 0.35 0.35 0.45 0.32 0.25 0.47 0.25 0.38 0.25 0.20 0.28 0.38
+> 0.93 0.73 0.53 0.36 0.37 0.48 0.42 0.28 0.58 0.36 0.38 0.44 0.17 0.37 0.46
+> 0.85 0.70 0.59 0.62 0.59 0.51 0.56 0.51 0.58 0.48 0.44 0.42 0.37 0.55 0.55
+> 0.86 0.78 0.51 0.53 0.41 0.50 0.42 0.41 0.52 0.43 0.42 0.31 0.13 0.53 0.48
+> 0.81 0.70 0.57 0.50 0.48 0.49 0.44 0.40 0.53 0.51 0.38 0.38 0.27 0.47 0.50
+> 0.73 0.64 0.44 0.43 0.35 0.40 0.40 0.32 0.45 0.35 0.43 0.39 0.32 0.35 0.43
+> 0.74 0.62 0.46 0.41 0.36 0.42 0.39 0.31 0.40 0.33 0.31 0.28 0.25 0.33 0.40
+> 0.72 0.55 0.47 0.27 0.28 0.40 0.19 0.32 0.44 0.20 0.20 0.27 0.22 0.31 0.35
+> 0.80 0.63 0.51 0.45 0.44 0.45 0.43 0.49 0.43 0.39 0.44 0.33 0.41 0.43 0.47
+> 0.69 0.68 0.50 0.41 0.36 0.43 0.39 0.34 0.44 0.36 0.37 0.38 0.34 0.41 0.44
+> open-weight closed-source API
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> 0.8
+> Risk  ρM(f) = 1 − mean( L0. .  L3)
+
+Figure 4: Category-averaged knowledge-risk profile derived from ρM(f ) = 1 − L0..L 3 across the open-weight panel (10 models) and 4 closed-source APIs; warmer colours indicate higher risk. Vertical separators delimit the two groups; the right-most column is the all-model mean. 
+
+must-inject floor, admitted only when its per-layer injection score Iℓ ranks above competing candidates in the budget. L3 also scales non-monotonically with model size – Qwen2.5-Coder-32B ( 0.425 ) outscores Llama-3.1-70B ( 0.200 ), and Qwen3-Coder-480B ( 0.495 ) tops the panel ahead of the larger Llama-3.1-405B ( 0.385 ) – which is consistent with capability patterns that need not be smooth in parameter count [ 42 , 43 ] and suggests that domain-specific API competence may depend on library exposure and code-specialisation rather than on parameter count alone. Per-model boundary profiling is therefore a safer deployment signal than scale-based selection. 
+
+Closed-source API panel. The four closed-source API models in Table 2 share the same qualitative L0–L3 shape (high L2; lower L0 and L3), so the bottleneck pattern is not an artifact of the open-weight panel. Recognition is universally weak: even the strongest API on L0 (GPT-5.4-mini at 0.615 ) recognises only about 62% of real entries against fabrications. Two API-side dissociations stand out: Gemini-2.5-Flash records the panel’s lowest L0 ( 0.353 )but the highest L3 ( 0.753 ), and DeepSeek-V4-Flash carries the largest L0–L3 gap (L1 = 0 .771 vs. L3 = 0 .367 ). These dissociations match patterns reported in Section 7: models whose L3 probes flag systematic application-layer weakness are also the ones whose remaining errors after proactive injection are concentrated in the executed-but-wrong-output regime that the reactive value-error branch (Section 6.4) is designed to target. 
+
+# 6 Demand-Guided Boundary Intervention 
+
+## 6.1 Method Overview 
+
+Boundary-aware intervention combines two signals. The model-side knowledge profile of Section 5 flags which API entries a particular model is likely to misuse; a query-side demand estimator (Section 6.2 below) predicts which entries a natural-language query is likely to require at inference time, when no reference code is available. Documentation is injected only when both signals agree. Query similarity alone is blind to which layer the chosen model already knows, while a model-side profile alone is blind to which layer the task needs; their joint conditioning yields a model-specific, layer-targeted injection that fills a fixed token budget by joint score, a form of conditioning that prior RAG and code/documentation retrieval methods do not use [12, 35–37]. The pipeline operates in two complementary phases (Fig. 5), addressing the two evaluation stages defined in Section 7.1. Phase 1 (proactive) runs before the first generation attempt: the model profile and demand estimate jointly select a small layer-targeted documentation set that is prepended to the generation prompt. Phase 2 (reactive) 
+
+activates after a failed execution or validation check; the demand estimate is replaced by evidence from the run—the exception class, failing source line, or parsed-payload mismatch—which already pinpoints the implicated APIs. Both phases consume the same library-knowledge artifact and differ only in the gating signal. Three kinds of library-knowledge facts are stored in that artifact: function snippets at each documentation layer (L0 short name/purpose hint, L1 call signature, L2 parameter/return contract, L3 compact usage example); anchors and intent signals , high-precision lexical patterns that tie a query phrase to a specific API or workflow executor 10 (network-loader names, construction-API substrings, mutually exclusive workflow executors such as time-series, short-circuit, contingency, OPF, DC power flow); and boundary cards , short DataFrame schema contracts for recurrent table conventions (element columns, result-table columns, time-series profile shapes, OPF cost extraction, short-circuit result reading) that span multiple APIs. Each artifact class is gated on the corresponding entries being present in the structured API specification, and none read or condition on the reference answer (derivation code in the Supplementary Material, Section S3). The artifact defines what library facts are available; the L0–L3 probe profile and demand estimator decide whether and at which layer to inject them. ··· 
+
+> PROACTIVE PHASE: BEFORE GENERATION
+
+? query -side   
+
+> demand
+> model -side
+> risk profile
+> joint gate:
+> function -layer
+> selection
+> under token budget
+> selected
+> function -layer
+> snippets
+> augmented
+> prompt
+> → LLM
+> →execute
+> </> first -pass
+> output
+> model -specific
+> level -targeted
+> no model modification
+
+library -knowledge artifact        
+
+> API -derived; no reference answers
+> function snippets (L0 -L3)
+> REACTIVE PHASE: AF TER A CHECK FAILS
+> !
+> raise
+> an exception?
+> YES
+> NO
+> execution -only
+> endpoint
+> validation -enabled
+> endpoint
+> after
+> fix
+> rounds
+> boundary cards (table schemas)
+> ··· execution/
+> validation
+> feedback
+> query anchors + intent signals
+> code -error route:
+> api contract / boundary
+> contract / basic fix
+> value -error route:
+> function -output contract +
+> output -format repair
+> targeted fix
+> prompt
+> →LLM
+> → re -execute
+> ···
+> gated by execution evidence
+> gated by demand ×risk
+
+Figure 5: Boundary-aware intervention: two-phase pipeline. Phase 1 (Proactive) injects layer-specific API documentation before generation, guided by task demand ˆd(f, q ) and model-specific knowledge deficits over L0–L3. Phase 2 (Reactive) 
+
+maps execution feedback to either runtime/API repair routes or value-level semantic diagnosis before re-execution. 
+
+Three properties distinguish boundary-aware intervention from general-purpose RAG or prompt-stuffing approaches. 
+
+Model-specificity : the same query produces different injections under different knowledge profiles, so a function reliable on Llama-3.1-405B but fragile on Qwen2.5-14B is rendered for the smaller model alone. Level-targeted correction :each fact is injected at the documentation layer the task or failure evidence implicates, not the full API entry, keeping prompts concise. No model modification : no fine-tuning, no weight updates, no model-internals access; the same probing and intervention pipeline is applied to every model in our evaluation panel, and the library-side artifacts are regenerated when the target library version changes. 
+
+## 6.2 Query-Side Demand Estimation 
+
+Knowledge profiles (Section 5) characterise model-side weaknesses: which API functions f carry high risk ρM(f ) for model M. To intervene we also need a query-side estimate: given only the natural-language query q, which API functions D(q) ⊆ F are required to solve it? We seek a predictor ˆD : q 7 → F such that ˆD(q) approximates the oracle set D∗(q) (derivable from the reference code, but unavailable at inference time). The predictor may use only the query text; it must not see the reference code, benchmark ground truth, or execution feedback. We supervise the predictor on 6,312 (query, function-list) pairs in 511 base groups covering 125 distinct API functions, derived by API-traversal paraphrase generation with AST-verified function labels and group-level train/test splits to prevent paraphrase leakage; construction details are in the Supplementary Material, Section S4. PowerCodeBench (Section 4) remains the held-out downstream evaluation target. We quantified function-label and query-text overlap between the two corpora directly (Section S4): no benchmark query is a paraphrase or near-clone of any training query (max per-query token-Jaccard 0.41 ; zero queries above 0.5), and the function-set overlap (Jaccard 0.25 ) is dominated 11 by analysis routines the predictor learns rather than the bench-only network loaders used to instantiate test grids. We compared six estimators spanning lexical retrieval (TF-IDF variants), dense embedding retrieval (SBERT), and cross-encoder reranking, with both unsupervised baselines and supervised pairwise variants [ 44 , 45 ]; full formulations and the recall@ 10 / hit@ 10 table are in the Supplementary Material, Section S4, and Section 7.4. We use hybrid TF-IDF as the deployed ranker; Section 7.4 confirms it transfers most robustly to the benchmark-reference diagnostic split, with the remaining variants reported alongside as comparison points rather than tuning targets. The augmented training corpus is construction-heavy whereas PowerCodeBench queries are operational (load a standard case, apply modifications, run analysis); this query-distribution shift is visualised in the Supplementary Material, Fig. S1, and persists in real deployments where different operator roles issue characteristically different workloads. We close the remaining gap with a covariate-shift correction at the level of API-function roles rather than individual training examples: given only an unlabelled target-scenario query corpus, training examples are re-weighted by the role-share ratio between target and training distributions and the supervised pairwise component is re-fit under those weights [ 46 ]; full algorithm in the Supplementary Material, Section S4. This is a mild transductive assumption—no function-level labels are required, but the deployment scenario must be sampleable in advance—and the adapted-ranker results in Section 7.4 are reported alongside the unadapted baseline so the reader can isolate this contribution. After adaptation the hybrid TF-IDF ranker reaches 71 .8% recall@ 10 on the benchmark-reference diagnostic split; this adapted predictor is the ˆd(·, q ) used as the query-side gate in Eq. (2) of the proactive injector below. 
+
+## 6.3 Phase 1: Proactive Layer-Wise Injection 
+
+Before the first generation attempt, we treat intervention as a set of function–layer choices. For each candidate function f and layer ℓ ∈ { L0 , L1 , L2 , L3 } we ask whether this model needs this layer of documentation for this query, then fill a fixed token budget with the highest-value candidates. Four factors combine into a single injection score :query-side demand for the API, model-side deficit at the layer, a deterministic safety floor that lifts the deficit term for high-confidence cases, and a query-derived task-need multiplier that raises the depth requirement for procedurally complex queries: 
+
+Iℓ(f, q, M) = ˆd(f, q ) · max( rM,ℓ (f ), τ ℓ(f, q )) · aℓ(q) · wℓ, (2) where ˆd(f, q ) ∈ [0 , 1] is the demand estimate of Section 6.2; rM,ℓ (f ) = max (0 , (τ − s(ℓ)
+
+> M
+
+(f )) /τ ) ∈ [0 , 1] is the layer-wise probe deficit that aggregates into ρM via Eq. (1), normalised against the reliability threshold τ = 0 .5; τℓ(f, q ) is a deterministic floor that lifts the deficit term in three high-confidence cases—when f matches a high-precision query anchor, when ˆd(f, q ) clears a confidence threshold, or when f is tied to a boundary-card contract triggered by q—so that the candidate remains in contention even when the probe deficit alone is small; aℓ(q) is a query-derived depth multiplier that accumulates small layer-specific increments when the query carries procedural-complexity signals (workflow intent, sequential or conditional connectives, aggregation phrasing, multi-modification verbs); and wℓ is the layer weight of Eq. (1) (uniform 0.25 ). We use the symbol Iℓ for the injection score to keep it distinct from the probe score s(ℓ)
+
+> M
+
+(f ) of Section 5. Anchors, boundary cards, intent signals, the full rule tables for τℓ and aℓ, and all numerical constants are documented in the Supplementary Material, Section S3; they are derived from the query text and the API specification only (no reference code or benchmark labels), encode layer-role priors and token-budget arithmetic, and are not tuned against PowerCodeBench accuracy (Appendix A.1). Given the scored candidates, we fill the token budget greedily. Candidates are ranked in decreasing order of 
+
+Iℓ(f, q, M) / |doc (f, ℓ )|1/2—a token-aware ranking rule that prefers short, high-value snippets when the budget is tight—and added one at a time until the cumulative documentation length reaches the token budget B, with a small query-conditioned cap on the number of L3 examples so that a few procedural snippets do not exhaust the budget on procedurally light queries. Higher-layer snippets suppress redundant lower-layer ones for the same function (an L2 contract makes a separate L0 hint unnecessary); L2 and L3 remain complementary because they address different failure modes. An intent-consistency filter against mutually exclusive workflow executors (time-series, short-circuit, contingency, OPF, DC power flow) prevents an OPF anchor from pulling in a time-series executor card. The selected snippets are prepended to the generation prompt as a targeted API-reference section. This phase targets R0 (first-pass) accuracy. A naive model-agnostic variant—which disables the model-side layer gate by replacing the layer deficit term in Eq. (2) with a constant—is evaluated as an explicit baseline (condition X) in Section 7.4. 
+
+## 6.4 Phase 2: Reactive Correction 
+
+When the generated code either raises an exception or executes but produces the wrong value, execution itself supplies direct API-level evidence: an exception class, a failing source line, or a parse failure on the printed payload. The reactive phase consumes this evidence directly rather than re-applying the demand-driven score of Eq. (2). 12 Execution-feedback prompting and iterative self-refinement provide the comparison class for this phase [ 38 , 39 ]; the new ingredient here is a router that first classifies each failure into one of two top-level branches— code errors (the program did not run) and value errors (the program ran but the printed payload did not match)—and only then decides which library facts to inject. The naming convention used in Section 7 for the resulting conditions is defined in Section 7.1; this section describes the routing behaviour. 
+
+Code-error route. For runtime exceptions, an error parser maps the exception class and the failing source line back to one or more candidate target-library functions in F. A router then chooses one of three prompt-augmentation policies: 
+
+• Basic fix. Local exceptions (e.g. SyntaxError , timeouts) without a concrete API symbol receive only the failure description; no documentation is injected. 
+
+• API contract. Exceptions implicating a concrete API on the failing line receive a compact L2 call contract for that API (purpose, required parameters, return information). Higher-level snippets suppress redundant lower-level snippets for the same function so the prompt receives only the layers needed to explain the failure. 
+
+• Boundary contract. Failures on a known API boundary that do not implicate a single function (DataFrame schema access, time-series profile indexing, OPF cost extraction, short-circuit result reading) receive a short boundary card from the library-knowledge artifact. The routing depends on the exception class and the symbols on the failing line, not on benchmark-specific patterns; the complete exception-class clusters are documented in the Supplementary Material, Section S3. 
+
+Value-error route. A second branch handles executed-but-wrong failures, where the code executed without raising but the printed payload either differs from the scalar reference under the matching tolerance or could not be parsed as the expected scalar type at all. Because no exception isolates a single API, this branch derives its evidence from the generated code itself and from the library-knowledge artifact; the reference answer is never read. It separates numerical 
+
+mismatches from output-format failures. The numerical-mismatch sub-path extracts a compact AST execution trace of the generated code (target-library API calls, table writes, result-table reads, code-only arithmetic invariants) and attaches interface contracts for the APIs and tables that the trace actually touches. For each analysis routine encountered in the trace it then injects a function-output contract that names the canonical net.res_* columns where the routine writes its results, addressing a recurrent failure pattern in which the model calls the right routine but reads the result from the wrong location. The output-format sub-path handles printed payloads that cannot be parsed as the expected scalar (multi-line text, labelled f-strings, array dumps) by emitting a focused output-format instruction without altering the analysis logic. Concrete trace structures, the eight-routine function-output mapping, and the verbatim format instruction are in the Supplementary Material, Section S3. 
+
+Operating regimes: reference-free vs. validation-enabled. The two reactive endpoints correspond to distinct operating regimes. The default reactive endpoint is reference-free: it consumes only execution-side evidence (exception class, failing source line, parse failure on the printed payload) and is therefore applicable wherever the generated code is run against the target library. The validation-enabled endpoint additionally activates the value-error branch whenever an external validation signal flags an executed-but-wrong output. In the benchmark this signal is provided by scalar matching against the reference; in deployment the equivalent signals are acceptance tests, measurement disagreement (SCADA, PMU, historical case data), physical-invariant violations (voltage range, power balance, line-loading limits), legacy-simulator or redundant-solver disagreement, and explicit operator feedback. The repair prompt itself reads no reference scalar in either mode; the value-aware mode requires the validation signal only at trigger -time, not at fix-time. Section 7 reports both endpoints throughout. The reactive fix prompt is assembled as a structured user-turn template that preserves the original task, the previous code, the failure description, and any router-selected documentation; the system prompt is retained unchanged across fix rounds. When the router returns a basic-fix decision, the relevant-doc block is empty and the prompt reduces to the standard error-feedback baseline. The full template layout is in the Supplementary Material, Section S3. This phase targets the post-first-pass fix trajectory: the goal is to reach a requested validation endpoint with fewer fix rounds and lower total token consumption than an always-document baseline by injecting only the minimum library context that the failure evidence implicates. The number of permitted fix rounds is an evaluation setting; in Section 7.1 we instantiate it as K = 3 and report the resulting R0 →R3 trajectory. 13 7 Experiments 
+
+## 7.1 Experimental Setup 
+
+Models. We evaluate ten open-weight models from 1.5B to 480 B parameters—Qwen2.5-Coder-{1.5B, 7B, 14B, 32B}, Qwen3-Coder-Next (MoE, mid-tier active size), Qwen3-Coder-480B, Llama-3.1-{8B, 70B, 405B}, and GPT-OSS-120B—alongside four closed-source mid-tier API models from four different vendors: Anthropic Claude-Haiku-4-5, Google Gemini-2.5-Flash, OpenAI GPT-5.4-mini, and DeepSeek-V4-Flash. All fourteen models see identical inputs on the full 2,000 -item PowerCodeBench benchmark, with no subset filtering. The 1.5B variant is included as a low-end reference; the deployable tier we refer to throughout is the ≥ 7B open-weight cohort together with the four APIs. The panel reflects the early-2026 mid-tier API generation; extending to newer open-weight families uses the same probing and intervention pipelines unchanged. 
+
+Decoding and protocol. Probe generation, first-pass code generation, and fix-round generation all use greedy decoding (temperature 0; vLLM seed fixed for open-weight inference). Closed-source API calls are issued under the same temperature-0, no-tool, no-reasoning regime where the vendor exposes those switches; reasoning-tier variants are evaluated separately in Section 7.5. Each benchmark item is evaluated under the two-phase protocol: up to K = 3 fix rounds are permitted, with the runtime exception trace or value-mismatch notice appended to the prompt at each failed round. Float results use the matching tolerance of Section 4.4 (absolute 10 −3, relative 10 −2). 
+
+Metrics. We report three basic per-model quantities throughout the experiments: ExecRate (execution rate, the fraction of generated programs that run to completion without raising an exception), Acc (accuracy, the fraction whose printed scalar matches the reference under the matching tolerance), and Acc |Exec (accuracy conditioned on execution). By construction Acc ≤ ExecRate , and Acc |Exec separates value-side errors from execution-side ones. At Round 0 (R0), Acc measures first-pass quality and is the target of proactive injection; the R0 → R3 Acc trajectory together with round counts evaluates reactive correction under the K = 3 setting. Prompt-token cost is reported for both phases: first-pass prompt cost for proactive injection and cumulative fix-round prompt cost for reactive correction. 
+
+Variance. Seed effects are bounded by re-running every open-weight panel cell on a stratified 400 -item subset across 10 vLLM generation seeds; per-cell sample standard deviations span ±0.00 pp (Qwen2.5-Coder-1.5B) to ±0.85 pp (Qwen3-Coder-Next), panel-median ±0.20 pp (full numbers in Appendix A.3). Cross-condition lifts of +32 to +56 pp sit well above this band; near-band cross-vendor gaps are read as parity rather than separation and reported with paired-bootstrap item-level CIs alongside the point estimates. 
+
+Proactive and reactive condition codes. Proactive injection (applied at Round 0): 
+
+A no proactive injection (baseline). 
+
+B function-name-only injection (Tier-0 ablation). 
+
+C layer-wise demand-aware injection—the full proactive method. 
+
+X demand-only injection at all L0–L3 layers without model-side risk gating: the demand-driven full-context upper bound. 
+
+R vanilla BM25 retrieval over the raw API documentation [35, 44]: off-the-shelf RAG baseline. 
+
+Reactive correction (Rounds 1–3, composed with a proactive condition; defined in Section 6.4): 
+
+FX plain fix loop with execution feedback only, no documentation—standard self-debug baseline [38, 39]. 
+
+FD always-document fix at static depth (no routing). 
+
+FDR demand-routed code-error fix (no value-error branch). 
+
+FDRS FDR with the value-error branch and function-output contracts—the full reactive method. Proactive–reactive combinations are written “proactive+reactive”, e.g. C+FDRS for the layer-wise proactive condition composed with the full reactive method. 
+
+## 7.2 End-to-end cross-model results 
+
+The main question for the energy-sector deployment scenario is direct: applied end-to-end on the full 2,000 -item benchmark, does the method lift mid-size open-weight models into the accuracy range of mid-tier commercial APIs, and is the lift consistent across very different model families? Table 3 and Fig. 6 report the comparison across the five strongest open-weight configurations and the four mid-tier APIs under identical inputs. 14 Table 3: Cross-vendor evaluation on the full 2,000 -item PowerCodeBench benchmark. The open-weight section lists the five strongest configurations in the open-weight panel of Section 7.4 (sub-32B rows reported there); the closed-source panel covers four mid-tier APIs. Reasoning-tier variants are evaluated separately in Section 7.5; per-cell seed variance is reported in Appendix A.3. Model A (R0) C (R0) C+FX C+FDR C+FDRS ∆
+
+FDRS–A 
+
+Closed-source API 
+
+GPT-5.4-mini 24.25 50.45 61.25 61.15 62.15 +37 .90 
+
+Claude-Haiku-4-5 10.35 36.90 61.10 61.10 63.75 +53 .40 
+
+DeepSeek-V4-Flash 11.05 40.65 47.30 47.30 55.90 +44 .85 
+
+Gemini-2.5-Flash 4.10 40.00 48.65 49.35 52.05 +47 .95 
+
+Open-weight (locally deployable) 
+
+Llama-3.1-405B 13.45 51.45 64.75 64.75 68.70 +55 .25 
+
+Qwen3-Coder-480B 15.05 56.65 63.80 63.75 65.90 +50 .85 
+
+GPT-OSS-120B 14.05 45.65 58.40 58.35 60.25 +46 .20 
+
+Llama-3.1-70B 5.00 38.15 49.00 51.45 57.45 +52 .45 
+
+Qwen2.5-Coder-32B 3.80 42.70 50.75 52.75 52.75 +48 .95 A
+
+> (R0)
+> C
+> (R0)
+> C+FDRS
+> (R3)
+
+Pipeline configuration 
+
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> 60
+> 70
+> 80
+> Result accuracy (%)
+> Line colours match panel (b);
+> solid = open-weight, dashed = API.
+
+(a) Trajectory across pipeline stages         
+
+> 010 20 30 40 50 60 70 80
+
+Accuracy contribution (pp) 
+
+> Llama-3.1-405B
+> Q3-Coder-480B
+> Claude-Haiku-4-5
+> GPT-5.4-mini
+> GPT-OSS-120B
+> Llama-3.1-70B
+> DeepSeek-V4-Flash
+> Q2.5-Coder-32B
+> Gemini-2.5-Flash
+> +55.2
+> +50.9
+> +53.4
+> +37.9
+> +46.2
+> +52.5
+> +44.9
+> +49.0
+> +47.9
+
+(b) Per-model component decomposition of C+FDRS   
+
+> A baseline (R0) + proactive idea (C) + reactive idea (C+FDRS)
+
+Figure 6: Cross-vendor results for the 9-model panel of Table 3 (5 strongest open-weight + 4 mid-tier APIs). (a) Accuracy trajectory across the architecture-level progression A → C → C+FDRS . Open-weight models use solid lines with circular markers; APIs use dashed lines with square markers. (b) Per-model decomposition of the C+FDRS endpoint into three stacked contributions — the A baseline (R0), the proactive-idea increment ( C−A ), and the reactive-idea increment ( C+FDRS −C ). The total lift ∆(FDRS–A) is annotated to the right of each bar. 
+
+15 Three findings emerge. 
+
+Every model in the panel is lifted, and lifted by a large margin. The trajectory A → C → C+FDRS is non-decreasing for every row in Table 3, with end-to-end lift between +37 .90 pp (GPT-5.4-mini) and +55 .25 pp (Llama-3.1-405B). The lift is therefore decoupled from any single training corpus, scale, or vendor toolchain. Within the lift, the value-error branch alone (the ∆(FDRS–FDR) column) contributes between +1 .00 pp (GPT-5.4-mini) and +8 .60 pp (DeepSeek-V4-Flash) on every API vendor; we revisit the mechanism behind this branch in Section 7.4. 
+
+Mid-size open-weight models reach mid-tier-API accuracy. For the energy-sector deployment scenario, this is the practically consequential finding. Llama-3.1-70B at 57 .45% and GPT-OSS-120B at 60 .25% both fall inside the four-vendor mid-tier API range ( 52 .05 –63 .75% ), and the entry-mid Qwen2.5-Coder-32B at 52 .75% sits at the lower end of that range. A utility or research lab that already requires on-premise serving for confidentiality, regulatory, or cost reasons does not have to trade away accuracy in this tier: the same intervention pipeline brings the deployable 
+
+70 –120 B class into the same accuracy band as the closed-source APIs. Where the smaller open-weight variants ( ≤ 14 B) still fall short, Section 7.3 reports the workload structure that explains it—basic single-step workflows are already in range, while specialised rare-API and semantic-grounded tiers retain a gap. 
+
+The upper tier sets the ceiling rather than the deployment claim. At the top of the open-weight panel, Llama-3.1-405B at C+FDRS reaches 68 .70% (95% paired-bootstrap CI [66 .80 , 71 .00] , B = 1 ,000 item-level resamples), and Qwen3-Coder-480B reaches 65 .90% ; both sit at or above the strongest mid-tier API (Claude-Haiku-4-5 63 .75% ,CI [61 .70 , 65 .85] ). The 95% paired-bootstrap CI on the Llama-3.1-405B–Claude-Haiku-4-5 gap is [+2 .95 , +6 .95] pp, comfortably above noise; the Qwen3-Coder-480B–Claude-Haiku-4-5 gap of +2 .15 pp sits within its ±0.65 pp seed-variance band and is read as parity rather than separation. The deployable 70 B– 120 B tier above is the more relevant constraint for utilities; the upper open-weight band confirms that the method is not artificially capped by the intervention itself. The remainder of this section examines the lift from three angles: why it works (failure anatomy and component ablations, Sections 7.3–7.4), at what cost (prompt economy, Section 7.4), and how robust the result is (adaptation robustness, naturalistic-query holdout, and reasoning-tier check; Section 7.5). 
+
+## 7.3 Failure Anatomy and Workload Envelope 
+
+With the main lift established, we now turn to the baseline it overcomes. Two questions shape this section: what fails on a first pass without intervention, and which workloads benefit most when intervention is applied. The first reveals an execution bottleneck rather than a numerical-reasoning bottleneck; the second defines the workload envelope that anchors the deployment guidance of Section 8.1. 
+
+First-pass failures are execution-bottlenecked, not value-bottlenecked. Without intervention, every panel cell falls well below the intervention endpoint: even the strongest open-weight model produces runnable code on fewer than one in three first-pass attempts (Table 4, ExecRate column). Mid-size models (7–32B) sit between 2% and 8% ;large models (70B+) reach 8–29% . Accuracy follows execution rate, not the other way round: Acc |Exec—accuracy conditioned on the code running—is 30 –53% across the panel above 7B, meaning roughly half the executable outputs already match the ground truth. This is the empirical anchor for the paper’s central reading: the binding constraint on first-pass quality is whether the code reaches the runtime at all, which is precisely the gap that proactive injection targets (Section 7.4). Three patterns in Table 4 support this reading. First, ExecRate scales with model size but stays in a wide band (0.4% –29% across the deployable tier; full scatter plot in the Supplementary Material, Section S5), confirming that scale alone does not eliminate the execution bottleneck. Second, the Acc |Exec column is markedly flatter across the panel than Acc itself ( 30 –53% vs. 0.4–15% ), so the spread in raw Acc is mostly explained by the spread in ExecRate, not by qualitatively different numerical reasoning. Third, accuracy on the explicit-parameter tiers (D1, D2) is uniformly higher than on the semantic-grounded tiers (D3, D4) for every model, with the rate of decline varying sharply between cohorts (Table 6 in Section 7.3 below)—the task-side reliability profile across the difficulty levels of Section 4.2. 
+
+Naive fix loops cannot close the API-knowledge gap. Letting the model see its own runtime exceptions and try again is the standard self-debug recipe, and it does help—but in a structured way that frames why reactive correction needs more than execution feedback. The naive R0 →R3 trajectory (full per-model curves in the Supplementary Material, Section S5) shows two patterns. First, gains are sharply front-loaded : the R0 →R1 step alone outweighs R1 →R2 plus R2 →R3 by a factor of 3.7–5.8 on the strongest models (Llama-3.1-405B, Qwen3-Coder-480B). By round two the naive loop has already passed its steepest improvement region, giving reactive correction a clear engineering target—deliver the same final accuracy with fewer rounds. Second, fix rounds help only when the model has some 
+
+API knowledge to begin with: 70 B+ models gain +9 to +15 pp across R0 →R3, but Qwen2.5-Coder-7B improves 16 Table 4: Round-0 (first-pass, no fix) benchmark results on PowerCodeBench: execution rate (ExecRate), accuracy (Acc), and accuracy conditioned on execution (Acc |Exec)—metrics defined in Section 7.1. Values match the no-injection column A of Table 8. 
+
+Model ExecRate (R0) Acc (R0) Acc |Exec (R0) 
+
+Sub-10B local models 
+
+Qwen2.5-Coder-1.5B 0.000 0.000 —Qwen2.5-Coder-7B 0.035 0.004 0.116 Llama-3.1-8B 0.017 0.005 0.294 
+
+Mid-size local models 
+
+Qwen2.5-Coder-14B 0.040 0.016 0.400 Qwen2.5-Coder-32B 0.079 0.038 0.484 
+
+Large / MoE local models 
+
+Qwen3-Coder-Next 0.076 0.040 0.530 Llama-3.1-70B 0.095 0.050 0.526 GPT-OSS-120B 0.265 0.141 0.531 Llama-3.1-405B 0.262 0.135 0.513 Qwen3-Coder-480B 0.290 0.151 0.520 by +0 .001 and the 1.5B reference stays at zero. Within each panel cell, execution rate grows faster than accuracy (Qwen2.5-Coder-14B ExecRate 0.040 → 0.164 vs. Acc 0.016 → 0.038 ), reinforcing the previous paragraph: even with free retries, the residual gap is an API-knowledge gap, not a numerical-reasoning gap. This is the gap that the demand-guided intervention of Section 6 is designed to close. 
+
+Where the lift comes from: the workload envelope. The lift is not uniform across the benchmark; it is highly structured by task family and difficulty tier, and that structure matters for deployment. Across task types, accuracy is highly heterogeneous. Familiar workflows—power flow, DC power flow, and basic comparisons—are already in range across the panel, because they involve the most commonly seen pandapower patterns in pre-training corpora. By contrast, fault-current screening, SCADA-based state estimation, post-contingency fault analysis, and parallel-scenario sweeps are near zero for most models without intervention. These workflows are operator-critical and rely on rare APIs ( pp.shortcircuit.calc_sc , pp.estimation.estimate , multi-threaded execution patterns) that carry low L0 and L3 probe scores across the board. This per-task asymmetry aligns directly with the L0–L3 probing diagnostic. Across the ten open-weight models, the rank correlation between each model’s per-layer probe score and its no-injection R0 accuracy is ρs = 0 .83 , 0.93 , 0.83 , 0.83 
+
+for L0–L3 respectively, with L1 (signature recall) the strongest cross-model predictor. Within the larger 32 B– 405 Bsub-panel where parameter count varies less, L1’s correlation persists ( ρs = 0 .90 , n = 5 ) while L2 and L3 collapse to noise because every capable model has saturated those layers. We read these correlations as support for the layer-role interpretation (L1 as the discriminating recall layer, L3 as the actionable application layer once saturation allows it) rather than as a significance test; parameter count confounds the signal at the model level. The intervention closes a large fraction of this per-task gap, and the resulting workload envelope is the basis for the workload-aware deployment guidance later in Section 8.1. Tables 5 and 6 make the picture concrete: under proactive condition C alone, mid-size open-weight models become outright competitive with mid-tier APIs on the basic single-step families (power flow, DC power flow) and on the explicit-parameter difficulty tier (D1/D2); harder specialised tasks and semantic-grounded tiers (D3/D4) remain the regime where larger open-weight or hosted APIs still dominate. Figure 7 visualises the same per-task structure side-by-side for the no-injection baseline (A) and the full method (C+FDRS), making the lift on the previously near-zero short-circuit and state-estimation families directly visible. The two tables together justify the workload-aware deployment reading of Section 1: on a 14B-class model an operator can expect mid-tier-API-grade accuracy on basic single-step workflows (e.g. power-flow and DC power-flow) and on the simpler explicit-parameter sequential workflows shown here, while a 70B–120B class covers multi-step and explicit-parameter tiers more broadly; the semantic-grounded tiers (D3/D4) and rare specialised tasks (short-circuit, state estimation) remain the regime where the larger open-weight tier or hosted APIs are still preferable. The method therefore enables a per-workload model-selection policy rather than a single “always use the largest available” default. 17 Table 5: Per-task accuracy ( %) under proactive base C (Round-0, no reactive correction) on the full 2,000 -item benchmark, for seven open-weight models (sorted by parameter count) and four closed-source mid-tier API vendors. Columns abbreviate task families: dc_pf (DC power flow), pf (AC power flow), seq (multi-step explicit-parameter workflow), sc_3ph (three-phase short-circuit), parallel (multi-scenario sweep). Full per-task data for all 15 families is in the released repository. Model dc_pf pf seq sc_3ph parallel 
+
+Open-weight (locally deployable) 
+
+Qwen2.5-Coder-7B 39 54 63 8 3Qwen2.5-Coder-14B 69 62 84 33 16 Qwen2.5-Coder-32B 70 68 80 39 64 
+
+Llama-3.1-70B 67 61 81 44 18 GPT-OSS-120B 78 71 84 24 25 Llama-3.1-405B 70 67 82 45 39 Qwen3-Coder-480B 77 69 85 50 56 
+
+Closed-source API (mid-tier) 
+
+Claude-Haiku-4-5 44 64 84 8 9Gemini-2.5-Flash 70 69 83 19 5GPT-5.4-mini 73 73 77 50 36 DeepSeek-V4-Flash 68 66 82 28 5
+
+Table 6: Per-difficulty Round-0 accuracy ( %) under proactive base C (no reactive correction) on the full 2,000 -item benchmark, for a representative compact panel (Qwen3-Coder-Next omitted here for table-width reasons; the full per-model per-difficulty matrix is in the released repository). D1=Basic single-step explicit; D2=Multi-step explicit; D3=Single-step semantic-grounded; D4=Multi-step semantic-grounded. Model D1 D2 D3 D4 
+
+Open-weight (locally deployable) 
+
+Qwen2.5-Coder-7B 30.7 30.3 11.0 13.3 Qwen2.5-Coder-14B 39.3 40.2 26.0 25.8 Qwen2.5-Coder-32B 52.0 51.0 25.3 33.8 Llama-3.1-8B 20.2 35.8 4.8 11.8 Llama-3.1-70B 44.0 48.0 25.0 27.8 GPT-OSS-120B 54.8 49.2 39.5 32.8 Llama-3.1-405B 68.3 50.0 46.0 33.8 Qwen3-Coder-480B 67.0 61.3 50.0 40.8 
+
+Closed-source API (mid-tier) 
+
+Claude-Haiku-4-5 39.8 44.5 25.8 32.3 DeepSeek-V4-Flash 54.7 40.2 36.0 25.0 Gemini-2.5-Flash 47.3 43.8 33.8 29.5 GPT-5.4-mini 60.5 61.2 40.8 29.0 
+
+## 7.4 Component and Cost Ablations 
+
+The end-to-end lift decomposes into four pieces that we ablate in turn. The demand-estimation ranker selects which 
+
+APIs to inject; layer-wise proactive injection (C) delivers the bulk of the R0 lift over both no-injection (A) and a vanilla BM25 RAG baseline (R); the reactive router with the value-error branch (FDRS) provides the remaining accuracy push above always-document (FD) and demand-routed-only (FDR); and the prompt-token economy confirms that C reaches the demand-driven full-context upper bound X at a fraction of its prompt cost—the cost-side claim that complements the accuracy-side claim. Robustness checks for the role-frequency adaptation of Section 6.2 are gathered in Section 7.5. 
+
+Demand-estimation evidence (six-variant comparison). Table 7 reports recall@10 and hit@10 across the six demand-modelling variants on three evaluation splits (Aug-test, Aug-orig, Bench-ref; defined in the table caption below). Detailed variant formulations are in the Supplementary Material, Section S4. Hybrid TF-IDF is the only estimator to clearly surpass zero-shot TF-IDF on the benchmark-reference split (0.718 vs. 0.605) while retaining strong augmented-test recall; recall@ k curves for the six variants flatten near k = 10 ,confirming this as the effective operating point for API document injection (Supplementary Material, Section S4). Cross-encoder reranking improves the augmented held-out splits but degrades benchmark-reference recall, suggesting 18 Llama-3.1-405B                                                                                                                                                                                      
+
+> Q3-Coder-480B
+> GPT-OSS-120B
+> Q3-Coder-Next
+> Llama-3.1-70B
+> Q2.5-Coder-32B
+> Q2.5-Coder-14B
+> Llama-3.1-8B
+> Q2.5-Coder-7B
+> Claude-Haiku-4-5
+> GPT-5.4-mini
+> DeepSeek-V4-Flash
+> Gemini-2.5-Flash
+> sequential
+> power_flow
+> opf
+> dc_power_flow
+> diagnose_and_fix
+> time_series
+> comparison_opf
+> comparison
+> contingency
+> parallel
+> short_circuit_3ph
+> state_estimation
+> pf_then_sc
+> short_circuit_2ph
+> contingency_fix
+> 39 37 37 51941118 47 33 12
+> 24 24 31 18 19 991125 44 26 8
+> 41 30 38 533 056021 38 22 5
+> 12 26 425400012 58 12 1
+> 24 18 23 12 516 20313 29 27 18
+> 11 28 21 91000023 24 92
+> 23 16 125000022 29 60
+> 22 25 23 511 10 21110 29 18 10
+> 010 25 0011001850
+> 0000000000500
+> 1000020000600
+> 040100000930 00
+> 0000000000400
+> 0000000000200
+> 3360100004211
+> open-weight closed-source API
+
+(a) Baseline A (no proactive injection, R0)                                                                                                                                                                                      
+
+> Llama-3.1-405B
+> Q3-Coder-480B
+> GPT-OSS-120B
+> Q3-Coder-Next
+> Llama-3.1-70B
+> Q2.5-Coder-32B
+> Q2.5-Coder-14B
+> Llama-3.1-8B
+> Q2.5-Coder-7B
+> Claude-Haiku-4-5
+> GPT-5.4-mini
+> DeepSeek-V4-Flash
+> Gemini-2.5-Flash
+> 87 85 87 86 86 82 84 71 73 85 85 85 85
+> 76 77 79 74 73 74 74 54 59 76 77 71 76
+> 82 79 73 72 77 65 64 52 50 78 59 64 73
+> 82 80 82 81 78 74 80 35 45 82 80 72 81
+> 48 45 61 45 47 56 47 63 35 53 76 49 65
+> 77 67 62 70 56 65 52 616 61 56 60 71
+> 64 65 51 53 58 47 52 33 37 64 66 60 60
+> 49 60 48 51 53 52 47 40 26 54 53 46 54
+> 60 62 63 53 61 26 22 739 72 80 67 48
+> 76 72 65 74 71 70 30 38 850 40 53 19
+> 63 59 46 56 52 45 55 40 21 49 53 46 32
+> 70 73 68 24 24 27 26 739 75 57 47 40
+> 61 59 43 57 55 41 32 39 10 59 59 39 27
+> 71 61 39 60 52 37 44 35 24 53 41 38 23
+> 63 37 28 27 910 93646 47 40 24
+> open-weight closed-source API
+
+(b) Full method C+FDRS (after 3 fix rounds) 
+
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> R3 accuracy (%)
+
+Figure 7: Per-task accuracy heatmap with identical row and column ordering in both panels for direct side-by-side comparison. 
+
+(a) Baseline A (no proactive injection, R0). (b) Full method C+FDRS after 3 fix rounds. Rows are pandapower -derived task families; columns split into open-weight models (left) and closed-source APIs (right). 
+
+Table 7: Task demand modelling results (recall@10 / hit@10). Aug-test : augmented held-out split. Aug-orig : original (non-augmented) queries only – a small held-out subset where hit@10 saturates more easily than the larger Aug-test, hence the 1.000 hit@10 reported by Pairwise TF-IDF+LogReg should be read in conjunction with its recall@10 ( 0.402 ). Bench-ref :benchmark-reference labels (diagnostic, not used for training). Model Aug-test Aug-orig Bench-ref Zero-shot TF-IDF 0.344 / 0.806 0.258 / 0.652 0.605 / 0.893 Pairwise TF-IDF+LogReg 0.307 / 0.795 0.402 / 1.000 0.489 / 0.946 Hybrid TF-IDF 0.471 / 0.937 0.443 / 0.957 0.718 / 0.983 
+
+Zero-shot SBERT 0.342 / 0.842 0.258 / 0.783 0.331 / 0.659 Zero-shot Cross-Encoder 0.383 / 0.888 0.319 / 0.870 0.397 / 0.723 Hybrid Cross-Encoder 0.480 / 0.962 0.371 / 0.913 0.432 / 0.774 
+
+that the reranker overfits surface-level documentation–query similarity under the domain shift; the supervised pairwise ranker also transfers poorly on benchmark-reference recall (0.489). These diagnostics support the hybrid TF-IDF choice as the most robust predictor under the benchmark query distribution; the remaining gap motivates the scenario adaptation defined in Section 6.2. 
+
+Role-frequency reweighting on demand recall. Role-frequency reweighting (formula and pseudocode in the Supplementary Material, Section S4) applied with the PowerCodeBench natural-language queries as QT produces the expected pattern of covariate-shift correction: the reweighted ranker is pushed away from the source distribution towards the target. On the hybrid TF-IDF pipeline (the deployed choice), recall@10 moves by −5.7pp on the held-out augmented source split and by +21 .4pp on the PowerCodeBench benchmark-reference split—a favourable trade by a wide margin; the pairwise TF-IDF+LogReg variant shows the same asymmetric pattern ( −9.5pp source, +23 .3pp target). Full before/after numbers for both supervised pipelines are in the Supplementary Material, Section S4. The adapted hybrid TF-IDF ranker reaches 71 .8% recall@10 on the benchmark-reference diagnostic split, and this is the 
+
+ˆd(·, q ) that feeds Eq. (2) in the proactive injector. 
+
+Proactive ablation (A/B/C/X/R). The full intervention is ablated next on the same 2,000 -item benchmark across the ten-model open-weight panel; the closed-source API panel is already shown in Section 7.2. Table 8 compares Round-0 accuracy (no fix rounds) across the five proactive conditions defined in Section 7.1. Layer-wise condition C delivers a +30 .95 pp mean accuracy gain over baseline A ( 95% paired-bootstrap CI 19 Table 8: Round-0 result accuracy ( %) under all five proactive conditions on the full 2,000 -item PowerCodeBench release.                                                                                      
+
+> ∆(C–A): condition-C lift over no injection. ∆(C–R): condition-C lift over the vanilla BM25-RAG baseline on the same raw API documentation corpus. Model ABCXR∆(C–A) ∆(C–R) Qwen2.5-Coder-1.5B 0.00 0.00 8.10 1.75 0.20 +8 .10 +7 .90
+> Qwen2.5-Coder-7B 0.40 1.70 23.15 24.15 3.75 +22 .75 +19 .40
+> Qwen2.5-Coder-14B 1.60 15.60 34.20 39.35 6.85 +32 .60 +27 .35
+> Qwen2.5-Coder-32B 3.80 14.90 42.70 46.05 11.10 +38 .90 +31 .60
+> Llama-3.1-8B 0.50 1.30 20.10 20.40 1.20 +19 .60 +18 .90
+> Llama-3.1-70B 5.00 5.20 38.15 41.60 10.45 +33 .15 +27 .70
+> Llama-3.1-405B 13.45 4.20 51.45 47.45 20.85 +38 .00 +30 .60
+> Qwen3-Coder-Next 4.00 15.60 47.20 52.15 11.15 +43 .20 +36 .05
+> Qwen3-Coder-480B 15.05 21.55 56.65 59.45 23.10 +41 .60 +33 .55
+> GPT-OSS-120B 14.05 9.65 45.65 48.95 21.20 +31 .60 +24 .45
+> Mean 5.79 8.97 36.74 38.14 10.99 +30 .95 +25 .75
+
+[+29 .75 , +32 .13] pp from B = 2 ,000 item-level resamples), uniformly across the panel (per-model gains span +8 pp on 1.5B to +43 pp on Qwen3-Coder-Next); condition C therefore provides a consistent lift independent of model family or scale. Function-name-only condition B, by contrast, is unstable: it recovers most of C’s gain on Qwen-family models ( +15 pp on 32B/14B) but actively hurts the strongest general-purpose models (Llama-3.1-405B −9.25 pp; GPT-OSS-120B −4.40 pp), because dropping unsupported names into the prompt without semantic context distracts more than it helps, supporting the function–layer formulation in Eq. (2) over flat name retrieval. The gap between C (designed) and X (the demand-driven full-context upper bound) is small and signed in both directions ( ∆(X–C) mean 
+
++1 .39 pp; negative on Qwen2.5-Coder-1.5B and Llama-3.1-405B): C reaches X’s first-pass quality while using 1,450 
+
+prompt tokens on average versus X’s 3,513 – a 41% ratio, saving 2,062 tokens per item (Section 7.4). We treat C as the primary proactive condition, report cross-base results for completeness, and use X as the demand-driven upper bound that C approximates at lower cost. 
+
+Vanilla BM25-RAG baseline (condition R). The R column of Table 8 is the vanilla BM25 RAG baseline an operator could obtain from raw documentation alone: BM25 over the same documentation corpus that feeds the probing procedure, no demand model, no risk gating, no boundary cards, with the same per-function snippet renderer that C and X use. Vanilla BM25 lifts R0 by +0 .20 to +8 .05 pp across the panel ( +10 .99 pp mean over A), while the full pipeline lifts R0 by +8 .10 to +43 .20 pp. The ∆(C–R) column thus reflects the joint contribution of the designed pipeline (demand model + model-side risk gating + library-knowledge contracts) over a vanilla BM25-RAG baseline: 
+
++25 .75 pp on average and +18 .9 to +36 .0pp per model. We do not claim risk gating in isolation accounts for this gap; an additional check holding demand modelling, anchors, boundary cards, renderer, layer pruning, and token budget identical to C and only setting the model-side layer deficit to a constant shifts panel-mean R0 by +0 .53 pp—small relative to the main gains and comparable to residual generation variability at this scale (per-model ∆ in the range 
+
+[−2.05 , +2 .75] pp, with 6 of 10 models inside ±1pp)—so the accuracy component of ∆(C–R) is primarily attributable to demand modelling and the library-derived artifacts. Off-the-shelf retrieval over raw API documentation alone is materially insufficient on this workload. 
+
+Reactive ablation (FX/FD/FDR/FDRS). The full intervention combines Phase 1 with the reactive router defined in Section 6.4. We evaluate four reactive conditions under each proactive base, yielding a 3 × 4 matrix of (proactive, reactive) pairs. Table 9 reports the cross-model mean of this matrix; the per-model breakdown under the deployment-recommended configuration (proactive base C, reactive FDRS) is in the Supplementary Material, Section S5. Table 9 shows that each fix-condition step adds incremental value. Plain error feedback (FX) lifts each base by 
+
+∼ 6–9pp, since the model can repair many syntactic issues without documentation; always-document fix (FD) then adds +1 –2pp on the proactive bases but only +0 .65 pp on base A, so documentation in the fix loop is most useful when Round-0 was already library-aware. Demand-routed fix (FDR) matches FD on base C ( ∆(FDR–FD) = −0.07 pp; 95% 
+
+paired-bootstrap CI [−0.44 , +0 .32] pp from B = 2 ,000 item-level resamples, within-noise) and slightly exceeds it on A and X. The full method FDRS adds a further +1 .14 to +2 .16 pp on top of FDR; the largest increment ( +2 .16 pp on base C) is strictly positive at the same bootstrap ( 95% CI [+1 .82 , +2 .52] pp), targeting value-level mismatches that the routed code-error branch alone cannot reach. Along the columns, layer-wise C contributes +32 –35 pp over no-proactive A at every fix condition, while the column-wise ∆(X–C) is at most +1 .40 pp at R0 and turns negative under every 20 Table 9: Mean Round-3 accuracy ( %) over the ten-model open-weight panel (1.5B–480B) on the full 2,000 -item benchmark, by proactive base (rows) and reactive condition (columns). ∆(C–A): column-wise difference between layer-wise proactive injection and no proactive. ∆(X–C): column-wise gap from C to the demand-driven full-context upper bound. ∆(FDR–FD): demand-routed vs. always-document fix. ∆(FDRS–FDR): routed plus value-error branch vs. routed code-error only. 
+
+Proactive base R0 FX FD FDR FDRS ∆
+
+FD–FX 
+
+∆
+
+FDR–FD 
+
+∆
+
+FDRS–FDR A (no proactive) 5.79 11.67 12.31 14.28 15.42 +0 .64 +1 .97 +1 .14 
+
+C (layer-wise) 36.74 45.27 47.10 47.03 49.19 +1 .83 −0.07 +2 .16 
+
+X (context-stuff) 38.14 45.06 46.08 46.87 48.25 +1 .02 +0 .79 +1 .38 ∆(C–A) +30 .95 +33 .60 +34 .79 +32 .75 +33 .77 ∆(X–C) +1 .40 −0.21 −1.02 −0.16 −0.94 
+
+reactive condition ( −1.02 , −0.16 , −0.94 pp on FD, FDR, FDRS respectively): once a routed reactive loop is in place, model-side risk gating reaches X’s accuracy plateau while using substantially less prompt context (Section 7.4). 
+
+Per-model evidence summary. The per-model breakdown under proactive base C (full table in the Supplementary Material, Section S5) confirms three properties of the panel mean reported above: (i) always-document fix (FD) helps 
+
+9 of 10 models (mean +1 .83 pp; sole exception Qwen2.5-Coder-1.5B at −0.50 pp, limited context-handling capacity); 
+
+(ii) demand-routed FDR matches FD at the panel mean ( −0.07 pp) with a structured signed pattern—small/mid models gain (Llama-3.1-8B +3 .35 pp) while a few strong models give back a small amount (Llama-3.1-405B −1.70 pp), interpretable as routing being most useful where context budget is tight; (iii) the FDRS −FDR delta is positive on every model (mean +2 .16 pp on the open-weight panel; strongest on Llama-3.1-70B +6 .00 pp and Llama-3.1-405B 
+
++3 .95 pp), directly evidencing the value-error branch’s contribution beyond the routed code-error branch. The same effect holds on the closed-source API panel of Section 7.2: ∆ FDRS–FDR is +1 .00 pp on GPT-5.4-mini, +2 .65 pp on Claude-Haiku-4-5, +2 .70 pp on Gemini-2.5-Flash, and +8 .60 pp on DeepSeek-V4-Flash; the DeepSeek case is particularly instructive in that FX and FDR both saturate near 47% and the entire FDRS lift is delivered by semantic_fix routes (Section 7.4, “where the reactive router sends each fix”), confirming the value-error branch addresses a failure mode that is independent of vendor and open/closed-source provenance. 
+
+Prompt economy: layer-wise injection at a fraction of full-context cost. Accuracy is only one part of the deployment picture; the other part is prompt-token cost. Condition C reaches the demand-driven full-context upper bound X within roughly 1.4pp at R0 while using only 41% of X’s prompt tokens (Table 10)—a 2,062 -token saving per item that scales linearly with throughput. All conditions share the same task wrapper (system prompt, query, output instruction), so per-row differences in “Prompt (avg)” are pure injection volume; “Successes” counts matched items at Round-0 (out of 2,000 ) for the proactive section and successful fix attempts for the reactive section; “Tok./succ.” is the mean prompt-token cost per successful match; “vs X” is the prompt-token ratio against X’s panel-mean Round-0 prompt of 3,513 tokens. 
+
+Proactive economy. The proactive Pareto in Fig. 8(a) makes the prompt-token trade-off explicit: C reaches X’s match count at 41% of X’s prompt, saving 2,062 tokens per item, while the BM25 RAG baseline R sits at the least favourable corner—largest prompt yet fewer matches than even B. C is therefore not a budget-restricted variant of X but a compact approximation of it, preserving X’s R0 plateau ( ∆(X–C) mean +1 .39 pp, within run noise) at less than half the cost. Panel (c.1) breaks down C’s panel-mean prompt as ∼180 base tokens + ∼770 documentation tokens (L0–L3 snippets plus boundary cards) + ∼500 framing tokens. R’s inefficiency is mechanistic: BM25 over raw documentation pulls long content-rich entries (transformer signatures with extensive std_types ) regardless of relevance, so R spends 38 ,131 prompt tokens per matched item versus C’s 3,947 —a 9.7× inefficiency on top of R’s lower match count. 
+
+Reactive economy. The reactive Pareto in Fig. 8(b) shows the same pattern at fix time. Demand-routed FDR matches FD’s final accuracy ( ∆(FDR–FD) = −0.07 pp) while carrying only 18% of FD’s documentation tokens—a 
+
+5.6× docs reduction and a 2.6× full-prompt reduction. The full method FDRS adds the value-error branch at 0.38 ×
+
+FD’s docs budget, recovers +2 .16 pp over FDR, and exceeds FD itself by +2 .09 pp. Per successful fix, FDR spends 
+
+23 .8k tokens versus FD’s 61 .6k. Plain FX is the cheapest per attempt but produces the fewest matched fixes ( 171 vs. 21 Table 10: Token economy in one view: proactive Round-0 (top) and reactive fix-round (bottom) conditions, panel-mean over the ten-model open-weight panel. “Successes” is matched/ 2,000 at R0 for the proactive section, count of successful fix attempts for the reactive section. “Tok./succ.” is the per-success prompt-token cost: for proactive rows, (Prompt avg × 2000) /Successes ;for reactive rows, total fix-round prompt tokens divided by successful fixes. “vs X” is the prompt-token ratio (Prompt avg of this row divided by X’s R0 mean of 3,513 ). Boldface marks the deployed configurations. Condition Docs (avg) Prompt (avg) Successes Tok./succ. vs X                                              
+
+> Round-0 (proactive injection)
+> A (no injection) 0182 115.7 / 2k 3,141 5% B (names only) 66 247 179.4 / 2k 2,754 7%
+> C (full proactive) 1,269 1,450 734.7 / 2k 3,947 41%
+> X (full-context bound) 3,331 3,513 762.6 / 2k 9,213 100% R (BM25 RAG) 4,007 4,188 219.7 / 2k 38,131 119%
+> Round 1–3 (reactive correction, base C)
+> C+FX (self-debug) 0494 171.4 fixes 14,601 14% C+FD (always-doc) 1,413 1,913 208.0 fixes 61,634 54% C+FDR (routed) 251 747 206.7 fixes 23,783 21%
+> C+FDRS 535 1,031 249.9 fixes 27,409 29%
+
+250 for FDRS), so its per-success advantage disappears once quality is held constant. The per-model breakdown in panel (c.2) confirms that this efficiency pattern holds uniformly across the panel. 
+
+Where the reactive router sends each fix. Across the 10 evaluated models, the FDR router sends 31 –55% of base-C fix attempts to the api_doc route, 4–32% to the boundary_contract route, and the remainder ( 20 –60% ) to 
+
+basic_fix (no documentation). The basic_fix share is highest on the strongest models (Qwen3-Coder-480B at 
+
+60% , Llama-3.1-70B at 53% ): once proactive injection has supplied the model with enough library context, most remaining failures are local code issues that need no further documentation. This is the same pattern we saw with ∆ FDR–FD: leaner routing is most accurate where the model already knows enough to recognise and use the failing line. Under FDRS the semantic_fix route additionally captures 18 –56% of fix attempts—these are the executed-but-wrong-value failures that function-output contracts target; the lower end of the range corresponds to small ( ≤ 8B) models that produce few executable-but-wrong-value outputs to begin with, and the upper end to capable models (Qwen3-Coder-480B at 56% , Llama-3.1-405B at 47% ) where the value-error branch carries most of the FDRS gain. 
+
+## 7.5 Robustness and External Validity 
+
+The lift above is measured under one particular combination of choices: a scenario-adapted demand predictor, a PowerCodeBench query distribution, and a non-reasoning regime on closed-source APIs. This section asks whether the main result survives when each of these choices is relaxed. 
+
+Robustness to role-frequency adaptation. The role-frequency adaptation of Section 6.2 uses PowerCodeBench natural-language queries as the unlabelled target distribution. A natural concern is that this transductive step may account for most of the lift. Two checks address that concern. First, the proactive R0 lift is not primarily driven by adaptation: re-running condition C with the unadapted hybrid TF-IDF predictor (recall@10 = 50 .5% on the benchmark-reference split versus 71 .8% adapted) still lifts mean Round-0 accuracy by +27 .79 pp over no injection and by +22 .59 pp over the BM25-RAG baseline, with both differences positive on every panel model; adaptation contributes the additional +3 .16 pp on top, i.e. about 10% of the full adapted-C lift over A. Second, the upper-tier cross-vendor comparison also holds without adaptation: Llama-3.1-405B at C+FDRS under the unadapted predictor reaches 
+
+65 .65% , still above the strongest mid-tier API (Claude-Haiku-4-5 63 .75% ). Per-model unadapted-versus-adapted breakdowns and the full unadapted endpoint table are in Appendix A.2; a cross-style held-out check confirming that the reweighting learns a transferable API-role pattern rather than fitting one specific query distribution is in the Supplementary Material, Section S4. 
+
+External validity: human-authored naturalistic queries. PowerCodeBench queries are generated from templates, so they are linguistically regular by construction. Operators do not write that way. We therefore evaluate the intervention on an independent 80 -item human-authored holdout: same 15 task families and 4 difficulty levels as 22 0 1000 2000 3000 4000 
+
+Average proactive prompt tokens 
+
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> 60
+> 70
+> 80
+> R0 result accuracy (%)
+
+A
+
+B
+
+C X
+
+R  
+
+> C reaches X's accuracy
+> at ∼41% of the prompt
+
+(a) Proactive token economy (per-model)          
+
+> Ano proactive injection
+> Bnames only
+> Clayer-wise demand + risk (proposed)
+> Xdemand-only full-context (upper bound)
+> Rvanilla BM25 RAG (panel mean only)
+> 500 1000 1500 2000 2500
+
+Average fix-round prompt tokens 
+
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> 60
+> 70
+> 80
+> R3 result accuracy (%)
+
+FX FD FDR FDRS   
+
+> FDRS: higher R3 accuracy
+> at ∼54% of FD's prompt
+
+(b) Reactive token economy under base C (per-model)          
+
+> FX plain self-debug (no docs)
+> FD always-document fix
+> FDR demand-routed (no value-error)
+> FDRS full method (proposed)
+> 01000 2000 3000 4000 5000
+
+Average prompt tokens per item (R0)               
+
+> X (dump)
+> 7B
+> L-8B
+> 14B
+> 32B
+> L-70B
+> Next
+> OSS-120B
+> L-405B
+> Q3-480B
+> Claude
+> Gemini
+> GPT-5.4
+> DeepSeek
+> 3512 (X ceiling)
+> 1415 (40% of X)
+> 1475 (42% of X)
+> 1475 (42% of X)
+> 1464 (42% of X)
+> 1417 (40% of X)
+> 1422 (40% of X)
+> 1503 (43% of X)
+> 1435 (41% of X)
+> 1443 (41% of X)
+> 1700 (48% of X)
+> 1578 (45% of X)
+> 1385 (39% of X)
+> 1493 (43% of X)
+
+(c.1) Proactive saving (per-model)           
+
+> base prompt C docs (L0--L3 + boundary cards) framing overhead
+> 0250 500 750 1000 1250 1500 1750 2000
+
+Average doc tokens per fix attempt               
+
+> FD (always doc)
+> 7B
+> L-8B
+> 14B
+> 32B
+> L-70B
+> Next
+> OSS-120B
+> L-405B
+> Q3-480B
+> Claude
+> Gemini
+> GPT-5.4
+> DeepSeek
+> 1413 (FD ceiling)
+> 489 (35% of FD)
+> 421 (30% of FD)
+> 536 (38% of FD)
+> 540 (38% of FD)
+> 510 (36% of FD)
+> 555 (39% of FD)
+> 578 (41% of FD)
+> 599 (42% of FD)
+> 671 (47% of FD)
+> 581 (41% of FD)
+> 574 (41% of FD)
+> 657 (47% of FD)
+> 596 (42% of FD)
+
+(c.2) Reactive saving     
+
+> api_doc boundary_contract semantic_fix basic_fix (0 docs)
+
+Figure 8: Token economy: Pareto trade-offs (a, b) and per-model saving breakdowns (c.1, c.2). (a) Proactive R0: prompt tokens vs. matched items (out of 2,000 ) for conditions A/B/C/X/R. (b) Reactive economy under base C: prompt tokens vs. successful fix attempts for FX/FD/FDR/FDRS. (c.1) Per-model R0 prompt decomposition under C—base prompt, documentation block (L0–L3 snippets plus DataFrame boundary cards), and template framing—with X’s panel-mean prompt as the ceiling. For open-weight models the documentation block is read directly from the injection log; for APIs only the total prompt is logged, so the documentation segment is derived as prompt − base − framing OW . (c.2) Per-model mean documentation tokens per fix attempt under C+FDRS, decomposed by router destination, with FD’s docs as the ceiling. 
+
+PowerCodeBench, same ground-truth scalars and scenarios, but every natural-language query rewritten in operator-style English without reusing template phrasing (for D3/D4, the query expresses semantic intent rather than the literal modification). Curation followed an audit protocol with author-side review against each scenario’s ground-truth specification; the CSV and build script are released with the artifact. The main lift carries over. Every deployable model is lifted on the holdout ( ∆(FDRS–A) panel-mean +34 .58 pp, median +36 .25 pp), and tier ordering is preserved—Llama-3.1-405B remains the panel ceiling at 66 .25% , Llama-3.1-70B at 61 .25% exceeds every smaller model, and the deployable 14 –120 B band continues to close most of the gap to the upper end. The holdout endpoints sit panel-mean 6.78 pp below the full-benchmark numbers and the lift narrows by −12 .58 pp, with the compression concentrated on the small or coder-specialised tail (Llama-3.1-8B and Qwen3-Coder-480B are most sensitive to non-template phrasing) while the 14 B/ 32 B Qwen2.5-Coder tier and Llama-3.1-70B retain most of the PCB lift. The result therefore transfers to operator-style queries, but with a measurable loss on the models most sensitive to phrasing rather than with uniform robustness across the panel. 
+
+Reasoning-tier check. Closed-source mid-tier APIs increasingly expose a separate “reasoning” mode in which the model performs an internal chain-of-thought before responding. Enabling reasoning costs an order of magnitude more per call than the no-tool regime used above, so a full-benchmark sweep is impractical; we instead probe two 23 Table 11: Naturalistic-query holdout versus the full 2,000 -item PowerCodeBench benchmark for the deployable open-weight panel ( ≥ 7B). The holdout is an 80 -item subset of human-authored naturalistic queries over the same scenarios as PowerCodeBench; the one-standard-error sampling band at n = 80 is approximately ±5pp. Holdout ( n = 80 ) PCB ( n = 2 ,000 ) ∆ FDRS–A Model A C+FDRS A C+FDRS Hold PCB Qwen2.5-Coder-7B 0.00 28.75 0.40 32.80 +28 .75 +32 .40                                                       
+
+> Llama-3.1-8B 1.25 20.00 0.50 36.30 +18 .75 +35 .80
+> Qwen2.5-Coder-14B 6.25 42.50 1.60 48.60 +36 .25 +47 .00
+> Qwen2.5-Coder-32B 7.50 42.50 3.80 52.75 +35 .00 +48 .95
+> Qwen3-Coder-Next 7.50 51.25 4.00 59.55 +43 .75 +55 .55
+> Llama-3.1-70B 15.00 61.25 5.00 57.45 +46 .25 +52 .45
+> GPT-OSS-120B 18.75 56.25 14.05 60.25 +37 .50 +46 .20
+> Llama-3.1-405B 30.00 66.25 13.45 68.70 +36 .25 +55 .25
+> Qwen3-Coder-480B 23.75 52.50 15.05 65.90 +28 .75 +50 .85
+> Panel mean 12.22 46.81 6.43 53.59 +34 .58 +47 .16
+
+reasoning-tier APIs (GPT-5.4-mini with reasoning_effort=high and DeepSeek-Reasoner) on a stratified 200 -item subset paired by item ID against the vanilla endpoints, where the ±3.5pp one-standard-error sampling band is enough to decide parity versus reversal. On this subset, GPT-5.4-mini-high reaches 68 .00% at C+FDRS and Llama-3.1-405B reaches 65 .50% , indistinguishable within sampling error; DeepSeek-Reasoner reaches 56 .00% , still 9.5pp below Llama-3.1-405B. The cross-vendor comparison therefore holds within the no-tool regime: enabling reasoning brings one probed API to parity with the strongest open-weight model rather than reversing the ranking. The intervention itself remains substantial under reasoning—the R0 →C+FDRS lift is +27 .50 pp on GPT-5.4-mini-high (versus +34 .50 pp vanilla) and +44 .00 pp on DeepSeek-Reasoner (versus +42 .00 pp on DeepSeek-V4-Flash)—so reasoning and boundary-aware intervention are complementary rather than substitutes. 
+
+# 8 Discussion 
+
+The experimental evidence in Section 7 addresses two practical questions for the on-premise grid-analysis scenario: API knowledge—rather than numerical reasoning alone—is the binding constraint on first-pass quality, and that constraint can be lifted at deployment time without weight modification across the deployable model tier we evaluate, with the sub-2B model retained only as a capacity-floor reference. Below we translate what this means for grid-analysis automation in practice and define what the paper does not measure. 
+
+## 8.1 Implications for Intelligent Energy Systems 
+
+The benchmark task families map directly onto operational analysis archetypes that grid operators face daily: routine power flow and DC power-flow checks, explicit-parameter multi-step screening sequences, three-phase short-circuit analysis used in protection coordination, SCADA-based state estimation, and multi-scenario sweeps central to contingency screening under high-penetration renewables. Two practical consequences follow on the accuracy axis; operational claims (total cost of ownership, latency, throughput, energy) are out of scope here, with the boundaries of the present evaluation set out in Section 8.2. 
+
+Selecting a deployable model. Choosing an LLM for a grid-analysis automation pipeline should not rely on a parameter-count or general-leaderboard proxy. The non-monotonic L3 pattern observed in Section 5.5—a 32 Bcode-specialised model outscoring a 70 B general-purpose model on the same API primitives—has a direct operational consequence: a domain-specific probe of the APIs a workflow actually uses is a better selection signal than scale alone. The L0–L3 probe suite released with this paper is designed to support that selection step, so that the model chosen for a deployment is the one whose knowledge boundary best matches the API surface the workflow relies on. 
+
+Workload-aware on-premise deployment. Once the API-knowledge bottleneck is lifted, the workload envelope reported in Section 7.3 maps each open-weight tier to the grid-analysis workloads it can reliably serve on-premise. Routine power flow and explicit-parameter sequential workflows are in range for the 14 B class under proactive injection alone; 32 B closes most of the explicit-parameter difficulty tier; 70 B– 120 B operates across the full benchmark inside the four-vendor mid-tier API accuracy range, with the 405 B– 480 B configurations covering the hardest cells. Because the method runs at deployment time without weight modification, an operator can match the local model tier to 24 this envelope on the accuracy axis rather than defaulting to either the largest available open-weight or a hosted API—a meaningful flexibility for utilities and research labs already required to serve on-premise for confidentiality, regulatory, or operating-cost reasons [ 6, 7], especially as renewable-integration analysis volume and diversity continue to grow [1, 29]. 
+
+## 8.2 Limitations and Future Work 
+
+Library and task-format scope. The benchmark currently covers only the pandapower library; extending to MATPOWER, OpenDSS, ANDES, or GridCal would require a backend-agnostic scenario schema and API documentation pipeline, and is a concrete next step for a multi-backend benchmark family [ 47 –49 ]. Within pandapower ,the benchmark is built from scalar-output executable tasks : each item produces a single numerical answer comparable against a reference value, which is what enables the matching tolerance and reactive value-error branch we report. This choice deliberately excludes full-report generation, multi-output table production, interactive scheduling decisions, and graphical analysis—all relevant to operator workflows but requiring different evaluation protocols. PowerCodeBench is also a controlled, schema-grounded set rather than a survey of operator query distributions; we address the latter directly with the 80 -item human-authored naturalistic-query holdout (Section 7.5), and larger holdouts collected from production workflows remain a natural extension. 
+
+Probing granularity. Probing and demand modelling are evaluated primarily at the level of API function identification . The intervention renderer already compresses L2 material into query-relevant call contracts and parameter summaries, but finer-grained parameter-level probing (e.g. asking the model to choose between valid and invalid parameter value ranges) may provide additional diagnostic resolution and enable still more targeted L2-level intervention. 
+
+Risk-score weighting. The risk score in Eq. (1) uses uniform L0–L3 weighting. A weight-sensitivity sweep (Appendix A.1) shows the method is robust to this choice—max R0 swing across uniform versus L3-emphasis settings is 1.30 pp full range on a three-model panel—but a principled re-weighting fitted against observed execution outcomes may further sharpen the model-side signal. 
+
+Minimum model-capacity threshold. The intervention has a lower bound on usable capacity: at the sub-2B scale (Qwen2.5-Coder-1.5B) the method recovers little more than the model’s already-tiny ceiling, with peak accuracy below 10% under the strongest configuration. We therefore report the 1.5B model only as a capacity-floor reference. The method targets the 7B-and-above tier, where demand-aware injection lifts a 0.4–15% R0 baseline to 33 –69% 
+
+Round-3 accuracy. 
+
+Closed-source API coverage. The closed-source evaluation covers four representative vendors (Anthropic Claude-Haiku-4-5, Google Gemini-2.5-Flash, OpenAI GPT-5.4-mini, DeepSeek-V4-Flash) on the same full 2,000 -item release, with two reasoning-tier APIs (GPT-5.4-mini-high and DeepSeek-Reasoner) probed on a stratified 200 -item subset (Section 7.5). Broader reasoning-tier coverage (Anthropic extended-thinking, Google thinking-mode) and larger reasoning samples remain a natural follow-up. 
+
+Transductive adaptation assumption. Role-frequency reweighting (Section 6.2) requires access to an unlabelled corpus of target-domain queries that is distributionally representative of the deployment scenario. No function-level labels are needed, but the assumption that such a corpus is available before the demand ranker is fitted is a mild form of transductive adaptation. We therefore report adapted recall alongside the unadapted baseline in Section 7.4, and the proactive R0 and reactive R3 endpoints under the unadapted ranker in Section 7.5, so that the main cross-condition gains do not silently depend on the adapted variant. 
+
+# 9 Conclusion 
+
+This paper diagnoses the dominant failure mode of LLM-based power-system code generation as an API-knowledge boundary problem rather than primarily a numerical-reasoning problem, and turns the diagnosis into a deployment-time intervention. Documentation-driven probing identifies each model’s per-API reliability profile; a query-side demand estimator predicts which APIs a natural-language query needs; a two-phase proactive–reactive loop then injects only the documentation layer the model and the task actually require. No model weights are modified, and the same pipeline applies to every model we evaluate. 25 End-to-end on a 2,000 -item executable benchmark, the intervention lifts every evaluated model from 7B parameters up to the 405 B– 480 B class and every mid-tier commercial API by 32 to 56 accuracy points. The deployment implication is structured by model scale and workload. On the full benchmark, the 70 B– 120 B open-weight class reaches the same accuracy range as the four-vendor mid-tier commercial API cohort, and the 405 B– 480 B configurations sit at or above the strongest mid-tier API. At smaller scales the lift remains workload-specific: the 14 B– 32 B class becomes competitive with mid-tier APIs on routine power-flow and DC power-flow analysis and on the explicit-parameter difficulty tier, while harder specialised tasks (three-phase short-circuit analysis, SCADA-based state estimation, multi-scenario sweeps) and semantic-grounded queries continue to favour the larger open-weight or hosted-API tiers. The targeted prompts recover the full-context accuracy plateau while using about 41% of the demand-only full-context prompt, so the gains are not simply the result of adding more context. For utility operators and energy-research labs already required to serve on-premise for data-confidentiality, regulatory, or operating-cost reasons, this reframes the deployment question into a workload-aware model-selection problem: the local model tier is matched to the grid-analysis workload envelope rather than defaulting to either the largest available open-weight or a hosted API. We report only the accuracy-side claim. Total cost of ownership, latency, throughput, and serving energy depend on hardware, quantisation, and the serving stack and are not measured here. Concrete next steps are to extend the benchmark to additional simulation backends (MATPOWER, OpenDSS, ANDES) and to evaluate production-collected query distributions. 
+
+# Acknowledgements 
+
+The authors acknowledge the use of resources provided by the Isambard-AI National AI Research Resource (AIRR). Isambard-AI is operated by the University of Bristol and is funded by the UK Government’s Department for Science, Innovation and Technology (DSIT) via UK Research and Innovation; and the Science and Technology Facilities Council [ST/AIRR/I-A-I/1023]. 
+
+# Declaration of Competing Interest 
+
+The authors declare that they have no known competing financial interests or personal relationships that could have appeared to influence the work reported in this paper. 
+
+# Data and Code Availability 
+
+The frozen PowerCodeBench benchmark ( 2,000 items with reference solutions and numerical ground truths) is publicly available at https://github.com/huiwxing/PowerCodeBench . The remaining artifacts—the L0–L3 probe suite (2,080 probes over 275 pandapower API entries), model-output records, routing logs, evaluation scripts, model-specific knowledge profiles, demand-predictor training data, and bootstrap confidence-interval scripts—together with the benchmark generator, probing pipeline, demand-modelling code, and intervention code, will be released in the same repository upon publication. All code is written in Python and relies only on open-source dependencies ( pandapower ,vLLM, scikit-learn, rank_bm25 ); no proprietary data or APIs are required to reproduce the open-weight panel results. The full reproducibility configuration—software versions, decoding parameters, random seeds, BM25 retrieval configuration, and demand-predictor training details—is in the Supplementary Material, Section S6. 
+
+# CRediT Authorship Contribution Statement 
+
+Hui Wu : Conceptualization, Methodology, Software, Investigation, Data curation, Formal analysis, Visualization, Writing – original draft. Xiaoyang Wang : Supervision, Methodology, Writing – review & editing. Zhong Fan :Supervision, Funding acquisition, Writing – review & editing. 
+
+# A Robustness checks 
+
+The split between this appendix and the Supplementary Material is deliberate: the appendix collects claim-critical robustness checks that directly support the main-manuscript claims, while the Supplementary Material houses engineering details, full per-model result tables, and reproducibility configuration. The three robustness checks below are: Appendix A.1 for risk-score weighting sensitivity (the uniform L0–L3 averaging in Eq. (1) is not a tuned choice); Appendix A.2 for the unadapted-versus-adapted demand-predictor ablation (the main gain does not rest on the 26 transductive role-frequency adaptation); and Appendix A.3 for per-cell multi-seed generation variance (cross-condition gaps are not seed-explained). Engineering details, full per-model results, and reproducibility configuration are in the Supplementary Material (Sections S1–S6). 
+
+## A.1 Risk-score weighting sensitivity 
+
+The risk score ρM (f ) in Eq. (1) averages the four L0–L3 probe scores uniformly. We test sensitivity by replacing the uniform weighting with two alternatives and re-running proactive condition C on three representative open-weight models: 
+
+Table A.1: Round-0 accuracy ( %) under three L0–L3 weighting configurations of the risk score ρM (f ) in Eq. (1): uniform 
+
+(0 .25 , 0.25 , 0.25 , 0.25) , mild-L3 (0 .20 , 0.25 , 0.20 , 0.35) , and L3-heavy (0 .0, 0.20 , 0.20 , 0.60) . “swing” is the half-range of the three values for that model. Model uniform mild-L3 L3-heavy swing Qwen2.5-Coder-32B 42.90 42.70 42.35 ±0.28 pp Llama-3.1-70B 38.20 38.15 39.05 ±0.45 pp Qwen3-Coder-480B 55.40 56.65 56.70 ±0.65 pp 
+
+Across three models and three weight settings spanning uniform through L3-heavy, the maximum full-range R0 change is 1.30 pp (half-range ±0.65 pp)—small relative to the +32 –56 pp main gains and comparable to the residual generation- and sampling-variability bands reported in Appendix A.3. The empirical support for the simple uniform weighting in Eq. (1) is therefore strong, and the main experiments throughout this paper use the uniform 0.25 
+
+weighting of Eq. (1). 
+
+## A.2 Demand-adaptation robustness 
+
+Role-frequency reweighting (Section 6.2) is the only component of our pipeline that consumes information from the target query distribution, so it is the natural choice for a transductive-adaptation sensitivity check. We re-run proactive condition C on the full 2,000 -item benchmark under the unadapted hybrid TF-IDF predictor (the same ranker trained without the role-frequency reweighting; recall@10 = 50 .5% on the benchmark-reference split), holding every other pipeline component fixed. Table A.2 reports the per-model Round-0 result accuracies alongside the no-injection baseline ( A), the vanilla BM25-RAG baseline ( R), and the adapted-predictor configuration ( Cadapt ) used everywhere else in the paper. 
+
+Table A.2: End-to-end Round-0 ablation of role-frequency reweighting for proactive condition C on the open-weight panel (full 2,000 -item benchmark, result accuracy in %). A, R, and Cadapt are reproduced from the proactive ablation table in Section 7.4; Cunadapt replaces the adapted demand predictor with the same hybrid TF-IDF model trained without role-frequency reweighting, leaving every other pipeline component unchanged. Model A R Cunadapt Cadapt ∆ (adapt −unadapt) Qwen2.5-Coder-1.5B 0.00 0.20 6.35 8.10 +1 .75 
+
+Qwen2.5-Coder-7B 0.40 3.75 22.25 23.15 +0 .90 
+
+Llama-3.1-8B 0.50 1.20 9.30 20.10 +10 .80 
+
+Qwen2.5-Coder-14B 1.60 6.85 27.55 34.20 +6 .65 
+
+Qwen2.5-Coder-32B 3.80 11.10 42.70 42.70 +0 .00 
+
+Llama-3.1-70B 5.00 10.45 39.85 38.15 −1.70 
+
+GPT-OSS-120B 14.05 21.20 42.95 45.65 +2 .70 
+
+Qwen3-Coder-Next 4.00 11.15 45.75 47.20 +1 .45 
+
+Llama-3.1-405B 13.45 20.85 46.70 51.45 +4 .75 
+
+Qwen3-Coder-480B 15.05 23.10 52.35 56.65 +4 .30 
+
+Mean 5.79 10.98 33.58 36.73 +3 .16 
+
+Even with the unadapted demand predictor, condition C lifts mean Round-0 accuracy by +27 .79 pp over no injection (A) and by +22 .59 pp over the vanilla BM25-RAG baseline ( R), with both differences positive for every model in the panel ( ≥ +6 .15 pp on the smallest open-weight model). Role-frequency reweighting contributes the additional +3 .16 pp on top of the unadapted lift, i.e. about 10% of the full adapted-C lift over A (+30 .95 pp). At the reactive endpoint the residual effect attenuates further: full C+FDRS reaches 46 .98% panel-mean under the unadapted predictor versus 27 49 .19% adapted, and Llama-3.1-405B under the unadapted predictor still reaches 65 .65% at C+FDRS—above the strongest mid-tier API. The main cross-condition lifts therefore do not rest on the adaptation step. 
+
+## A.3 Multi-seed generation variance 
+
+Table A.3 reports the per-cell sample standard deviation of C+FDRS Round-3 accuracy across 10 vLLM generation seeds on the open-weight panel. 
+
+Table A.3: Per-cell run-to-run variance across 10 vLLM generation seeds for every open-weight panel cell on a stratified 
+
+400 -item subset (sample_seed= 22 , strata=difficulty; C+FDRS Round-3 endpoint; greedy decoding T = 0 , seed only affects batched tie-breaking). Closed-source APIs are not included because their generation seed is not exposed in the vendor APIs. Model mean (%) sample std (pp) range (%) spread (pp) Qwen2.5-Coder-1.5B 10.00 ±0.00 [10 .00 , 10 .00] 0.00 Qwen2.5-Coder-7B 31.32 ±0.12 [31 .25 , 31 .50] 0.25 Llama-3.1-8B 36.80 ±0.33 [36 .25 , 37 .25] 1.00 Qwen2.5-Coder-14B 48.10 ±0.13 [48 .00 , 48 .25] 0.25 Qwen2.5-Coder-32B 49.85 ±0.13 [49 .75 , 50 .00] 0.25 Llama-3.1-70B 55.98 ±0.34 [55 .50 , 56 .50] 1.00 GPT-OSS-120B 58.35 ±0.18 [58 .25 , 58 .75] 0.50 Qwen3-Coder-Next 58.27 ±0.85 [57 .00 , 59 .75] 2.75 Llama-3.1-405B 66.28 ±0.22 [66 .00 , 66 .75] 0.75 Qwen3-Coder-480B 64.80 ±0.65 [63 .50 , 65 .50] 2.00 
+
+Panel median — ±0.20 — 0.75 
+
+Panel max — ±0.85 — 2.75 
+
+28 Supplementary Material Overview 
+
+This Supplementary Material accompanies the main manuscript and provides engineering-level details, full result tables, and reproducibility configuration that are referenced from the main paper but kept separate to preserve narrative flow. All section, table, figure, and equation numbers in this document are prefixed with “ S”. Contents: 
+
+Section S1 Benchmark engineering details: the five-stage construction pipeline, generator configuration, semantic-leakage audit, and extended D1–D4 examples. 
+
+Section S2 Probe corpus engineering details: per-level mechanics for the L0–L3 probes, distractor construction, auxiliary diagnostics, and 275-entry API-coverage analysis. 
+
+Section S3 Intervention engineering details: full layer-constant matrices, query anchor and boundary-card construc-tion rules, reactive-router exception classes, value-error AST trace and output-format sub-path, and reactive fix prompt template. 
+
+Section S4 Demand modelling details: six estimator derivations, the role-frequency reweighting algorithm, the recall@ k curves of the six variants, and the before/after recall table for the reweighting ablation. 
+
+Section S5 Full experimental results: per-model fix-round trajectories, per-difficulty R3 tables, the model-scale scatter, and the per-model reactive ablation under proactive base C. 
+
+Section S6 Reproducibility configuration: software versions, hardware, decoding parameters, BM25 retriever setup, demand-predictor training, and random seeds. The per-call inference cost log is bundled with the released artifact rather than reproduced here. The main manuscript cites these sections as “see Supplementary Material, Section S1” and similar. 29 S1 Benchmark engineering details 
+
+## S1.1 Generator configuration and release diagnostics 
+
+The frozen release is produced from a generator configuration of 39 networks (30 fast/small, 9 large transmission), 8
+
+single-step and 7 multi-step task families, 29 modification operators, 12 rule-grounded semantic setup rules, 6 D4 compound wrappers, and a validated natural-language template expansion mechanism; task-specific feasibility filters and uniqueness checks reject failed or duplicate instantiations before freezing. Table S1 summarises the protocol parameters and quality diagnostics of the frozen 2,000 -item release used in all experiments. 
+
+Table S1: Frozen PowerCodeBench generation protocol and quality diagnostics. Ratios describe the intended generation protocol; item-level counts reflect the final validated benchmark used in all experiments. Aspect Evidence in the frozen benchmark release Difficulty protocol 2,000 items with a fixed D1/D2/D3/D4 split of 30%/30%/20%/20% (600/600/400/400). Task coverage 15 task families: 8 single-step analysis families and 7 multi-step workflow families, including OPF, contingency analysis, time series, state estimation, short-circuit studies, sequential diagnosis, and PF–SC composition. Query coverage 17 answer patterns, including scalar point values, extrema, argmax/argmin, totals, threshold checks, time-series values, and multi-step workflow outputs. Network coverage 39 standard pandapower networks. The sampling pool explicitly includes both fast/s-mall networks and large transmission grids (PEGASE, RTE, Polish, GB, and Oberrhein cases); task-specific feasibility filters determine the final per-network item counts. Natural-language diversity Template-based rendering with LLM-expanded paraphrases; the active single-task and multi-task template keys used by the frozen release have at least 9 surface variants per key after validation. Semantic setup coverage 12 rule-grounded setup rules spanning demand response, line outage and reinforcement, generator trip/redispatch, shunt support/absorption, and transformer tap adjustment. Ground-truth types 1,848 float targets, 108 integer targets, and 44 Boolean targets, all extracted from executable reference solutions. Uniqueness diagnostics 2,000/2,000 unique item IDs, 1,999/2,000 unique natural-language queries, and 1,995/2,000 unique scenario serialisations. Semantic diagnostics 800/800 D3–D4 items contain the intended rule-grounded semantic phrase; release diagnostics scan the semantic setup span for explicit target indices or hidden numeric values before freezing the benchmark. 
+
+## S1.2 Ground-truth quality control and semantic-setup audit 
+
+Quality control applies three checks: (i) the reference code executes without exception; (ii) the simulation converges (power-flow, OPF) or completes (short-circuit, state estimation); and (iii) the extracted value lies within physically plausible ranges. The semantic-setup audit (already framed in the main manuscript’s PowerCodeBench section) operationally verifies that every D3/D4 query contains the intended rule-grounded phrase and separately scans only the semantic-setup span for explicit indices or numeric values; flagged items are tagged for regeneration in future releases. 
+
+## S1.3 Five-stage construction pipeline 
+
+The 2,000 items are produced by the five-stage pipeline summarised in Figure S1. 
+
+(1) Template design. Each task family has a parameterised code template with slots for the target network, modification target, analysis parameters, and result-extraction expression (D1/D3 share the 8 single-step families; D2/D4 share the 7 multi-step families). (2) Controlled instantiation. Sampling uses seed 42 at the ratios reported in Section S1.1. (3) Reference execution. The instantiated Python reference is run against a deterministic network snapshot; the printed scalar is captured as g∗. (4) Validation and rejection. Items are rejected on reference-code failure, simulation non-convergence, unparseable scalar output, duplicate ID, or failed exact re-execution. (5) Semantic diagnostics. D3/D4 queries pass the semantic-phrase / explicit-parameter audit of Section S1.2. 30 Validation Gates       
+
+> Deterministic validation ;reject on failure
+> Explicit
+> (doc +numerical )
+> Semantic
+> (inferred)
+> Single -
+> step
+> Multi -
+> step
+
+## D1 explicit 
+
+> single -step
+
+## D3 
+
+> semantic
+> single -step
+
+## D2 
+
+> explicit
+> multi -step
+
+## D4 
+
+> semantic
+> multi -step
+> Sampling & Balancing
+> (stratified)
+> cover all
+> networks
+> cover all
+> task
+> families
+> diverse
+> operator
+> combinations
+> balanced
+> across
+> D1 -D4
+
+Reference code executes 
+
+> no syntax/runtime errors;
+> inputs well -formed
+> Accept
+> Reject
+
+Simulation feasible 
+
+> power flow / OPF / SC
+> converges and feasible
+
+Scalar result extracted 
+
+> well -defined objective or
+> quantity obtained
+
+Exactre -execution consistency   
+
+> rerun reference →identical
+> scalar (tolerance = 0)
+
+Controlled Instantiation 
+
+> Generate tasks across workflow structure
+> (rows) and specification mode (columns)
+> Accept
+> Accept
+> Accept
+> Reject
+> Reject
+> Reject
+
+Input Bank  
+
+> (Parameter Space)
+
+39 pandapower 
+
+networks 
+
+15 task fam ilies 
+
+29 modification 
+
+operators 
+
+12 rule -grounded 
+
+semantic setup rules 
+
+Natural -language 
+
+template bank 
+
+Release Version 
+
+2,000 -item benchmark    
+
+> D1=600 D2=600 D3=400 D4=400
+
+Figure S1: PowerCodeBench generation and validation pipeline. A configurable design space of networks, task families, modification operators, semantic setup rules, compound wrappers, and natural-language templates is sampled into four difficulty levels. Candidate items are accepted only after reference-code execution, simulation validity, scalar extraction, re-execution consistency, and semantic-setup auditing, yielding the frozen 2,000 -item benchmark release used in the experiments. 
+
+# S2 Probe corpus engineering details 
+
+## S2.1 Probe corpus construction protocol 
+
+Table S2 summarises the L0–L3 probe corpus construction protocol and coverage diagnostics for the frozen probe release used in all experiments. 
+
+Table S2: L0–L3 probe corpus construction protocol and coverage diagnostics for the frozen probe release. Aspect Evidence in the frozen probe corpus Source corpus 275 deduplicated public pandapower documentation entries, comprising 262 entries typed as functions and 13 callable classes; 274 entries include at least one example snippet available for L3-oriented injection. Total probes 2,080 unique probe IDs across four layers. L0 recognition 550 four-choice probes: 275 find_real probes and 275 find_fake probes. L1 recall 275 free-response JSON probes for callable path and required-parameter recall. L2 comprehension 980 multiple-choice probes instantiated from non-empty documentation fields: 275 function-purpose, 535 parameter-meaning, and 170 return-information questions. L3 application 275 minimal executable-code probes, one per function; execution success is the primary metric, with API-validity and target-function usage recorded as auxiliary diagnostics. These probes do not require example snippets. Benchmark linkage AST auditing of PowerCodeBench reference code verifies that the probed corpus covers the core API primitives used by benchmark solutions; non-probed calls are generic language/library accessors or network-fixture loaders. 
+
+31 S2.2 Per-level probe construction mechanics 
+
+L0 (Recognition). For each function f , two complementary four-choice probes are constructed. (i) find_real :given a short list containing f mixed with plausible-sounding fabricated API names, the model must identify the real entry. (ii) find_fake : given a list of real function names with one fabricated entry inserted, the model must flag the fabrication. The L0 score for f is the mean accuracy across the paired probes (550 in total; 275 per direction). The two-sided design tests both positive recognition (can the model locate known APIs under distractors?) and negative discrimination (does the model hallucinate when invited to?), which single-direction probes conflate. 
+
+L1–L3 mechanics. L1 uses required-parameter Jaccard as the primary score (path correctness is an auxiliary diagnostic). L2 partitions the 980 probes into 275 func_purpose , 535 param_meaning , and 170 return_info multiple-choice items (Table S2). L3 records execution success as the primary score and additionally logs API validity rate and target-function usage, linking code-generation correctness to tool/function-calling evaluation [16, 22, 32, 33]. 
+
+# S3 Intervention engineering details 
+
+This section provides the engineering-level rationale and implementation detail referenced from the main manuscript’s intervention section. 
+
+## S3.1 Layer constants: values and rationale 
+
+The deficit floor τℓ(f, q ) in the main manuscript’s injection score lifts the deficit term in three deterministic high-confidence cases—a query-anchored function match, a high-confidence demand prediction, and a boundary-card hit—so the candidate remains in contention even when the probe deficit alone is small: 
+
+τℓ(f, q ) = max  τ anchor  
+
+> ℓ
+
+⊮[f ∈ anchor( q)] , τ intf  
+
+> ℓ
+
+⊮[ ˆd(f, q ) ≥ d∗],τ bnd  
+
+> ℓ
+
+⊮[f ∈ boundary( q)] , (S1) with d∗ = 0 .85 the high-confidence demand threshold, anchor (q) the set of functions matched by high-precision query anchors (network-loader names, construction-API substrings), and boundary (q) the set of functions tied to a boundary-card contract triggered by q. The τ constants above, together with the base and cap constants of the task-need multiplier aℓ(q) (Section S3.2 below), take the following values throughout the paper: 
+
+ℓ L0 L1 L2 L3 
+
+τ anchor  
+
+> ℓ
+
+0.45 0.40 0 0
+
+τ intf  
+
+> ℓ
+
+0.16 0.14 0 0
+
+τ bnd  
+
+> ℓ
+
+0 0.22 0.18 0base ℓ 0.70 0.95 0.70 0.75 cap ℓ 1.05 1.15 1.30 1.40 
+
+(S2) These constants encode layer-role priors and token-budget arithmetic and are not tuned against PowerCodeBench accuracy. The per-layer thresholds in τℓ(f, q ) reflect the empirical role each documentation layer plays. L0 car-ries the highest anchor threshold ( τ anchor L0 = 0 .45 ) because its probe most directly predicts hallucination-induced 
+
+AttributeError ; L1 receives must-inject floors at both anchor and boundary triggers ( τ anchor L1 = 0 .40 , τ bnd L1 = 0 .22 )because L1 (signature recall) is the single layer with the strongest cross-model rank correlation against downstream R0 ( ρs = 0 .93 on n = 10 models), so signature-level guidance is preserved even when probe scores saturate; L3 is given the largest task-pressure ceiling ( cap L3 = 1 .40 ) because L3 is the most directly intervention-actionable axis and least predictable from model size alone; L2 thresholds are deliberately small since L2 saturates on capable models and is admitted only when its per-layer score Iℓ ranks above competing candidates in the budget, not via a forced floor. The weight-sensitivity sweep reported in the main paper’s Appendix A.1 confirms only a 1.30 pp full-range R0 change across uniform versus L3-emphasis weight settings. 
+
+## S3.2 Layer-need rules: signal-to-increment mapping 
+
+The task-need multiplier aℓ(q) in the main manuscript’s injection score is a query-derived depth adjustment. It starts from base ℓ (above) and accumulates layer-specific increments triggered by query-derived binary signals σi(q), then is clipped to the per-layer ceiling cap ℓ:
+
+aℓ(q) = min 
+
+
+
+base ℓ + X
+
+> i
+
+∆(ℓ) 
+
+> i
+
+⊮[σi(q) = 1] , cap ℓ
+
+
+
+. (S3) 32 All signals are computed from q alone via regex or intent matching; none read the reference code, benchmark difficulty labels, or any execution feedback. The signal set comprises: workflow_intent (the query matches a known target-library workflow such as time-series, short-circuit, OPF, contingency, DC power flow); sequential (temporal connectives such as “first”, “then”, “after”, and “rerun”); conditional (branching or threshold language such as “if”, “whether”, “check”, “above”, and “below”); aggregation (reduction language such as “max”, “count”, “total”, “average”, or “which index”); multi_modification (≥ 2 modification verbs such as “set”, “scale”, “add”, “remove”, or “connect” within the query); constructor_or_executor_role (the demand candidate set includes at least one network-construction or analysis-execution function); and long_query (≥ 35 tokens). The increment rule ∆(ℓ) 
+
+> i
+
+assigns the following layer-specific bumps: trigger ∆(L0) ∆(L1) ∆(L2) ∆(L3) 
+
+constructor_or_executor_role 0 0.10 0 0
+
+conditional ∨ aggregation 0 0 0.22 0
+
+workflow_intent 0 0 0.10 0.22 
+
+sequential 0 0 0 0.22 
+
+multi_modification 0 0 0.10 0.12 
+
+long_query 0 0 0.05 0.05 
+
+(S4) The number of L3 examples actually retained by the greedy selector described in the main manuscript is additionally capped at 1, 2, or 3 depending on the count of active procedural triggers (workflow / sequential / conditional / aggregation / multi-modification), preventing a small number of long L3 snippets from exhausting the token budget on procedurally light queries. The canonical implementation is in knowledge_injection/proactive.py .
+
+## S3.3 Query anchors, intent-consistency filter, and DataFrame boundary cards 
+
+The library-knowledge artifact and its role relative to the probe-driven decision signal are defined in the main manuscript’s intervention framework overview; here we document the three artifact classes that the proactive injector consumes beyond per-function snippets. 
+
+Query anchors. High-precision query anchors fire on explicit network-loader and construction-API substrings in q;matched functions trigger the τ anchor  
+
+> ℓ
+
+component of the deficit floor (Eq. (S1)), which in turn enters the injection score in the main manuscript. 
+
+Intent-consistency filter. A consistency filter over mutually exclusive workflow executors (time-series, short-circuit, contingency, OPF, DC power flow) prevents a recall-oriented demand predictor from promoting a low-confidence tail candidate purely because that API is risky for the target model. The exclusion sets are generated from API-intent fields in the spec rather than written as benchmark-specific rules. 
+
+DataFrame boundary cards. For recurrent API-boundary conventions not tied to a single function (DataFrame-based element and result-table schemas), boundary cards are injected when the query asks to modify element tables or read result columns. Cards state general contracts such as using net.res_line[’loading_percent’] rather than hallucinated result attributes, and net.bus[’min_vm_pu’] / net.bus[’max_vm_pu’] rather than invented network attributes. 
+
+## S3.4 Reactive code-error router: exception-class clusters 
+
+The three code-error routes defined in the main manuscript use the following exception-class clusters as triggers, in order of precedence: 
+
+• basic_fix : SyntaxError , IndentationError , timeouts, and any exception that carries no concrete API symbol on the failing line. 
+
+• api_doc : AttributeError , TypeError , NameError , ImportError , IndexError , plus contract-style failures such as ValueError , KeyError , and LoadflowNotConverged , that implicate a concrete API on the failing line. The augmenting snippet is a compact L2 call contract (purpose, required and error-relevant parameters, return information). Higher-level snippets suppress redundant lower-level snippets for the same function so the prompt receives only the layers needed to explain the failure. 
+
+• boundary_contract : when the failing line lies on a known API boundary but no single function is implicated (DataFrame schema access on a result table, time-series profile indexing, OPF cost extraction, or short-circuit 33 result reading), the prompt receives a short boundary card from the library-knowledge artifact rather than per-API documentation. The routing depends on the exception class and the symbols on the failing line, not on benchmark-specific patterns. 
+
+## S3.5 Value-error branch: AST trace and function-output contracts 
+
+AST execution trace. The trace extracted by the numerical-mismatch sub-path consists of: the ordered list of target-library API calls, the table writes performed before each analysis, the result-table reads appearing in the final 
+
+print expression, and a small set of code-only invariants on the final arithmetic. Interface contracts drawn from the library-knowledge artifact are attached for the APIs and tables that the trace actually touches. 
+
+Function-output contracts. For each analysis routine encountered in the trace ( runpp , rundcpp , runopp , calc_sc ,
+
+run_contingency , run_timeseries , estimate , runpp_3ph ), we inject a function-output contract that names the canonical net.res_* columns where the routine writes its results and explicitly warns against reading aggregated metrics from the function’s Python return value or any intermediate dictionary. This contract is library-derived, encoded as one curated mapping in the library-knowledge artifact, and decoupled from any benchmark item. This contract together with the output-format repair sub-path account for FDRS-only gains; the two sub-paths are not separately ablated in the main manuscript. 
+
+## S3.6 Value-error branch: output-format sub-path 
+
+When the printed payload could not be parsed as the expected scalar (multi-line text, labelled f-strings, or array dumps), trace-grounded contracts are not actionable. The output-format sub-path therefore emits a short library-agnostic instruction stating that the last line must print exactly one numeric scalar value with no labels, no f-string wrapping, no multi-line text, and no DataFrame, Series, or array dumps, while leaving the analysis logic untouched. 
+
+## S3.7 Reactive fix prompt template 
+
+The reactive fix prompt is assembled as a structured user-turn template preserving the original task, the previous code, the failure description, and any router-selected documentation, in a “ task / previous code / failure / relevant doc / instruction ” block layout. The system prompt is retained unchanged across fix rounds, so the model’s role description is not re-specified. When the router returns a basic-fix decision, the relevant-doc block is empty and the prompt reduces to the standard error-feedback baseline. 
+
+# S4 Demand modelling supplementary 
+
+This section documents the augmented corpus construction and PowerCodeBench overlap audit, the detailed estimator formulations, and the role-frequency reweighting pseudocode for the scenario-adaptive demand model summarised in the main manuscript. 
+
+## S4.1 Augmented corpus construction and overlap audit 
+
+The supervision corpus is constructed by API traversal. For each documented function we synthesise a small set of exemplar Python snippets that exercise the function, then generate natural-language questions for each snippet via an LLM-assisted paraphrase step seeded from the reference docstring. Triples are retained only if the reference code executes to completion and its function list is verified by AST parsing. Distinct paraphrases of the same seed form a base group : a base group of size ≈ 12 samples shares the same underlying task, while the per-sample function-label multiset draws from the smaller vocabulary of labelled functions. After filtering to functions present in the documentation corpus F, the final corpus contains 6,312 samples in 511 base groups referencing 125 distinct API functions as ground-truth labels. Train/test splits are performed at the group level so that paraphrases of the same seed never straddle the split. This corpus is supervision for the demand predictor only and is never used as a benchmark; PowerCodeBench remains the held-out downstream evaluation target. 
+
+Function-label overlap with PowerCodeBench. The augmented corpus references 125 distinct API functions as positive labels; PowerCodeBench’s reference solutions reference 50 distinct functions; the intersection is 35 , a function-set Jaccard of 0.25 . Of the 50 benchmark-side functions, 35 (70% ) appear in augmented training as positive labels, while 15 (30% ) are bench-only. The 15 bench-only items are dominated by large transmission-grid network 34 loaders ( case1354pegase , case6470rte , case9241pegase , case_illinois200 , GBnetwork , etc.) used to instantiate the test grids; they are not the analysis routines whose recall the demand predictor learns. 
+
+Query-text overlap with PowerCodeBench. At the query-text level, the augmented and benchmark vocabularies share 350 tokens out of 1,822 in their union (token Jaccard 0.19 ). On 500 randomly sampled benchmark queries paired against 5,000 augmented queries, the per-query best-match Jaccard against augmented queries is mean 0.25 ,max 0.41 , with zero queries above 0.5. No benchmark query is a paraphrase or near-clone of any augmented query under this metric, supporting the claim that the augmented corpus and PowerCodeBench are independent draws from the shared API surface rather than a contaminated train/test pair. Raw overlap statistics are saved alongside the codebase for independent verification. 
+
+## S4.2 Six demand-estimator detailed formulations 
+
+(1) Zero-shot TF-IDF. Retrieves the top-k functions by TF-IDF cosine similarity between the query and each function’s documentation string. No training required. 
+
+(2) Pairwise TF-IDF + LogReg. Trains a logistic regression classifier on (query, function-card) pairs, where positive pairs come from the augmented dataset and negatives are sampled randomly (ratio 4:1). At inference, ranks all functions by their predicted positive probability. 
+
+(3) Hybrid TF-IDF. Linearly combines the zero-shot TF-IDF score with the supervised pairwise score, with the mixing weight α selected automatically to maximise recall@10 on a held-out augmented validation split. 
+
+(4) Zero-shot SBERT. Encodes query and function documentation with a sentence-BERT model (all-MiniLM-L6-v2 ) and ranks by embedding cosine similarity. 
+
+(5) Zero-shot Cross-Encoder. Uses the zero-shot TF-IDF ranker for candidate generation and reranks the top candidates with a cross-encoder ( cross-encoder/ms-marco-MiniLM-L-12-v2 ). 
+
+(6) Hybrid Cross-Encoder. Combines the hybrid TF-IDF ranker (for candidate generation) with the same cross-encoder reranker. The mixing weight α is selected automatically. 
+
+## S4.3 Role-frequency reweighting 
+
+The 275 documented entry points partition naturally into a small number of roles: network construction, network loading, analysis execution, time-series control, plotting, and other (utilities, diagnostics). The augmented training corpus is dominated by construction-oriented queries (“create an empty network, add buses, attach loads. . . ”) while PowerCodeBench queries are operational (load a standard test case, apply modifications, run analysis). In real deployments the shift sharpens further: transmission planners issue contingency-heavy queries, distribution operators issue fault-analysis queries, research teams issue parameter-sweep queries; collecting per-scenario function-level supervision is impractical, which motivates the unlabelled-target reweighting that follows. Let ˆpS (r) denote the role share in the labelled source corpus Dtrain and ˆpT (r) the role share predicted on QT by the unadapted ranker. For each training pair (qi, f i, y i) with fi in role r(fi) we set 
+
+wi = min ˆpT
+
+ r(fi)
+
+ˆpS
+
+ r(fi) , w max 
+
+!
+
+, (S5) followed by a global normalisation wi ← wi/ max j wj so that the largest weight equals 1. The cap wmax = 3 guards against roles that are nearly absent in training (where the raw ratio would explode and dominate the fit). The adaptation only re-fits the supervised pairwise component of the hybrid pipeline using weighted logistic regression (Algorithm 1); the TF-IDF vocabulary, the zero-shot similarity branch, and the cross-encoder reranker are frozen. 35 −80 −60 −40 −20 0 20 40 60 80 
+
+> t-SNE 1
+> −60
+> −40
+> −20
+> 0
+> 20
+> 40
+> 60
+> t-SNE 2
+> Augmented training (n=800)
+> PowerCodeBench (n=2000)
+
+Figure S2: Query distribution shift between the augmented training corpus and PowerCodeBench (t-SNE projection of TF-IDF embeddings). The two distributions occupy distinct regions, explaining the degraded transfer of supervised demand models to the benchmark query distribution. 1 3 5 10 20     
+
+> Top-k
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Recall@ k
+> (a) Aug-test split
+> Hybrid TF-IDF (proposed)
+> Zero-shot TF-IDF
+> Zero-shot SBERT
+> Pairwise TF-IDF + LogReg
+> Hybrid cross-encoder
+> 13510 20
+> Top-k
+> (b) Bench-ref split
+
+Figure S3: Recall@ k curves for six demand modelling variants on (a) augmented held-out split and (b) benchmark-reference diagnostic split. Curves flatten near k = 10 , confirming that this is the effective operating point for API document injection. 
+
+Table S3: Recall@ 10 before and after role-frequency reweighting toward the deployment query distribution. “Aug-test” is the held-out augmented split (training distribution); “Bench-ref” is the PowerCodeBench benchmark-reference diagnostic split. The adaptation trades a small amount of in-distribution recall for a large gain on the deployment distribution, exactly the asymmetry expected from a covariate-shift correction. Demand model Aug-test recall@10 Bench-ref recall@10 before after ∆ before after ∆
+
+Pairwise TF-IDF + LogReg 0.401 0.307 −9.5 0.256 0.489 +23 .3
+
+Hybrid TF-IDF (proposed) 0.528 0.471 −5.7 0.505 0.718 +21 .4
+
+∆ in pp. 
+
+36 Algorithm 1 Scenario-adaptive role-frequency reweighting for the pairwise demand ranker.  
+
+> 1:
+
+Input: labelled training set Dtrain = {(qi, f i, y i)}, unlabelled target queries QT , role assignment r : F → R 
+
+derived from the function cards.  
+
+> 2:
+
+Compute source role distribution ˆpS (r) ← training share of role r over Dtrain . 
+
+> 3:
+
+Compute target role distribution ˆpT (r) ← predicted share of role r over QT (via the unadapted ranker’s top-k
+
+outputs).  
+
+> 4:
+
+for each role r ∈ R do  
+
+> 5:
+
+˜w(r) ← min  ˆpT (r)/ˆpS (r), w max 
+
+ ▷ cap wmax = 3 to stabilise training  
+
+> 6:
+
+end for  
+
+> 7:
+
+Normalise w(r) ← ˜w(r)/ max r′ ˜w(r′). 
+
+> 8:
+
+Assign wi ← w(r(fi)) to each training pair.  
+
+> 9:
+
+Refit pairwise logistic regression with sample weights {wi}; all other pipeline components remain frozen.  
+
+> 10:
+
+Output: scenario-adapted pairwise ranker. 
+
+## S4.4 Query distribution shift visualisation S4.5 Recall@ k curves for the six demand estimators S4.6 Role-frequency reweighting effect on demand recall S4.7 Cross-style held-out generalisation of the adaptation 
+
+To check whether role-frequency reweighting learns a transferable API-role pattern rather than fitting the specific query distribution used for adaptation, we partition PowerCodeBench by query style (D1+D2: 1,200 explicit-parameter items; D3+D4: 800 semantic-grounded items) and run the adaptation in both directions, fitting the role weights on one half’s queries and evaluating recall@ 10 on the held-out half. Fitting on D1+D2 yields +18 .48 pp recall@ 10 lift in-distribution and +17 .96 pp on the held-out D3+D4 split; the reverse direction (fit on D3+D4, evaluate on D1+D2) yields +12 .24 pp in-distribution and +12 .28 pp held-out. Held-out lifts match in-distribution lifts to within 0.04 –0.52 pp in both directions, so the role-frequency reweighting learns an API-role pattern that transfers across operator-style phrasing differences rather than fitting one specific query distribution. 
+
+# S5 Full experimental results 
+
+This section reports per-model, per-difficulty, and per-condition breakdowns that the main manuscript summarises in compact form. 
+
+## S5.1 Per-model fix-round trajectory (R0–R3) without intervention 
+
+Table S4 reports the full Round-0 to Round-3 accuracy trajectory across the ten open-weight models without any intervention, supporting the bottleneck and front-loading observations in the main manuscript’s fix-round progression analysis. 
+
+## S5.2 Per-difficulty accuracy at R3 (without intervention) 
+
+Table S5 reports the Round-3 accuracy broken down by difficulty level (D1–D4) and by accuracy-conditioned-on-execution (Acc |Exec), supporting the per-difficulty discussion in the main manuscript’s fix-round progression analysis. Llama-3.1-8B reaches zero accuracy on both D3 and D4: its R3 execution rate on these splits is below 2% , so the zero outcome reflects an inability to produce executable semantic-grounded code at this model scale rather than a statistical artifact of the 400 -item subsets. 
+
+## S5.3 Model scale vs. R0 performance scatter S5.4 Per-model reactive ablation under proactive base C 
+
+Table S6 reports the per-model breakdown at the deployment-recommended configuration (proactive base C, reactive FDRS), together with the three pairwise ablation deltas that isolate each design component. The cross-model mean is repeated as the bottom row and matches the C-row of the reactive master table in the main manuscript. 37 Table S4: Accuracy progression across fix rounds (R0–R3) on PowerCodeBench, no intervention applied. ∆ denotes the total R0 →R3 uplift attributable to fix rounds. These numbers are the target for improvement by reactive correction. 
+
+Model R0 R1 R2 R3 ∆(R0 →R3) 
+
+Sub-10B local models 
+
+Qwen2.5-Coder-1.5B 0.000 0.000 0.000 0.000 +0.000 Qwen2.5-Coder-7B 0.004 0.004 0.004 0.005 +0.001 Llama-3.1-8B 0.005 0.007 0.011 0.013 +0.008 
+
+Mid-size local models 
+
+Qwen2.5-Coder-14B 0.016 0.032 0.037 0.038 +0.022 Qwen2.5-Coder-32B 0.038 0.086 0.102 0.112 +0.074 
+
+Large local models 
+
+Qwen3-Coder-Next 0.040 0.052 0.059 0.070 +0.030 Llama-3.1-70B 0.050 0.085 0.129 0.150 +0.100 GPT-OSS-120B 0.141 0.194 0.217 0.229 +0.088 Llama-3.1-405B 0.135 0.217 0.263 0.285 +0.151 Qwen3-Coder-480B 0.150 0.220 0.253 0.265 +0.115 
+
+Table S5: Per-difficulty accuracy at R3 (after up to 3 fix rounds), no intervention applied. Acc: overall accuracy; Acc |Exec: accuracy conditioned on execution. Acc (R3) Acc |Exec (R3) Model D1 D2 D3 D4 D1 D2 D3 D4 Qwen2.5-Coder-7B 0.003 0.008 0.003 0.007 0.087 0.122 0.048 0.150 Qwen2.5-Coder-14B 0.063 0.037 0.025 0.018 0.469 0.234 0.135 0.090 Qwen2.5-Coder-32B 0.077 0.178 0.062 0.113 0.438 0.637 0.362 0.409 Llama-3.1-8B 0.028 0.013 0.000 0.000 0.425 0.471 0.000 0.000 Llama-3.1-70B 0.155 0.182 0.115 0.130 0.699 0.509 0.465 0.356 Llama-3.1-405B 0.298 0.308 0.287 0.230 0.694 0.551 0.628 0.371 GPT-OSS-120B 0.243 0.255 0.225 0.172 0.676 0.577 0.570 0.373 Qwen3-Coder-480B 0.297 0.278 0.282 0.180 0.739 0.570 0.571 0.319 Qwen3-Coder-Next 0.097 0.072 0.050 0.045 0.682 0.453 0.364 0.305 
+
+Table S6: Per-model accuracy ( %) at Round-3 under proactive base C, with ablation deltas in percentage points. ∆ FD–FX = does adding always-doc help over plain fix? ∆ FDR–FD = does demand-routed injection match always-doc at lower documentation cost? ∆ FDRS–FDR = how much does the value-error branch contribute on top of FDR? 
+
+Model C+FX C+FD C+FDR C+FDRS ∆
+
+FD–FX 
+
+∆
+
+FDR–FD 
+
+∆
+
+FDRS–FDR Qwen2.5-Coder-1.5B 9.90 9.40 9.55 9.60 −0.50 +0 .15 +0 .05 
+
+Qwen2.5-Coder-7B 29.55 31.30 31.25 32.80 +1 .75 −0.05 +1 .55 
+
+Qwen2.5-Coder-14B 42.55 46.45 46.10 48.60 +3 .90 −0.35 +2 .50 
+
+Qwen2.5-Coder-32B 50.75 52.20 52.75 52.75 +1 .45 +0 .55 +0 .00 
+
+Llama-3.1-8B 28.95 31.05 34.40 36.30 +2 .10 +3 .35 +1 .90 
+
+Llama-3.1-70B 49.00 51.00 51.45 57.45 +2 .00 +0 .45 +6 .00 
+
+Llama-3.1-405B 64.75 66.45 64.75 68.70 +1 .70 −1.70 +3 .95 
+
+Qwen3-Coder-Next 55.00 57.85 57.95 59.55 +2 .85 +0 .10 +1 .60 
+
+Qwen3-Coder-480B 63.80 65.45 63.75 65.90 +1 .65 −1.70 +2 .15 
+
+GPT-OSS-120B 58.40 59.80 58.35 60.25 +1 .40 −1.45 +1 .90 
+
+Mean 45.27 47.10 47.03 49.19 +1 .83 −0.07 +2 .16 
+
+38 10 0 10 1 10 2
+
+Parameter count (B, log scale) 
+
+0
+
+10 
+
+20 
+
+30 
+
+40 
+
+50 
+
+60 
+
+70 
+
+80  
+
+> Result accuracy (%)
+> 1.5B
+> 7B
+> 8B
+> 14B
+> 32B
+> 70B
+> Next 120B
+> 405B
+> 480B
+> mid-tier API
+> C+FDRS range
+> (52--64%)
+
+A baseline (R0) 
+
+C proactive (R0) 
+
+C+FDRS full method (R3) 
+
+family 
+
+Qwen 
+
+Llama 
+
+GPT-OSS Figure S4: Result accuracy vs. model parameter count (log scale) at three pipeline endpoints: the A baseline R0 (grey), proactive C R0 (blue), and full-method C+FDRS R3 (red). Each series is fit with its own log-linear trend. The pink band marks the mid-tier-API C+FDRS range ( 52 –64% ) as an external reference. Within an endpoint, models of different families fall on opposite sides of the trend (e.g. Llama-3.1-70B sits below Qwen2.5-Coder-32B at C R0), motivating per-model boundary profiling rather than scale-based selection. 
+
+# S6 Reproducibility configuration 
+
+This section consolidates fixed configuration values used across the experiments reported in the main manuscript. The verbatim system prompt, full BM25 tokeniser, and per-condition prompt templates are included in the released artifact rather than reproduced here. 
+
+## S6.1 Decoding and execution 
+
+A single system prompt describes the task (write Python that uses pandapower to answer the query and print one scalar on the final line), specifies the import alias and the sandbox import policy, and is held constant across all conditions; only the user-turn content varies. Decoding is greedy (temperature 0) for every model. Open-weight models are served via vLLM at BF16 precision (no quantisation) on NVIDIA H100 80 GB GPUs (tensor parallelism scaled to model size) with sampling seed 22 , max new tokens 4,096 for first-pass generation, 2,048 for fix rounds, and a 60 s sandbox execution timeout with a 75 s parent watchdog that recovers stuck workers. Closed-source API calls use the same maximum new tokens at temperature 0 (where the vendor exposes it), with reasoning-mode features and tool/function calling disabled to keep the four-vendor panel within the mid-tier deployment regime evaluated in the main manuscript’s cross-vendor evaluation. HuggingFace identifiers for the open-weight panel and the closed-source API model names are listed in the main manuscript’s experimental setup and are not duplicated here. 39 S6.2 Vanilla BM25 (condition R) configuration 
+
+The vanilla BM25 retrieval baseline (condition R) indexes the same 275 -entry documentation corpus used by the L0–L3 probe generator and the demand predictor. Each documented entry is flattened to “name + full path + category + signature + description + parameter names and descriptions + return information” (the examples field is excluded so that BM25 is not biased toward construction-heavy demonstration patterns) and tokenised with a regular-expression identifier tokeniser ( [A-Za-z][A-Za-z0-9_]* , lower-cased, preserving snake_case ). Retrieval uses 
+
+rank_bm25.BM25Okapi at the library defaults (k1= 1.5, b =0.75 , ε =0.25) , and emits the top-10 functions, which are then rendered through the same per-function snippet builder used by C and X (no boundary cards, no query anchors, no model-side risk gating). 
+
+## S6.3 Demand predictor training and adaptation 
+
+The pairwise component of the hybrid demand model is trained on (query , function-card ) pairs from the augmented corpus described in the main manuscript using scikit-learn L2 logistic regression at the 4 : 1 negative–positive sampling ratio of the main manuscript’s demand models section. Train/test splits are group-level (over the 511 base groups, seed 42 ). The hybrid mixing weight α is auto-selected on the held-out Aug-test split by maximising recall@ 10 
+
+over the grid α ∈ { 0.0, 0.1, . . . , 1.0}; the selected value is α = 0 .5 for both the unadapted and the role-reweighted variants reported in the main manuscript’s demand-results and adaptation tables. Role-frequency reweighting follows the algorithm documented in Section S4 with cap wmax = 3 , post-cap normalisation by max j wj , and a role taxonomy of |R| = 6 (network construction, network loading, analysis execution, time-series control, plotting, other); the target distribution QT is the PowerCodeBench natural-language query pool. The remaining demand-model variants (zero-shot SBERT, zero-shot cross-encoder, hybrid cross-encoder) follow the sentence-transformers defaults documented alongside the artifact and are not part of the deployed C pipeline. 
+
+## S6.4 Software versions 
+
+The frozen experimental environment uses Python 3.11 , pandapower 3.4.0 (frozen for the experimental window), NumPy 2.2.6, pandas 2.3.3, vllm 0.15 .1, transformers 4.57 .6, sentence-transformers 5.2.3, scikit-learn 1.6.0,and rank_bm25 (BM25Okapi library defaults). Vendor SDKs ( anthropic , google-generativeai , openai , and the DeepSeek-compatible OpenAI client) are pinned in the released environment specification. 
+
+## S6.5 Randomness 
+
+All experiments use deterministic decoding and fixed seeds: the PowerCodeBench item generator uses seed 42 
+
+(Section S1.3); the demand predictor train/test group split uses seed 42 ; vLLM open-weight inference uses sampling seed 22 at temperature 0; closed-source API calls use temperature 0 where supported. 
+
+# References 
+
+[1] Priya L. Donti and J. Zico Kolter. Machine learning for sustainable energy systems. Annual Review of Environment and Resources , 46:719–747, 2021. doi: 10.1146/annurev-environ-020220-061831. [2] Fabian Heymann, Hugo Quest, Tania B. Lopez Garcia, Christophe Ballif, and Matthias Galus. Reviewing 40 years of artificial intelligence applied to power systems—a taxonomic perspective. Energy and AI , 15:100322, 2024. doi: 10.1016/j.egyai.2023.100322. [3] Chenghao Huang, Siyang Li, Ruohong Liu, Hao Wang, and Yize Chen. Large foundation models for power systems. In 2024 IEEE Power & Energy Society General Meeting (PESGM) , pages 1–5, 2024. doi: 10.1109/ PESGM51994.2024.10688670. [4] Subir Majumder, Lin Dong, Fatemeh Doudi, Yuting Cai, Chao Tian, Dileep Kalathil, Kevin Ding, Anupam A. Thatte, Na Li, and Le Xie. Exploring the capabilities and limitations of large language models in the electric energy sector. Joule , 8(6):1544–1549, 2024. doi: 10.1016/j.joule.2024.05.009. [5] Leon Thurner, Alexander Scheidler, Florian Schäfer, Jan-Hendrik Menke, Julian Dollichon, Friederike Meier, Steffen Meinecke, and Martin Braun. pandapower—an open-source python tool for convenient modeling, analysis, and optimization of electric power systems. IEEE Transactions on Power Systems , 33(6):6510–6521, 2018. doi: 10.1109/TPWRS.2018.2829021. 40 [6] Felipe Henao, Robert Edgell, Ambar Sharma, and Jeffrey Olney. AI in power systems: A systematic review of key matters of concern. Energy Informatics , 8:76, 2025. doi: 10.1186/s42162-025-00529-1. [7] Yuheng Cheng, Xiyuan Zhou, Huan Zhao, Gaoqi Liang, Fushuan Wen, and Junhua Zhao. Secure and trustworthy energy systems: A four-layer threat model and defense-in-depth framework. Energy , 344:140027, 2026. doi: 10.1016/j.energy.2026.140027. [8] Zeyu Leo Liu, Shrey Pandit, Xi Ye, Eunsol Choi, and Greg Durrett. CodeUpdateArena: Benchmarking knowledge editing on API updates. arXiv preprint arXiv:2407.06249 , 2024. [9] Sachit Kuhar, Wasi Uddin Ahmad, Zijian Wang, Nihal Jain, Haifeng Qian, Baishakhi Ray, Murali Krishna Ramanathan, Xiaofei Ma, and Anoop Deoras. LibEvolutionEval: A benchmark and study for version-specific code generation. In Proceedings of the 2025 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies (NAACL-HLT) , 2025. arXiv:2412.04478. [10] Terry Yue Zhuo, Junda He, Jiamou Sun, Zhenchang Xing, David Lo, John Grundy, and Xiaoning Du. Identifying and mitigating API misuse in large language models. arXiv preprint arXiv:2503.22821 , 2025. [11] Yujia Chen, Mingyu Chen, Cuiyun Gao, Zhihan Jiang, Zhongqi Li, and Yuchi Ma. Towards mitigating API hallucination in code generated by LLMs with hierarchical dependency aware. arXiv preprint arXiv:2505.05057 ,2025. [12] Shishir G. Patil, Tianjun Zhang, Xin Wang, and Joseph E. Gonzalez. Gorilla: Large language model connected with massive APIs. arXiv preprint arXiv:2305.15334 , 2023. [13] Hongwei Jin, Kibaek Kim, and Jonghwan Kwon. Gridmind: Llms-powered agents for power system analysis and operations. arXiv preprint arXiv:2509.02494 , 2025. [14] Qian Zhang and Le Xie. Poweragent: A road map toward agentic intelligence in power systems: Foundation model, model context protocol, and workflow. IEEE Power & Energy Magazine , 23(5):93–101, 2025. doi: 10.1109/MPE.2025.3579718. [15] Yuheng Cheng, Huan Zhao, Xiyuan Zhou, Junhua Zhao, Yuji Cao, Chao Yang, and Xinlei Cai. A large language model for advanced power dispatch. Scientific Reports , 15:8925, 2025. doi: 10.1038/s41598-025-91940-x. [16] Mark Chen, Jerry Tworek, Heewoo Jun, Qiming Yuan, Henrique Ponde de Oliveira Pinto, Jared Kaplan, Harri Edwards, Yuri Burda, Nicholas Joseph, Greg Brockman, Alex Ray, Raul Puri, Gretchen Krueger, Michael Petrov, Heidy Khlaaf, Girish Sastry, Pamela Mishkin, Brooke Chan, Scott Gray, Nick Ryder, Mikhail Pavlov, Alethea Power, Lukasz Kaiser, Mohammad Bavarian, Clemens Winter, Philippe Tillet, Felipe Petroski Such, Dave Cummings, Matthias Plappert, Fotios Chantzis, Elizabeth Barnes, Ariel Herbert-Voss, William Hebgen Guss, Alex Nichol, Alex Paino, Nikolas Tezak, Jie Tang, Igor Babuschkin, Suchir Balaji, Shantanu Jain, William Saunders, Christopher Hesse, Andrew N. Carr, Jan Leike, Joshua Achiam, Vedant Misra, Evan Morikawa, Alec Radford, Matthew Knight, Miles Brundage, Mira Murati, Katie Mayer, Peter Welinder, Bob McGrew, Dario Amodei, Sam McCandlish, Ilya Sutskever, and Wojciech Zaremba. Evaluating large language models trained on code. arXiv preprint arXiv:2107.03374 , 2021. [17] Jacob Austin, Augustus Odena, Maxwell Nye, Maarten Bosma, Henryk Michalewski, David Dohan, Ellen Jiang, Carrie Cai, Michael Terry, Quoc Le, and Charles Sutton. Program synthesis with large language models. arXiv preprint arXiv:2108.07732 , 2021. [18] Dan Hendrycks, Steven Basart, Saurav Kadavath, Mantas Mazeika, Akul Arora, Ethan Guo, Collin Burns, Samir Puranik, Horace He, Dawn Song, and Jacob Steinhardt. Measuring coding challenge competence with APPS. In 
+
+Advances in Neural Information Processing Systems , volume 34, pages 20389–20403, 2021. [19] Carlos E. Jimenez, John Yang, Alexander Wettig, Shunyu Yao, Kexin Pei, Ofir Press, and Karthik Narasimhan. SWE-bench: Can language models resolve real-world github issues? In International Conference on Learning Representations , 2024. [20] Yuhang Lai, Chengxi Li, Yiming Wang, Tianyi Zhang, Ruiqi Zhong, Luke Zettlemoyer, Wen-tau Yih, Daniel Fried, Sida Wang, and Tao Yu. DS-1000: A natural and reliable benchmark for data science code generation. In 
+
+Proceedings of the 40th International Conference on Machine Learning , pages 18319–18345, 2023. 41 [21] Minyang Tian, Luyu Gao, Shizhuo Dylan Zhang, Xinan Chen, Cunwei Fan, Xuefei Guo, Roland Haas, Pan Ji, Kittithat Krongchon, Yao Li, Shengyan Liu, et al. Scicode: A research coding benchmark curated by scientists. In Advances in Neural Information Processing Systems , 2024. [22] Terry Yue Zhuo, Minh Chien Vu, Jenny Chim, Han Hu, Wenhao Yu, Ratnadira Widyasari, Imam Nur Bani Yusuf, Haolan Zhan, Junda He, Indraneil Paul, et al. Bigcodebench: Benchmarking code generation with diverse function calls and complex instructions. In International Conference on Learning Representations , 2025. [23] Xiyuan Zhou, Huan Zhao, Yuheng Cheng, Yuji Cao, Gaoqi Liang, Guolong Liu, Wenxuan Liu, Yan Xu, and Junhua Zhao. Elecbench: A power dispatch evaluation benchmark for large language models. arXiv preprint arXiv:2407.05365 , 2024. [24] Shuangshuang Jin and Shrirang G. Abhyankar. Chatgrid: Power grid visualization empowered by large language model. In 2024 IEEE Workshop on Energy Data Visualization (EnergyVis) , pages 12–17, 2024. doi: 10.1109/ EnergyVis63885.2024.00007. [25] Rodrigo S. Bonadia, Fernanda C. L. Trindade, Walmir Freitas, and Bala Venkatesh. On the potential of ChatGPT to generate distribution systems for load flow studies using OpenDSS. IEEE Transactions on Power Systems , 38 (6):5965–5968, 2023. doi: 10.1109/TPWRS.2023.3315543. [26] Mengshuo Jia, Zeyu Cui, and Gabriela Hug. Enabling large language models to perform power system simulations with previously unseen tools: A case of Daline. arXiv preprint arXiv:2406.17215 , 2024. [27] Mengshuo Jia, Zeyu Cui, and Gabriela Hug. Enhancing LLMs for power system simulations: A feedback-driven multi-agent framework. arXiv preprint arXiv:2411.16707 , 2024. [28] Gabriel Antonesi, Tudor Cioara, Ionut Anghel, Vasilis Michalakopoulos, Elissaios Sarmas, and Liana Toderean. A systematic review of transformers and large language models in the energy sector: Towards agentic digital twins. Applied Energy , 401:126670, 2025. doi: 10.1016/j.apenergy.2025.126670. [29] Chaobo Zhang, Jian Zhang, Jie Lu, and Yang Zhao. Large language models meet energy systems: Opportunities, challenges, and future perspectives. Applied Energy , 403:127076, 2026. doi: 10.1016/j.apenergy.2025.127076. [30] Timo Schick, Jane Dwivedi-Yu, Roberto Dessì, Roberta Raileanu, Maria Lomeli, Luke Zettlemoyer, Nicola Cancedda, and Thomas Scialom. Toolformer: Language models can teach themselves to use tools. In Advances in Neural Information Processing Systems , volume 36, 2023. [31] Shunyu Yao, Jeffrey Zhao, Dian Yu, Nan Du, Izhak Shafran, Karthik Narasimhan, and Yuan Cao. ReAct: Synergizing reasoning and acting in language models. In International Conference on Learning Representations ,2023. [32] Minghao Li, Yingxiu Zhao, Bowen Yu, Feifan Song, Hangyu Li, Haiyang Yu, Zhoujun Li, Fei Huang, and Yongbin Li. API-bank: A comprehensive benchmark for tool-augmented LLMs. arXiv preprint arXiv:2304.08244 , 2023. [33] Yujia Qin, Shihao Liang, Yining Ye, Kunlun Zhu, Lan Yan, Yaxi Lu, Yankai Lin, Xin Cong, Xiangru Tang, Bill Qian, Sihan Zhao, Lauren Hong, Runchu Tian, Ruobing Xie, Jie Zhou, Mark Gerstein, Dahai Li, Zhiyuan Liu, and Maosong Sun. Toolllm: Facilitating large language models to master 16000+ real-world APIs. arXiv preprint arXiv:2307.16789 , 2023. [34] Weiwen Liu, Xu Huang, Xingshan Zeng, Xinlong Hao, Shuai Yu, Dexun Li, Shuai Wang, Weinan Gan, Zhengying Liu, Yuanqing Yu, et al. Toolace: Winning the points of LLM function calling. In International Conference on Learning Representations , 2025. [35] Patrick Lewis, Ethan Perez, Aleksandra Piktus, Fabio Petroni, Vladimir Karpukhin, Naman Goyal, Heinrich Küttler, Mike Lewis, Wen-tau Yih, Tim Rocktäschel, Sebastian Riedel, and Douwe Kiela. Retrieval-augmented generation for knowledge-intensive NLP tasks. In Advances in Neural Information Processing Systems , volume 33, 2020. [36] Fengji Zhang, Bei Chen, Yue Zhang, Jacky Keung, Jin Liu, Daoguang Zan, Yi Mao, Jian-Guang Lou, and Weizhu Chen. Repocoder: Repository-level code completion through iterative retrieval and generation. In Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing , 2023. 42 [37] Soyeong Jeong, Jinheon Baek, Sukmin Cho, Sung Ju Hwang, and Jong C. Park. Adaptive-RAG: Learning to adapt retrieval-augmented large language models through question complexity. In Proceedings of the 2024 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies (Volume 1: Long Papers) , pages 7036–7050, 2024. doi: 10.18653/v1/2024.naacl-long.389. [38] Xinyun Chen, Maxwell Lin, Nathanael Schärli, and Denny Zhou. Teaching large language models to self-debug. 
+
+arXiv preprint arXiv:2304.05128 , 2023. [39] Aman Madaan, Niket Tandon, Prakhar Gupta, Skyler Hallinan, Luyu Gao, Sarah Wiegreffe, Uri Alon, Nouha Dziri, Shrimai Prabhumoye, Yiming Yang, Shashank Gupta, Bodhisattwa Prasad Majumder, Katherine Hermann, Sean Welleck, Amir Yazdanbakhsh, and Peter Clark. Self-refine: Iterative refinement with self-feedback. In 
+
+Advances in Neural Information Processing Systems , volume 36, 2023. [40] Lorin W. Anderson, David R. Krathwohl, Peter W. Airasian, Kathleen A. Cruikshank, Richard E. Mayer, Paul R. Pintrich, James Raths, and Merlin C. Wittrock. A Taxonomy for Learning, Teaching, and Assessing: A Revision of Bloom’s Taxonomy of Educational Objectives . Longman, New York, 2001. [41] Scott G. Paris, Marjorie Y. Lipson, and Karen K. Wixson. Becoming a strategic reader. Contemporary Educational Psychology , 8(3):293–316, 1983. doi: 10.1016/0361-476X(83)90018-8. [42] Jared Kaplan, Sam McCandlish, Tom Henighan, Tom B. Brown, Benjamin Chess, Rewon Child, Scott Gray, Alec Radford, Jeffrey Wu, and Dario Amodei. Scaling laws for neural language models. arXiv preprint arXiv:2001.08361 ,2020. [43] Jason Wei, Yi Tay, Rishi Bommasani, Colin Raffel, Barret Zoph, Sebastian Borgeaud, Dani Yogatama, Maarten Bosma, Denny Zhou, Donald Metzler, Ed H. Chi, Tatsunori Hashimoto, Oriol Vinyals, Percy Liang, Jeff Dean, and William Fedus. Emergent abilities of large language models. Transactions on Machine Learning Research ,2022. [44] Stephen Robertson and Hugo Zaragoza. The probabilistic relevance framework: BM25 and beyond. Foundations and Trends in Information Retrieval , 3(4):333–389, 2009. doi: 10.1561/1500000019. [45] Nils Reimers and Iryna Gurevych. Sentence-BERT: Sentence embeddings using siamese BERT-networks. In 
+
+Proceedings of the 2019 Conference on Empirical Methods in Natural Language Processing and the 9th International Joint Conference on Natural Language Processing , pages 3982–3992, 2019. [46] Jiayuan Huang, Alexander J. Smola, Arthur Gretton, Karsten M. Borgwardt, and Bernhard Schölkopf. Correcting sample selection bias by unlabeled data. In Advances in Neural Information Processing Systems , volume 19, pages 601–608, 2007. [47] Ray D. Zimmerman, Carlos E. Murillo-Sánchez, and Robert J. Thomas. Matpower: Steady-state operations, planning, and analysis tools for power systems research and education. IEEE Transactions on Power Systems , 26 (1):12–19, 2011. doi: 10.1109/TPWRS.2010.2051168. [48] Roger C. Dugan and Thomas E. McDermott. An open source platform for collaborating on smart grid research. In 2011 IEEE Power and Energy Society General Meeting , pages 1–7, 2011. doi: 10.1109/PES.2011.6039829. [49] Hantao Cui, Fangxing Li, and Kevin Tomsovic. Hybrid symbolic-numeric framework for power system modeling and analysis. IEEE Transactions on Power Systems , 36(2):1373–1384, 2021. doi: 10.1109/TPWRS.2020.3017019. 43

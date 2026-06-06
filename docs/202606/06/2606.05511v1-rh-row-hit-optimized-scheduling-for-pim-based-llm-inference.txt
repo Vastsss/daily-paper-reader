@@ -1,0 +1,234 @@
+Title: RH+: Row-Hit-Optimized Scheduling for PIM-based LLM Inference
+
+URL Source: https://arxiv.org/pdf/2606.05511v1
+
+Published Time: Fri, 05 Jun 2026 00:23:52 GMT
+
+Number of Pages: 5
+
+Markdown Content:
+# RH+: Row-Hit-Optimized Scheduling for PIM-based LLM Inference 
+
+Yongchan Jung ∗, Shafayat Mowla Anik †, Byeong Kil Lee †, and Jeeho Ryoo ∗∗Fairleigh Dickinson University , Vancouver, BC, Canada 
+
+†University of Colorado Colorado Springs , Colorado Springs, CO, USA Emails: y.jung@student.fdu.edu, sanik@uccs.edu, blee@uccs.edu, j.ryoo@fdu.edu 
+
+Abstract —Large language model inference on processing-in-memory (PIM) architectures promises to break the memory wall by performing multiply-accumulate (MAC) operations di-rectly within HBM3 DRAM banks. Prior work identifies the power constraint timing parameter nCCDAB as the primary performance bottleneck and optimizes scheduling accordingly. We demonstrate that for GEMV operations that dominate autoregressive decoding, the DRAM row cycle time ( nRC ) is 10 to 11 times larger than nCCDAB . Consequently, nCCDAB is entirely masked, rendering prior nCCDAB -focused optimizations ineffective for these workloads. The root cause is inherited host-centric address interleaving, which forces every all-bank MAC command into a different DRAM row. We propose RH+ scheduling, a simple stride change that keeps 32 consecutive MAC operations within the same row. Cycle-accurate simulation across four LLM workloads shows that RH+ delivers 8–12 × speedup, over 74% energy reduction, and up to 52 × EDP improvement. 
+
+Index Terms —Processing-in-memory, HBM3, DRAM row cycle time, LLM inference, energy-delay product 
+
+I. I NTRODUCTION 
+
+Large language models (LLMs) have scaled from hundreds of millions to hundreds of billions of parameters in just a few years [1], [11]–[13]. While training these models remains compute-bound, serving them at low batch sizes tells a dif-ferent story. During autoregressive decoding, each generated token requires reading the full weight matrix for every linear layer, yet performs only a single matrix-vector multiplication (GEMV) per layer. This memory-bound nature has motivated processing-in-memory (PIM) architectures that place compute units directly within the DRAM die, eliminating the costly data movement that conventional accelerators must endure [8], [9]. HBM3-PIM extends this idea to high-bandwidth memory stacks, enabling all-bank multiply-accumulate (MAC AB) op-erations that activate compute across all 1024 banks simulta-neously [4] as shown in Fig. 1(a). Recent PIM-based LLM inference work [3], [5] focuses on the power constraint timing parameter nCCDAB , treating it as the primary performance bottleneck and scheduling around it. We observe, however, that a larger and previously overlooked bottleneck exists. As Fig. 1(b) shows, the DRAM row cycle time nRC is 10 to 11 times larger than nCCDAB 
+
+across all HBM3 speed grades, completely masking the power constraint. The root cause, detailed in §II, is a host-centric 
+
+Yongchan Jung and Shafayat Mowla Anik are graduate students. DRAM Die DRAM Die Ch0 Ch1 pCH1 pCH0 pCH0 pCH1 TSVs PHY           
+
+> Bank �Group1
+> Bank1 Bank0 Bank3 Bank2 Bank1 Bank0 Bank3 Bank2 GEMV/SoftMax Buffer Bank1 Bank0 Bank3 Bank2
+> Bank �Group0
+> Bank Group7 . . .
+> Memory Cell Array
+> Row Buffer DeMuX Column Decoder Processing unit (PU) Mux Bank
+> Column Mux Adder Tree Result Output
+> PU
+> Data From Global Buffer Data from Memory Array Logic Die HBM3
+> Logic Die
+> (a) HBM3-PIM architecture with per-bank PU and GM/SM buffer. (b) nRC vs nCCDAB across 5 speed grades 4.8 5.2 5.6 6.0 6.4
+
+HBM3 Speed Grade (Gbps)      
+
+> 0
+> 20
+> 40
+> 60
+> 80 Timing (tCK)
+> 10× 10× 11× 11× 11× nRC (row cycle) nCCDAB (power)
+
+Fig. 1. HBM3-PIM bank architecture and nRC vs. nCCDAB across five HBM3 speed grades [4]. 
+
+address interleaving stride that forces every MAC AB into a different DRAM row. We propose RH+ scheduling , which changes the MAC AB address stride from 64 columns to 1 column, enabling 32 consecutive row hits per activate-precharge cycle. This paper makes three contributions: 
+
+• We identify nRC , not nCCDAB , as the true GEMV bottleneck in HBM3-PIM inference, showing that the power constraint is entirely masked by row management overhead. 
+
+• We propose RH+ scheduling, a stride change that converts every MAC from a row miss into a row hit, yielding an analytical speedup of 8.1–10.8 ×.
+
+• We validate RH+ end-to-end with cycle-accurate Ra-mulator 2.0 simulation [10] across four LLM models, demonstrating 8.25–11.88 × speedup, 74.5–77.1% energy reduction, and 32.4–52.0 × EDP improvement. 
+
+> arXiv:2606.05511v1 [cs.ET] 3 Jun 2026 C31
+
+... C0 C1 R4 R2 R3 R1 R0 M1 M2 M0 Row Miss +64 cols Row Miss +64 cols ROW MISS Problem : MAC_AB Stride (64 cols) > DRAM Row Size (32 cols) 
+
+> Memory Access Result : Every MAC lands in a different row
+> 0% Row Hit Rate (worst case).
+> DRAM Row Size: 32 columns (1024B) 12
+
+Fig. 2. Baseline stride-64 row addressing. Each MAC AB lands in a different row, resulting in 0% row hit rate. 
+
+II. B ACKGROUND 
+
+HBM3-PIM Architecture: An HBM3-PIM stack consists of 16 channels, each containing 2 pseudo-channels and 2 ranks. Each rank is organized into 4 bank groups of 4 banks, yielding 1024 banks per stack [4]. As shown in Fig. 1(a), every bank contains a processing unit (PU) capable of executing MAC operations on data resident in that bank’s DRAM arrays. The all-bank MAC command (MAC AB) activates PUs across all banks simultaneously for data-parallel GEMV execution. Additional PIM commands handle inter-bank data movement and aggregation, including WR GB (write to global buffer, 4 tCK), MV SB (move via shared buffer, 4 tCK), and reduction operations (MV GB, SFM). 
+
+DRAM Row Management: As illustrated in Fig. 1(a), DRAM arrays are organized into rows and columns. Before any computation, the target row must be activated (ACT), which copies the row contents into the sense amplifier (row buffer). After the operation completes, the row must be precharged 
+
+(PRE) to restore the bitlines. The minimum time from one ACT to the next on the same bank is the row cycle time, nRC .Across HBM3 speed grades ranging from 4.8 to 6.4 Gbps, nRC 
+
+spans 60 to 77 tCK [4]. 
+
+Power Constraint (nCCDAB): To limit simultaneous switch-ing current across all banks, the HBM3-PIM specification defines nCCDAB as the minimum interval between consecu-tive MAC AB commands. Under the power-constrained (PC) mode, nCCDAB ranges from 6 to 7 tCK across speed grades. Systems with sufficient power delivery and thermal headroom may operate in non-power-constrained (NPC) mode, which relaxes nCCDAB to 4 tCK for higher throughput. 
+
+DRAM Row Addressing and Bank-Rotation Stride: Standard HBM address interleaving maps consecutive cache-line ad-dresses across different banks to maximize memory bus uti-lization for host-side access. This interleaving produces a per-bank address stride of 64 columns (2048 B), meaning that consecutive addresses mapping to the same bank are 64 columns apart. Prior PIM work [5] inherits this mapping for MAC AB commands without modification. Fig. 2 illustrates the consequence. Each DRAM row holds 32 columns (C0–C31, 1024 B). The first MAC command M0 accesses a column in row R0. Because the stride is 64 columns, the next command M1 lands 64 columns later, which skips entirely past R1 and into R2. The third command M2 advances another 64 columns into R4. Every MAC therefore lands in (nCCDAB) 
+
+> RH+ PIM Mechanism RH+ PIM Speedup
+> C31
+
+... C0 C1 R2 R1 R0 nRC=63tCK ACT PRE Saved Cycles ... MAC ACT MAC 6tCK Memory Array View -Baseline (Stride = 64 columns) (Every MAC = ROW MISS )Memory Array View Row-Hit (Stride = 1 column) (ROW HITS )32 MACs: 32 x nRC = 2016 tCK 
+
+> C31
+
+... C0 C1 R2 R1 R0 M1 M2 M3 M4 ... M0 PRE 32 MACs 6tCK ... MAC ACT At 5.2 Gbps (PC) [nCCDAB = 6; nRC=63] (nCCDAB) 32 MACs: nRC + 31 x nCCDAB= 249 tCK      
+
+> At 5.2 Gbps (NPC) [nCCDAB = 4; nRC=61] 32 MACs: nRC + 31 x nCCDAB= 185 tCK
+> M0 M1 Repeated Row Cycle(THRASHING) Baseline Memory Access: Large Stride (0% Row Hits) PRE ACT PRE MAC MAC MAC MAC
+
+Fig. 3. RH+ mechanism (top) and timing-level speedup (bottom) at the 5.2 Gbps speed grade. 
+
+a different row, forcing a full ACT-PRE cycle each time and yielding a 0% row hit rate. Since MAC AB operates entirely within each bank and data never traverses the memory bus, this stride provides no benefit for PIM yet forces every MAC into a different row. III. T HE nRC BOTTLENECK & RH+ O PTIMIZATION 
+
+A. GEMV Dominance in Decode 
+
+In autoregressive LLM decoding, each token generation requires a full forward pass through every transformer layer. At batch size 1, each layer performs GEMV operations for the QKV projection, output projection, and two feed-forward layers. These linear layers account for the vast majority of decode compute, with prior work reporting that GEMV operations consume over 95% of per-token latency [3], [5]. Our cycle-accurate simulation also confirms that compute operations consume 90+% of total cycles across all model configurations, while rearrangement (data movement between buffers) contributes a negligible fraction. The fundamental inefficiency lies in how each MAC AB command interacts with the DRAM row buffer. In the baseline configuration, every MAC AB triggers a full row cycle: activate the target row (ACT), perform the computation over nCCDAB = 6 tCK, then precharge the bank (PRE). The entire sequence takes 
+
+nRC = 63 tCK at 5.2 Gbps, yielding a MAC duty cycle of only 
+
+6/63 = 9 .5% .
+
+B. Power Constraint Is Irrelevant for GEMV 
+
+Since every MAC AB incurs the full nRC penalty (Sec-tion II), nCCDAB is entirely masked by row management. Even if nCCDAB were reduced to zero, GEMV latency would remain unchanged. In HBM3-PIM, the 16-channel interleaving architecture means that MAC AB commands cycle through 16 channels before returning to the same channel, creating a natural inter-command gap of 16 tCK per channel. This gap exceeds nCCDAB at all speed grades (6–7 tCK in PC, 4 tCK 128/2K     
+
+> 2K/128
+> 2K/2K
+> 128/2K
+> 2K/128
+> 2K/2K
+> 128/2K
+> 2K/128
+> 2K/2K
+> 128/2K
+> 2K/128
+> 2K/2K 6
+> 8
+> 10
+> 12
+> Relative Speedup
+> (higher better)
+> GPT-175B LLAMA-65B MT-530B OPT-66B
+> Batch=1
+> Batch=4 Fig. 4. End-to-end speedup of RH+ over baseline.
+
+in NPC). As a result, PC and NPC modes produce identical 
+
+cycle counts and energy consumption for baseline GEMV. Our kernel measurements at 5.2 Gbps confirm this: both modes yield exactly 221K cycles for a GPT-175B QKV operation (M ×K = 4608 ×12288 projection weight matrix). 
+
+C. RH+ Scheduling 
+
+Our key observation is that if consecutive MAC AB com-mands stayed within the same DRAM row, the costly ACT-PRE cycle would be amortized across multiple operations. RH+ scheduling achieves this by changing the MAC AB address stride from 64 columns to 1 column. Fig. 3 illustrates the full mechanism and its performance impact. In the memory array view (Fig. 3, top), the left side recaps the baseline stride-64 row-miss pattern from Fig. 2. The right side shows RH+ with stride-1: M0, M1, M2, M3, M4, and subsequent MACs all access consecutive columns C0, C1, C2, . . . within the same row R0. Because a single DRAM row holds 32 columns, RH+ keeps all 32 MAC AB commands within one row before the next ACT-PRE cycle is needed. In the timing comparison (Fig. 3, bottom), the baseline repeats the full ACT-MAC-PRE cycle for each MAC, costing 32 × nRC = 2016 tCK. Under RH+, only a single ACT is issued at the start, the 32 MACs fire back-to-back at the nCCDAB rate, and a single PRE closes the row at the end. The saved cycles are highlighted in red. The total drops to nRC + 31 × nCCDAB = 249 tCK in PC and 185 tCK in NPC. IV. M ETHODOLOGY 
+
+We extend the AttAcc simulator [5], which models HBM3-PIM command scheduling and end-to-end LLM inference, with Ramulator 2.0 [10] for cycle-accurate DRAM timing with per-command-type cycle and energy tracking. The energy model follows the IDD-based DRAMPower methodology [2], decomposing total energy into four components. Compute energy accounts for MAC AB operations. Rearrangement energy covers data movement commands such as WR GB, MV SB, MV GB, and SFM. ACT/PRE/REF energy captures the cost of row management and refresh. Finally, background energy reflects standby currents IDD3N (active) and IDD2N (idle) across all 32 pseudo-channels for the full execution duration. We evaluate four representative LLM models under tensor-parallel inference (tp = 8) across five HBM3 stacks: GPT-128/2K     
+
+> 2K/128
+> 2K/2K
+> 128/2K
+> 2K/128
+> 2K/2K
+> 128/2K
+> 2K/128
+> 2K/2K
+> 128/2K
+> 2K/128
+> 2K/2K 70
+> 72
+> 74
+> 76
+> 78
+> 80
+> Energy Reduction
+> (higher better)
+> GPT-175B LLAMA-65B MT-530B OPT-66B
+> Batch=1
+> Batch=4
+> Fig. 5. End-to-end energy reduction (%) of RH+.
+
+175B [1] (96 layers, 96 heads, dmodel = 12288), LLaMA-65B [12] (80 layers, 64 heads, dmodel = 8192), Megatron-Turing 530B [11] (105 layers, 128 heads, dmodel = 20480), and OPT-66B [13] (64 layers, 72 heads, dmodel = 9216). Each model is evaluated with three input/output sequence length pairs (128/2048, 2048/128, 2048/2048) and two batch sizes (1 and 4), yielding 24 configurations (6 per model), each evaluated under both baseline and RH+ scheduling. All experiments use the HBM3 5.2 Gbps speed grade. V. E VALUATION 
+
+A. End-to-End Performance 
+
+Fig. 4 shows the speedup achieved by RH+ schedul-ing across all configurations. At batch = 1, speedup ranges from 8.25 × (LLaMA-65B, 2048/2048) to 11.51 × (MT-530B, 128/2048). At batch = 4, the range narrows and rises to 10.77– 11.88 ×. Two properties of LLM workloads explain this vari-ation. First, the speedup correlates with the model’s hidden dimension K, which determines the number of MAC AB commands per GEMV layer. MT-530B ( K = 20480) issues the most MACs per layer, so the row-hit benefit of RH+ accu-mulates over more operations, yielding the highest speedup. In contrast, LLaMA-65B and OPT-66B ( K = 8192 and 9216) issue fewer MACs, and the fixed overhead of attention, which RH+ does not optimize, occupies a relatively larger fraction of total time. Second, batch size has a pronounced effect. At batch = 1, each token’s forward pass includes both GEMV (weight projection) and attention (KV cache lookup). Atten-tion latency is independent of RH+ because it does not use MAC AB commands. Longer output sequences (Lout = 2048) further increase attention’s share, pulling speedup down. At batch = 4, however, each batch element contributes an ad-ditional full GEMV while the attention cost remains per-sequence. This shifts the compute mix heavily toward GEMV, narrowing the speedup range across models. 
+
+B. End-to-End Energy 
+
+Fig. 5 shows energy reduction across the same configura-tions. Savings range from 74.5% to 77.1%, a remarkably tight band considering the 3.3 × variation in model size. The reason lies in the HBM3-PIM power structure. An HBM3 stack contains 32 pseudo-channels, each drawing standby current (IDD3N in active mode, IDD2N in idle mode) for the entire 128/2K    
+
+> 2K/128
+> 2K/2K
+> 128/2K
+> 2K/128
+> 2K/2K
+> 128/2K
+> 2K/128
+> 2K/2K
+> 128/2K
+> 2K/128
+> 2K/2K
+> 30
+> 40
+> 50
+> EDP
+> Improvement in %
+> (higher better)
+> GPT-175B LLAMA-65B MT-530B OPT-66B
+> Batch=1
+> Batch=4
+
+Fig. 6. End-to-end EDP improvement of RH+. 0             
+
+> 20
+> 40
+> 60
+> 80
+> 100
+> Energy Breakdown
+> (lower better)
+> AttAcc RH+ AttAcc RH+ AttAcc RH+ AttAcc RH+
+> GPT-175B LLAMA-65B MT-530B OPT-66B
+> Background ACT/PRE/REF Compute Rearrangement
+
+Fig. 7. Energy breakdown normalized to baseline. 
+
+execution duration regardless of how many banks are comput-ing. This background power is fixed per unit time and cannot be clock-gated during GEMV. In the baseline, the long nRC -dominated execution stretches this standby cost over many cycles, making background energy the dominant component (roughly 67% of total). When RH+ reduces execution time by roughly 10 ×, the standby duration shrinks proportionally, and background energy collapses. Because standby current is a DRAM property rather than a workload parameter, the energy reduction is nearly model-independent. 
+
+C. End-to-End Energy-Delay Product 
+
+Fig. 6 shows Energy-Delay Product (EDP) improvement ranging from 32.4 × to 52.0 ×. EDP = Time × Energy captures the compounding relationship between performance and en-ergy, and the superlinear gains arise directly from the back-ground energy structure described above. When RH+ reduces execution time, the time reduction enters EDP twice: once through the delay term and again through the energy term, because background energy is itself proportional to execution time. Concretely, a 10 × speedup with 76% energy reduction yields roughly 10 /(1 −0.76) ≈ 41 .7× EDP improvement. MT-530B at batch = 4 reaches the peak of 52.0 × because its large 
+
+K maximizes speedup (11.88 ×) and the high GEMV share maximizes energy reduction (77.1%) simultaneously. 
+
+D. Energy Breakdown 
+
+Fig. 7 decomposes energy into four components, normal-ized to the baseline total for each model. In the baseline, background energy dominates at 67.3–67.8%, followed by ACT/PRE/REF overhead (15.5%), compute (14%), and re-arrangement (3%). The large ACT/PRE/REF share is a di-rect consequence of the 0% row-hit rate in baseline: every MAC AB pays the full activate-precharge cost. After RH+, this component nearly vanishes because 31 out of every 32 MACs are row hits that skip ACT/PRE entirely. Background energy also collapses in absolute terms due to the shorter execution, but its relative share actually rises to 25–31% of the now much smaller total, because compute energy (which is the same number of MAC operations regardless of scheduling) becomes the dominant remaining cost. VI. D ISCUSSION & C ONCLUSION 
+
+Discussion: RH+ requires a one-time offline reordering of weight elements along the K-dimension so that consecutive elements map to adjacent DRAM columns within the same row. This transformation has zero runtime overhead and does not change the GEMV result, as accumulation order is com-mutative. After RH+ eliminates the nRC bottleneck, nCCDAB 
+
+becomes the new limiting factor. PC ( nCCDAB = 6) is 1.36 ×
+
+slower than NPC ( nCCDAB = 4) under RH+, compared to identical performance in the baseline. Combining RH+ with NPC-aware scheduling is a promising direction for future work. 
+
+Related Work: HBM-PIM [8], AIM [7], Newton [6], and TransPIM [14] target PIM-based neural network inference. AttAcc [5] and NeuPIMs [3] specifically address LLM infer-ence, optimizing around the power constraint. None identify 
+
+nRC as the GEMV bottleneck. RH+ is complementary to these approaches. 
+
+Conclusion. We have shown that nRC , not nCCDAB , is the dominant bottleneck for PIM-based LLM inference. RH+ achieves 8.25–11.88 × speedup, 74.5–77.1% energy reduction, and 32.4–52.0 × EDP improvement across four LLM models, demonstrating that DRAM microarchitectural awareness is essential for realizing the full potential of PIM. REFERENCES [1] T. Brown et al. Language models are few-shot learners. Advances Neural Inf. Process. Syst. (NeurIPS) , 33, 2020. [2] K. Chandrasekar et al. DRAMPower: Open-source DRAM power & energy estimation tool. In URL: http://www.drampower.info , 2012. [3] G. Hwang et al. NeuPIMs: NPU-PIM heterogeneous acceleration for batched LLM inference. In Proc. ACM Int. Conf. Archit. Support Program. Lang. Oper. Syst. (ASPLOS) , 2024. [4] JEDEC. JESD238A: High bandwidth memory (HBM3) DRAM, 2023. [5] Y. Jeong et al. AttAcc: Unleashing the power of PIM for batched transformer-based generative model inference. In Proc. ACM Int. Conf. Archit. Support Program. Lang. Oper. Syst. (ASPLOS) , 2024. [6] H. Kim et al. Newton: A DRAM-maker’s accelerator-in-memory (AiM) architecture for machine learning. In Proc. IEEE/ACM Int. Symp. Microarchit. (MICRO) , 2020. [7] S. Lee et al. AIM: Energy-efficient aggregation inside the memory hierarchy. ACM Trans. Archit. Code Optim. (TACO) , 13(1), 2016. [8] S. Lee et al. Hardware architecture and software stack for PIM based on commercial DRAM technology: Industrial product. In Proc. ACM/IEEE Int. Symp. Comput. Archit. (ISCA) , 2021. [9] S. Lee et al. A 1ynm 1.25v 8gb 16gb/s/pin GDDR6-based accelerator-in-memory supporting 1tflops MAC operation and various activation functions. In Proc. IEEE Int. Solid-State Circuits Conf. (ISSCC) , 2022. [10] H. Luo et al. Ramulator 2.0: A modern, modular, and extensible DRAM simulator. IEEE Comput. Archit. Lett. , 22(2), 2023. [11] M. Shoeybi et al. Megatron-LM: Training multi-billion param-eter language models using model parallelism. arXiv preprint arXiv:1909.08053 , 2019. [12] H. Touvron et al. LLaMA: Open and efficient foundation language models. arXiv preprint arXiv:2302.13971 , 2023. [13] S. Zhang et al. OPT: Open pre-trained transformer language models. 
+
+arXiv preprint arXiv:2205.01068 , 2022. [14] C. Zhou et al. TransPIM: A memory-based acceleration via software-hardware co-design for transformers. In Proc. IEEE Int. Symp. High-Perform. Comput. Archit. (HPCA) , 2022.

@@ -1,0 +1,2148 @@
+Title: STEP: Learning STructured Embeddings for Progressive Time Series
+
+URL Source: https://arxiv.org/pdf/2605.31061v1
+
+Published Time: Mon, 01 Jun 2026 01:10:41 GMT
+
+Number of Pages: 25
+
+Markdown Content:
+# STEP: Learning STructured Embeddings for Progressive Time Series 
+
+Lucas Thil 
+
+LIX, École Polytechnique IRT SystemX Palaiseau, France 
+
+lix@polytechnique.fr 
+
+Jesse Read 
+
+LIX, École Polytechnique Palaiseau, France 
+
+Rim Kaddah 
+
+IRT SystemX Palaiseau, France 
+
+Guillaume Doquet 
+
+Safran Tech Chateaufort, France 
+
+Abstract 
+
+We present a novel method for learning interpretable representations of progressive time series, that is, data capturing irreversible state transitions such as degradation or task completion. Our approach uses a self-supervised contrastive objective to learn a low-dimensional latent space whose geometry is itself the interpretation: each observation becomes a point on a manifold anchored between two fixed orthogonal prototype vectors, and a trajectory becomes a path across that manifold. From this structure we read a latent compass , the polar coordinates (θ, r ) of the latent vector, in which θ tracks the progression of the underlying state (e.g., from healthy to failed) and r identifies the active mode (e.g., the operating condition), without any proxy labels. We evaluate the approach against the state of the art on diverse domains, including industrial degradation, robotic tasks, and neural activity, validating three key capabilities: (1) end-state prediction, (2) multi-step forecasting, and (3) interpretable phase separation. Our method matches or improves over black-box counterparts on all of these while providing transparency about the underlying mechanisms. A simple linear regressor on top of the latent compass coordinates is competitive with deep architectures, direct quantitative evidence that the underlying state is encoded in a geometrically accessible form. Code is available at https://github.com/LucasStill/STEP .
+
+1 Introduction 
+
+Time series data from critical systems such as aircraft engines, medical monitors, or robots often capture progressive trajectories: a system evolves from an initial state (e.g., healthy) to a distinct end state (e.g., degraded, or task-completed). Formally, in this paper we use the term progressive time series to refer to an unobserved state st evolving across time t = 1 , ..., T through a non-regressive transition: as t increases, st moves away from its initial distribution and does not return to it under nominal operation. In practice, the state itself is never directly observable; we have only noisy, high-dimensional measurements xt that may oscillate due to sensor noise. The canonical tasks involving progressive time series include degradation processes monitored for prognostics and health management (PHM) [Lee et al., 2014], where one wants to estimate the Remaining Useful Life (RUL, the number of timesteps before a known terminal event such as failure, i.e., T − t) or the State of Health (SOH, measurements on st that capture a monotonic evolution over time t = 1 , ..., T ). Two main challenges exist in practice: Firstly, st is never directly observable, and 
+
+> Preprint.
+> arXiv:2605.31061v1 [cs.LG] 29 May 2026
+
+its evolution can only be observed via measurements xt which do not necessarily directly reflect the progressive nature underlying the state st. Secondly, the only supervised learning signal is time t
+
+itself; we may assume that in expectation there is degradation from t to t + 1 , with terminal state at time T (hence, the RUL objective). Existing approaches face significant limitations. Traditional methods such as hand-crafted health indicators (HIs) or Self-Organizing Maps (SOMs) may be interpretable but lack adaptability [Tsui et al., 2015, Bougacha et al., 2020]. Modern deep learning models can predict RUL or SOH but suffer from two core challenges: (1) their latent spaces are opaque “black boxes” unsuitable for certification in safety-critical domains, and (2) they rely on abstract proxy labels (e.g., RUL) that prevent the discovery of richer, embedded concepts (e.g., distinct failure modes), especially when such labels are noisy or sparse in real-world data collections. We seek latent representation zt such to enable strong performance on downstream tasks (e.g., RUL prediction in this space), and such that this space be interpretable. Interpretation can be validated via the performance of linear models with inputs as z-trajectories and feature functions thereof. To address these issues we propose STEP (ST ructured Embeddings for Progressive Time Series) uses a self-supervised contrastive objective to learn a low-dimensional latent space where progression is explicitly encoded as paths anchored between two fixed orthogonal prototype vectors zinit , z end . From these representations we derive two interpretable, formula-based polar coordinates that together act as a latent compass over the manifold: an angular position θt that serves as a smooth, full-trajectory proxy for SOH, and a radius rt that exposes residual structure such as the operating mode or failure mode active at that step. Crucially, θt and rt are deterministic functions (coordinate system) of zt,computable at inference without any oracle knowledge, and they are decoupled from the elapsed-time signal t/T both distributionally and predictively (Sec. 5.2). This decoupling is what justifies calling the geometry a representation of the underlying state rather than of the temporal axis used to construct the triplets. Our core contributions are: 1. A new paradigm for learning representations of progressive time series, framing state evolution as geometric paths in a contrastively learned latent space without reliance on proxy labels. 2. An interpretation tool (that we call a ‘latent-space compass’; essentially high-level features) enabling the discovery of underlying mechanisms of time-series progression. 3. Demonstration of competitive performance on downstream tasks (regression and forecast-ing) across diverse domains. The interpretable indicators enable simple linear models to match or outperform complex architectures, providing a principled quantitative criterion of interpretability. The paper is organized by first covering related work (Sec. 2), presenting our method (Sec. 3), detailing experimental protocols (Sec. 4), and discussing results (Sec. 5). 
+
+2 Related Work 
+
+Supervised RUL prediction. A dominant strand of PHM frames prognostics as supervised RUL regression with CNN/LSTM hybrids [Zheng et al., 2017, Peng et al., 2021, Li et al., 2020], uncertainty-aware variants [De Pater and Mitici, 2022, Costa and Sánchez, 2022], or autoencoder/SSL feature extraction [Pillai and Vadakkepat, 2021, Listou Ellefsen et al., 2019]. These models achieve strong benchmark accuracy but function as black boxes, returning a scalar RUL without exposing the under-lying degradation progression. Traditional threshold-based and parametric methods are interpretable but lack adaptability [Kim et al., 2017]. 
+
+Health indicators (HIs). A parallel line learns interpretable scalar HIs that monotonically correlate with degradation [Rombach et al., 2024, Thil et al., 2026, Leyli-Abadi et al., 2026], often via reconstruction error or novelty scores. Most are designed for end-of-life regimes [Zhao et al., 2017, Fu et al., 2025] and do not model the complete trajectory in a sequential setting. A recurring challenge for both supervised and HI methods is reliance on predefined modes or labels, which are noisy, incomplete, or unavailable [Fink et al., 2020]. 2Figure 1: Approach overview. a) Model learning: an autoencoder is trained with triplet sampling so that anchor xa, positive xp (temporally close, |tp − ta| ≤ δt) and negative xn (temporally distant or from a different unit) are aligned in the latent space z. b) Temporal latent space. (i) The mean-scaled view (later denoted as ˜z) exhibits a clear progression between fixed orthogonal prototypes 
+
+zinit , zend , with sub-phase clusters appearing along the manifold. (ii) The unit-normalized view ¯z
+
+projects trajectories onto the unit circle, exposing the angular progression θt and the residual radius 
+
+r as polar coordinates. c) Latent compass: the angular progression θt and the angle/radius polar plot are deterministic functions of zt that serve directly as interpretable, formula-based features for downstream tasks (RUL, forecasting, phase clustering). 
+
+Contrastive and topology-based representation learning. Contrastive methods learn representa-tions from unlabeled time series via positive/negative pair construction [Zhang et al., 2022, Eldele et al., 2021, Baydogan and Runger, 2016], with refinements such as combined losses [Cai et al., 2025], long-range dependencies [Park et al., 2024], soft pair assignments [Liu and Chen, 2023], and SoftCLT’s soft temporal contrast [Lee et al., 2024] (the strongest current general-purpose base-line). These methods, however, do not produce a globally ordered, human-interpretable progression geometry. Topology-inspired models such as SOMs [Côme et al., 2010] and GTM [Bishop et al., 1998] are interpretable but assume a fixed discrete grid; learned topologies [Mladenov et al., 2023] and triplet-based stage representations [Schroff et al., 2015, Fan et al., 2024] are evaluated through traditional HI metrics that fail to capture continuous progression [Coble, 2010]. 
+
+Progressive representations beyond PHM. The same need arises in robotics, where task pro-gression provides grounded long-horizon estimators [Chen et al., 2025, Ma et al., 2023], and in latent planning, where recent work [Wang et al., 2026] argues for low-dimensional bottlenecks that “straighten” progressive trajectories. Hyperspherical, cosine-based metric learning [Li et al., 2017, Kumar BG et al., 2016] provides the geometric foundation we exploit. STEP unifies these threads with a fully self-supervised objective that learns a continuous, prototype-anchored progressive manifold, yielding interpretable indicators valid across the full trajectory and across domains. 
+
+3 STEP (STructured Embeddings for Progressive Time Series) 
+
+The central idea behind our approach is to make the latent space itself the interpretation. Each observation xt is encoded into a point zt on a learned manifold (latent space), and thus an entire trajectory becomes a path across that manifold, and two polar coordinates of zt, namely the angle 
+
+θt and the radius rt, together form a latent compass : θt measures how far along the progression a point is (e.g., from healthy to failed) and rt measures the active mode at that step (e.g., the operating condition). Reading the compass thus tracks progression while providing grounded coordinates for interpretability. We learn this by combining three forces in a composite objective. A contrastive cosine triplet loss orders observations by state similarity, producing a coherent manifold curvature such that the emerging metrics allow localization of the observed states. A prototype loss anchors the empirical start and end of every trajectory to a fixed orthogonal basis {zinit , z end }, fixing a consistent semantic frame across runs and datasets. A reconstruction term acts as a mild regularizer, preventing latent collapse. The full objective is 
+
+Ltotal = λ1 Lrecon + λ2 Ltrip + λ3 Lproto , (1) 3with weights λ1, λ 2, λ 3. This process should allow visual and clear continuity metrics, acting as geometric guardrails. The next subsections explain each component, and empirical results follow in Sec. 4 across multiple use cases. 
+
+3.1 Setting and Goal: a State-Based Latent Map 
+
+We have a set of U independent progressive time series {(x(u)1 , . . . , x (u) 
+
+> Tu
+
+)}Uu=1 with observations 
+
+x(u) 
+
+> t
+
+∈ Rd. We posit that each xt is a noisy observation of an unobserved progressive state st
+
+that moves monotonically and non-regressively from s1 (e.g., healthy) to sT (e.g., degraded or task-completed); a Markov-chain formalization is given in Appendix A. Crucially, st is unobserved and there is no ground-truth label: only the start and end of each trajectory are observable surrogates for the progression boundaries. Our goal is an encoder zt = fenc (xt) whose latent geometry tracks st, not t: trajectories of similar state should be mapped close in z-space irrespective of how much wall-clock time they have accu-mulated, and the angular position θt along the manifold should serve as a smooth proxy for st. We empirically verify this state-vs-time decoupling in Sec. 5.2. 
+
+3.2 A State-Based Contrastive Objective 
+
+We use a triplet loss with cosine similarity to organize z-space by state similarity. For a triplet 
+
+(xa, x p, x n) with latent codes (za, z p, z n),
+
+Ltrip = 1
+
+N
+
+> N
+
+X
+
+> i=1
+
+max  0, cos( za, z n) − cos( za, z p) + m, (2) where m is the margin and cos( za, z p) = za·zp 
+
+> ∥za∥∥ zp∥
+
+. Geometrically cos( za, z p) = cos( θap ), so Eq. (2) softly encourages θap < θ an , ordering embeddings angularly along a manifold that follows the state sequence s1, . . . , s T .
+
+Sampling strategy. We construct triplets using temporal proximity within a trajectory as a sampling proxy for state similarity. The positive xp is drawn from the same unit as the anchor xa, with 
+
+0 < |tp − ta| ≤ δt; the negative xn is drawn either from the same unit with |tn − ta| ≥ δt or from a different unit entirely. Temporal proximity is a sampling heuristic, not a property the encoder ultimately learns: what we actually obtain is a state-based geometry that does not collapse to elapsed time 5.2. 
+
+The encoder is per-observation by design. The encoder fenc processes each observation xt
+
+independently; temporality enters only through the sampling, not the architecture. This is the modular split adopted by most successful SSL methods (SimCLR [Chen et al., 2020], BYOL [Grill et al., 2020], SoftCLT [Lee et al., 2024], and more recently LeJEPA [Balestriero and LeCun, 2025]), where the encoder produces a representation of individual inputs whose geometry is shaped by the loss, and any sequential modeling is delegated to the downstream model. As a consequence the same backbone is reusable across disjoint downstream tasks (RUL regression, autoregressive forecasting, phase clustering), and the polar coordinates (θ, r ) remain deterministic functions of zt (Eq. 7), giving a formula-based interpretation of any single observation. 
+
+Reconstruction regularizer. To prevent the encoder from collapsing into a degenerate latent, we add a standard mean squared error reconstruction term computed over a minibatch of N observations, 
+
+Lrecon = 1
+
+N
+
+> N
+
+X
+
+> i=1
+
+∥xi − ˆxi∥22, ˆxi = fdec (fenc (xi)) , (3) weighted by λ1 in Ltotal . We use a deliberately simple MLP decoder to avoid latent space collapse from a high-capacity decoder. 
+
+3.3 A Fixed Coordinate System for Interpretability 
+
+The contrastive objective of Sec. 3.2 already produces a coherent manifold whose curvature follows the state progression. What it does not provide is a consistent reference frame: the manifold is free to 4rotate, reflect, and rescale arbitrarily across runs, so the same observation can land at very different absolute coordinates from one training to another, and the start versus end of a trajectory are not pinned to any particular location. This is fatal for interpretability, certification, and any cross-run or cross-dataset comparison of θ and r.To fix this frame we set the start and end anchors to two standard basis vectors of Rd,
+
+zinit = e1, zend = e2, (4) which are orthogonal by construction. This instantiates the standard partially-observable picture of a progressive process: the latent space contains an initial-state region (around e1) and an absorbing terminal region (around e2), with trajectories navigating between them. Because st has no ground-truth label, we do not condition on intermediate states; we only use the boundary observations, that is, the empirical first k and last k time steps of each trajectory, 
+
+Xinit = {first k time steps of each unit u},Xend = {last k time steps of each unit u}, (5) which we softly pull toward the anchors with 
+
+Lproto = Ex∈Xinit 
+
+∥fenc (x) − zinit ∥2 + Ex∈Xend 
+
+∥fenc (x) − zend ∥2 . (6) The pull is a soft expectation, not a hard constraint: empirically, observations cluster near (not at ) the anchors, leaving slack along the basis directions for unit-level variability such as different starting health levels (visible as the spread inside the green “healthy zone” in Fig. 1). The radial direction is also left free so that distinct modes spread around the anchors rather than onto them: in our FD002 experiments, r recovers all six operating conditions as concentric rings without any supervision (Sec. 5). Removing the prototype loss ( λ3=0 ) degrades performance primarily on heterogeneous subsets (FD004: 12 .10 → 19 .01 ) while leaving homogeneous ones essentially unchanged (FD003: 
+
+13 .35 → 11 .59 ). Together, the contrastive ordering and the prototype-anchored basis formulate a state-based topology 
+
+over the dataset, in which each observation projects to a single step along the trajectory map. 
+
+4 Experimental Framework 
+
+Our goal is to investigate interpretability gains without losing performance. We test our approach on three tasks: semantic interpretation, RUL estimation, and forecasting. We train a backbone model from which we extract the polar coordinates (θ, r ); with them, we train a downstream model for RUL or forecasting, or plot them directly (Fig. 2). We compare against two baselines with the same backbone architecture: AE (trained with Lrecon only) and SoftCLT (trained with the SoftCLT loss [Lee et al., 2024]), which is state of the art on general time-series datasets. 
+
+4.1 Datasets and Preprocessing 
+
+The C-MAPSS dataset [Saxena et al., 2008] comprises four subsets (FD001–004) of turbofan engine run-to-failure simulations with varying operating conditions (OCs) and failure modes (FMs). Training trajectories contain complete run-to-failure sequences; test sequences are right-censored at arbitrary points with known RUL ground truth. We also use NVIDIA GROOT’s Can2Drawer dataset [NVIDIA et al., 2025], and recorded trajectories of object displacement with LeRobot [Cadene et al., 2024] for robotic episode completions, representing continuous joint motor positions. Finally, we use a 56-dimensional neuroscience dataset recording the brain activity of a mouse in a single episode [Vinograd et al., 2024], where two intruders visit the environment. These three datasets cover non-regressive state transitions with snapshot, continuous, and single-trajectory domains. We apply min-max normalization on the input data X and use a sliding window of size 1-10 in selected analyses. 
+
+Geometrical analysis. From the trained encoder we read two standard views of the same latent space, ˜z = ( z − μ)/σ (mean-scaled, removes magnitude variation across units) and ¯z = z/ ∥z∥
+
+(unit-normalized, projecting trajectories onto the hypersphere), together with the polar coordinates of 
+
+zt in the prototype basis, 
+
+θt = arctan 2  zt · zend , z t · zinit 
+
+ (progression angle) , rt = ∥zt∥ (mode radius) , (7) 5which together form the latent compass on the manifold. We analyze the views ˜z and ¯z to interpret trajectory progression across all datasets, asking whether the learned representations disentangle OCs/FMs (C-MAPSS, Appendix Table 4), task-solving strategies (robotics), and intruder-driven behavioral phases (mouse). t-SNE of          
+
+> latent z
+> (Visual
+> purpose
+> only)
+> Angular Progression
+> Angle-
+> Radius
+> Space (polar
+> coordinates)
+> BaseAE
+> Latent  Dimension  2 (scaled)
+> Unit Trajectory
+> Start (early)
+> *End (late)
+> ^ 2
+> 150 ฿
+> Polar  Angle  0
+> Latent Dimension 1(scaled)
+
+| || hl            
+
+> Radius rfrom origin (0,0)
+> Latent  Dimension  2 (scaled)
+> Polar  Angle  0Radius  r from  origin  (0,0)
+> SoftCLT
+> Latent Dimension 1(scaled)
+> Latent  Dimension  2 (scaled) Polar  Angle  ORadius  r from  origin  (0,0)
+> STEP w=1
+> 2
+> Latent Dimension 1(scaled)
+> STEP w=10, dim(z)=2 STEP w=10, dim(z)=4
+> 2
+> 12
+> Latent  Dimension  2 (scaled)
+> Latent  Dimension  2 (scaled)
+> Polar  Angle  6
+> Polar  Angle  6
+> Radius  r from  origin  (0,0)
+> Radius  r from  origin  (0,0)
+
+Figure 2: Latent compass comparison on C-MAPSS FD002 (6 operating conditions). Gray points show t-SNE embeddings of the entire dataset; the colored trajectory is engine 20 through time. AE does not exhibit a visibly coherent structure. SoftCLT shows limited coherence. STEP (ours) with window size w=1 clearly isolates six latent rings (one per operating condition) and yields a clear angular progression θ and a radius that precisely indicates the active mode. With w=10 , STEP 
+
+aggregates superposed states while maintaining temporal progression, and θ serves as an accurate State-of-Health (SOH) proxy, evidence that our coordinates act as reliable Health Indicators (HIs). A higher latent dimension dim( z)=4 exhibits a richer, fused embedding. 
+
+4.2 RUL Prediction 
+
+We evaluate our method on the C-MAPSS dataset for RUL estimation. We train three variants of the backbone autoencoder (STEP, SoftCLT, AE), each using the same architecture but different training objectives. For each variant we extract the latent compass coordinates and train a transformer-based RUL estimator on these features, as well as a simple linear regressor head (L.Reg). The features include the latent ˜z, angular position, progression score, and radial distance (see Appendix for details). 
+
+4.3 Forecasting 
+
+We evaluate forecasting on the mouse brain activity dataset [Vinograd et al., 2024]. We train a predictor ϕ that maps latent states: ϕ(zt) 7 → zt+1 . At evaluation, we initialize with the true latent state zt = fenc (xt), then perform an autoregressive rollout by recursively applying ϕ for 15 steps without further ground-truth input: zt+k = ϕ(zt+k−1) for k = 1 , . . . , 15 (each step representing 1 s via discretization). The final reconstruction is ˆxt+15 = fdec (zt+15 ). We compare against latent forecasting models [Hu et al., 2025, Archambeau et al., 2007] and test multiple window sizes for backbones, hyperparameters, and a vanilla autoencoder baseline. We report the R2 score, as in related work, over 20 randomly sampled initial times t.
+
+5 Results and Discussion 
+
+5.1 Geometric Interpretation of Latent Spaces 
+
+The latent manifolds learned by each method reveal a clear progression in structure and interpretability (Fig. 2). AE, trained solely on reconstruction, fails to organize C-MAPSS FD002 meaningfully (diffuse, temporally incoherent space). SoftCLT yields soft, poorly separated clusters vaguely 6Table 1: Comparison of RUL estimation RMSE on C-MAPSS subsets (lower is better). Bold indicates SOTA; asterisks (*) denote methods providing HIs. Prefixes Tr. and LR. refer to the regressor head (transformer and linear regression, respectively) applied to the learned HIs and latent ˜z. STEP is compared against two baselines (SoftCLT and AE) using the same backbone autoencoder trained with different objectives. We test bottlenecks z∈{ 2, 4, 8, 16 }; the full sweep up to z=32 is reported in Appendix Table 8. Note that the simple LR.STEP* outperforms the transformer baselines on heterogeneous subsets (underlined), evidence that representation quality outweighs model complexity. 
+
+Model FD001 FD002 FD003 FD004 
+
+MLP 37.56 80.03 37.39 77.30 SVR 20.96 42.00 21.05 45.35 RVR 23.80 31.30 22.37 34.34 CNN 18.45 30.29 19.82 29.10 SSL 12.56 22.73 12.10 22.66 CNN-LSTM 11.17 – 9.99 –MS-DCNN 11.44 19.35 11.67 22.20 VAE + RNN 11.44 24.12 14.88 26.50 MLE4X+CCF 11.57 18.84 11.83 20.70 RVE 13.42 14.92 12.51 16.30 Prob. CNN 12.42 13.72 12.16 15.90 Wang et al.* – – – 15.42 I-GLIDE* 9.47 16.18 8.29 12.30 Tr.AE 11.48 35.21 12.23 36.53 Tr.SoftCLT z=2 13.26 19.15 12.21 21.14 Tr.SoftCLT z=4 11.56 17.72 13.36 19.75 
+
+Tr.STEP* z=2 10.65 12.52 11.48 16.93 
+
+LR.STEP* z=2 15.30 14.38 17.96 19.48 
+
+Tr.STEP* z=4 11.26 12.34 13.35 12.10 LR.STEP* z=4 12.87 12.94 14.49 20.40 
+
+Tr.STEP* z=8 11.34 12.87 11.34 17.37 
+
+Tr.STEP* z=16 11.62 12.74 11.33 17.59 suggesting OCs but lacks a globally ordered geometry. STEP, in contrast, produces a structured manifold: with window size w=1 , six crisp rings emerge (one per OC); θ advances monotonically with deterioration, forming a continuous SOH proxy; r indicates the active OC; and the fixed prototypes anchor this coordinate system. With w=10 the rings merge but the angular progression sharpens, trading OC separation for SOH crispness. Scaling to dim( z)=4 enhances structure in the radius while still exposing the six OCs, and the geometry remains stable up to dim( z)=32 (Sec. 5.5). The use of θ and r as diagnostics for AE and SoftCLT (which were not designed for circular geometry) is motivated in Appendix C.1. On the robotics datasets, ¯z recovers interpretable task phases (locating, grabbing, moving, placing) (Fig. 3), enabling action-phase localization and soft phase labeling without manual annotation. On the mouse brain data, STEP identifies phase changes corresponding to intruder entry/exit events, demonstrating that it captures dynamics from single trajectories; SoftCLT also captures these but with a less clear trajectory manifold (Fig. 4b). 
+
+5.2 θ encodes state, not elapsed time 
+
+A natural concern is whether the angular coordinate θ merely encodes elapsed time t/T rather than genuine state. Three converging lines of evidence rule this out (full diagnostics in Appendix G). (i) Predictive gain : a downstream transformer trained on t/T alone collapses to RMSE 58.1 ( R2=−1.75 )on FD002, while training on θ alone achieves RMSE 14.1 ( R2=0 .84 ); concatenating t/T to θ does 
+
+not help (Appendix Fig. 5), evidence that θ already subsumes the information in t/T plus additional state structure. (ii) Distributional : the marginals of θ and t/T are nearly disjoint near the trajectory extremes (KS =1.00 early, 0.98 late, p ≪ 10 −3, Appendix Fig. 7), and the pair level points sharing the same t/T bucket can occupy very different θ values (Spearman ρ=0 .04 , Appendix Fig. 9). (iii) PHM 
+
+7(a) Gr00t [NVIDIA et al., 2025] (pick-and-place). (b) LeRobot [Cadene et al., 2024] (shelf grabbing). 
+
+Figure 3: Learned latent representations on two robotics datasets. ˜z captures continuous task progression; ¯z clusters into distinct, interpretable task phases (locating, grabbing, moving, placing). The two datasets cover distinct embodiments and tasks but produce equivalent geometry under STEP. 0 5 10 15         
+
+> Forecasting Horizon in Seconds
+> 0.3
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> 0.8
+> 0.9
+> R² Score
+> SING-GP
+> VDP-GP
+> BaseAE
+> SoftCLT
+> STEP w=10 2,3=1
+> STEP w=10 2=0.7 3=0.3
+> STEP w=10 2,3=0
+> STEP w=1 2=0.7 3=0.3
+
+(a) Multi-step latent forecasting R2 (higher is better). 
+
+SoftCLT STEP (b) Latent topology comparison ( ¯z, t-SNE). 
+
+Figure 4: Mouse brain activity, single-trajectory dataset. (a) Forecasting comparison: STEP (ours), SING-GP [Hu et al., 2025], VDP-GP [Archambeau et al., 2007], AE, and SoftCLT [Lee et al., 2024], across hyperparameters and backbone window sizes. (b) STEP yields a clearer trajectory manifold than SoftCLT on the same data. 
+
+quality : θ achieves prognosability 0.91–0.98 and trendability 0.45–0.81 across subsets. Note also that t/T is unavailable at inference (it requires oracle T ), whereas θ is computed directly from zt.
+
+5.3 RUL Estimation Performance 
+
+Table 1 shows our method achieves SOTA on FD002 (12.34 RMSE) and FD004 (12.10 RMSE) and competitive performance on the other subsets. Unlike most prior works, our approach provides interpretable HIs without compromising predictive accuracy. Among the compared methods, only I-GLIDE also offers HIs for downstream prognostics, but it is trained only on data deemed “healthy” through novelty detection and thus fails to capture the full degradation progression. In contrast, our model learns from the entire dataset, capturing the complete degradation dynamics. Ablations performed with the same backbone architecture demonstrate the importance of our loss: AE trained on a pure reconstruction objective performs poorly when its latent serves for regression (FD002: 35.21 RMSE). SoftCLT, which achieved SOTA on generic time series through a temporal-contrastive loss, yields inferior results on this PHM dataset (FD002: 17.72, FD004: 19.75), confirming that both standard objectives and recent time series learning paradigms are not directly suited to capture the monotonic progression inherent in prognostics. Notably, a simple linear regressor trained on the latent compass coordinates (L.Reg.) achieves com-petitive performance, sometimes surpassing specialized deep learning models (e.g., RVE, VAE+RNN, 8I-GLIDE). This is, in our view, the strongest quantitative interpretability evidence in the paper: 
+
+a linear model can only succeed on top of a representation if the underlying state is encoded in a geometrically accessible form. Our approach therefore delivers a dual benefit: accurate RUL estimation paired with an interpretable latent space. Performance is stable as the bottleneck grows: z=8 and z=16 stay within ∼ 0.5 RMSE of z=4 on FD001/FD002, and FD003 even improves slightly with dimension (11.48 at z=2 , 11.33 at z=16 ), evidence that interpretability and predictive performance scale together when training is stabilized via β-scheduling. The full sweep through z=32 is reported in Appendix Table 8. 
+
+5.4 Forecasting Performance 
+
+Fig. 4 shows that STEP outperforms vanilla representations (AE) and the general-time-series SOTA (SoftCLT) on forecasting of high-dimensional, noisy mouse brain data. Performance degrades on longer horizons compared to Latent SDE models (SING-GP, VDP-GP), warranting future work to reduce prediction drift. These results demonstrate that progressive state representations with geometric constraints improve state inference in complex, noisy systems and that such guardrails could be enriched with latent SDE approaches. For STEP, loss balance between Ltriplet and Lrecon 
+
+(via λ2, λ 3) plays a role: while some configurations exhibit superior performance on short horizons, their performance can degrade. STEP with w=10 and λ2=λ3=1 shows the most competitive results. 
+
+5.5 Robustness, Scaling and Multi-Mode Discovery 
+
+The non-regression assumption concerns the latent health state, not noisy sensors: retraining STEP at 
+
+dim( z)=16 with sensor noise scaled by ×0.5 and ×2.5 degrades gracefully (FD002: 14 .23 → 15 .12 ), as the cosine triplet loss operates on distributional proximity. The instability previously observed at dim( z)=4 is resolved via β-scheduling, and results are stable across dim( z) ∈ { 2, 4, 8, 16 , 32 }
+
+with no collapse, in line with recent findings on low-dimensional latent planning [Wang et al., 2026]. Even with a single zend , unsupervised K-means ( k=2 ) on terminal embeddings recovers distinct failure modes on FD003 (1 OC, 2 FMs) and FD004 (6 OCs, 2 FMs) with high silhouette scores (FD003: 0.75 at dim( z)=4 , 0.97 at dim( z)=32 ; FD004: 0.60–0.66) and zero misplaced units, addressing the concern that a single zend cannot represent qualitatively distinct terminal states. Per-unit Spearman |ρ(θ, RUL) | remains 0.96/0.93/0.96 at dim( z)∈{ 4, 16 , 32 } (Appendix Fig. 6), with PHM prognosability staying ≥ 0.88 across all dimensions and datasets, confirming that interpretability scales with latent dimension (full diagnostics in Appendix G). 
+
+6 Conclusion 
+
+We have presented STEP, a method for learning interpretable representations from progressive time series by framing state evolution as geometric paths in a contrastively learned latent space anchored to fixed orthogonal prototypes. Our approach yields a latent compass , the polar coordinates 
+
+(θ, r ), that tracks progression without proxy supervision, exposes underlying system mechanisms, and disentangles progression from active mode. Such information is captured in a relatively low-dimensional bottleneck, as little as 2 dimensions, and remains stable up to dim( z)=32 via β-scheduling. We performed experiments on progressive time series from industrial degradation, robotic task completion, and neural activity. In all cases interpretability does not come at the cost of performance: simple linear models on the latent compass coordinates match or exceed complex black-box approaches, providing direct quantitative evidence that the underlying state is encoded in a geometrically accessible form. 
+
+Limitations and future work. Our method is designed for progressive (non-regressive) sequences and does not natively handle systems that revert to earlier concept states (e.g., after maintenance actions). The prototype anchoring favors the existence of identifiable trajectory extremes during training, although it remains flexible without ( k = 0 ). Extensions to (i) reversible state transitions with intervention modeling, (ii) learning intermediate prototypes from the discovered latent structure as a refinement stage, and (iii) integrating latent SDEs to reduce forecasting drift on longer horizons, are promising directions. 9References 
+
+Cédric Archambeau, Manfred Opper, Yuan Shen, Dan Cornford, and John Shawe-Taylor. Variational inference for diffusion processes. Advances in neural information processing systems , 20, 2007. Randall Balestriero and Yann LeCun. Lejepa: Provable and scalable self-supervised learning without the heuristics. arXiv preprint arXiv:2511.08544 , 2025. doi: 10.48550/arXiv.2511.08544. Mustafa Gokce Baydogan and George Runger. Time series representation and similarity based on local autopatterns. Data Mining and Knowledge Discovery , 30(2):476–509, 2016. Christopher M. Bishop, Markus Svensén, and Christopher K. I. Williams. Gtm: The generative topo-graphic mapping. Neural Computation , 10(1):215–234, 1998. doi: 10.1162/089976698300017953. Omar Bougacha, Christophe Varnier, and Noureddine Zerhouni. A review of post-prognostics decision-making in prognostics and health management. International Journal of Prognostics and Health Management , 11(15):31, 2020. Remi Cadene, Simon Alibert, Alexander Soare, Quentin Gallouedec, Adil Zouitine, Steven Palma, Pepijn Kooijmans, Michel Aractingi, Mustafa Shukor, Dana Aubakirova, Martino Russi, Francesco Capuano, Caroline Pascal, Jade Choghari, Jess Moss, and Thomas Wolf. Lerobot: State-of-the-art machine learning for real-world robotics in pytorch. https://github.com/huggingface/ lerobot , 2024. Huili Cai, Xiang Zhang, and Xiaofeng Liu. Semi-supervised end-to-end contrastive learning for time series classification. (arXiv:2310.08848), March 2025. doi: 10.48550/arXiv.2310.08848. URL 
+
+http://arxiv.org/abs/2310.08848 . arXiv:2310.08848 [cs]. Qianzhong Chen, Justin Yu, Mac Schwager, Pieter Abbeel, Yide Shentu, and Philipp Wu. Sarm: Stage-aware reward modeling for long horizon robot manipulation. (arXiv:2509.25358), Oc-tober 2025. doi: 10.48550/arXiv.2509.25358. URL http://arxiv.org/abs/2509.25358 .arXiv:2509.25358 [cs]. Ting Chen, Simon Kornblith, Mohammad Norouzi, and Geoffrey Hinton. A simple framework for contrastive learning of visual representations. In International Conference on Machine Learning (ICML) , 2020. Jamie Baalis Coble. Merging data sources to predict remaining useful life–an automated method to identify prognostic parameters. 2010. Etienne Côme, Marie Cottrell, Michel Verleysen, and Jérôme Lacaille. Aircraft engine health monitoring using self-organizing maps. In 10th Industrial Conference, ICDM 2010, , volume 6171, pages 405–417. Springer, 2010. Nahuel Costa and Luciano Sánchez. Variational encoding approach for interpretable assessment of remaining useful life estimation. Reliability Engineering & System Safety , 222:108353, June 2022. ISSN 09518320. doi: 10.1016/j.ress.2022.108353. URL https://linkinghub.elsevier. com/retrieve/pii/S0951832022000321 .Ingeborg De Pater and Mihaela Mitici. Novel metrics to evaluate probabilistic remaining useful life prognostics with applications to turbofan engines. PHM Society European Conference , 7(1): 96–109, June 2022. ISSN 2325-016X, 2325-016X. doi: 10.36001/phme.2022.v7i1.3320. URL 
+
+https://papers.phmsociety.org/index.php/phme/article/view/3320 .Emadeldeen Eldele, Mohamed Ragab, Zhenghua Chen, Min Wu, Chee Keong Kwoh, Xiaoli Li, and Cuntai Guan. Time-series representation learning via temporal and contextual contrasting. In Proceedings of the Thirtieth International Joint Conference on Artificial Intelligence , pages 2352–2359. International Joint Conferences on Artificial Intelligence Organization, 2021. Yalun Fan, Weilin Li, Liang Guo, Yaoxiang Yu, Tao Luo, and Hongli Gao. A metric learning-based health indicator for early degradation point detection of machines. In 2024 Global Reliability and Prognostics and Health Management Conference (PHM-Beijing) , page 1–8, Beijing, China, October 2024. IEEE. ISBN 979-8-3503-5401-0. doi: 10.1109/PHM-Beijing63284.2024.10874536. URL https://ieeexplore.ieee.org/document/10874536/ .10 Olga Fink, Qin Wang, Markus Svensén, Pierre Dersin, Wan-Jui Lee, and Melanie Ducoffe. Potential, challenges and future directions for deep learning in prognostics and health management appli-cations. Engineering Applications of Artificial Intelligence , 92:103678, 2020. ISSN 09521976. doi: 10.1016/j.engappai.2020.103678. URL https://linkinghub.elsevier.com/retrieve/ pii/S0952197620301184 .Ying Fu, Ye Kwon Huh, and Kaibo Liu. Degradation modeling and prognostic analysis under unknown failure modes. IEEE Transactions on Automation Science and Engineering , 2025. Jean-Bastien Grill, Florian Strub, Florent Altché, Corentin Tallec, Pierre H. Richemond, Elena Buchatskaya, Carl Doersch, Bernardo Avila Pires, Zhaohan Daniel Guo, Mohammad Gheshlaghi Azar, et al. Bootstrap your own latent – a new approach to self-supervised learning. In Advances in Neural Information Processing Systems (NeurIPS) , 2020. Amber Hu, Henry D Smith, and Scott Linderman. Sing: Sde inference via natural gradients. Advances in Neural Information Processing Systems , 2025. Nam-Ho Kim, Dawn An, and Joo-Ho Choi. Prognostics and health management of engineering systems. Switzerland: Springer International Publishing , 2017. Vijay Kumar BG, Gustavo Carneiro, and Ian Reid. Learning local image descriptors with deep siamese and triplet convolutional networks by minimising global loss functions. In Proceedings of the IEEE conference on computer vision and pattern recognition , pages 5385–5394, 2016. Jay Lee, Fangji Wu, Wenyu Zhao, Masoud Ghaffari, Linxia Liao, and David Siegel. Prognostics and health management design for rotary machinery systems—reviews, methodology and applications. 
+
+Mechanical Systems and Signal Processing , 42(1–2):314–334, January 2014. ISSN 08883270. doi: 10.1016/j.ymssp.2013.06.004. URL https://linkinghub.elsevier.com/retrieve/ pii/S0888327013002860 .Seunghan Lee, Taeyoung Park, and Kibok Lee. Soft contrastive learning for time series. (arXiv:2312.16424), March 2024. doi: 10.48550/arXiv.2312.16424. URL http://arxiv.org/ abs/2312.16424 . arXiv:2312.16424 [cs]. Milad Leyli-Abadi, Lucas Thil, Sebastien Razakarivony, Guillaume Doquet, and Jesse Read. A machine learning framework for turbofan health estimation via inverse problem formulation, 2026. URL https://arxiv.org/abs/2604.08460 .Chao Li, Xiaokong Ma, Bing Jiang, Xiangang Li, Xuewei Zhang, Xiao Liu, Ying Cao, Ajay Kannan, and Zhenyao Zhu. Deep speaker: an end-to-end neural speaker embedding system. arXiv preprint arXiv:1705.02304 , 2017. Han Li, Wei Zhao, Yuxi Zhang, and Enrico Zio. Remaining useful life prediction using multi-scale deep convolutional neural network. Applied Soft Computing , 89:106113, April 2020. ISSN 15684946. doi: 10.1016/j.asoc.2020.106113. URL https://linkinghub.elsevier.com/ retrieve/pii/S1568494620300533 .André Listou Ellefsen, Emil Bjørlykhaug, Vilmar Æsøy, Sergey Ushakov, and Houxiang Zhang. Remaining useful life predictions for turbofan engine degradation using semi-supervised deep architecture. Reliability Engineering & System Safety , 183:240–251, March 2019. ISSN 09518320. doi: 10.1016/j.ress.2018.11.027. URL https://linkinghub.elsevier.com/retrieve/pii/ S0951832018307506 .Jiexi Liu and Songcan Chen. Timesurl: Self-supervised contrastive learning for universal time series representation learning. (arXiv:2312.15709), December 2023. doi: 10.48550/arXiv.2312.15709. URL http://arxiv.org/abs/2312.15709 . arXiv:2312.15709 [cs]. Yecheng Jason Ma, Vikash Kumar, Amy Zhang, Osbert Bastani, and Dinesh Jayaraman. Liv: Language-image representations and rewards for robotic control. In International Conference on Machine Learning , pages 23301–23320. PMLR, 2023. 11 Emanuil Mladenov, Miguel Martínez-García, Yu Zhang, Shaheryar Khan, and Faizan Patankar. Unsupervised flight fault propagation analysis using a variational autoencoder. In 2023 IEEE 13th International Conference on Pattern Recognition Systems (ICPRS) , page 1–4, Guayaquil, Ecuador, 2023. IEEE. ISBN 979-8-3503-3337-4. doi: 10.1109/ICPRS58416.2023.10179004. URL https://ieeexplore.ieee.org/document/10179004/ .NVIDIA, Johan Bjorck, Nikita Cherniadev Fernando Castañeda, Xingye Da, Runyu Ding, Linxi "Jim" Fan, Yu Fang, Dieter Fox, Fengyuan Hu, Spencer Huang, Joel Jang, Zhenyu Jiang, Jan Kautz, Kaushil Kundalia, Lawrence Lao, Zhiqi Li, Zongyu Lin, Kevin Lin, Guilin Liu, Edith Llontop, Loic Magne, Ajay Mandlekar, Avnish Narayan, Soroush Nasiriany, Scott Reed, You Liang Tan, Guanzhi Wang, Zu Wang, Jing Wang, Qi Wang, Jiannan Xiang, Yuqi Xie, Yinzhen Xu, Zhenjia Xu, Seonghyeon Ye, Zhiding Yu, Ao Zhang, Hao Zhang, Yizhou Zhao, Ruijie Zheng, and Yuke Zhu. GR00T N1: An open foundation model for generalist humanoid robots. In ArXiv Preprint ,March 2025. Junwoo Park, Daehoon Gwak, Jaegul Choo, and Edward Choi. Self-supervised contrastive learning for long-term forecasting. (arXiv:2402.02023), March 2024. doi: 10.48550/arXiv.2402.02023. URL http://arxiv.org/abs/2402.02023 . arXiv:2402.02023 [cs]. Cheng Peng, Yufeng Chen, Qing Chen, Zhaohui Tang, Lingling Li, and Weihua Gui. A remaining useful life prognosis of turbofan engine using temporal and spatial feature fusion. Sensors , 21(2): 418, January 2021. ISSN 1424-8220. doi: 10.3390/s21020418. URL https://www.mdpi.com/ 1424-8220/21/2/418 .Shanmugasivam Pillai and Prahlad Vadakkepat. Two stage deep learning for prognostics using multi-loss encoder and convolutional composite features. Expert Systems with Applications ,171:114569, June 2021. ISSN 09574174. doi: 10.1016/j.eswa.2021.114569. URL https: //linkinghub.elsevier.com/retrieve/pii/S0957417421000105 .Katharina Rombach, Gabriel Michau, Wilfried Bürzle, Stefan Koller, and Olga Fink. Learning informative health indicators through unsupervised contrastive learning. IEEE Transactions on Reliability , page 1–13, 2024. ISSN 0018-9529, 1558-1721. doi: 10.1109/TR.2024.3397394. URL 
+
+https://ieeexplore.ieee.org/document/10531793/ .Abhinav Saxena, Kai Goebel, Don Simon, and Neil Eklund. Damage propagation modeling for aircraft engine run-to-failure simulation. In 2008 International Conference on Prognostics and Health Management , page 1–9, Denver, CO, USA, October 2008. IEEE. ISBN 978-1-4244-1935-7. doi: 10.1109/PHM.2008.4711414. URL http://ieeexplore.ieee.org/document/4711414/ .Florian Schroff, Dmitry Kalenichenko, and James Philbin. Facenet: A unified embedding for face recognition and clustering. In Proceedings of the IEEE conference on computer vision and pattern recognition , pages 815–823, 2015. Lucas Thil, Jesse Read, Rim Kaddah, and Guillaume Doquet. I-GLIDE: Input Groups for La-tent Health Indicators in Degradation Estimation , volume 16018 of Lecture Notes in Computer Science , page 395–411. Springer Nature Switzerland, Cham, 2026. ISBN 978-3-032-06105-8. doi: 10.1007/978-3-032-06106-5\_23. URL https://link.springer.com/10.1007/ 978-3-032-06106-5_23 .Kwok L Tsui, Nan Chen, Qiang Zhou, Yizhen Hai, and Wenbin Wang. Prognostics and health management: A review on data driven approaches. Mathematical Problems in Engineering , 2015 (1):793161, 2015. Amit Vinograd, Aditya Nair, Joseph H. Kim, Scott W. Linderman, and David J. Anderson. Causal evidence of a line attractor encoding an affective state. Nature , 634(8035):910–918, October 2024. ISSN 0028-0836, 1476-4687. doi: 10.1038/s41586-024-07915-x. URL https://www.nature. com/articles/s41586-024-07915-x .Tongzhou Wang and Phillip Isola. Understanding contrastive representation learning through align-ment and uniformity on the hypersphere. In International conference on machine learning , pages 9929–9939. PMLR, 2020. Ying Wang et al. Temporal straightening for latent planning. arXiv preprint arXiv:2603.12231 , 2026. 12 Xiang Zhang, Ziyuan Zhao, Theodoros Tsiligkaridis, and Marinka Zitnik. Self-supervised contrastive pre-training for time series via time-frequency consistency. (arXiv:2206.08496), October 2022. doi: 10.48550/arXiv.2206.08496. URL http://arxiv.org/abs/2206.08496 . arXiv:2206.08496 [cs]. Zeqi Zhao, Bin Liang, Xueqian Wang, and Weining Lu. Remaining useful life prediction of aircraft engine based on degradation pattern learning. Reliability Engineering & System Safety ,164:74–83, August 2017. ISSN 09518320. doi: 10.1016/j.ress.2017.02.007. URL https: //linkinghub.elsevier.com/retrieve/pii/S0951832017302454 .Shuai Zheng, Kosta Ristovski, Ahmed Farahat, and Chetan Gupta. Long short-term memory network for remaining useful life estimation. In 2017 IEEE International Conference on Prognostics and Health Management (ICPHM) , page 88–95, Dallas, TX, USA, June 2017. IEEE. ISBN 978-1-5090-5710-8. doi: 10.1109/ICPHM.2017.7998311. URL http://ieeexplore.ieee. org/document/7998311/ .13 Appendix Contents 
+
+1 Introduction 12 Related Work 23 STEP (STructured Embeddings for Progressive Time Series) 3
+
+3.1 Setting and Goal: a State-Based Latent Map . . . . . . . . . . . . . . . . . . . . . 43.2 A State-Based Contrastive Objective . . . . . . . . . . . . . . . . . . . . . . . . . 43.3 A Fixed Coordinate System for Interpretability . . . . . . . . . . . . . . . . . . . 4
+
+4 Experimental Framework 5
+
+4.1 Datasets and Preprocessing . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 54.2 RUL Prediction . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 64.3 Forecasting . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 6
+
+5 Results and Discussion 6
+
+5.1 Geometric Interpretation of Latent Spaces . . . . . . . . . . . . . . . . . . . . . . 65.2 θ encodes state, not elapsed time . . . . . . . . . . . . . . . . . . . . . . . . . . . 75.3 RUL Estimation Performance . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 85.4 Forecasting Performance . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 95.5 Robustness, Scaling and Multi-Mode Discovery . . . . . . . . . . . . . . . . . . . 9
+
+6 Conclusion 9A Notation Reference 15 B Model Definition and Theoretical Framework 15 
+
+B.1 RUL problem formulation . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 15 B.2 Formulation as a Progressive Latent Markov Process . . . . . . . . . . . . . . . . 15 
+
+C Model Architecture Overview 16 
+
+C.1 Theoretical Basis for Polar Coordinate Diagnostics . . . . . . . . . . . . . . . . . 16 
+
+D Implementation and Training Details 16 
+
+D.1 Dataset Specifications . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 16 D.2 Latent Compass Coordinates (full definitions) . . . . . . . . . . . . . . . . . . . . 17 D.3 Multi-Mode Failure Discovery (Robustness Tables) . . . . . . . . . . . . . . . . . 17 D.4 Ablation: Prototype Anchoring ( k = 0 ) . . . . . . . . . . . . . . . . . . . . . . . 17 
+
+E Additional Experiments 18 
+
+E.1 Ablation Study of Latent HIs over RUL Downstream task on C-MAPSS . . . . . . 18 E.2 Vinograd Dataset Forecasting . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 18 14 F Supplementary Figures (Decoupling and Dimensionality) 19 G Comprehensive Latent-Geometry Diagnostics 19 
+
+G.1 θ vs t/T : additional diagnostics on FD002 . . . . . . . . . . . . . . . . . . . . . . 19 G.2 Cross-subset replication of the decoupling story . . . . . . . . . . . . . . . . . . . 19 G.3 High-dimensional STEP geometry preserved . . . . . . . . . . . . . . . . . . . . 19 G.4 Phase analysis and density decoupling (per-subset) . . . . . . . . . . . . . . . . . 19 
+
+A Notation Reference 
+
+Table 2: Notation and terminology used throughout the paper. 
+
+Symbol Description 
+
+xt Observation at time tst Unobserved latent (e.g. health) state at time tzt Learned latent: zt = fenc (xt)˜z Mean-wise scaled latent set z
+
+¯z Trajectory-wise normalized latent z
+
+ˆxt Reconstruction: ˆxt = fdec (zt)(xa, x p, x n) Anchor, positive, negative samples 
+
+(za, z p, z n) Their latent codes 
+
+(ta, t p, t n) Their time indices 
+
+δt Temporal sampling margin 
+
+zinit , z end Fixed latent prototype vectors 
+
+Xinit , X end Initial/terminal observation sets 
+
+Lrecon Reconstruction loss (MSE) 
+
+Ltriplet Triplet loss with cosine similarity 
+
+Lproto Prototype alignment loss 
+
+Ltotal Combined objective 
+
+B Model Definition and Theoretical Framework 
+
+B.1 RUL problem formulation 
+
+We have a dataset of observation-trajectories (x1, . . . , x T ), each sampled independently (and possibly of varying length T ). We construct a degradation dataset D = {(x(u) 
+
+> t
+
+, y (u) 
+
+> t
+
+= T − t)}, where u is the trajectory number and y is the remaining useful life (RUL). The objective is to find indicators ϕt
+
+from the trajectory which are predictive of yt and human-interpretable. 
+
+B.2 Formulation as a Progressive Latent Markov Process 
+
+The underlying mechanism behind a degradation/progression process can be expressed via a non-regressive Markov chain {st}Tu
+
+> t=1
+
+. Without loss of generality (and not assuming the state space is discrete), if discretized into K ≥ 2 states st ∈ { 1, . . . , K }, we have s1̸ = sT , sT is an absorbing terminal state, and indices can be permuted such that st ≥ st−1 for all t. There is thus an underlying state of health/completion that moves monotonically. Although our proposed method does not employ an explicit Markov model, this formulation clarifies the theoretical motivation for learning a structured progressive latent space. 15 C Model Architecture Overview 
+
+The model implements a transformer-based autoencoder, with a symmetric encoder-decoder archi-tecture. The encoder compresses input features into a latent space z and the decoder reconstructs the input. The reconstruction decoder is a simple MLP to avoid latent space collapse, where a high-capacity decoder can ignore the meaningful structure of the latent representation (akin to posterior collapse in VAEs). Table 3: Model architecture components and specifications. 
+
+Component Description Specification 
+
+Input Projection Linear projection to transformer dimension 
+
+Rinput_dim → Rdmodel 
+
+Transformer En-coder Stack of transformer layers Layers / Heads / FF = 2 ×d, GELU Global Pooling Sequence aggregation Adaptive average pooling Latent Projection MLP to latent space Rdmodel → R32 → Rlatent_dim 
+
+Decoder MLP reconstruction Rlatent_dim → R64 → R128 → Rinput_dim 
+
+Parameter configuration. Default values: latent dim = 2 (or 4–32), dmodel = 32 , 8 attention heads, 4 transformer layers, dropout 0.1, GELU activation. 
+
+C.1 Theoretical Basis for Polar Coordinate Diagnostics 
+
+Our use of θ and r as the latent compass coordinates is grounded in contrastive representation learning. Wang and Isola [2020] identify two key properties: alignment (positive pairs should be close) and 
+
+uniformity (features should be roughly uniform on the hypersphere). For progressive time series, alignment manifests as smooth temporal evolution captured by monotonic θ progression; uniformity requires that distinct states occupy different regions, reflected in coherent r patterns separating modes. The origin (0 , 0) serves as a natural geometric anchor: it is invariant to data distribution; movement relative to it reflects both direction ( θ) and magnitude ( r); and on the unit hypersphere our prototype vectors define concept boundaries, with θ as a positional proxy. Even methods not designed for circular representations (AE, SoftCLT) can be evaluated through this lens: chaotic θ/r 
+
+patterns indicate poor alignment/uniformity, while structured signals validate these metrics as general diagnostics. 
+
+D Implementation and Training Details 
+
+D.1 Dataset Specifications 
+
+Table 4: NASA C-MAPSS dataset description, combining multiple OCs and FMs. FD001 FD002 FD003 FD004 Train set 100 260 100 248 Test set 100 259 100 249 OCs 1 6 1 6FMs 1 1 2 2
+
+Stability via β-scheduling. For higher latent dimensions ( dim( z) ≥ 4), the prototype/triplet weights are gradually annealed from a small starting value, which stabilizes training and prevents collapse to suboptimal local minima. 16 Table 5: Default training hyperparameters. 
+
+Parameter Value 
+
+Window Size ( w) 10 time steps Latent Dimension 2 (also tested 4, 8, 16, 32) Transformer Layers 4Attention Heads 8Batch Size 256 Learning Rate 5 × 10 −4
+
+Triplet Margin ( m) 1.0 
+
+λ1 (recon) 1.0 
+
+λ2 (triplet) 0.7 
+
+λ3 (prototype) 0.3 
+
+D.2 Latent Compass Coordinates (full definitions) 
+
+We provide the full set of derived indicators used in the ablations: 
+
+θi = arctan 2( zi, 2, z i, 1), ri = ∥zi∥, M = 1
+
+T − 1 
+
+> T−1
+
+X
+
+> t=1
+
+I(θt+1 > θ t). (8) Progression score: 
+
+ˆu = zT − z1
+
+∥zT − z1∥ , si = zi · ˆu, s′ 
+
+> i
+
+= si − smin 
+
+smax − smin 
+
+. (9) Line deviation: 
+
+u = zT − z1, vi = zi − z1, pi = vi · u
+
+∥u∥2 u, di = ∥vi − pi∥. (10) 
+
+D.3 Multi-Mode Failure Discovery (Robustness Tables) 
+
+Table 6: Unsupervised K-means ( k=2 ) on terminal embeddings from STEP. Despite a single zend 
+
+prototype, distinct failure modes are recovered without supervision. Silhouette and separation ratio increase with dimensionality. Dataset dim( z) Silhouette Separation ratio Misplaced (%) FD003 4 0.75 6.3 × 0% FD003 16 0.93 21.0 × 0% FD003 32 0.97 52.83 × 0% FD004 8 0.60 3.6 × 0% FD004 16 0.62 1.92 × 0% FD004 32 0.66 3.5 × 0% Table 7: Sensor-noise robustness at dim( z)=16 . STEP degrades gracefully under amplified noise, confirming that the cosine triplet loss is tolerant of noise-induced ordering violations in the observation space. Noise FD001 FD002 FD003 FD004 
+
+×0.5 11.34 14.23 13.23 18.36 
+
+×2.5 13.20 15.12 14.52 24.70 
+
+D.4 Ablation: Prototype Anchoring ( k = 0 )
+
+Removing prototype anchoring degrades performance primarily on heterogeneous subsets (FD004: 12.10 →19.01 RMSE, +57% ), while homogeneous subsets remain robust (FD003: 13.35 →11.59). The ablation behaves exactly as the design predicts: prototype anchoring contributes most where cross-trajectory structure is needed (FD004) and least where it may be constraining (FD003). 17 Table 8: Latent dimensionality sweep of RUL RMSE for STEP, downstream transformer head (Tr.STEP*) only. Performance is stable across all tested dimensions thanks to β-scheduling. 
+
+dim( z) FD001 FD002 FD003 FD004 2 10.65 12.52 11.48 16.93 4 11.26 12.34 13.35 12.10 8 11.34 12.87 11.34 17.37 16 11.62 12.74 11.33 17.59 32 12.40 12.94 11.46 17.54 
+
+E Additional Experiments 
+
+E.1 Ablation Study of Latent HIs over RUL Downstream task on C-MAPSS 
+
+Table 9: Ablation Study Results for Different Feature Combinations using dim( z)=2 . Bold best results per subset, underlined beats prior SOTA. No smoothing on features. Observation window of 75 used. 
+
+Model Features FD001 FD002 FD003 FD004 
+
+Random Forest PS, θ 14.70 12.90 13.43 18.02 Random Forest PS, θ, r 13.04 13.04 12.98 18.13 Random Forest θ, r 12.97 12.98 13.17 18.18 Random Forest θ 14.41 12.86 13.37 18.67 Random Forest z 13.63 13.13 12.59 17.98 Random Forest z, PS, θ, r 13.04 12.89 12.84 18.20 Linear regression z, PS, θ, r 15.30 14.38 17.96 19.48 Transformer z 11.67 13.03 11.48 17.11 Transformer θ, z 10.65 13.19 13.19 17.53 Transformer PS, θ 14.12 12.57 13.93 17.44 Transformer PS, θ, r 13.36 12.87 12.07 16.93 
+
+Transformer θ 14.04 13.00 16.10 17.62 Transformer θ, r 12.89 12.61 12.16 17.43 Transformer z, PS, θ, r 12.73 12.66 12.02 17.08 The ablation shows few performance variations between our indicator features, evidence that we have learned a strong representation of the dataset’s geometry. This stability is important: prior work such as I-GLIDE required combining HIs together and showed instability when they were used in isolation. Our HIs are designed to comprehensively represent entire degradation trajectories, whereas I-GLIDE focuses on near-failure RUL estimation. 
+
+E.2 Vinograd Dataset Forecasting 
+
+For reproduction purposes, we adopt the same discretization as Hu et al. [2025] for the forecasting task, but the backbone is trained on the entire dataset. We train a first backbone using w=1 and a second using w=10 with step size 1 in both cases. Once the representation is learned, we sample observations using a step size of 10 to obtain an observation state every 1 s. We train a transformer model on the forecasting task p(zt+1 |zt). We use 30 epochs with early stopping on the validation R2
+
+over 15-step predictions. We perform 10 runs per backbone to gather mean and std. Our best results remain superior in early steps and comparable to prior methods in later stages. 18 t/T only only + t/T    
+
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> 60
+> RMSE (lower is better)
+> 58.1
+> 14.1
+> 58.4
+> RUL Prediction RMSE
+> (Downstream Transformer)
+> t/T only only + t/T
+> 1.5
+> 1.0
+> 0.5
+> 0.0
+> 0.5
+> R² (higher is better)
+> -1.749
+> 0.838
+> -1.774
+> RUL Prediction R²
+> (Downstream Transformer)
+> Conditional Predictive Gain FD002 (z=4, w=10)
+
+Figure 5: θ does not collapse to t/T (FD002). Adding t/T to θ does not improve, and slightly hurts, downstream RMSE/ R2, evidence that θ already encodes the state. 
+
+(a) dim( z)=4 , |ρ|=0 .98 . (b) dim( z)=16 , |ρ|=0 .93 . (c) dim( z)=32 , |ρ|=0 .96 .
+
+Figure 6: Full latent-dimension sweep on FD003. The directional structure from green (healthy) to red (end-of-life) anchor is preserved across all tested dimensions; the surrounding manifold becomes richer with dimension. 
+
+F Supplementary Figures (Decoupling and Dimensionality) G Comprehensive Latent-Geometry Diagnostics 
+
+We extend the main-paper evidence on (i) decoupling of θ from elapsed time and (ii) preservation of geometric interpretability across higher latent dimensions, with comprehensive per-subset and per-dimension figures. 
+
+G.1 θ vs t/T : additional diagnostics on FD002 G.2 Cross-subset replication of the decoupling story 
+
+The same battery of diagnostics is reproduced on all four C-MAPSS subsets to rule out FD002-specific effects. 
+
+G.3 High-dimensional STEP geometry preserved G.4 Phase analysis and density decoupling (per-subset) 
+
+The full per-subset phase-analysis battery is provided in the released anonymized code repository. As an example we include here the FD001 and FD003 phase_analysis and density_decoupling 
+
+composites. 19 0.0 0.2 0.4 0.6 0.8 1.0 
+
+Value 
+
+0
+
+1
+
+2
+
+3
+
+4
+
+5
+
+> Density
+
+Early (0-33%) 
+
+(KS=1.0000, p=0.00e+00) 
+
+t/T 
+
+0.2 0.4 0.6 0.8 1.0 
+
+Value 
+
+0.0 
+
+0.5 
+
+1.0 
+
+1.5 
+
+2.0 
+
+2.5 
+
+3.0 
+
+3.5 
+
+4.0 
+
+> Density
+
+Mid (33-67%) 
+
+(KS=0.4035, p=0.00e+00) 
+
+t/T 
+
+0.0 0.2 0.4 0.6 0.8 1.0 
+
+Value 
+
+0
+
+1
+
+2
+
+3
+
+4
+
+5
+
+> Density
+
+Late (67-100%) 
+
+(KS=0.9799, p=0.00e+00) 
+
+t/T Figure 7: Phase-wise marginal distributions of θ vs t/T on FD002. The two signals are nearly disjoint at the trajectory extremes (KS =1.00 early, 0.98 late; KS =0.40 mid; all p ≪ 10 −3). 0 20 40 60 80 100 120 
+
+> Timestep
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+Unit 244 (T=119)  
+
+> t/T
+> 1RUL (norm)
+
+0 20 40 60 80 100 120 140 160 
+
+> Timestep
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+Unit 143 (T=157) 
+
+0 25 50 75 100 125 150 175 
+
+> Timestep
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+Unit 86 (T=181) 
+
+0 25 50 75 100 125 150 175 200 
+
+> Timestep
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+Unit 147 (T=198) 
+
+0 50 100 150 200 
+
+> Timestep
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+Unit 236 (T=230) 
+
+0 50 100 150 200 250 300 350 
+
+> Timestep
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+Unit 112 (T=369) 
+
+vs t/T vs RUL FD002 (z=4, w=10) 
+
+Figure 8: Per-unit comparison of θ (blue) and t/T (red) on six FD002 engines. The two signals are clearly distinct: t/T is a perfect diagonal by construction, while θ remains noisy in a high “healthy” regime then crashes near failure. The transition timing varies across engines, consistent with θ
+
+tracking state rather than time. 20 0 50 100 150 200 
+
+RUL Difference (cycles) 
+
+0.0 
+
+0.1 
+
+0.2 
+
+0.3 
+
+0.4 
+
+0.5 
+
+> Difference
+
+Health State Difference vs Difference 
+
+(Spearman =0.0374, p=1.11e-02) 
+
+Trend 
+
+t/T=0.0 t/T=0.1 t/T=0.2 t/T=0.3 t/T=0.4 t/T=0.5 t/T=0.6 t/T=0.7 t/T=0.8 t/T=0.9 
+
+Normalized Time Bucket 
+
+0.0 
+
+0.1 
+
+0.2 
+
+0.3 
+
+0.4 
+
+0.5 
+
+0.6 
+
+> Difference
+
+Difference Across Different Times 
+
+0.0 0.2 0.4 0.6 0.8 1.0 
+
+values (comparing pairs) 
+
+Unit A 
+
+Unit B 
+
+> Unit Pair
+
+Sample Pairs: Showing Differences Within Pairs 
+
+Test 1c: Same-Time Different-Health Analysis 
+
+Dataset: FD002 
+
+Latent Dim: 4
+
+Window Size: 10 
+
+Results: 
+
+Comparison Pairs: 4596 
+
+RUL Difference: 
+
+Mean: 35.4 cycles 
+
+Median: 26.0 cycles 
+
+Max: 237.0 cycles 
+
+Difference: 
+
+Mean: 0.1247 
+
+Median: 0.1005 
+
+Max: 0.5821 
+
+Correlation: 
+
+Spearman = 0.0374 
+
+p-value = 1.11e-02 
+
+Interpretation: 
+
+If >> 0 and p < 0.05: 
+
+TRACKS STATE (different health 
+
+leads to different even at same t/T) 
+
+If 0 or p > 0.05: 
+
+may be learning just t/T 
+
+(health difference doesn't affect )
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+> Normalized Time (t/T)
+
+Figure 9: Same-time, different-health analysis (FD002). For pairs of points binned by their normalized time t/T , the difference in θ is essentially uncorrelated with the time difference (Spearman 
+
+ρ=0 .04 , p=1 .1×10 −2), confirming that two observations sharing the same elapsed time can occupy very different latent states. 0.4 0.2 0.0 0.2 0.4 
+
+Partial Correlation 
+
+0
+
+50 
+
+100 
+
+150 
+
+200 
+
+250 
+
+> Number of Units
+
+pcorr( , RUL | t/T) 
+
+> Per-unit pcorr
+> Mean = 0.000
+> Pooled = 0.043 (p=7.1e-23)
+
+1.0 0.5 0.0 0.5 1.0 
+
+corr(t/T, RUL) 
+
+1.00 
+
+0.75 
+
+0.50 
+
+0.25 
+
+0.00 
+
+0.25 
+
+0.50 
+
+0.75 
+
+1.00 
+
+> corr(  , RUL)
+
+Per-Unit: vs t/T 
+
+correlation with RUL  
+
+> y = x ( = t/T)
+
+0 50 100 150 200 250 
+
+Unit (sorted by significance) 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+1.2 
+
+> -log  (p-value)
+
+Significance of 
+
+pcorr( , RUL | t/T) 
+
+> p=0.05 (0/260 sig.)
+
+Partial Correlation Analysis FD002 (z=4, w=10) 
+
+Figure 10: Partial correlation analysis on FD002. Per-unit pcorr( θ, RUL | t/T ). After controlling for elapsed time, θ retains a statistically significant pooled partial correlation with RUL (pooled 
+
+= 0 .043 , p=7 .1×10 −23 ). The middle panel highlights that within each unit, θ correlates with RUL near −0.9, comparable to t/T , but θ remains computable at inference without oracle T .21 t/T 
+
+> angles
+> radii
+> z
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0  
+
+> Monotonicity
+> 1.00
+> 0.03
+> 0.12
+> 0.04 0.03
+
+Monotonicity 
+
+> t/T
+> angles
+> radii
+> z
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> Trendability
+> 1.00
+> 0.77
+> 0.55
+> 0.50
+> 0.41
+
+Trendability 
+
+> t/T
+> angles
+> radii
+> z
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0    
+
+> Prognosability
+> 1.00 0.98 0.99
+> 0.85 0.86
+
+Prognosability 
+
+> t/T
+> angles
+> radii
+> z
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> Init. Distinguish.
+> 1.00
+> 0.88
+> 0.68
+> 0.88
+> 0.82
+
+Init. Distinguish. 
+
+> t/T
+> angles
+> radii
+> z
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> | (HI, RUL)|
+> 1.00
+> 0.77
+> 0.55
+> 0.50
+> 0.41
+
+| (HI, RUL)| 
+
+Health Indicator Quality FD002 (z=4, w=10) (a) Standard PHM HI quality metrics on FD002. t/T scores 1.0 by construction on monotonicity/trendability/ |ρ(HI , RUL) |; θ matches it on prognosability (0.98) while remaining inferable at test time. 
+
+(b) Marginal and CDF comparisons of three indicators ( zlatent L2 norm, θ, r) versus normalized timestep t/T on FD002. 
+
+Figure 11: Additional FD002 diagnostics for the indicators-vs-time decoupling. 22 t/T only only + t/T 
+
+0
+
+10 
+
+20 
+
+30 
+
+40 
+
+50 
+
+60 
+
+> RMSE (lower is better)
+
+64.7 
+
+19.5 
+
+62.9 
+
+RUL Prediction RMSE 
+
+(Downstream Transformer) 
+
+t/T only only + t/T 
+
+2.0 
+
+1.5 
+
+1.0 
+
+0.5 
+
+0.0 
+
+0.5 
+
+> R² (higher is better)
+
+-2.160 
+
+0.713 
+
+-1.987 
+
+RUL Prediction R² 
+
+(Downstream Transformer) 
+
+Conditional Predictive Gain FD001 (z=4, w=10) (a) FD001, predictive gain. t/T only only + t/T 
+
+0
+
+10 
+
+20 
+
+30 
+
+40 
+
+50 
+
+60 
+
+> RMSE (lower is better)
+
+65.5 
+
+15.6 
+
+65.9 
+
+RUL Prediction RMSE 
+
+(Downstream Transformer) 
+
+t/T only only + t/T 
+
+2.5 
+
+2.0 
+
+1.5 
+
+1.0 
+
+0.5 
+
+0.0 
+
+0.5 
+
+> R² (higher is better)
+
+-2.707 
+
+0.788 
+
+-2.759 
+
+RUL Prediction R² 
+
+(Downstream Transformer) 
+
+Conditional Predictive Gain FD003 (z=4, w=10) 
+
+(b) FD003, predictive gain. 
+
+23 t/T only only + t/T 
+
+0
+
+10 
+
+20 
+
+30 
+
+40 
+
+50 
+
+60 
+
+> RMSE (lower is better)
+
+64.1 
+
+20.4 
+
+63.3 
+
+RUL Prediction RMSE 
+
+(Downstream Transformer) 
+
+t/T only only + t/T 
+
+2.0 
+
+1.5 
+
+1.0 
+
+0.5 
+
+0.0 
+
+0.5 
+
+> R² (higher is better)
+
+-2.054 
+
+0.692 
+
+-1.976 
+
+RUL Prediction R² 
+
+(Downstream Transformer) 
+
+Conditional Predictive Gain FD004 (z=4, w=10) (a) FD004, predictive gain. 0 50 100 150 200 250 300 350 
+
+RUL Difference (cycles) 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+> Difference
+
+Health State Difference vs Difference 
+
+(Spearman =0.2922, p=4.95e-99) 
+
+Trend 
+
+t/T=0.0 t/T=0.1 t/T=0.2 t/T=0.3 t/T=0.4 t/T=0.5 t/T=0.6 t/T=0.7 t/T=0.8 t/T=0.9 
+
+Normalized Time Bucket 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+> Difference
+
+Difference Across Different Times 
+
+0.0 0.2 0.4 0.6 0.8 1.0 
+
+values (comparing pairs) 
+
+Unit A 
+
+Unit B 
+
+> Unit Pair
+
+Sample Pairs: Showing Differences Within Pairs 
+
+Test 1c: Same-Time Different-Health Analysis 
+
+Dataset: FD003 
+
+Latent Dim: 4
+
+Window Size: 10 
+
+Results: 
+
+Comparison Pairs: 5000 
+
+RUL Difference: 
+
+Mean: 55.9 cycles 
+
+Median: 35.0 cycles 
+
+Max: 361.0 cycles 
+
+Difference: 
+
+Mean: 0.2722 
+
+Median: 0.0880 
+
+Max: 0.9064 
+
+Correlation: 
+
+Spearman = 0.2922 
+
+p-value = 4.95e-99 
+
+Interpretation: 
+
+If >> 0 and p < 0.05: 
+
+TRACKS STATE (different health 
+
+leads to different even at same t/T) 
+
+If 0 or p > 0.05: 
+
+may be learning just t/T 
+
+(health difference doesn't affect )
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+> Normalized Time (t/T)
+
+(b) FD003, same-time/different-health. 
+
+Figure 13: Cross-subset replication: θ subsumes t/T in downstream RMSE/R 2 on FD001/FD003/FD004 as well, and the same-time/different-health pattern reproduces on FD003. 24 050 100 150 200 250 
+
+RUL (cycles remaining) 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+> Angle  (radians)
+
+Angular Degradation Paths 
+
+Unit 1 
+
+Unit 2 
+
+Unit 3 
+
+Unit 5 
+
+050 100 150 200 250 
+
+RUL (cycles remaining) 
+
+0.6 
+
+0.8 
+
+1.0 
+
+1.2 
+
+1.4 
+
+1.6 
+
+1.8 
+
+> Radius r (norm)
+
+Radial Degradation Paths 
+
+Unit 1 
+
+Unit 2 
+
+Unit 3 
+
+Unit 5 
+
+Angle Radius r 
+
+0.0 
+
+0.1 
+
+0.2 
+
+0.3 
+
+0.4 
+
+0.5 
+
+0.6 
+
+0.7 
+
+0.8 
+
+> Monotonicity Score
+
+Monotonicity Distribution 
+
+Angle Radius r 
+
+0.88 
+
+0.90 
+
+0.92 
+
+0.94 
+
+0.96 
+
+0.98 
+
+1.00 
+
+> Prognosability Score
+
+Prognosability Distribution 
+
+050 100 150 200 250 
+
+RUL (cycles remaining) 
+
+0.3 
+
+0.4 
+
+0.5 
+
+0.6 
+
+0.7 
+
+0.8 
+
+0.9 
+
+1.0 
+
+1.1 
+
+> Angle
+
+Angle vs RUL (Unit 1, = 0.931) 
+
+trend (slope=0.003) 
+
+Angle Radius r 
+
+1.00 
+
+0.75 
+
+0.50 
+
+0.25 
+
+0.00 
+
+0.25 
+
+0.50 
+
+> Spearman Correlation with Time
+
+Degradation-Correlation ( )(a) FD003 at dim( z)=16 .050 100 150 200 250 
+
+RUL (cycles remaining) 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> Angle  (radians)
+
+Angular Degradation Paths 
+
+Unit 1 
+
+Unit 2 
+
+Unit 3 
+
+Unit 5 
+
+050 100 150 200 250 
+
+RUL (cycles remaining) 
+
+0.5 
+
+1.0 
+
+1.5 
+
+2.0 
+
+2.5 
+
+3.0 
+
+3.5 
+
+> Radius r (norm)
+
+Radial Degradation Paths 
+
+Unit 1 
+
+Unit 2 
+
+Unit 3 
+
+Unit 5 
+
+Angle Radius r 
+
+0.0 
+
+0.1 
+
+0.2 
+
+0.3 
+
+0.4 
+
+0.5 
+
+0.6 
+
+0.7 
+
+> Monotonicity Score
+
+Monotonicity Distribution 
+
+Angle Radius r 
+
+0.800 
+
+0.825 
+
+0.850 
+
+0.875 
+
+0.900 
+
+0.925 
+
+0.950 
+
+0.975 
+
+1.000 
+
+> Prognosability Score
+
+Prognosability Distribution 
+
+050 100 150 200 250 
+
+RUL (cycles remaining) 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+1.2 
+
+> Angle
+
+Angle vs RUL (Unit 2, = 0.963) 
+
+trend (slope=0.004) 
+
+Angle Radius r 
+
+1.0 
+
+0.8 
+
+0.6 
+
+0.4 
+
+0.2 
+
+0.0 
+
+0.2 
+
+> Spearman Correlation with Time
+
+Degradation-Correlation ( ) (b) FD003 at dim( z)=32 .050 100 150 200 250 300 
+
+RUL (cycles remaining) 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> Angle  (radians)
+
+Angular Degradation Paths 
+
+Unit 1 
+
+Unit 2 
+
+Unit 3 
+
+Unit 5 
+
+050 100 150 200 250 300 
+
+RUL (cycles remaining) 
+
+0.5 
+
+1.0 
+
+1.5 
+
+2.0 
+
+2.5 
+
+3.0 
+
+> Radius r (norm)
+
+Radial Degradation Paths 
+
+Unit 1 
+
+Unit 2 
+
+Unit 3 
+
+Unit 5 
+
+Angle Radius r 
+
+0.0 
+
+0.1 
+
+0.2 
+
+0.3 
+
+0.4 
+
+0.5 
+
+> Monotonicity Score
+
+Monotonicity Distribution 
+
+Angle Radius r 
+
+0.65 
+
+0.70 
+
+0.75 
+
+0.80 
+
+0.85 
+
+0.90 
+
+0.95 
+
+1.00 
+
+> Prognosability Score
+
+Prognosability Distribution 
+
+050 100 150 200 250 300 
+
+RUL (cycles remaining) 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+1.2 
+
+> Angle
+
+Angle vs RUL (Unit 2, = 0.885) 
+
+trend (slope=0.003) 
+
+Angle Radius r 
+
+0.8 
+
+0.6 
+
+0.4 
+
+0.2 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+> Spearman Correlation with Time
+
+Degradation-Correlation ( )
+
+(c) FD004 at dim( z)=32 .0 50 100 150 200 250 
+
+Time Step 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> Angle  (radians)
+
+Angular Degradation Paths 
+
+Unit 1 
+
+Unit 2 
+
+Unit 3 
+
+Unit 5 
+
+0 50 100 150 200 250 
+
+Time Step 
+
+0.0 
+
+0.5 
+
+1.0 
+
+1.5 
+
+2.0 
+
+2.5 
+
+3.0 
+
+3.5 
+
+> Radius r (norm)
+
+Radial Degradation Paths 
+
+Unit 1 
+
+Unit 2 
+
+Unit 3 
+
+Unit 5 
+
+Angle Radius r 
+
+0.0 
+
+0.1 
+
+0.2 
+
+0.3 
+
+0.4 
+
+0.5 
+
+0.6 
+
+0.7 
+
+> Monotonicity Score
+
+Monotonicity Distribution 
+
+Angle Radius r 
+
+0.70 
+
+0.75 
+
+0.80 
+
+0.85 
+
+0.90 
+
+0.95 
+
+> Prognosability Score
+
+Prognosability Distribution 
+
+050 100 150 200 250 
+
+RUL (cycles remaining) 
+
+0.0 
+
+0.1 
+
+0.2 
+
+0.3 
+
+0.4 
+
+0.5 
+
+> Angle
+
+Angle vs RUL (Unit 1, = -0.978), dim(z)=4 
+
+trend (slope=-0.002) 
+
+Angle Radius r 
+
+0.4 
+
+0.2 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> Spearman Correlation with Time
+
+Degradation-Correlation ( ) (d) FD003 at dim( z)=4 (reference). 
+
+Figure 14: Comprehensive PHM diagnostics across latent dimensions. Each panel reports angular and radial degradation paths, monotonicity & prognosability boxplots, angle-vs-RUL with trendline, and Spearman degradation correlation. The angle-vs-RUL Spearman |ρ| stays high at every dimension (0.96, 0.93, 0.96 on FD003 at dim( z)=4 , 16 , 32 ). 0.2 0.0 0.2 0.4 0.6 0.8 
+
+Latent Dimension 1 (scaled) 
+
+0.5 
+
+0.6 
+
+0.7 
+
+0.8 
+
+> Latent Dimension 2 (scaled)
+
+k-means (k=2) on Mean of Last 10 Latent Vectors per Unit 
+
+Cluster 0 
+
+Cluster 1 
+
+Centroids 
+
+(a) FD003 ( k = 2 , last-10 mean). 1.2 1.4 1.6 1.8 
+
+Latent Dimension 1 (scaled) 
+
+1.00 
+
+0.95 
+
+0.90 
+
+0.85 
+
+0.80 
+
+0.75 
+
+0.70 
+
+> Latent Dimension 2 (scaled)
+
+k-means (k=2) on Mean of Last 10 Latent Vectors per Unit 
+
+Cluster 0 
+
+Cluster 1 
+
+Centroids (b) FD003 z=16. 0.2 0.0 0.2 0.4 0.6 0.8 
+
+Latent Dimension 1 (scaled) 
+
+0.5 
+
+0.6 
+
+0.7 
+
+0.8 
+
+> Latent Dimension 2 (scaled)
+
+k-means (k=2) on Mean of Last 10 Latent Vectors per Unit 
+
+Cluster 0 
+
+Cluster 1 
+
+Centroids (c) FD003 z=32. 
+
+Figure 15: Unsupervised K-means ( k=2 ) on terminal latent embeddings recovers the two FD003 failure modes at every latent dimension. Two clearly separated clusters (silhouette 0.75/0.93/0.97) with 0% misplaced units, despite a single shared zend prototype during training. 0.0 0.2 0.4 0.6 0.8 
+
+Value 
+
+0
+
+2
+
+4
+
+6
+
+8
+
+10 
+
+12 
+
+14 
+
+> Density
+
+Early (0-33%) 
+
+(KS=0.7544, p=0.00e+00) 
+
+t/T 
+
+0.0 0.2 0.4 0.6 0.8 1.0 
+
+Value 
+
+0
+
+1
+
+2
+
+3
+
+4
+
+5
+
+> Density
+
+Mid (33-67%) 
+
+(KS=0.7085, p=0.00e+00) 
+
+t/T 
+
+0.0 0.2 0.4 0.6 0.8 1.0 
+
+Value 
+
+0
+
+1
+
+2
+
+3
+
+4
+
+5
+
+6
+
+7
+
+> Density
+
+Late (67-100%) 
+
+(KS=0.1851, p=2.00e-98) 
+
+t/T 
+
+(a) FD001, phase analysis. 0.0 0.2 0.4 0.6 0.8 
+
+Value 
+
+0
+
+2
+
+4
+
+6
+
+8
+
+10 
+
+> Density
+
+Early (0-33%) 
+
+(KS=0.5838, p=0.00e+00) 
+
+t/T 
+
+0.0 0.2 0.4 0.6 0.8 1.0 
+
+Value 
+
+0
+
+1
+
+2
+
+3
+
+4
+
+5
+
+> Density
+
+Mid (33-67%) 
+
+(KS=0.6719, p=0.00e+00) 
+
+t/T 
+
+0.0 0.2 0.4 0.6 0.8 1.0 
+
+Value 
+
+0
+
+2
+
+4
+
+6
+
+8
+
+> Density
+
+Late (67-100%) 
+
+(KS=0.3333, p=9.88e-324) 
+
+t/T (b) FD003, phase analysis. 
+
+Figure 16: Marginal θ/t/T distributions across early/mid/late phases. KS values exceed 0.95 in early and late phases for both subsets, replicating the FD002 finding. 25
