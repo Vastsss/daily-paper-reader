@@ -1,0 +1,1432 @@
+Title: GNMR: Runtime Stability Control for Low-Precision Large Language Model Training
+
+URL Source: https://arxiv.org/pdf/2606.00539v1
+
+Published Time: Tue, 02 Jun 2026 00:55:38 GMT
+
+Number of Pages: 29
+
+Markdown Content:
+June 2, 2026 
+
+# GNMR: Runtime Stability Control for Low-Precision Large Language Model Training 
+
+## Boao Kong 1,∗, Weichen Jia 1,∗, Engao Zhang 1,∗, Guohong Li 1,∗,
+
+## Yonghan Dong 2, Yao Wang 2, Yaoyuan Wang 2, Yunke Peng 2, Kun Yuan 1,¶
+
+> 1
+
+Peking University , 2Huawei Technologies Ltd. 
+
+Training stability is a key bottleneck in low-precision language model training: efficient low-cost paths can still produce short-lived numerical risks at a small set of operators. We formulate this as runtime stability control and present Gradient Norm-to-Mean Ratio ( GNMR ), a lightweight controller that compares each recoverable unit’s current gradient norm with its historical mean. Together with 
+
+∆-GNMR for abrupt short-window increases, GNMR maps local risk signals to bounded recovery actions under a hard maxO budget and a short lock interval, without changing the numerical format, kernel, or backend recipe. Across activation-quantization stress, DeepSeek-style recipe-level training, and LLaMA-2 13B fine-tuning, GNMR preserves high-fidelity quality with sparse, budgeted recovery. These results support GNMR as a backend-agnostic controller to improve low-precision training stability while preserving low-cost execution. 
+
+> ∗
+
+Equal Contribution, ¶Corresponding author  
+
+> Emails:
+
+kongboao@stu.pku.edu.cn (Boao Kong), kunyuan@pku.edu.cn (Kun Yuan) 
+
+## 1 Introduction 
+
+Training stability is a central constraint in training and adaptation of large language model (LLM). To reduce computation, memory, and communication costs, modern training stacks use low-cost execution paths. These paths may appear as mixed-precision training [ 37 ], FP8 training recipes [ 40 ], compression of activation or optimization state [ 58 ], or quantized adaptation [ 13 ]. Previous work has shown that such paths can preserve acceptable model quality when combined with suitable formats, scaling rules, outlier handling, and high-fidelity safeguards. The question we study is not whether low-cost execution is useful on average. Instead, we ask whether training can detect and recover from local stability risks when low-precision perturbations become harmful at runtime. From a stability angle, low-precision perturbations do not affect all layers, operators, and training steps equally. Most low-cost execution may be safe for most steps, while a few local units can become risky in short windows. LLM.int8 [ 11 ] identifies outlier features as a key difficulty in quantization of LLMs, and SmoothQuant [ 59 ]treats activation outliers as a central obstacle to accurate low-bit execution. Reduced-precision training can be sensitive to stability and hyperparameter choices [ 30 ]. More broadly, loss and gradient spikes are known failure modes in large-scale pre-training [49] and have motivated optimizer-level stabilization methods [21]. These observations make stability under low precision a runtime control problem, not only a static configuration problem. A layer may be stable for many updates, become risky for a few steps when gradients, activation statistics, scaling factors, or optimizer states shift, and then return to a stable regime. In the same step, most of the other layers may remain safe. A useful controller should therefore identify which local units are becoming unstable, decide whether recovery is needed now, and apply recovery under a fixed overhead budget. Existing work addresses low-precision numerical issues in several directions. Low-bit training recipes extend practical execution to FP4-style regimes [ 55 ] and NVFP4-style regimes [ 1]. Training stability methods include gradient clipping [ 39 ], gradient-noise-scale analysis [ 34 ], and GSNR-style signals [ 25 ]. Dynamic precision methods study adaptive bit-width choices over time or structure [ 62 ]. These methods are valuable, but they 
+
+> arXiv:2606.00539v1 [cs.LG] 30 May 2026
+
+2Loss        
+
+> Iteration
+> Loss Spike
+> Input
+> Output
+> Attn
+> FFN
+> 𝑴𝒖𝒍𝒕𝒊𝑯𝒆𝒂𝒅
+> 𝑨𝒕𝒕𝒆𝒏𝒕𝒊𝒐𝒏
+> 𝑷 𝒍𝒐𝒘
+> 𝑷 𝒍𝒐𝒘
+> 𝑷 𝒍𝒐𝒘 fc2
+> fc1
+> With GNMR
+> Low Precision
+> GNMR
+> Check
+> By using GNMR, we can train with
+> High precision to avoid spike
+> Input
+> Output
+> Attn
+> FFN
+> 𝑴𝒖𝒍𝒕𝒊𝑯𝒆𝒂𝒅
+> 𝑨𝒕𝒕𝒆𝒏𝒕𝒊𝒐𝒏
+> 𝑷 𝒍𝒐𝒘
+> 𝑷 𝒍𝒐𝒘
+> 𝑷 𝒉𝒊𝒈𝒉 fc2
+> fc1
+> GNMR
+> Check Input
+> Output
+> Attn
+> FFN
+> 𝑴𝒖𝒍𝒕𝒊𝑯𝒆𝒂𝒅
+> 𝑨𝒕𝒕𝒆𝒏𝒕𝒊𝒐𝒏
+> 𝑷 𝒍𝒐𝒘
+> 𝑷 𝒍𝒐𝒘
+> 𝑷 𝒍𝒐𝒘 fc2
+> fc1
+
+Figure 1 Overview of GNMR as a runtime stability controller. GNMR monitors local risk signals and routes selected recoverable units from the low-cost path to the higher-fidelity recovery path under a fixed active budget. 
+
+mainly focus on the format, recipe, optimizer, or offline calibration level. They do not directly answer the controller-level question studied here: given an existing low-cost path and a more accurate recovery path, how should training decide online which local units to recover under a fixed budget? 
+
+1.1 Challenges in Runtime Stability Control under Low Precision 
+
+The stability-control view above leads to four requirements that existing low-precision approaches do not jointly satisfy. 
+
+(L1) Sparse and non-stationary runtime risk. Low-precision instability is rarely uniform across all layers and steps. A unit may be safe for most of training process but risky during a short window. Static or semi-static strategies may miss such transient risks, or protect too much of the model with conservative safeguards. 
+
+(L2) Local and lightweight risk signals. Existing stability indicators include loss spikes [ 49 ], global gradient norms [ 39 ], gradient-noise statistics [ 34 ], GSNR-style signals [ 25 ], and outlier statistics [ 59 ]. However, a runtime controller needs more than a general warning signal. It needs a signal that is cheap to compute, available in every single step, local enough to identify the risky unit, and comparable across modules. 
+
+(L3) Budgeted and stable intervention. Recovery actions are not free. Sending more units through a higher-fidelity path can increase peak memory, casting overhead, and routing complexity. Frequent switching can also cause thrashing. A controller must therefore decide which units are risky, how many can be recovered at each step, and how long recovery should persist. 
+
+(L4) Separation between control quality and backend implementation. Low-precision studies often evaluate complete systems where formats, kernels, scaling rules, optimizers, and fallback policies change together. Such evaluations are useful, but they can hide the controller question. To evaluate runtime stability control, we need to separate trigger quality, budget behavior, recipe-level integration, and large-model boundedness from claims about new kernels or universal hardware speedups. 
+
+1.2 Contributions 
+
+To address these challenges, we present GNMR , short for Gradient Norm-to-Mean Ratio, a runtime stability controller for low-precision language model training, as illustrated in Figure 1. GNMR monitors operator-wise gradient deviations and applies temporary high-fidelity recovery only to risky low-precision-eligible units under a fixed budget. Its core contribution is a stability-aware risk monitor and a budgeted closed-loop control policy operating over existing low-cost and recovery paths. Our contributions can be summarized as: 3 
+
+> (C1) Runtime stability-control formulation under low precision.
+
+We formulate local instability in low-precision language model training as a constrained online control problem. Given a low-cost execution path and a higher-fidelity recovery path, the controller observes runtime statistics of eligible units and selects a sparse subset for temporary recovery under a memory or compute budget. This formulation unifies risk identification, recovery decisions, and budget constraints while decoupling the control policy from backend implementation.  
+
+> This addresses (L1) and (L4). (C2) Dual-timescale GNMR risk monitor.
+
+We design GNMR as a lightweight operator-wise statistic that compares a unit’s current gradient norm with its historical mean, capturing long-horizon deviations from typical training behavior. We further introduce ∆-GNMR, which normalizes GNMR by a short recent window to detect abrupt local changes. Together, they provide a real-time, dimensionless, and local risk signal for runtime control. This addresses (L2). (C3) Budgeted recovery policy with analysis. We design a policy that recovers only top-risk units, uses maxO 
+
+to control instantaneous overhead, and applies a short Tlock interval to reduce thrashing. We also provide a one-step expected-descent analysis showing why selective recovery can reduce low-precision perturbation on critical updates. This addresses (L3). (C4) Controller-level evidence across low-precision settings. We evaluate GNMR in a controlled activation-quantization stress bench, a TE-backed low-precision training setting [ 41 ], and a large-model post-training task. The experiments examine trigger quality, budget behavior, quality preservation, and engineering overhead, supporting GNMR as a runtime stability controller that separates trigger quality, budget behavior, recipe-level integration, and downstream preservation from backend implementation choices. This addresses (L4). 
+
+A comprehensive review of Related Work is provided in Appendix A. 
+
+## 2 Preliminary: Operator-wise Runtime Monitoring 
+
+We use an operator-level view of transformer training to define the local runtime statistics used by our controller. This view separates the compositional structure of the network from within-layer parallelism, but we keep only the notation needed in the main text. Detailed instantiations for attention, feed-forward networks, normalization, residual paths, aggregation, and backpropagation are deferred to Appendix B.  
+
+> Training objective.
+
+Let F (⋅; Θ ) be the model mapping and r(⋅; θ(r)) the readout to logits. For data (x, y )∼D,we write the training objective as 
+
+L(Θ, θ (r)) = E(x,y )∼D [ℓ(r(F (x; Θ ); θ(r)), y )] ,
+
+where Θ contains the parameters of the model’s operator blocks.  
+
+> Operator-level decomposition.
+
+We write the network as a composition of U nested operators: 
+
+y[0] = x, y[u] = N [u](y[u−1]; Ξ [u]) , u = 1, . . . , U. (1) Each block N [u] may contain multiple sibling operators whose outputs are combined by an aggregation operation. This covers multi-head attention, feed-forward modules, normalization, and residual paths. We leave the explicit sibling-operator and aggregation formulas to Appendix B.  
+
+> Monitored runtime units.
+
+The decomposition above induces a set of monitored units B. A unit b ∈ B may correspond to an operator, branch, block, or layer, depending on the implementation granularity. We denote its parameters by θb. At training step t, let ̂ Lt be the stochastic mini-batch loss. The local gradient and its norm are 
+
+gb,t = ∇θb̂ Lt, nb,t = ∥gb,t ∥2. (2) 4The scalar nb,t is the basic runtime statistic used in Section 3. Because raw gradient norms are not directly comparable across operators with different typical scales, the next section introduces a history-normalized statistic for local stability monitoring. 
+
+## 3 GNMR Runtime Stability Controller 
+
+Section 2 defines the operator-wise gradient norm nb,t as a local statistic available during training. Although 
+
+nb,t is local and cheap to obtain, its raw value cannot be used as a risk score directly, since different operators have different typical scales. A useful risk criterion should therefore measure whether a unit’s current update is unusual relative to its own history. We instantiate this criterion with two history-normalized risk scores: GNMR for long-horizon deviations and 
+
+∆-GNMR for short-window changes. These scores are then used to drive the budgeted recovery policy in Section 3.3. 
+
+3.1 Long-horizon Risk Score: GNMR 
+
+GNMR, short for Gradient Norm-to-Mean Ratio, measures how unusual the current gradient norm of a monitored unit is relative to its own historical scale. For an operator parameter θ[u,k ], this corresponds to comparing its current gradient norm with its running historical mean: GNMR t(θ[u,k ]) ∶= ∥g[u,k ] 
+
+> t
+
+∥
+
+∑t−1  
+
+> τ=1
+
+∥g[u,k ] 
+
+> τ
+
+∥ /( t − 1) , (3) where g[u,k ] 
+
+> t
+
+denotes the evaluated gradient at the t-th step with respect to θ[u,k ]. We set GNMR 1(θ[u,k ]) = 1.Instead of comparing raw gradient norms across operators, GNMR compares each unit with its own past behavior, making the score dimensionless and more suitable for ranking local runtime risks across heterogeneous modules. Compared with stability indicators such as gradient spike score (GSS) [ 21 ], gradient signal-to-noise ratio (GSNR) [ 25 ], and Jacobian spectral norm [ 49 ], GNMR is designed for online operator-wise monitoring. GSS relies on full-process gradient statistics, GSNR requires large-batch gradients, and Jacobian-based quantities introduce substantial overhead. In contrast, GNMR only uses the current gradient norm and a running historical average, as summarized in Algorithm 1. 
+
+3.2 Short-window Risk Score: ∆-GNMR 
+
+GNMR uses long-horizon history, which is useful for measuring persistent deviation but may smooth out abrupt local changes. To capture short-window instability, we introduce ∆-GNMR, which compares the current GNMR value with its recent-window average: 
+
+∆-GNMR t(θ[u,k ]) ∶= GNMR t(θ[u,k ])
+
+∑δτ =1 GNMR t−τ (θ[u,k ])/ δ , (4) where δ is the short-window length. Thus, GNMR asks whether a unit deviates from its long-term behavior, while ∆-GNMR asks whether the current risk rises sharply relative to recent steps. Similar to GNMR, ∆-GNMR metric can be computed online with a small queue of recent GNMR values and does not require extra backward passes or full-process statistics. Algorithm 1 gives the concrete computation 5
+
+Algorithm 1 Online computation of GNMR and ∆-GNMR for one monitored unit  
+
+> Require:
+
+Gradient gb,t , historical mean Ab,t −1, recent GNMR queue Qb, window length δ, step t, and small constant ϵ.
+
+nb,t ← ∥gb,t ∥2. 
+
+> if
+
+t = 1 or Ab,t −1 = 0 then 
+
+GNMR b,t ← 1.
+
+> else
+
+GNMR b,t ← nb,t /( Ab,t −1 + ϵ). 
+
+> end if if
+
+∣Qb∣ = δ then 
+
+∆-GNMR b,t ← GNMR b,t /( mean (Qb) + ϵ).
+
+> else
+
+∆-GNMR b,t ← 1.
+
+> end if
+
+Ab,t ← Ab,t −1 + (nb,t − Ab,t −1)/ t.Push GNMR b,t into Qb and keep only the most recent δ values.  
+
+> return
+
+GNMR b,t , ∆-GNMR b,t , Ab,t , and Qb.for a generic monitored unit b; for an operator parameter θ[u,k ], one can take b = (u, k ). The scores themselves do not define a numerical format or kernel; they provide local risk estimates that are later converted into recovery actions by the controller. 
+
+3.3 From Risk Scores to Budgeted Recovery 
+
+GNMR and ∆-GNMR provide local risk estimates, but the controller must turn these scores into bounded recovery actions. We distinguish monitored units from recoverable units. A monitored unit has runtime statistics, while a recoverable unit is one for which the backend training stack provides both a low-cost path and a higher-fidelity recovery path. Units fixed by the backend recipe remain outside the action space. At step t, for each recoverable unit b, we combine the two risk scores as 
+
+Rb,t = max { GNMR b,t 
+
+αt
+
+, ∆-GNMR b,t 
+
+βt
+
+} .
+
+Here, αt and βt control the risk sensitivity of long-horizon deviations and short-window changes. Candidate units are those with Rb,t > 1, together with units still prioritized by the lock mechanism. The controller then selects the final active recovery set with the top maxO operators as 
+
+At = Top maxO (Ct; Rb,t ),
+
+where Ct is the candidate pool. Only units in At use the recovery path; all remaining recoverable units use the low-cost path. Thus, maxO caps the number of units active in recovery at each step, matching the budgeted set in Theorem 1. The lock mechanism stabilizes active-set membership but does not bypass this active budget. When a unit is selected, its lock counter is reset to Tlock ; locked units remain in the candidate pool for a short interval, but the final active set is still chosen under the same top-maxO cap. This prevents frequent switching while preserving a fixed instantaneous recovery budget. Algorithm 2 summarizes the resulting closed-loop recovery procedure. 6
+
+Algorithm 2 Budgeted runtime recovery from GNMR risk scores  
+
+> Require:
+
+Recoverable units Brec , risk thresholds αt, β t, active budget maxO , lock length Tlock , and lock counters Lock b for b ∈ Brec . 
+
+> for
+
+each training step t do for each recoverable unit b ∈ Brec do 
+
+Compute GNMR b,t and ∆-GNMR b,t by Algorithm 1. 
+
+Rb,t ← max {GNMR b,t /αt, ∆-GNMR b,t /βt}.
+
+> end for
+
+Ct ← {b ∶ Rb,t > 1} ∪ {b ∶ Lock b > 0}.
+
+At ← Top maxO (Ct; Rb,t ). 
+
+> for
+
+each recoverable unit b ∈ Brec do if b ∈ At then 
+
+Use the recovery path for b. 
+
+> if
+
+Rb,t > 1 then 
+
+Lock b ← Tlock .
+
+> else
+
+Lock b ← max (Lock b − 1, 0).
+
+> end if else
+
+Use the low-cost path for b and set Lock b ← 0.
+
+> end if end for end for
+
+3.4 Controller Interface, Budget, and Calibration  
+
+> Controller interface and backend constraints.
+
+GNMR operates on backend-provided low-cost and higher-fidelity recovery paths for a subset of recoverable units. It assumes that the backend provides a low-cost path and a higher-fidelity recovery path for a subset of recoverable units, which can be operators, blocks, or layers depending on the implementation. Units fixed by the backend recipe may still be monitored, but they are not adjusted by the controller. When operator-level recovery may create inconsistent execution within a block, we treat the whole transformer block as the recoverable unit, so all recoverable low-cost operations inside the block share the same recovery decision. This interface lets the same risk monitor work across controlled activation-quantization stress tests, TE-backed low-precision training, and large-model post-training stress tests, while keeping backend-specific constraints explicit.  
+
+> Active budget and calibration.
+
+Recovery incurs extra memory compared with the low-cost path, especially when multiple units become risky in the same step. The budget maxO is a hard cap on the active recovery set: at each step, the controller executes at most maxO recoverable units on the recovery path. Let cb denote the additional saved-activation cost of recovering unit b. Then 
+
+∆Mt = ∑
+
+> b∈At
+
+cb ≤ maxO ⋅ cmax , cmax = max 
+
+> b∈Brec
+
+cb. (5) Appendix D instantiates cb using saved-activation bitwidths and activation footprints. The lock interval Tlock 
+
+reduces switching by keeping recent risky units eligible for short-term retention, but the final active set At is always selected under the same maxO cap. The lock interval Tlock stabilizes active-set membership over time: recently selected units remain in the candidate pool for a short window and can be retained if they remain among the top-risk units, but the final active set is always selected under the same maxO cap. Thus, the lock mechanism reduces unnecessary switching without bypassing the recovery budget. 7 
+
+> Table 1
+
+Validation perplexity ( ↓) in the controlled activation-quantization stress bench for LLaMA-2 pre-training. The low-cost path quantizes saved activations of recoverable projection operators; GNMR+ ∆-GNMR selectively routes risky units to the recovery path. ✗ means the model fails to converge.  
+
+> precision
+
+αt βt
+
+60M 130M 350M 1.3B 1.1B tokens 2.2B tokens 6.4B tokens 13.1B tokens  
+
+> 4-bit
+
+N.A. N.A. 67.22 169.21 26.56 ✗
+
+> 4-bit/8-bit
+
+1.5 1.3 30.59 24.66 18.84 15.71 2.0 1.5 30.66 24.86 19.07 N.A. 3.0 2.0 30.68 25.33 18.77 N.A.  
+
+> 8-bit
+
+N.A. N.A. 30.88 25.13 18.59 15.68  
+
+> 16-bit
+
+N.A. N.A. 30.79 25.06 18.80 15.56 
+
+The thresholds αt and βt control risk sensitivity. The former governs long-horizon GNMR deviations, while the latter governs short-window ∆-GNMR changes. In practice, a higher warm-up threshold reduces noisy early triggers when the history is short, while scheduled relaxation or warm-up calibration maintains sensitivity after running statistics stabilize. Section 4 provides a bound-level motivation connecting active recovery, perturbation reduction, and threshold calibration. 
+
+## 4 Theoretical Motivation 
+
+We give a bound-level motivation for budgeted recovery. Low-cost execution may perturb forward computation, saved activations, or backward signals, and such perturbations can propagate through the computation graph. We therefore do not model low-precision error as independent zero-mean gradient noise. Instead, for each recoverable unit b and path q ∈ {low , rec }, let Ebq (ρ) denote an operator-wise perturbation penalty that upper-bounds its contribution to the one-step smoothness bound at risk level ρ. The standing assumptions, including L-smoothness, standard SGD noise, and the perturbation envelope, are given in Appendix C. Define the recovery gap 
+
+∆bs = ∆Eb(ρbs) = Eb
+
+> low
+
+(ρbs) − Eb
+
+> rec
+
+(ρbs).
+
+We assume ∆bs ≥ 0 on the risky regimes targeted by the controller. 
+
+Theorem 1 (Bound-level gain of budgeted recovery) . Let As ⊆ Brec be the active recovery set at step s,with ∣As∣ ≤ maxO . Let ¯ULow  
+
+> s
+
+be the one-step upper bound under the always-low-cost path, and ¯URec  
+
+> s
+
+(As)
+
+the bound when units in As use recovery. If we denote ∆U 
+
+> s
+
+∶= ¯ULow  
+
+> s
+
+− ¯URec  
+
+> s
+
+(As), then under the standing assumptions, 
+
+∆U 
+
+> s
+
+= ∑
+
+> b∈Brec
+
+∆Eb(ρbs)1{b ∈ As}.
+
+Moreover, for the transition from step t to t + 1, suppose the newly selected set satisfies St ⊆ At+1,
+
+Pr (ρbt+1 ≥ τb ∣ b ∈ St) ≥ πb, ∆Eb(ρ) ≥ ∆Eb(τb)1{ρ ≥ τb}.
+
+Then it holds that 
+
+E[∆U
+
+> t+1
+
+] ≥ ∑
+
+> b∈Brec
+
+Pr (b ∈ St)πb∆Eb(τb). (6) 
+
+(See the proof in Appendix C.2.) 8
+
+Table 2 The validation perplexity ( ↓) for the pre-training LLaMA-2 models for variance model size with DeepSeek-style mixed-precision strategy under different precision strategy. αt and βt represent the threshold of GNMR and ∆-GNMR, respectively. 
+
+precision αt βt
+
+Training tokens (B) 1.3 2.6 3.9 5.2 6.6 7.9 9.2 10.5 13.1 
+
+6-bit/8-bit 1.5/1.1 3 1.5 28.52 21.17 19.07 17.88 17.06 16.43 15.93 15.57 15.20 
+
+8-bit N.A. N.A. 29.54 21.57 19.25 17.96 17.11 16.45 15.94 15.56 15.18 
+
+8-bit/16-bit 1.5/1.1 3 N.A. 29.50 21.48 19.14 17.89 17.04 16.37 15.86 15.48 15.10 
+
+16-bit N.A. N.A. 29.10 21.35 19.08 17.84 16.98 16.33 15.82 15.44 15.06  
+
+> 3We use the two-stage threshold in this training task, see Appendix E.2 for more details.
+
+Table 3 Trigger sparsity in the activation-quantization stress bench: proportion of eligible linear blocks exceeding GNMR and ∆-GNMR thresholds. 
+
+Model size αt βt GNMR ∆-GNMR 
+
+60M 2.0 1.5 0.070% 0.081% 3.0 2.0 0.019% 0.033% 
+
+350M 2.0 1.5 0.141% 0.067% 3.0 2.0 0.019% 0.016% 
+
+Table 4 The per-step time ( ↓) and the throughput ( ↑) of the LLaMA-2 1.3B training task with different precision strategies on the same device. 
+
+precision per-step time (s) throughput (token/s) 
+
+8-bit 1.266 103532 
+
+8-bit/16-bit 1.264 103696 16-bit 1.294 101292 
+
+Corollary 1 (Oracle target under an active budget) . If the latent gaps ∆bs were observable, the oracle recovery set under budget ∣As∣ ≤ maxO would solve 
+
+A⋆ 
+
+> s
+
+∈ arg max   
+
+> A⊆Brec ,∣A∣≤maxO
+
+∑
+
+> b∈A
+
+∆bs.
+
+Thus, it selects the largest positive gaps up to the total budget. 
+
+Corollary 1 identifies the latent target of a budgeted controller: ranking units by their unobserved recovery gaps under the active budget. Since ∆bs is not observable online, GNMR and ∆-GNMR instantiate this oracle view with lightweight runtime scores for ranking risky units. The lock interval Tlock further stabilizes active-set membership, yielding a budgeted online policy consistent with the descent-gain mechanism in Theorem 1. 
+
+Theorem 2 (Historical-mean concentration under fixed GNMR thresholds) . For unit b and t ≥ 2, let 
+
+nb,t = ∥gb,t ∥2. For any fixed α = 1 + ε > 1, under the sub-exponential tail condition in Appendix C, there is 
+
+c > 0 such that 
+
+Pr (GNMR b,t ≥ α) ≤ exp (−c min { ε2
+
+κ2
+
+> b
+
+, εκb
+
+}) + 2 exp (−c(t − 1) min { (ε/α)2
+
+κ2
+
+> b
+
+, ε/ακb
+
+}) . (7) 
+
+(See the proof in Appendix C.4.) 9                                       
+
+> Table 5 The validation perplexity ( ↓) for the pre-training LLaMA-2 130M model with different two-stage GNMR threshold, αinit
+> trepresents the threshold in the initial 2.5% steps and αmain
+> trepresents the threshold in the other steps.
+> αinit
+> tαmain
+> t
+> Training tokens (B) 1.3 2.1 2.6 1.1 1.1 26.53 23.95 23.57 1.5 1.1 26.49 23.92 23.54
+> 1.5 1.5 26.56 23.98 23.60
+> Table 6 The validation perplexity ( ↓) for the pre-training LLaMA-2 130M model with different maxO .
+> maxO Training tokens (B) 1.3 2.1 2.6 226.56 23.97 23.59 426.49 23.92 23.54
+> 626.50 23.94 23.56 826.56 24.01 23.63
+
+Theorem 2 is diagnostic result. The first term captures current-step deviation, while the second term captures historical-mean uncertainty and shrinks with history length. Thus, fixed high thresholds can become conservative after the historical mean stabilizes, motivating scheduled relaxation of the threshold αt and βt.
+
+## 5 Experiments 
+
+We evaluate GNMR as a runtime stability controller in three settings: activation-quantization stress, DeepSeek-style mixed-precision pre-training, and LLaMA-2 13B fine-tuning stress. Appendix E reports full configurations, matched-trigger comparisons, threshold and maxO ablations, an ADAPT-style static baseline [ 29 , 35 ], and MoE/PanGu-style stress tests. 
+
+5.1 Pre-training LLaMA-2 under Activation-Quantization  
+
+> Experiment setup.
+
+We pre-train LLaMA-2 [ 50 ] models on C4-en [ 43 ], following the settings in [ 28 , 64 ]; model sizes, token budgets, learning rates, and schedules are in Appendix E.1 and Table 8. This benchmark keeps weights and optimizer states in BF16 and applies token-wise quantization [ 26 , 45 ] only to saved activations of LLaMA attention and SwiGLU MLP projection operators. These projection operators define the recoverable set, while embeddings, normalization, and output heads remain outside the GNMR action space. GNMR+ ∆-GNMR routes each recoverable unit between the low-cost activation path and the higher-fidelity recovery path, isolating runtime recovery from changes to the optimizer, model, or data.  
+
+> Experiment results.
+
+Table 1 exposes the failure mode targeted by GNMR: a static low-cost activation path can severely degrade or fail, whereas GNMR-controlled 4-bit/8-bit recovery remains close to the fixed 8-bit and BF16/16-bit references across model sizes. This shows that online recovery over the eligible projection set can preserve the higher-fidelity trajectory without changing the training recipe. Table 3 shows that the recovery signal is highly localized: threshold exceedance stays below 0.2% in the reported runs. Thus the quality gain is not obtained by keeping a broad static slice of the model in high precision; GNMR acts as a selective runtime controller that converts rare unit-level risks into bounded recovery actions. Appendix E.4 compares this online policy with an ADAPT-style static sensitivity baseline [ 29 , 35 ], and Appendix E reports matched-trigger comparisons under the same recovery actuator. 10 
+
+Table 7 LLaMA-2 13B fine-tuning stress and downstream evaluation. Higher is better for GSM8K, MMLU, and HellaSwag; lower is better for WikiText-2 PPL. Method GSM8K EM MMLU Acc. HellaSwag Acc. WikiText-2 PPL BF16 15.09 29.92 64.62 5.4503 
+
+Fixed INT8 14.71 29.88 64.55 5.4519 GNMR+ ∆ INT8/BF16 15.01 29.92 64.67 5.4511 0 2000 4000 6000 8000 10000 
+
+> training steps
+> 0
+> 2
+> 4
+> 6
+> 8
+> 10
+> GNMR
+> BF16
+> GNMR=1
+
+Figure 2 The GNMR curve during the pre-training task of LLaMA-2 model with BF16 precision. 0 2000 4000 6000 8000 10000 
+
+> training steps
+> 2
+> 0
+> 2
+> 4
+> 6
+> 8
+> 10
+> GNMR
+> Dynamic precision (FP8/BF16)
+> FP8
+> BF16
+
+Figure 3 Evolution of average GNMR values across operators under different precision strategies. 
+
+5.2 Pre-training LLaMA-2 with DeepSeek-style Mixed Precision 
+
+Experiment setup. We next evaluate GNMR on C4-en under a DeepSeek-V3-style precision hierarchy [ 32 ]. Operators fixed to 16-bit or 32-bit by the recipe stay unchanged; GNMR controls only the remaining low-precision-eligible subgraph. Because operator-level recovery can create inconsistent execution inside a block, we use each transformer block as the recoverable unit. The active set is capped by maxO = 6, so at most 25% 
+
+of layers use the recovery path at a step. We compare dynamic 6-bit/8-bit against fixed 8-bit, and dynamic 8-bit/16-bit against fixed 16-bit. Details are in Appendix E.2 and Table 9. 
+
+Experiment results. Table 2 shows that GNMR stays close to the corresponding higher-fidelity references throughout the DeepSeek-style recipe. This is recipe-level integration evidence: GNMR controls temporary recovery decisions over its eligible subgraph. Table 4 characterizes the reported 1.3B training stack. Dynamic 8-bit/16-bit preserves the low-cost execution profile under this implementation while following the higher-fidelity quality trend. Figures 2 and 3 also give diagnostic risk traces, showing that GNMR-controlled recovery dampens high-risk excursions relative to the fixed low-cost path. 
+
+Scaling, threshold, and budget behavior. Figure 4 reports GNMR-controlled LLaMA-style pre-training from 130M to 3B under the 6-bit/8-bit setting; the corresponding configurations and token budgets are documented in Appendix E.2. This result shows that GNMR preserves the expected model-and-token scaling trend in the tested regime. Tables 5 and 6 study threshold scheduling and the active recovery budget. The two-stage threshold reflects noisy early GNMR history and more stable later running statistics. The maxO study characterizes a recovery–overhead trade-off: maxO bounds active recovery actions and peak overhead. 
+
+5.3 LLaMA-2 13B Fine-tuning Stress Test 
+
+Experiment setup. Finally, we evaluate LLaMA-2 13B under BF16, fixed INT8, and dynamic INT8/BF16 controlled by GNMR+ ∆-GNMR. The controller acts only on the low-precision-eligible recovery path, with 11 10 8 10 9 10 10  
+
+> training tokens
+> 3 × 10 0
+> 4 × 10 0
+> 5 × 10 0
+> training loss
+> 130M
+> 350M
+> 1.3B
+> 3B
+> Figure 4
+
+Scaling trajectory for GNMR-controlled LLaMA-style pre-training under the 6/8-bit low-cost/recovery setting. The corresponding model configurations, token budgets, learning rates, and final evaluation PPLs are reported in Table 9. 
+
+maxO = 10 over 40 decoder layers. We fine-tune LoRA [ 18 ] adapters while keeping the base model frozen, and evaluate matched downstream tasks covering math reasoning, multiple-choice knowledge, commonsense completion, and language modeling: GSM8K [8], MMLU [17], HellaSwag [63], and WikiText-2 [36].  
+
+> Experiment results.
+
+Table 7 reports matched downstream metrics after the 13B fine-tuning stress test. GNMR+ ∆ INT8/BF16 obtains high-fidelity-level downstream performance across all reported tasks, matching BF16 on MMLU and outperforming BF16 on HellaSwag. On GSM8K and WikiText-2, GNMR+ ∆ remains close to the BF16 reference while operating through the low-cost INT8/BF16 recovery interface. These results support GNMR as a runtime controller that preserves downstream behavior under a low-cost INT8 path. Additional fine-tuning and evaluation details are provided in Appendix E.3. 
+
+## 6 Conclusion 
+
+This paper frames low-precision language model training stability as a runtime control problem and presents GNMR as a controller for this setting. GNMR and ∆-GNMR estimate long-horizon and short-window operator-level risks, then allocate a limited recovery budget to the most risky recoverable units. Experiments across activation-quantization stress, TE-backed low-precision training, and large-model post-training stress show that GNMR improves stability while preserving low-cost execution. 
+
+## 7 Limitations 
+
+GNMR targets runtime stability control over backend-provided low-cost and recovery paths. Its effectiveness depends on backend-level observability, recoverable units, and compatible recovery implementations. Further engineering can reduce casting, routing, and recovery-switching overheads. 12 
+
+## References 
+
+[1] Abecassis, F., Agrusa, A., Ahn, D., Alben, J., Alborghetti, S., Andersch, M., Arayandi, S., Bjorlin, A., Blakeman, A., Briones, E., et al. Pretraining large language models with nvfp4. arXiv preprint arXiv:2509.25149 , 2025. [2] Ashkboos, S., Verhoef, B., Hoefler, T., Eleftheriou, E., and Dazzi, M. Efqat: An efficient framework for quantization-aware training. arXiv preprint arXiv:2411.11038 , 2024. [3] Bondarenko, Y., Del Chiaro, R., and Nagel, M. Low-rank quantization-aware training for llms. arXiv preprint arXiv:2406.06385 , 2024. [4] Brock, A., De, S., Smith, S. L., and Simonyan, K. High-performance large-scale image recognition without normalization. In International conference on machine learning , pp. 1059–1071. PMLR, 2021. [5] Brown, T., Mann, B., Ryder, N., Subbiah, M., Kaplan, J. D., Dhariwal, P., Neelakantan, A., Shyam, P., Sastry, G., Askell, A., et al. Language models are few-shot learners. Advances in neural information processing systems ,33:1877–1901, 2020. [6] Castro, R. L., Panferov, A., Tabesh, S., Sieberling, O., Chen, J., Nikdan, M., Ashkboos, S., and Alistarh, D. Quartet: Native fp4 training can be optimal for large language models. arXiv preprint arXiv:2505.14669 , 2025. [7] Chen, M., Shao, W., Xu, P., Wang, J., Gao, P., Zhang, K., and Luo, P. Efficientqat: Efficient quantization-aware training for large language models. arXiv preprint arXiv:2407.11062 , 2024. [8] Cobbe, K., Kosaraju, V., Bavarian, M., Chen, M., Jun, H., Kaiser, L., Plappert, M., Tworek, J., Hilton, J., Nakano, R., et al. Training verifiers to solve math word problems. arXiv preprint arXiv:2110.14168 , 2021. [9] Dai, D., Deng, C., Zhao, C., Xu, R., Gao, H., Chen, D., Li, J., Zeng, W., Yu, X., Wu, Y., et al. Deepseekmoe: Towards ultimate expert specialization in mixture-of-experts language models. arXiv preprint arXiv:2401.06066 ,2024. [10] Dai, W., Jia, Z., Bai, Y., and Sun, Q. Convergence-aware operator-wise mixed-precision training. CCF Transactions on High Performance Computing , 7(1):43–57, 2025. [11] Dettmers, T., Lewis, M., Shleifer, S., and Zettlemoyer, L. 8-bit optimizers via block-wise quantization. arXiv preprint arXiv:2110.02861 , 2021. [12] Dettmers, T., Lewis, M., Belkada, Y., and Zettlemoyer, L. Gpt3. int8 (): 8-bit matrix multiplication for transformers at scale. Advances in neural information processing systems , 35:30318–30332, 2022. [13] Dettmers, T., Pagnoni, A., Holtzman, A., and Zettlemoyer, L. Qlora: Efficient finetuning of quantized llms. 
+
+Advances in neural information processing systems , 36:10088–10115, 2023. [14] Du, N., Huang, Y., Dai, A. M., Tong, S., Lepikhin, D., Xu, Y., Krikun, M., Zhou, Y., Yu, A. W., Firat, O., et al. Glam: Efficient scaling of language models with mixture-of-experts. In International conference on machine learning , pp. 5547–5569. PMLR, 2022. [15] Fedus, W., Zoph, B., and Shazeer, N. Switch transformers: Scaling to trillion parameter models with simple and efficient sparsity. Journal of Machine Learning Research , 23(120):1–39, 2022. [16] Frantar, E., Ashkboos, S., Hoefler, T., and Alistarh, D. Gptq: Accurate post-training quantization for generative pre-trained transformers. arXiv preprint arXiv:2210.17323 , 2022. [17] Hendrycks, D., Burns, C., Basart, S., Zou, A., Mazeika, M., Song, D., and Steinhardt, J. Measuring massive multitask language understanding. arXiv preprint arXiv:2009.03300 , 2020. [18] Hu, E. J., Shen, Y., Wallis, P., Allen-Zhu, Z., Li, Y., Wang, S., Wang, L., Chen, W., et al. Lora: Low-rank adaptation of large language models. ICLR , 1(2):3, 2022. [19] Hu, R., Cao, Y., Kong, B., Sun, M., and Yuan, K. Synergistic intra-and cross-layer regularization losses for moe expert specialization. arXiv preprint arXiv:2602.14159 , 2026. 13 
+
+[20] Huang, T., Hu, H., Zhang, Z., Jin, G., Li, X., Shen, L., Chen, T., Liu, L., Wen, Q., Wang, Z., et al. Stable-spam: How to train in 4-bit more stably than 16-bit adam. arXiv preprint arXiv:2502.17055 , 2025. [21] Huang, T., Zhu, Z., Jin, G., Liu, L., Wang, Z., and Liu, S. Spam: Spike-aware adam with momentum reset for stable llm training. arXiv preprint arXiv:2501.06842 , 2025. [22] Huang, Y., Cheng, Y., Bapna, A., Firat, O., Chen, D., Chen, M., Lee, H., Ngiam, J., Le, Q. V., Wu, Y., et al. Gpipe: Efficient training of giant neural networks using pipeline parallelism. Advances in neural information processing systems , 32, 2019. [23] Jacobs, R. A., Jordan, M. I., Nowlan, S. J., and Hinton, G. E. Adaptive mixtures of local experts. Neural computation , 3(1):79–87, 1991. [24] Jia, J., Xie, C., Lu, H., Wang, D., Feng, H., Zhang, C., Sun, B., Lin, H., Zhang, Z., Liu, X., et al. Sdp4bit: Toward 4-bit communication quantization in sharded data parallelism for llm training. Advances in Neural Information Processing Systems , 37:8734–8759, 2024. [25] Jiang, G., Liu, J., Ding, Z., Guo, L., and Lin, W. Accelerating large batch training via gradient signal to noise ratio (gsnr). arXiv preprint arXiv:2309.13681 , 2023. [26] Jiang, Z., Chen, X., Huang, X., Du, X., Zhou, D., and Wang, Z. Back razor: Memory-efficient transfer learning by self-sparsified backpropagation. Advances in neural information processing systems , 35:29248–29261, 2022. [27] Kong, B., Huang, X., Xu, Y., Liang, Y., Wang, B., and Yuan, K. Clapping: Removing per-sample storage for pipeline parallel distributed optimization with communication compression. arXiv preprint arXiv:2509.19029 ,2025. [28] Kong, B., Liang, J., Liu, Y., Deng, R., and Yuan, K. Cr-net: Scaling parameter-efficient training with cross-layer low-rank structure. arXiv preprint arXiv:2509.18993 , 2025. [29] Kummer, L., Sidak, K., Reichmann, T., and Gansterer, W. Adaptive precision training (adapt): A dynamic quantized training approach for dnns. In Proceedings of the 2023 SIAM International Conference on Data Mining (SDM) , pp. 559–567. SIAM, 2023. [30] Lee, J., Bae, J., Kim, B., Kwon, S. J., and Lee, D. To fp8 and back again: Quantifying reduced precision effects on llm training stability. arXiv preprint arXiv:2405.18710 , 2024. [31] Lin, J., Tang, J., Tang, H., Yang, S., Chen, W.-M., Wang, W.-C., Xiao, G., Dang, X., Gan, C., and Han, S. Awq: Activation-aware weight quantization for on-device llm compression and acceleration. Proceedings of machine learning and systems , 6:87–100, 2024. [32] Liu, A., Feng, B., Xue, B., Wang, B., Wu, B., Lu, C., Zhao, C., Deng, C., Zhang, C., Ruan, C., et al. Deepseek-v3 technical report. arXiv preprint arXiv:2412.19437 , 2024. [33] Liu, Z., Oguz, B., Zhao, C., Chang, E., Stock, P., Mehdad, Y., Shi, Y., Krishnamoorthi, R., and Chandra, V. Llm-qat: Data-free quantization aware training for large language models. arXiv preprint arXiv:2305.17888 , 2023. [34] McCandlish, S., Kaplan, J., Amodei, D., and Team, O. D. An empirical model of large-batch training. arXiv preprint arXiv:1812.06162 , 2018. [35] Menon, H., Lam, M. O., Osei-Kuffuor, D., Schordan, M., Lloyd, S., Mohror, K., and Hittinger, J. Adapt: Algorithmic differentiation applied to floating-point precision tuning. In SC18: International Conference for High Performance Computing, Networking, Storage and Analysis , pp. 614–626. IEEE, 2018. [36] Merity, S., Xiong, C., Bradbury, J., and Socher, R. Pointer sentinel mixture models. arXiv preprint arXiv:1609.07843 , 2016. [37] Micikevicius, P., Narang, S., Alben, J., Diamos, G., Elsen, E., Garcia, D., Ginsburg, B., Houston, M., Kuchaiev, O., Venkatesh, G., et al. Mixed precision training. arXiv preprint arXiv:1710.03740 , 2017. [38] Micikevicius, P., Stosic, D., Burgess, N., Cornea, M., Dubey, P., Grisenthwaite, R., Ha, S., Heinecke, A., Judd, P., Kamalu, J., et al. Fp8 formats for deep learning. arXiv preprint arXiv:2209.05433 , 2022. 14 
+
+[39] Pascanu, R., Mikolov, T., and Bengio, Y. On the difficulty of training recurrent neural networks. In International conference on machine learning , pp. 1310–1318. Pmlr, 2013. [40] Peng, H., Wu, K., Wei, Y., Zhao, G., Yang, Y., Liu, Z., Xiong, Y., Yang, Z., Ni, B., Hu, J., et al. Fp8-lm: Training fp8 large language models. arXiv preprint arXiv:2310.18313 , 2023. [41] Perez, S. P., Zhang, Y., Briggs, J., Blake, C., Levy-Kramer, J., Balanca, P., Luschi, C., Barlow, S., and Fitzgibbon, A. W. Training and inference of large language models using 8-bit floating point. arXiv preprint arXiv:2309.17224 ,2023. [42] Radford, A., Wu, J., Child, R., Luan, D., Amodei, D., Sutskever, I., et al. Language models are unsupervised multitask learners. OpenAI blog , 1(8):9, 2019. [43] Raffel, C., Shazeer, N., Roberts, A., Lee, K., Narang, S., Matena, M., Zhou, Y., Li, W., and Liu, P. J. Exploring the limits of transfer learning with a unified text-to-text transformer. Journal of machine learning research , 21 (140):1–67, 2020. [44] Rajbhandari, S., Rasley, J., Ruwase, O., and He, Y. Zero: Memory optimizations toward training trillion parameter models. In SC20: International Conference for High Performance Computing, Networking, Storage and Analysis ,pp. 1–16. IEEE, 2020. [45] Ramasinghe, S., Ajanthan, T., Avraham, G., Zuo, Y., and Long, A. Protocol models: Scaling decentralized training with communication-efficient model parallelism. arXiv preprint arXiv:2506.01260 , 2025. [46] Shazeer, N., Mirhoseini, A., Maziarz, K., Davis, A., Le, Q., Hinton, G., and Dean, J. Outrageously large neural networks: The sparsely-gated mixture-of-experts layer. arXiv preprint arXiv:1701.06538 , 2017. [47] Shoeybi, M., Patwary, M., Puri, R., LeGresley, P., Casper, J., and Catanzaro, B. Megatron-lm: Training multi-billion parameter language models using model parallelism. arXiv preprint arXiv:1909.08053 , 2019. [48] Simsekli, U., Sagun, L., and Gurbuzbalaban, M. A tail-index analysis of stochastic gradient noise in deep neural networks. In International Conference on Machine Learning , pp. 5827–5837. PMLR, 2019. [49] Takase, S., Kiyono, S., Kobayashi, S., and Suzuki, J. Spike no more: Stabilizing the pre-training of large language models. arXiv preprint arXiv:2312.16903 , 2023. [50] Touvron, H., Martin, L., Stone, K., Albert, P., Almahairi, A., Babaei, Y., Bashlykov, N., Batra, S., Bhargava, P., Bhosale, S., et al. Llama 2: Open foundation and fine-tuned chat models. arXiv preprint arXiv:2307.09288 , 2023. [51] Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A. N., Kaiser, Ł., and Polosukhin, I. Attention is all you need. Advances in neural information processing systems , 30, 2017. [52] Vershynin, R. High-dimensional probability: An introduction with applications in data science , volume 47. Cambridge university press, 2018. [53] Wan, X., Qi, P., Huang, G., Lin, M., and Li, J. Pipeoffload: Improving scalability of pipeline parallelism with memory optimization. arXiv preprint arXiv:2503.01328 , 2025. [54] Wang, G., Qin, H., Jacobs, S. A., Holmes, C., Rajbhandari, S., Ruwase, O., Yan, F., Yang, L., and He, Y. Zero++: Extremely efficient collective communication for giant model training. arXiv preprint arXiv:2306.10209 , 2023. [55] Wang, R., Gong, Y., Liu, X., Zhao, G., Yang, Z., Guo, B., Zha, Z., and Cheng, P. Optimizing large language model training using fp4 quantization. arXiv preprint arXiv:2501.17116 , 2025. [56] Wang, S. and Kanwar, P. Bfloat16: The secret to high performance on cloud tpus. URL https://cloud. google. com/blog/products/ai-machine-learning/bfloat16-the-secret-to-high-performance-on-cloud-tpus , 2019. [57] Wei, X., Zhang, Y., Li, Y., Zhang, X., Gong, R., Guo, J., and Liu, X. Outlier suppression+: Accurate quantization of large language models by equivalent and optimal shifting and scaling. arXiv preprint arXiv:2304.09145 , 2023. [58] Xi, H., Cai, H., Zhu, L., Lu, Y., Keutzer, K., Chen, J., and Han, S. Coat: Compressing optimizer states and activation for memory-efficient fp8 training. arXiv preprint arXiv:2410.19313 , 2024. 15 
+
+[59] Xiao, G., Lin, J., Seznec, M., Wu, H., Demouth, J., and Han, S. Smoothquant: Accurate and efficient post-training quantization for large language models. In International conference on machine learning , pp. 38087–38099. PMLR, 2023. [60] Xiong, R., Yang, Y., He, D., Zheng, K., Zheng, S., Xing, C., Zhang, H., Lan, Y., Wang, L., and Liu, T. On layer normalization in the transformer architecture. In International conference on machine learning , pp. 10524–10533. PMLR, 2020. [61] Yao, Z., Yazdani Aminabadi, R., Zhang, M., Wu, X., Li, C., and He, Y. Zeroquant: Efficient and affordable post-training quantization for large-scale transformers. Advances in neural information processing systems , 35: 27168–27183, 2022. [62] Yu, Z., Fu, Y., Wu, S., Li, M., You, H., and Lin, Y. Ldp: Learnable dynamic precision for efficient deep neural network training and inference. arXiv preprint arXiv:2203.07713 , 2022. [63] Zellers, R., Holtzman, A., Bisk, Y., Farhadi, A., and Choi, Y. Hellaswag: Can a machine really finish your sentence? In Proceedings of the 57th Annual Meeting of the Association for Computational Linguistics , 2019. [64] Zhao, J., Zhang, Z., Chen, B., Wang, Z., Anandkumar, A., and Tian, Y. Galore: Memory-efficient llm training by gradient low-rank projection. arXiv preprint arXiv:2403.03507 , 2024. [65] Zhao, Y., Gu, A., Varma, R., Luo, L., Huang, C.-C., Xu, M., Wright, L., Shojanazeri, H., Ott, M., Shleifer, S., et al. Pytorch fsdp: experiences on scaling fully sharded data parallel. arXiv preprint arXiv:2304.11277 , 2023. 16 
+
+# Appendix 
+
+## A Related works 
+
+This section reviews work on low-precision training and adaptation, with emphasis on how prior methods relate to the runtime stability-control view studied in this paper.  
+
+> Mixed-precision training and numerical formats.
+
+Mixed-precision training reduces memory traffic and improves accelerator throughput by combining low-cost arithmetic with higher-fidelity accumulation or safeguards. Early FP16 training used loss scaling and selective FP32 accumulation to preserve accuracy on modern accelerators [ 37 ], while BF16 improved dynamic-range robustness and became a common choice for large-scale language model training [ 56 ]. More recent work has moved toward sub-16-bit training. FP8 formats and recipes, including E4M3/E5M2 variants, have shown that reduced-precision training can converge under carefully designed scaling rules [ 38 , 40 ]. Transformer Engine (TE) further makes FP8 execution practical through delayed scaling and per-tensor format selection [ 41 ]. COAT compresses optimizer states and activations to FP8 [ 58 ], while recent FP4 and NVFP4 training studies push precision even lower with stronger scaling, outlier handling, and selective high-fidelity components [ 1, 6, 55 ]. These works provide important backend execution paths; GNMR instead studies when an existing low-cost path should be temporarily recovered for stability.  
+
+> Quantization, outliers, and memory-efficient adaptation.
+
+Quantization methods for language models highlight that low precision is often limited by outliers and fragile layers. LLM.int8 and GPT3.int8 identify outlier features as a key challenge for accurate low-bit execution [ 12 ], while SmoothQuant shifts activation difficulty into weights to enable W8A8 inference [ 59 ]. GPTQ, AWQ, and ZeroQuant further improve post-training quantization through layer-wise reconstruction, salient-weight protection, or distillation [ 16 , 31 , 61 ]. For adaptation, QLoRA trains adapters over frozen 4-bit bases using NF4 quantization and paged optimizers [ 13 ]. Quantization-aware training and efficient QAT variants further reduce the quality gap at low bit-widths [ 2, 3,7, 33 , 65 ]. Outlier suppression and smoothing methods also show that precision risk is often local rather than uniform [ 57 ]. These methods mainly reduce quantization error through calibration, smoothing, or training procedures; GNMR uses runtime training signals to decide where recovery is needed during training.  
+
+> Systems support for low-precision training.
+
+Large-scale language model training relies on systems that combine low-precision execution with distributed parallelism. Megatron-LM scales transformer training through tensor and pipeline parallelism [ 47 ], while ZeRO and ZeRO++ reduce optimizer-state and communication overhead through sharding and communication-aware design [ 44 , 54 ]. Communication compression and quantization further reduce distributed training cost, including 4-bit communication for sharded training and protocol-level compression [ 24 , 27 , 45 ]. Pipeline and offload systems also reduce memory and communication bottlenecks in large training runs [ 22 , 53 ]. These systems are complementary to our work: they determine how low-cost execution is implemented and scaled, while GNMR determines when local runtime evidence justifies temporary recovery.  
+
+> Training stability signals and optimizer-level stabilization.
+
+Stability failures such as loss spikes and gradient spikes are a known challenge in large-scale pre-training [ 49 ]. Classical gradient clipping controls exploding gradients [ 39 ], and Adaptive Gradient Clipping normalizes clipping by parameter scale [ 4]. Transformer stabilization methods such as Pre-LN, RMSNorm, and DeepNorm help regulate update magnitudes in deep networks [ 60 ]. Gradient-noise-scale analysis characterizes batch-size regimes [ 34 ], while GSNR-style signals use gradient statistics to guide large-batch training [ 25 ]. Recent spike-aware optimizers reset or adjust updates when instability is detected [ 20 , 21 ]. Reduced-precision training can further increase sensitivity to stability 17 and hyperparameters [ 30 ]. These works motivate the use of runtime stability signals, but they do not directly provide an operator-local controller for budgeted precision recovery.  
+
+> Dynamic and operator-wise precision selection.
+
+Dynamic precision methods adapt numerical precision over time, layer, or operator. ADAPT-style approaches estimate sensitivity and assign precision based on profiling or program analysis [ 29 , 35 ]. Learnable Dynamic Precision formulates temporal and spatial precision choices as learnable parameters to optimize the compute-accuracy tradeoff [ 62 ]. Convergence-aware operator-wise mixed precision methods also explore precision assignment using convergence or sensitivity information [ 10 ]. These methods are closely related to our setting, but they are typically offline, coarse-grained, or aimed at compute-accuracy assignment rather than runtime stability control. GNMR differs by using online operator-wise gradient deviations to trigger temporary recovery under an explicit budget, aligning precision intervention with local training risk rather than a fixed schedule or static sensitivity profile. 
+
+## B Additional details for the operator-level modeling. 
+
+This section complements the operator-wise runtime monitoring setup in Section 2. The main text keeps only the notation needed to define local gradient statistics for GNMR. Here, we spell out the sibling-operator, aggregation, and backpropagation details for common Transformer components. The goal is not to introduce a new architectural abstraction, but to make explicit how attention, feed-forward modules, normalization, residual paths, and MoE layers map to the monitored units used by the controller. The discussion applies to both encoder-only and decoder-style models [5, 51].  
+
+> Nest--parallel operator details.
+
+A depth-U Transformer stack corresponds to the composition of nested operators N [1], . . . , N [U ] acting across layers, as in Eq. (1) . Inside one block u, sibling operators act on the same input: 
+
+z[u,k ] ∶= f [u,k ](y[u−1]; θ[u,k ]) , k = 1, . . . , K u. (8) An aggregation operation then merges their outputs and may also use the skip input y[u−1]:
+
+N [u] = z[u, 0](z[u, 1], . . . , z [u,K u]; θ[u, 0], y [u−1]) , with Ξ[u] = (θ[u,k ])Ku 
+
+> k=0
+
+. (9) This pattern captures multi-head attention, feed-forward modules, residual connections, normalization, and MoE variants. It also provides a common index for the monitored units whose gradient norms are used by GNMR. 
+
+Multi-head self-attention (MHA). Let H be the layer input. The head-wise projections are parallel operators 
+
+Q = HW [u] 
+
+> Q
+
+, K = HW [u] 
+
+> K
+
+, V = HW [u] 
+
+> V
+
+. (10) The attention aggregator then maps (Q, K, V ) and the residual input H to the layer output: 
+
+z[u] 
+
+> att
+
+(Q, K, V ; W [u] 
+
+> O
+
+, H ) = softmax ( QK ⊺
+
+√dk
+
+) V W [u] 
+
+> O
+
++ H. (11) Stacking multiple heads fits by letting the sibling set contain per-head projections and attention kernels, with the aggregator concatenating head outputs and applying W [u] 
+
+> O
+
+.
+
+Feed-forward networks (FFN) and MoE. A standard two-layer FFN with residual can be represented with 
+
+Ku = 1 as 
+
+z[u, 0](z[u, 1]; θ[u, 0], y ) = y + W2 φ(W1 LN (y)) . (12) 18 Mixture-of-experts (MoE) variants can be represented using Ku > 1 sibling experts f [u,k ] and an aggregator that gates or mixes expert outputs, e.g., 
+
+z[u, 0](z[u, 1], . . . , z [u,K u]; θ[u, 0], y ) =
+
+> Ku
+
+∑
+
+> k=1
+
+αk(y) z[u,k ], (13) where ∑Ku 
+
+> k=1
+
+αk(y) = 1. This form covers router-based and top-k mixing used in modern MoE systems [ 9, 14 , 15 , 19 ]. Variants with concatenation followed by projection are obtained by letting z[u, 0] first concatenate (z[u, 1], . . . , z [u,K u]) and then apply a linear map.  
+
+> Backpropagation in the operator view.
+
+Denote the upstream gradient at layer u by ¯y[u] ∶= ∂L /∂y [u], and define ¯z[u,k ] ∶= ∂L /∂z [u,k ]. The aggregator routes sensitivity to each sibling output via 
+
+¯z[u,k ] = ( ∂z [u, 0]
+
+∂z [u,k ] )
+
+> ⊺
+
+¯y[u], k = 1, . . . , K u. (14) Parameter gradients follow directly from the local Jacobians: 
+
+∇θ[u,k ] L = ( ∂f [u,k ]
+
+∂θ [u,k ] )
+
+> ⊺
+
+¯z[u,k ], ∇θ[u, 0] L = ( ∂z [u, 0]
+
+∂θ [u, 0] )
+
+> ⊺
+
+¯y[u]. (15) The gradient w.r.t. the layer input y[u−1] sums the sibling and aggregator contributions: 
+
+¯y[u−1] =
+
+> Ku
+
+∑
+
+> k=1
+
+( ∂f [u,k ]
+
+∂y )
+
+> ⊺
+
+¯z[u,k ] + ( ∂z [u, 0]
+
+∂y )
+
+> ⊺
+
+¯y[u]. (16) These expressions are shape-consistent with Eq. (9) and specialize to standard Transformer derivatives: for attention, the aggregator derivatives backpropagate through the softmax and output projection; for FFN/MoE, they reduce to linear maps and elementwise nonlinearity Jacobians.  
+
+> Implementation scope.
+
+Residual paths are naturally included by passing y[u−1] to the aggregator, as in Eqs. (11) – (12) . Layer normalization can be modeled either as a sibling f [u,k ] or inside the aggregator, depending on implementation needs. Parameter sharing, masking, and causal structure can be represented as operators inside f [u,k ] or the aggregator. In summary, the nest–parallel operator view recovers standard Transformer components while providing a common indexing scheme for operator-wise gradient statistics. This makes it a convenient interface for GNMR-based runtime stability monitoring and budgeted recovery. 
+
+## C Assumptions and detailed proofs 
+
+This appendix provides the standing assumptions and detailed proofs for Theorems 1 and 2. The first part proves the bound-level gain of budgeted selective recovery. The second part proves the fixed-threshold GNMR concentration result. Throughout, Brec is a finite set of recoverable units, Fs denotes the history available before the update at step s, and the active recovery set As is Fs-measurable. When newly selected units at step t are denoted by St, we use the lock/update convention in Theorem 1, namely St ⊆ At+1.19 
+
+C.1 Assumptions 
+
+Assumption 1 (Smoothness) . The training objective L(θ) is L-smooth, i.e., for any θ, θ ′,
+
+L(θ′) ≤ L(θ) + ⟨∇L(θ), θ ′ − θ⟩ + L
+
+2 ∥θ′ − θ∥2. (17) 
+
+Assumption 2 (SGD noise) . The ideal mini-batch stochastic gradient at step s can be written as 
+
+gs = ∇L(θs) + ξs, (18) 
+
+where 
+
+E[ξs ∣ Fs] = 0, E[∥ ξs∥2 ∣ Fs] ≤ σ2. (19) 
+
+Assumption 3 (Perturbation envelope) . For each recoverable unit b ∈ Brec , and for each path q ∈ {low , rec },let Ebq (ρbs) denote an operator-wise upper-envelope penalty contributed by unit b to the one-step smoothness upper bound at risk state ρbs. For an active set As, let qb(As) = rec if b ∈ As, and let qb(As) = low otherwise. If rs(As) is the path-dependent perturbation in the actual update direction, then the conditional path-dependent remainder in the smoothness bound satisfies 
+
+E[−η ⟨∇L(θs), r s(As)⟩ + Lη 2 ⟨gs, r s(As)⟩ + Lη 2
+
+2 ∥rs(As)∥ 2∣Fs]
+
+≤ ∑
+
+> b∈Brec
+
+[1{b ∈ As}Eb
+
+> rec
+
+(ρbs) + 1{b ∉ As}Eb
+
+> low
+
+(ρbs)] .
+
+(20) 
+
+We use the right-hand side of (20) to define the path-dependent part of the surrogate one-step upper bound. The recovery gap is 
+
+∆Eb(ρ) = Eb
+
+> low
+
+(ρ) − Eb
+
+> rec
+
+(ρ). (21) 
+
+The gap in (21) is assumed to satisfy the lower-envelope condition in Assumption 4 on the risky regimes used in Theorem 1. 
+
+Remark 1 (One sufficient parameterization) . Assumption 3 does not require low-cost errors to be independent or zero-mean. One sufficient parameterization is as follows. Let eqb,s be the effective perturbation induced by the precision transformation of unit b under path q, after it propagates through the relevant forward, activation-storage, or backward computation. Define 
+
+μbq (ρ) = ∥E[eqb,s ∣ Fs, ρ bs = ρ]∥ 2 , vbq (ρ) = E[∥ eqb,s ∥22 ∣ Fs, ρ bs = ρ] . (22) 
+
+If Gs ≥ ∥∇L(θs)∥ , and Γb ≥ 1 absorbs cross terms, forward/backward propagation, residual or normalization amplification, and operator coupling, then one may take 
+
+Ebq (ρ) = ηG sμbq (ρ) + Lη 2
+
+2 Γbvbq (ρ). (23) 
+
+Indeed, by (22) , the linear term in the smoothness remainder is bounded by 
+
+η∥∇L(θs)∥ ∥ E[eqb,s ∣ Fs, ρ bs = ρ]∥ 2 ≤ ηG sμbq (ρ). (24) 
+
+The quadratic term and the mixed term Lη 2⟨gs, r s⟩ can be bounded by a shared path-independent term plus operator-wise second-moment penalties using Cauchy–Schwarz and Young inequalities; the constants and coupling losses are collected into Γb in (23) . Thus the envelope can include bias, variance, activation quantization error, forward/backward perturbations, and backend-specific scaling or casting effects. 20 
+
+Assumption 4 (Selected-risk persistence) . Let St be the newly selected recovery set at step t. For each 
+
+b ∈ Brec , assume that there exist πb ∈ (0, 1] and τb such that, whenever Pr (b ∈ St) > 0,
+
+Pr (ρbt+1 ≥ τb ∣ b ∈ St) ≥ πb. (25) 
+
+We also assume the following lower envelope for the perturbation-penalty gap in (21) :
+
+∆Eb(ρ) ≥ ∆Eb(τb)1{ρ ≥ τb}, ∆Eb(τb) ≥ 0. (26) 
+
+Equivalently, the recovery path is not worse than the low-cost path in the regimes used by the lower-bound argument, and the gap is at least ∆Eb(τb) once the next-step risk exceeds τb.
+
+This is a sufficient controller-efficacy condition rather than a universal distributional assumption; it can be estimated from training traces. 
+
+Remark 2 (Budget convention) . In Theorem 1, maxO is interpreted as a budget on the active recovery set, i.e., ∣As∣ ≤ maxO . This matches the claim that maxO controls instantaneous overhead. If an implementation instead caps only newly admitted units, then the same proof applies with ∣St∣ ≤ maxO , but the runtime overhead should be reported using the active set size ∣As∣.
+
+C.2 Proof of Theorem 1 
+
+We prove the theorem through several lemmas. The proof is stated at the level of smoothness upper bounds. Thus, the quantity 
+
+¯ULow  
+
+> s
+
+− ¯URec  
+
+> s
+
+(As) (27) is a difference between two surrogate one-step upper bounds, not an exact difference between actual losses. 
+
+Lemma 1 (Smoothness upper bound with perturbation envelope) . For any active recovery set As ⊆ Brec , the surrogate one-step upper bound can be written as 
+
+¯Us(As) = U0,s + ∑
+
+> b∈Brec
+
+[1{b ∈ As}Eb
+
+> rec
+
+(ρbs) + 1{b ∉ As}Eb
+
+> low
+
+(ρbs)] , (28) 
+
+where U0,s collects the ideal SGD terms and all terms shared by the two paths. Moreover, 
+
+E[L(θs+1) ∣ Fs] ≤ ¯Us(As). (29) 
+
+Proof. Let fs ∶= ∇L(θs), and let ̃ gs denote the actual update direction under a given path assignment. By Assumption 1, for the update θs+1 = θs − η̃ gs, we have 
+
+L(θs+1) ≤ L(θs) − η⟨fs,̃ gs⟩ + Lη 2
+
+2 ∥̃ gs∥2. (30) Write the actual update direction as the ideal mini-batch stochastic gradient plus a path-dependent perturba-tion: ̃
+
+gs = gs + rs(As), gs = fs + ξs. (31) Substituting (31) into (30) gives 
+
+L(θs+1) ≤ L(θs) − η⟨fs, g s⟩ + Lη 2
+
+2 ∥gs∥2 − η⟨fs, r s(As)⟩ + Lη 2⟨gs, r s(As)⟩ + Lη 2
+
+2 ∥rs(As)∥ 2. (32) 21 Taking conditional expectation with respect to Fs, the ideal part in (32) is 
+
+E[L(θs) − η⟨fs, g s⟩ + Lη 2
+
+2 ∥gs∥2∣Fs] = L(θs) − η∥fs∥2 + Lη 2
+
+2 E[∥ fs + ξs∥2 ∣ Fs]
+
+=L(θs) − η∥fs∥2 + Lη 2
+
+2 (∥ fs∥2 + E[∥ ξs∥2 ∣ Fs]) ≤ L(θs) − η (1 − Lη 
+
+2 ) ∥ fs∥2 + Lη 2
+
+2 σ2.
+
+(33) The first equality in (33) uses (18), and the last inequality uses (19). Then, define the shared ideal term by 
+
+U0,s ∶= L(θs) − η (1 − Lη 
+
+2 ) ∥ fs∥2 + Lη 2
+
+2 σ2. (34) The remaining terms in (32) are exactly the path-dependent perturbation terms. By Assumption 3, their conditional contribution is bounded by (20). Combining (34) and (20) yields (28), and hence (29). 
+
+Lemma 2 (Active-set bound-level gain) . Let ¯ULow  
+
+> s
+
+be the upper bound when every recoverable unit uses the low-cost path, and let ¯URec  
+
+> s
+
+(As) be the upper bound under active recovery set As. Then it holds that: 
+
+¯ULow  
+
+> s
+
+− ¯URec  
+
+> s
+
+(As) = ∑
+
+> b∈Brec
+
+∆Eb(ρbs)1{b ∈ As}. (35) 
+
+Proof. By Lemma 1, the always-low-cost upper bound is 
+
+¯ULow  
+
+> s
+
+= U0,s + ∑
+
+> b∈Brec
+
+Eb
+
+> low
+
+(ρbs). (36) The recovery-policy upper bound is 
+
+¯URec  
+
+> s
+
+(As) = U0,s + ∑
+
+> b∈Brec
+
+[1{b ∈ As}Eb
+
+> rec
+
+(ρbs) + 1{b ∉ As}Eb
+
+> low
+
+(ρbs)] . (37) Subtracting (37) from (36) , the shared term U0,s cancels. For any b ∉ As, both bounds contain Eb
+
+> low
+
+(ρbs), so its contribution to the difference is zero. For any b ∈ As, the difference is 
+
+Eb
+
+> low
+
+(ρbs) − Eb
+
+> rec
+
+(ρbs) = ∆Eb(ρbs), (38) where the last equality is (21). Therefore (35) follows. 
+
+Lemma 3 (Selected-risk persistence lower bound) . Under Assumption 4, and assuming St ⊆ At+1, for each 
+
+b ∈ Brec ,
+
+E[∆Eb(ρbt+1)1{b ∈ At+1}] ≥ Pr (b ∈ St)πb∆Eb(τb). (39) 
+
+Proof. Since St ⊆ At+1, we have 
+
+1{b ∈ At+1} ≥ 1{b ∈ St}. (40) By (26), ∆Eb(ρbt+1) ≥ 0, so (40) implies 
+
+E[∆Eb(ρbt+1)1{b ∈ At+1}] ≥ E[∆Eb(ρbt+1)1{b ∈ St}] . (41) Using (26) again, 
+
+E[∆Eb(ρbt+1)1{b ∈ St}] ≥ ∆Eb(τb) Pr (ρbt+1 ≥ τb, b ∈ St). (42) If Pr (b ∈ St) = 0, (39) is immediate. Otherwise, the product rule and (25) give 
+
+Pr (ρbt+1 ≥ τb, b ∈ St) = Pr (b ∈ St) Pr (ρbt+1 ≥ τb ∣ b ∈ St) ≥ Pr (b ∈ St)πb. (43) Combining (41), (42), and (43) gives (39). 22 
+
+Proof of Theorem 1. The identity in (35) follows directly from Lemma 2. This is an equality because it is the algebraic difference between two one-step smoothness upper bounds. For the second statement, apply Lemma 3 to each b ∈ Brec and sum over b. Using (35) at s = t + 1, we obtain 
+
+E[ ¯ULow  
+
+> t+1
+
+− ¯URec  
+
+> t+1
+
+(At+1)] = ∑
+
+> b∈Brec
+
+E[∆Eb(ρbt+1)1{b ∈ At+1}] ≥ ∑
+
+> b∈Brec
+
+Pr (b ∈ St)πb∆Eb(τb). (44) This proves (44). 
+
+Lemma 4 (Variance-gap model as a special case) . Suppose the path-induced perturbations are zero-mean, conditionally independent, and only the second-moment term is retained in the smoothness upper bound. If 
+
+Γb = 1, then 
+
+Ebq (ρ) = Lη 2
+
+2 vbq (ρ), (45) 
+
+and hence 
+
+∆Eb(ρ) = Lη 2
+
+2 (vb
+
+> low
+
+(ρ) − vb
+
+> rec
+
+(ρ)) . (46) 
+
+Proof. Under the stated zero-mean assumption, the bias strength satisfies μbq (ρ) = 0. If only the second-moment contribution is retained and Γb = 1, the perturbation envelope in Remark 1 reduces to (45) . Subtracting the recovery-path penalty from the low-cost-path penalty and using (21) gives (46) . Thus, the previous variance-gap analysis is recovered as a special case of the perturbation-envelope model. 
+
+C.3 Proof of Corollary 1 
+
+Proof. By Theorem 1, the bound-level gain for active set As is ∑b∈As ∆bs. Therefore, under budget ∣As∣ ≤ K,the oracle set solves 
+
+max 
+
+> A⊆Brec
+
+∑
+
+> b∈A
+
+∆bs s.t. ∣A∣ ≤ K. (47) The objective in (47) is modular. If an optimal set contains i but excludes j with ∆js > ∆is, replacing i with 
+
+j strictly increases the summation ∑b∈As ∆bs, contradicting optimality. Thus, the oracle selects the largest positive gaps under the budget. When all selected gaps are nonnegative and the budget is filled, this is the top-K set by ∆bs.
+
+C.4 Proof of Theorem 2 
+
+We prove the historical-mean concentration bound for a fixed monitored unit b. Let 
+
+Xbt ∶= nb,t = ∥gb,t ∥2, μb ∶= E[Xbt ] > 0. (48) Define the normalized variable 
+
+Y bt ∶= Xbt
+
+μb
+
+, E[Y bt ] = 1. (49) Let 
+
+Sbt−1 = 1
+
+t − 1
+
+> t−1
+
+∑ 
+
+> τ=1
+
+Y bτ = ¯nb,t −1
+
+μb
+
+. (50) Then GNMR b,t = Xbt
+
+¯nb,t −1
+
+= Y bt
+
+Sbt−1
+
+. (51) 23 
+
+Assumption 5 (A sufficient sub-exponential model for historical-mean concentration) . For the monitored unit b, the centered normalized variables Zbt ∶= Y bt − 1 are mean-zero and independent across time over the historical window considered. They also satisfy 
+
+∥Y bt − 1∥ψ1 ≤ κb (52) 
+
+for some κb > 0 independent of t. Consequently, there exists an absolute constant c > 0 such that, for every 
+
+x > 0,
+
+Pr (Y bt − 1 ≥ x) ≤ exp ⎛⎝ − c min { x2
+
+κ2
+
+> b
+
+, xκb
+
+} ⎞⎠. (53) 
+
+Remark 3 (Scope of the sub-exponential assumption) . Assumption 5 is used only as a sufficient local condition for the Bernstein concentration step in Lemma 5. It should not be interpreted as a global claim that operator-level gradient norms are independent or light-tailed throughout training. Sub-exponential tails provide a standard route to Bernstein-type bounds [ 52 ]; however, deep-network gradients can be heavy-tailed or nonstationary in some regimes [ 48 ]. In such cases, the same ratio-decomposition argument can be retained by replacing the Bernstein concentration step with a clipped, robust, martingale, mixing, or empirical concentration bound. 
+
+Lemma 5 (Concentration of the historical mean) . Under Assumption 5, for any ν ∈ (0, 1) and t ≥ 2,
+
+Pr (Sbt−1 ≤ 1 − ν) ≤ 2 exp ⎛⎝ − c(t − 1) min { ν2
+
+κ2
+
+> b
+
+, νκb
+
+} ⎞⎠. (54) 
+
+Proof. Let Zτ = Y bτ − 1. By Assumption 5, E[Zτ ] = 0, ∥Zτ ∥ψ1 ≤ κb, and the sequence is independent across τ .By (50), 
+
+Sbt−1 − 1 = 1
+
+t − 1
+
+> t−1
+
+∑ 
+
+> τ=1
+
+Zτ . (55) The Bernstein inequality for sums of independent sub-exponential random variables gives 
+
+Pr (∣ Sbt−1 − 1∣ ≥ ν) ≤ 2 exp ⎛⎝ − c(t − 1) min { ν2
+
+κ2
+
+> b
+
+, νκb
+
+} ⎞⎠. (56) The desired lower-tail bound in (54) follows from (56) by dropping the upper-tail event. 
+
+Lemma 6 (Ratio event decomposition) . Let α = 1 + ε > 1, and choose s1 = ε/2 and s2 = ε/( 2α). Then 
+
+{GNMR b,t ≥ α} ⊆ {Y bt ≥ 1 + s1} ∪ {Sbt−1 ≤ 1 − s2}. (57) 
+
+Proof. We prove the contrapositive. Assume 
+
+Y bt < 1 + s1, Sbt−1 > 1 − s2. (58) By (51) and (58), GNMR b,t = Y bt
+
+Sbt−1
+
+< 1 + s1
+
+1 − s2
+
+. (59) 24 By the choice s1 = ε/2 and s2 = ε/( 2α), we have 
+
+α(1 − s2) = α − ε
+
+2 = 1 + ε
+
+2 = 1 + s1. (60) Thus (60) implies 1+s1 
+
+> 1−s2
+
+= α, which gives GNMR b,t < α. So the event {GNMR b,t ≥ α} cannot occur. This proves (57). 
+
+Proof of Theorem 2. Let α = 1 + ε > 1, s1 = ε/2, and s2 = ε/( 2α). By Lemma 6 and the union bound, 
+
+Pr (GNMR b,t ≥ α) ≤ Pr (Y bt ≥ 1 + s1) + Pr (Sbt−1 ≤ 1 − s2). (61) For the first term, (53) gives 
+
+Pr (Y bt ≥ 1 + s1) = Pr (Y bt − 1 ≥ s1) ≤ exp [−c min { s21
+
+κ2
+
+> b
+
+, s1
+
+κb
+
+}] . (62) Since s1 = ε/2, constants can be absorbed into c, yielding 
+
+Pr (Y bt ≥ 1 + s1) ≤ exp ⎛⎝ − c min { ε2
+
+κ2
+
+> b
+
+, εκb
+
+} ⎞⎠. (63) For the second term, Lemma 5 gives 
+
+Pr (Sbt−1 ≤ 1 − s2) ≤ 2 exp ⎛⎝ − c(t − 1) min { s22
+
+κ2
+
+> b
+
+, s2
+
+κb
+
+} ⎞⎠. (64) Since s2 = ε/( 2α), constants independent of ε, α, κ b, t can be absorbed into c, but the factor ε/α must remain. Therefore, 
+
+Pr (Sbt−1 ≤ 1 − s2) ≤ 2 exp ⎛⎝ − c(t − 1) min { (ε/α)2
+
+κ2
+
+> b
+
+, ε/ακb
+
+} ⎞⎠. (65) Combining (61), (63), and (65) proves 
+
+Pr (GNMR b,t ≥ α) ≤ exp ⎛⎝ − c min { ε2
+
+κ2
+
+> b
+
+, εκb
+
+} ⎞⎠ + 2 exp ⎛⎝ − c(t − 1) min { (ε/α)2
+
+κ2
+
+> b
+
+, ε/ακb
+
+} ⎞⎠. (66) 
+
+## D Peak-memory modeling under the maxO budget 
+
+This section provides a simple upper-bound model for the additional peak activation memory introduced when the controller promotes a subset of operators to higher precision under a hard maxO budget.  
+
+> Setup.
+
+Let B be the set of eligible operators. For each operator b ∈ B, let Ab denote the number of activation elements that must be saved for backward under a fixed batch and sequence configuration. At step t, let 
+
+St ⊆ B be the set of operators executed in high precision. By design, the budget enforces ∣St∣ ≤ maxO for all t. 
+
+> From bitwidth to bytes.
+
+Let plow and phigh denote the storage precisions in bits per element. Memory is typically measured in bytes, and one byte equals eight bits. Therefore, the bytes-per-element conversion is bytes per element = bits per element 
+
+8 .25       
+
+> Table 8 Model configurations for different LLaMA scales used in GNMR-guided activation quantization.
+> Params Hidden Intermediate Heads Layers Training Tokens Learning Rate
+
+60M 512 1376 8 8 1.3B 2.5E-3 130M 768 2048 12 12 2.6B 2.5E-3 350M 1024 2736 16 24 7.8B 1E-3 1.3B 2048 5461 24 32 13.1B 6E-4  
+
+> Additional peak activation memory.
+
+Relative to a baseline that runs all eligible operators in low precision, the additional activation memory at step t is 
+
+∆Mt = phigh − plow 
+
+8 ∑
+
+> b∈St
+
+Ab, (67) measured in bytes. Using ∣St∣ ≤ maxO , we obtain the upper bound 
+
+∆Mt ≤ phigh − plow 
+
+8 ∑
+
+> b∈TopK (B,maxO ;Ab)
+
+Ab ≤ phigh − plow 
+
+8 ⋅ maxO ⋅ Amax , (68) where Amax ∶= max b∈B Ab. 
+
+> Interpretation.
+
+Eq. (68) shows that the additional peak activation memory grows linearly with the budget 
+
+maxO and with the activation footprint of the promoted operators. This explains why a hard maxO constraint is an effective and model-agnostic knob for controlling peak memory when dynamic precision promotion is triggered by rare but bursty instability events. 
+
+## E Experimental setup and Additional Results 
+
+This appendix provides training configurations and additional controller-level analyses for the experiments in Section 5.  
+
+> Artifact use.
+
+We use publicly available research datasets and model checkpoints under their respective licenses or access terms. We do not redistribute the original datasets or model checkpoints; the experiments use them for research evaluation and training-stability analysis. 
+
+E.1 Pre-training LLaMA-2 with activation quantization 
+
+During pre-training across all LLaMA model scales, we implement the configuration framework from [ 64 ], with key technical specifications comprising a 256-token maximum sequence length and a global batch size of 512 samples, corresponding to approximately 131K tokens per optimization step. The learning rate scheduling integrates two-phase optimization: initial linear warm-up during the first 10% of training iterations, succeeded by cosine decay gradually reducing the learning rate to 10% of its initial magnitude. Complete architectural configurations and training protocol details have been systematically documented in Table 8. 
+
+E.2 Pre-training LLaMA-2 with DeepSeek-style Recipe-Level Recovery 
+
+This setting evaluates GNMR as a controller layered on top of an existing DeepSeek-style precision recipe. We keep the same sequence length, batch size, and learning-rate scheduler as in Appendix E.1. Operators fixed to 16-bit or 32-bit precision by the recipe remain fixed; GNMR only controls the low-precision-eligible subgraph. The detailed model configurations are provided in Table 9. We use a two-stage GNMR threshold, with a higher threshold during the first 2.5% of training steps and a lower threshold afterward. We instantiate two low-cost/recovery hierarchies: 26       
+
+> Table 9 Model configurations and final validation perplexity for different LLaMA scales used in GNMR-guided DeepSeek-style training.
+> Params Hidden Intermediate Heads Layers Training Tokens Learning Rate Validation Perplexity
+
+130M 768 2048 12 12 2.6B 1E-3 24.62 350M 1024 2736 16 24 7.8B 5E-4 18.87 1.3B 2048 5472 24 32 13.1B 5E-4 15.20 3B 2560 6848 32 32 28.8B 3E-4 13.93 
+
+• BF16 as the higher-fidelity recovery path with Transformer Engine hybrid FP8 [ 41 ] as the low-cost path; 
+
+• Hybrid FP8 as the higher-fidelity recovery path with quantization-simulated 4-bit (E2M1) and 6-bit (E3M2) linear operators as the low-cost path. This design keeps the backend recipe explicit while testing whether GNMR can make bounded recovery decisions over the low-precision-eligible blocks.  
+
+> BF16 High-Precision with Hybrid FP8 Low-Precision Operators.
+
+In the first configuration, bfloat16 (BF16) serves as the high-precision format, establishing the baseline for parameter storage and computationally intensive operations. For low-precision computations, we implement a hybrid FP8 strategy to balance numerical stability with computational efficiency. Specifically, the FP8-E4M3 format (4 exponent bits, 3 mantissa bits) is employed during forward propagation, while FP8-E5M2 (5 exponent bits, 2 mantissa bits) is utilized for backward propagation. This mixed-precision framework is implemented through Transformer Engine, which manages both GEMM operations and activation tensor storage in FP8 formats. Within the FP8 autocast context, BF16 weights and inputs undergo dynamic scaling and conversion to FP8-E4M3 for forward computations. During backward propagation, incoming gradients are cast to FP8-E5M2 to prevent numerical underflow or overflow. All gradients resulting from FP8 GEMM operations are subsequently dequantized back to BF16 for parameter updates.  
+
+> Quantization-Simulated Low-Precision Operators.
+
+In the second configuration, hybrid FP8 operators constitute the high-precision baseline, while low-precision behavior is emulated through quantization using E2M1 (4-bit) and E3M2 (6-bit) formats. For each token, activation values are scaled into the representable range of the target precision, rounded to the nearest representable value, and rescaled to their original dynamic range. During forward propagation, both weights ( w) and activations ( x) undergo quantization prior to computation to simulate precision constraints, with the resulting activations ( y) being quantized again. Backward propagation follows a similar quantization procedure: incoming gradients ( ∂L /∂y ) are quantized, and the computed weight and input gradients ( ∂L /∂w and ∂L /∂x ) are quantized before further propagation.  
+
+> Recoverable scope.
+
+GNMR controls only the recoverable units exposed by the experimental backend. In the activation-quantization stress bench, the recoverable units are the saved activation paths of attention and SwiGLU MLP projection operators. Components that are fixed by the recipe or kept outside the activation-quantization stress path, such as embeddings, normalization layers, and output heads, are not controller actions. This scope separation keeps the experiment focused on runtime recovery decisions rather than full-model precision allocation. 27                         
+
+> Table 10 The validation perplexity ( ↓) for the pre-training LLaMA-2 models for variance model size with activation quantization under different precision strategy. αtand βtrepresent the threshold of GNMR and ∆-GNMR, respectively.
+> method αtβt
+> 130M 350M 2.2B tokens 6.4B tokens
+> ADAPT N.A. N.A. 215.10 88.97 GNMR + ∆-GNMR 1.5 1.3 24.66 18.84 2.0 1.5 24.86 19.07 3.0 2.0 25.33 18.77
+
+E.3 LLaMA-2 13B Fine-tuning Stress Details 
+
+We evaluate LLaMA-2 13B under three precision settings: BF16, fixed INT8, and dynamic INT8/BF16 controlled by GNMR+ ∆-GNMR. All runs fine-tune LoRA adapters on a frozen LLaMA-2 13B base model using two NVIDIA A100 80G GPUs. The common optimization setup uses AdamW, learning rate 2 × 10 −5,weight decay 0.0, gradient clipping 1.0, LoRA rank 8, LoRA scaling αLoRA = 16 , and LoRA dropout 0.05. For GNMR+ ∆-GNMR, the controller acts on the low-precision-eligible recovery path with maxO = 10 , Tlock = 1,a two-stage GNMR threshold αt = 1.5 → 1.1, and a raw ∆-GNMR threshold βt = 1.5 with window size 5. We report matched downstream evaluations on GSM8K, MMLU, HellaSwag, and WikiText-2: GSM8K uses generation with answer extraction, MMLU uses multiple-choice conditional log-likelihood, HellaSwag uses continuation log-likelihood, and WikiText-2 uses autoregressive language-modeling perplexity. The main downstream results are reported in Table 7. 
+
+E.4 Comparison of Static Baselines 
+
+To compare online control with static sensitivity profiling, we run additional activation-quantization stress experiments on LLaMA-2 130M and 350M with simulated low-bit activation quantization under a standard BF16 training stack. All runs use the same data, optimizer, learning-rate schedule, and token budget as in our main activation-quantization experiments presented in Appendix E.1; only the recovery-selection rule changes. Activations of all linear operators in Transformer blocks are quantized using a simulated 4/8-bit floating-point format on top of a BF16 implementation, while weights and optimizer states remain in BF16.  
+
+> Static and stage-wise baselines.
+
+We implement a proxy ADAPT-style [ 35 ] baseline while sharing the same infrastructure as GNMR. Specifically, after a short warm-up phase (500 steps) in BF16, we enable a GNMR/GSS monitor that records per-block gradient-norm-to-history ratios. At the end of warm-up, we aggregate these statistics into a single scalar per block by averaging GNMR over the warm-up steps, sort blocks by this score, and select the top-25% “high-risk” blocks. For the remainder of training, these blocks are always executed with 8-bit activations, while all remaining blocks use 4-bit. The set of high-precision blocks is fixed and no further updates are made. This mimics ADAPT-style approaches that first estimate layer sensitivity and then assign a static bit-width to each layer.  
+
+> Experimental results.
+
+Table 10 presents the validation perplexity during training across different precision strategies. The results show that a fixed sensitivity profile is insufficient under nonstationary runtime risk, while GNMR+ ∆-GNMR updates the recovery set online and preserves the low-cost trajectory more effectively. 
+
+E.5 130M Matched-trigger and Overhead Characterization  
+
+> Setup.
+
+We further isolate trigger quality from the recovery actuator on the 130M activation-quantization stress bench. This experiment follows the same 130M pre-training protocol as Appendix E.1: LLaMA-style 130M pre-training on C4-en [ 43 , 50 ], following the GaLore/CR-Net training setup [ 28 , 64 ], with maximum 28  
+
+> Table 11
+
+Matched-trigger and overhead comparison on the 130M activation-quantization stress bench.    
+
+> Trigger Final PPL Promotion Ratio Hit-
+
+maxO Step Time (s) Peak Mem. (MB) 
+
+GNMR 23.685 0.0040 0.0043 0.9972 3732 GSNR 23.729 – – 1.2775 4009 Jacobian proxy 23.750 – – 1.0167 3682  
+
+> Table 12
+
+Model configuration for the GPT-based MoE stress test. GNMR controls only low-precision-eligible MoE components exposed by the backend setting. 
+
+> Params Attn Hidden Per Expert Hidden MoE Heads Attn Heads Topk Layers Learning Rate
+
+3.7B 7168 2048 64 128 8 3 5E-5  
+
+> Table 13
+
+Training loss ( ↓) for the GPT-based MoE stress test. GNMR-controlled 8-bit/16-bit recovery is compared with fixed 8-bit and BF16 references. ✗ means the run fails to converge.  
+
+> Precision
+
+Training steps (K) 1 2 3 4 6 8 10 12 14 17 20 29  
+
+> 8-bit
+
+0.223 0.205 0.189 0.312 0.176 0.170 0.167 0.163 0.160 0.159 0.158 ✗ 
+
+> 8-bit/16-bit
+
+0.224 0.201 0.189 0.183 0.173 0.170 0.168 0.164 0.162 0.159 0.159 0.154  
+
+> BF16
+
+0.226 0.205 0.187 0.181 0.172 0.171 0.167 0.163 0.159 0.159 0.156 0.152  
+
+> Table 14
+
+Model configurations for PanGu-1B used in GNMR-guided 4-bit training.        
+
+> Params Hidden Intermediate Heads Layers KV groups Channels Learning Rate
+
+1.2B 1536 6144 12 26 6 128 2E-3  
+
+> Table 15
+
+Training loss ( ↓) for the PanGu-1B-class 4-bit stress test. GNMR-controlled recovery improves the fixed 4-bit low-cost path, while BF16 remains the higher-fidelity reference.  
+
+> Precision
+
+Training Tokens (B) 0 0.4 0.8 1.2 1.6 2.0 2.4 2.8 3.2 3.6 4.0  
+
+> 4-bit
+
+12.261 4.656 4.177 3.670 3.527 3.348 3.314 3.238 3.170 3.156 3.124  
+
+> 4-bit+GNMR
+
+12.261 4.650 3.929 3.575 3.564 3.309 3.290 3.215 3.155 3.128 3.076  
+
+> BF16
+
+12.261 4.608 3.878 3.526 3.472 3.210 3.160 3.077 3.004 2.978 2.913 learning rate 3 × 10 −3 and 2.6B training tokens. The low-cost path uses 4-bit activation quantization and the recovery path uses 8-bit activation quantization over the same recoverable projection-activation units as in the main 130M stress setting. All compared methods share the same model, data, optimizer, token budget, low-cost/recovery activation paths, and active recovery cap maxO = 4. GNMR uses thresholded online triggering with Tlock = 1, so 
+
+maxO = 4 is an upper bound rather than a target to fill. For GSNR and the Jacobian proxy, we use budgeted 29 top-maxO ranking baselines that select four units per step. Thus, this comparison tests whether GNMR can achieve competitive quality with a selective thresholded controller, rather than simply comparing full-budget rankers.  
+
+> Compared triggers.
+
+We compare GNMR with two alternative operator-level signals: a GSNR-style gradient stability signal [ 25 ] and a Jacobian-based proxy [ 49 ]. We do not include GSS in this matched-trigger table because GSS is a global/full-process spike score rather than a per-unit online trigger under the same recovery interface. Step time and peak memory characterize overhead under the reported software stack.  
+
+> Results and interpretation.
+
+Table 11 shows that GNMR is an effective thresholded online trigger under the shared 4-bit/8-bit activation recovery interface. It obtains the best final PPL while activating the recovery path only sparsely: the promotion ratio is 0.0040 , and the hit-maxO rate is 0.0043 .Under the same benchmark, GNMR also has the lowest measured step time and lower peak memory than GSNR. The Jacobian proxy has a comparable memory footprint, but gives worse final PPL under a denser full-budget ranking policy. Overall, this comparison supports GNMR as a selective and budget-efficient runtime trigger for the tested controller interface, rather than merely a correlated stability score. 
+
+E.6 GPT-based MoE Stress Test  
+
+> Experiment setup.
+
+We include a GPT-based MoE stress test to evaluate whether the same runtime controller interface remains useful beyond dense LLaMA-style models. We pre-train a 3.7B-parameter GPT-based model [ 5, 42 ] with a Mixture-of-Experts (MoE) architecture [ 23 , 46 ]. The model is trained with global batch size 32, sequence length 4096, learning rate 5 × 10 −5, and cosine decay. In the MoE layers, GNMR controls whether low-precision-eligible components use the low-cost 8-bit path or the 16-bit recovery path. We compare this GNMR-controlled 8-bit/16-bit recovery policy with fixed 8-bit and BF16 references. We use αGNMR = 0.9
+
+after a high-fidelity warm-up: during the first 5% of training steps, all low-precision-eligible MoE components use the 16-bit recovery path. This warm-up avoids reacting to unusually large early gradients before the GNMR running statistics stabilize; after it, GNMR controls the 8-bit/16-bit recovery decisions under the same threshold. Complete architectural configurations and training details are provided in Table 12.  
+
+> Experiment results.
+
+Table 13 reports training loss under the fixed 8-bit low-cost path, GNMR-controlled 8-bit/16-bit recovery, and BF16 reference. The fixed 8-bit run becomes unstable and fails to converge, while GNMR-controlled recovery remains close to the BF16 reference. This is a controller-level architecture stress test: fixed low-precision execution can become unstable in MoE training, while GNMR converts local runtime risk signals into bounded recovery actions. The result supports the portability of the runtime recovery interface to a non-dense transformer setting. 
+
+E.7 PanGu-1B-class 4-bit Stress Test 
+
+We include a PanGu-1B-class stress test under 4-bit low-precision pressure. The model is trained with global batch size 256, sequence length 4096, learning rate 2 × 10 −3, and cosine decay. We compare a fixed 4-bit low-cost path, a GNMR-controlled recovery setting, and a BF16 reference. The GNMR threshold is fixed to 0.4, and the model is trained for 4B tokens. The architectural configuration is provided in Table 14.  
+
+> Experiment results.
+
+Table 15 reports training loss under the fixed 4-bit low-cost path, GNMR-controlled recovery, and BF16 reference. GNMR-controlled recovery improves convergence relative to fixed 4-bit training, while BF16 remains the higher-fidelity reference. This result supports the controller interface beyond the LLaMA-style setting: GNMR applies risk-triggered recovery whenever the backend exposes a low-cost path and a recovery path.
