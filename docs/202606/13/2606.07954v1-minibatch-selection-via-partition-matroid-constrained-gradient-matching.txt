@@ -1,0 +1,1491 @@
+Title: Minibatch Selection via Partition Matroid Constrained Gradient Matching
+
+URL Source: https://arxiv.org/pdf/2606.07954v1
+
+Published Time: Tue, 09 Jun 2026 00:34:08 GMT
+
+Number of Pages: 28
+
+Markdown Content:
+# Minibatch Selection via Partition Matroid Constrained Gradient Matching ∗
+
+Prayas Agrawal 1,3† Prateek Chanda 1,2‡ Ishita Khatri 2
+
+Ganesh Ramakrishnan 1,2 Bamdev Mishra 4 Pratik Jawanpuria 2§
+
+> 1
+
+Department of Computer Science and Engineering, Indian Institute of Technology Bombay 
+
+> 2
+
+Centre for Machine Intelligence and Data Science, Indian Institute of Technology Bombay 
+
+> 3
+
+Microsoft Research India 
+
+> 4
+
+Microsoft India 
+
+Abstract 
+
+Training large language models (LLMs) on heterogeneous data requires selecting minibatches that balance convergence speed with coverage across domains. Existing methods either select samples independently within each domain or rely on computationally expensive proxy models to learn continuous domain weights. We propose PartitionSel , a cross-domain minibatch selection approach that maximizes a validation-guided gradient-matching utility under per-domain budgets encoded as a partition-matroid constraint. By coupling the per-domain budgets through a single utility, PartitionSel is designed to reduce redundancy in selections across domains. The proposed objective is weakly submodular and admits an orthogonal matching pursuit algorithm with provable approximation guarantees. Empirically, we evaluate PartitionSel for minibatch selection during the fine-tuning of Qwen2.5 and Llama-3 
+
+on MetaMathQA and Mol-Instructions . PartitionSel achieves robust gains over per-domain and domain-agnostic baselines on both benchmarks. It also reduces the number of conflicting gradient pairs within each batch, indicating that the cross-domain coupling translates into more compatible training updates. Code is available here. 
+
+# 1 Introduction 
+
+Training large language models (LLMs) with larger mini-batches is known to improve convergence rates and can lead to superior performance. However, large mini-batches incur substantial GPU memory overhead. Recent works propose selectively training on targeted samples within each mini-batch (Wang et al., 2024; Nguyen et al., 2025), thereby significantly reducing memory consumption. The selection of such samples is typically performed using influence functions (Fahrbach et al., 2019; Pruthi et al., 2020; Gasteiger et al., 2022), gradient-matching techniques (Mirzasoleiman et al., 2020a; Killamsetty et al., 2021b,a), or distribution based matching approaches (Kim et al., 2016; Gurumoorthy et al., 2019, 2021; Liu et al., 2024b; Chanda et al., 2026). The minibatch selection problem becomes more challenging when the data includes multiple heterogeneous domains. Several works emphasize on identifying optimal domain representations during training (Tishby & Zaslavsky, 2015; Maurer et al., 2016; Namkoong & Duchi, 2016). Consequently, recent works (Xie et al., 2023a; Liu et al., 2025) aim at optimizing the domain representation mixture via proxy models which are trained alongside the main LLM. However, training proxy models involve computational and practical concerns as       
+
+> ∗Proceedings of the 43 rd International Conference on Machine Learning, Seoul, South Korea. PMLR 306, 2026. Copyright 2026 by the author(s).
+> †Equal contribution. agrawalprayas9@gmail.com
+> ‡Equal contribution. prateekch@cse.iitb.ac.in
+> §Corresponding author: pratik.jawanpuria@iitb.ac.in
+
+1
+
+> arXiv:2606.07954v1 [cs.LG] 6 Jun 2026
+
+one needs to ensure that the proxy model faithfully mirrors the optimization trajectory or emergent behaviors of the main LLM. In this work, we take a discrete, combinatorial view of domain-aware minibatch construction that sidesteps the need for any auxiliary proxy model. We encode per-domain capacities directly as a partition-matroid constraint on the minibatch and select samples jointly under this constraint by maximizing a common utility function across domains. Overall, the samples are rewarded not only for aligning with the signals within their own domain, but also for being non-redundant with samples chosen from other domains. The resulting objective is weakly submodular and admits an efficient orthogonal matching pursuit algorithm with provable approximation guarantees – effectively inducing an implicit domain mixture at the batch level without the computational overhead of training a proxy alongside the LLM. In summary, our contributions are as follows: 
+
+• A unified, domain-coupled formulation. We cast cross-domain minibatch selection as the maxi-mization of a single, validation-guided gradient-matching utility subject to per-domain budgets encoded as a partition-matroid constraint. The proposed weighted-prototype objective, PartitionSel , recovers the GREATS selection rule (Wang et al., 2024) as the binary special case, while, unlike GREATS ,being provably monotone and weakly submodular. 
+
+• A discrete bridge to continuous data-mixture methods. PartitionSel offers a principled connection between discrete subset selection and continuous reweighting strategies such as DoReMi (Xie et al., 2023a), by inducing a discrete, sample-level domain mixture at each training step. 
+
+• Empirical gains and gradient-level evidence. Across Qwen2.5 and Llama-3 fine-tuned on 
+
+MetaMathQA and Mol-Instructions , PartitionSel based minibatch selection consistently im-proves upon strong baselines including GREATS (Wang et al., 2024), COLM (Nguyen et al., 2025), and DoReMi (Xie et al., 2023a). PartitionSel also reduces the number of conflicting gradient pairs within each batch, indicating that the proposed cross-domain coupling translates into more compatible training updates. 
+
+1.1 Related Works 
+
+Coresets and subset selection for language models. Coreset methods select small training subsets whose aggregate gradient approximates that of the larger dataset. CRAIG (Mirzasoleiman et al., 2020b) and GradMatch (Killamsetty et al., 2021a) formalize this as gradient-matching, while GLISTER (Killamsetty et al., 2021b) adds a bilevel validation objective. Recent works extend these ideas to LLMs at the mini-batch level: CoLM (Nguyen et al., 2025) performs memory-efficient coreset selection in the Adam-normalized gradient space for fine-tuning on heterogeneous mixtures while UniProT (Chanda et al., 2026) selects uniformly weighted mini-batch selection for improving minority class representation. Our work shares this gradient-matching philosophy but couples per-domain selections through a single validation-guided utility under partition-matroid constraints. 
+
+Validation-guided and influence-based selection. A complementary line of work scores examples by their estimated influence on a held-out signal using influence functions or gradient-based approximations (Koh & Liang, 2017; Pruthi et al., 2020). LESS (Xia et al., 2024b) computes low-rank gradient features for targeted instruction tuning, and GREATS (Wang et al., 2024) proposes an efficient gradient-matching selection rule at the mini-batch level. Quality-scoring methods such as Ask-LLM and QuRating (Sachdeva et al., 2026; Wettig et al., 2024) use model-derived signals to filter pretraining data, while DSIR (Xie et al., 2023b) performs importance resampling against a target distribution. PartitionSel similarly leverages validation guidance, but performs joint selection across domains under explicit per-domain capacity constraints, which we show reduces redundancy and gradient conflicts within each batch. 
+
+Continuous data-mixture and reweighting methods. Rather than selecting discrete subsets, mixture methods learn continuous domain weights to reweight the training distribution. DoReMi (Xie et al., 2023a) optimizes the mixture via a group-DRO proxy, RegMix (Liu et al., 2025) fits a regression surrogate over small-scale runs, and CLIMB (Diao et al., 2025) iteratively bootstraps clusters and weights. MATES (Yu et al., 2024b) learns a model-aware data selector and Sheared-LLaMA (Xia et al., 2024a) couples data selection with (model) structured pruning. These approaches build on group-robust and distributionally robust optimization (Sagawa et al., 2019) but typically require auxiliary proxy models or extra optimization 2loops. Our batch-level constrained selection can be viewed as a discrete alternative that induces an implicit 
+
+mixture without an auxiliary proxy. 
+
+# 2 Background 
+
+Notations . The n-dimensional non-negative orthant is denoted by Rn
+
+> +
+
+. Sets are denoted by calligraphic notation (e.g. S). For any set A, the corresponding index set is denoted by A. Vectors are typeset in lowercase boldface (e.g., x), and matrices are typeset in uppercase boldface (e.g., X). Sub-vectors and sub-matrices indexed by index sets are denoted using bracketed subscripts (e.g., x[I], X[I],[J ]), where I and J are the index sets. The probability simplex set is denoted by ∆ n = {x ∈ Rn 
+
+> +
+
+: Pni=1 xi = 1 }. The operator (spectral) norm of a matrix A is ∥A∥op := sup ∥x∥2=1 ∥Ax ∥2. We let ⊎ denote the disjoint union of sets and I[·] the indicator function. For a vector x ≥ 0, supp (x) = {j : xj > 0} denotes the support of x.
+
+Submodularity and submodularity ratio . Let f : 2 V → R be a set function over a ground set V. For any subset A ⊆ V and element e ∈ V \ A, the marginal gain is defined as ∆f (e|A) = f (A ∪ { e}) − f (A). The function f is submodular if it exhibits diminishing returns: for all A ⊆ B ⊆ V and e ∈ V \ B, ∆f (e|A) ≥
+
+∆f (e|B). The submodularity ratio γ captures how close a non-submodular function is to being submodular: 
+
+f is said to be γ-weakly submodular for some γ ∈ (0 , 1] if it satisfies: P 
+
+> e∈B
+
+∆f (e|A) ≥ γ∆f (B|A) for all disjoint sets A, B ⊆ V , where ∆f (B | A) = f (A ∪ B) − f (A). For submodular functions, γ = 1. To maximize a monotonic γ-weakly submodular function under cardinality constraint, the classical greedy algorithm (based on marginal gains) achieves (1 − e−γ ) approximation of the optimal value (Nemhauser et al., 1978; Das & Kempe, 2018). 
+
+RSC and RSM . A differentiable function l : Rd → R is restricted strong concave (RSC) with parameter 
+
+cΩ and restricted smooth (RSM) with parameter CΩ on a domain Ω ⊂ Rd × Rd if ∀ (x, y) ∈ Ω, 
+
+l(x) − l(y) + ⟨∇ l(x), y − x⟩ ∈ [ cΩ
+
+2 ∥y − x∥22, CΩ
+
+2 ∥y − x∥22].
+
+RSC and RSM have been studied in the context of weakly submodular functions (Elenberg et al., 2018; Gurumoorthy et al., 2019). Let Ω κ := {(x, y) : ∥x∥0≤ κ, ∥y∥0≤ κ, x, y ≥ 0}, and let cκ and Cκ denote the RSC and RSM parameters of l on Ω κ. Since Ω k ⊆ Ωκ whenever k ≤ κ, it is easily verified that ck ≥ cκ and 
+
+Ck ≤ Cκ. Finally, define eΩ := {(x, y) : ∥x − y∥0≤ 1}, with associated smoothness parameter eC1.
+
+Partition matroid . A partition matroid M = ( V, I) is defined by a partition of the ground set V into disjoint sets V1, . . . , Vm (i.e., V = ⊎mi=1 Vi) with capacities k1, k 2, . . . , k m, respectively. Here I is the set of all 
+
+independent subsets of V, defined as I = {S ⊆ V | |S ∩ V i|≤ ki ∀ i = 1 , . . . , m }.
+
+Conflicting gradients . We define ϕij as the angle between two sample gradients gi and gj . The gradients are conflicting if cos ϕij < 0( ≡ ⟨ gi, gj ⟩ < 0). In Section 7.4, we use this notion of gradient conflict to analyze how samples from different domains interfere with one another during training. 
+
+# 3 Problem Formulation 
+
+We consider the standard setting for training a language model. Let Dtr denote the training dataset and 
+
+ℓ : Z × Θ → R be an instance-wise loss function, where Z = X × Y is the instance space and Θ is the model parameter space. We seek to minimize the expected loss via iterative stochastic optimization (e.g., Adam). At each step t ∈ [T ], the model receives a mini-batch Bt ⊆ Dtr , and the parameters θt are updated using the cumulative batch loss Lt(θt) = P 
+
+> z∈B t
+
+ℓ(z; θt). To guide the learning process, we assume access to a small validation set Dval (Wang et al., 2024; Xia et al., 2024b; Xie et al., 2023a), from which a validation mini-batch 
+
+Bval  
+
+> t
+
+⊆ D val is sampled at each step. 
+
+Domain heterogeneity and mixture strategies . We consider the setting where the data distribution is heterogeneous, i.e., the training dataset spans C distinct domains. Accordingly, Dtr decomposes as 
+
+Dtr = UCc=1 Vc, where Vc denotes the samples belonging to the c-th domain. Recent domain-aware mixture strategies typically learn an optimal continuous weight vector w ∈ ∆C over the domains. However, estimating these weights requires computationally expensive techniques such as training auxiliary proxy models to predict downstream performance (Liu et al., 2025; Diao et al., 2025) or employing group distributionally robust optimization (Xie et al., 2023a; Sagawa et al., 2019). 3Domain-aware batch selection . To circumvent the computational costs of the above techniques, we reformulate the problem as domain-aware mini-batch selection. Instead of learning global domain weights, we optimize the data mixture locally , at the batch level, by selecting a subset of samples that maximizes a utility function subject to domain constraints. For a given training batch Bt at step t, we consider the disjoint union of samples across all C domains, Bt = UCc=1 Bct , where Bct = Bt ∩ V c. Our objective is to select a subset 
+
+St ⊆ B t that maximizes a time-dependent utility Ut(S) while respecting per-domain cardinality constraints 
+
+{κtc}Cc=1 . We define the selection problem as: max 
+
+> S⊆B t
+
+Ut(S) s.t. |S ∩ B ct |≤ κtc ∀c, 
+
+> C
+
+X
+
+> c=1
+
+κtc = κ (1) where κ is the per-step selection budget. The constraint in (1) is precisely a partition-matroid constraint with capacities {κtc}. This formulation lets us enforce domain-specific budgets (and effectively inducing a data mixture) without proxy models or continuous weight optimization. 
+
+3.1 Validation-Guided Gradient Matching 
+
+The utility Ut(S) quantifies the marginal value of training samples by balancing alignment with the validation signal (to ensure relevance) against intra-subset diversity (to limit redundancy and gradient conflicts). To instantiate it, we adopt a validation-guided approach: we select a training subset S ⊆ B t such that the model update derived from S maximally reduces the loss on the validation batch Bval  
+
+> t
+
+. Let θt be the current model parameters. Following (Koh & Liang, 2017; Killamsetty et al., 2021b; Xia et al., 2024b; Wang et al., 2024), we define the utility of a set S ⊆ B t as the expected reduction in validation loss after a stochastic gradient-descent step with learning rate ηt. For a validation instance zval , the expected reduction in validation loss is 
+
+Ut(S) := ℓ(zval ; θt) − ℓ
+
+
+
+zval ; ˜θt+1 (S)
+
+
+
+,
+
+where ˜θt+1 (S) = θt − ηt
+
+P 
+
+> z∈S
+
+gθt (z) denotes the parameters updated using the subset S, and gθt (z) := 
+
+∇θ ℓ(z; θ)|θ=θt is the gradient of ℓ(z; θ) at θt.Given the partially constructed selection S := {z1, z2, · · · , zi−1} at step t, we compute the marginal gain of the utility as follows: 
+
+∆Ut(zi | S ) = ℓ(zval ; ˜θt+1 (S)) − ℓ(zval ; ˜θt+1 (S ∪ { zi})) 
+
+≈ ηt gθt (zi), gθt (zval )
+
+−η2 
+
+> t
+
+gθt (zi), Hzval (θt)( P 
+
+> z∈S
+
+gθt (z)) .
+
+(2) Equation (2) follows from two successive first-order Taylor expansions (Wang et al., 2024): a first-order expansion of the loss difference, together with the update relation ˜θt+1 (S∪{ zi}) = ˜θt+1 (S)−ηt gθt (zi), followed by a first-order expansion of the validation gradient ∇θ ℓ(zval ; ·) about θt. Here Hzval (θt) := ∇2 
+
+> θ
+
+ℓ(zval ; θ)|θ=θt
+
+denotes the validation-loss Hessian at θt.The first term in (2) is the importance score of zi with respect to the validation point zval . It captures how effectively the gradient of the training instance zi reduces the validation loss. The second term is the Hessian-weighted similarity of the candidate zi to the training instances in S. It is subtracted and hence promotes diversity (Wang et al., 2024). 
+
+3.2 GREATS (Wang et al., 2024) 
+
+Wang et al. (2024) proposed the GREATS algorithm, which approximates the vanilla greedy algorithm by iteratively updating the set as S ← S ∪ { z∗} (while respecting the cardinality constraint |S|≤ κ), where 
+
+z∗ := arg max 
+
+> z∈B t\S
+
+gθt (z), gθt (zval )
+
+−ηt
+
+D
+
+gθt (z), P  
+
+> zj∈S
+
+gθt (zj )
+
+E
+
+.
+
+(3) Since the Hessian-gradient product is expensive, Wang et al. (2024) approximate H ≈ I in (2) to obtain (3) .4It should be noted that, while (3) appears to be an instance of greedy selection that maximizes a specific marginal-gain function, Wang et al. (2024) observed (on the review-discussion forum) that it is not an instance of submodular maximization. They conjectured that the GREATS objective may “potentially fall into the category of weakly submodular functions.” As discussed in Section 2, (weak) submodularity is a desirable property of set functions, since it yields an approximation guarantee for the vanilla greedy algorithm. We also note that the marginal gain for an element z ∈ B t \ S in (3) can easily be negative. A simple scenario is when a candidate’s gradient is near-orthogonal to the validation gradient ( gθt (z), gθt (zval ) ≈ 0) yet highly correlated with the samples already in S. Thus the optimization problem of Wang et al. (2024) is non-monotone, as adding an element may decrease the objective. In the following section, we address these concerns by associating each sample z ∈ B t with a non-negative weight indicative of its importance. Introducing these importance weights alleviates the above issues and ensures that the resulting problem is a monotone, weakly submodular maximization problem. 
+
+# 4 Proposed Approach 
+
+We propose to select a subset S ⊆ B t that maximizes the following objective: max   
+
+> S⊆B t,|S|≤ κ
+
+f (S) (4) where f (S) defines the utility of a set S as 
+
+f (S) = max   
+
+> w∈R|B t|
+> +,supp (w)⊆S
+
+Ut(w, Bt; zval ), (5) 
+
+Ut(w, Bt; zval ) = w, μθt − ηt
+
+2 ⟨w, Kθt w⟩ (6) where μθt = Gθt gθt (zval ) + ηt 
+
+> 2
+
+νθt , Kθt = Gθt G⊤ 
+
+> θt
+
+, νθt = diag (Kθt ), Gθt denotes the batchwise gradient matrix over all the samples, i.e., Gθt = [ gθt (z1), . . . , gθt (z|B t|)] T, and diag (·) denotes the vector of diagonal entries of a square matrix. See Appendix E.3 for our memory-efficient construction of per-example gradient features. We note that, given S, computing f (S) in (5) is a convex problem (concave maximization over a convex set) and can be solved optimally using gradient-based solvers. Moreover, as the per-sample LLM gradients are very high-dimensional ( d ≫ |B t|), the Gram matrix Kθt = Gθt G⊤ 
+
+> θt
+
+is positive definite (Kθt ≻ 0). Such properties make the proposed formulation amenable to efficient optimization techniques such as accelerated gradient descent and orthogonal matching pursuit (discussed in Section 6). We further note that f is monotone non-decreasing: enlarging the support set S only enlarges the feasible region of the inner maximization, and Ut(0, Bt; zval ) = 0. The following remark shows that the GREATS optimization objective is a special case of our formulation. 
+
+Remark 4.1 . Consider the setting in which the weights w are restricted to be binary, i.e., w ∈ { 0, 1}|B t|, in (5) . Then the marginal gain ∆f (z | S ) coincides with the objective maximized by GREATS (Wang et al., 2024) in (3) . 
+
+Domain-wise cardinality constraints and expected utility . As discussed in Section 3, the data distribution is heterogeneous in real-world applications. To handle this, we (i) aggregate the utility over the validation set and (ii) enforce per-domain selection budgets. For (i), define the expected utility gain 
+
+Ut(w) := Ezval ∼D val Ut(w, Bt; zval )= w, ¯μθt − ηt
+
+2 ⟨w, Kθt w⟩ ,
+
+where Ezval ∼D val [·] denotes the empirical average over the validation set Dval . Since the batchwise gradient matrix Gθt does not depend on zval , the quadratic term is unchanged under the expectation, and only the linear term is averaged: ¯μθt = Gθt ¯gθt + ηt
+
+2 νθt with ¯gθt := Ezval ∼D val [gθt (zval )]. Our subsequent analysis uses this aggregated utility Ut(·) throughout. For (ii), we enforce the per-domain budgets {κtc}Cc=1 through a partition matroid on the index set of Bt,rather than through explicit sparsity constraints on w. Construct Mt = ( Bt, It) with the canonical domain 5Algorithm 1 PartitionSel  
+
+> 1:
+
+Input: T ∈ N (total training steps)  
+
+> 2:
+
+Output: Final model parameters θT +1  
+
+> 3:
+
+Initialize model parameters θ0 
+
+> 4:
+
+for t = 1 to T do  
+
+> 5:
+
+Receive mini-batch Bt = UCc=1 Bct 
+
+> 6:
+
+Set domain budgets {κtc}Cc=1 ; build parti-tion matroid Mt 
+
+> 7:
+
+Form aggregated utility Ut(·) over Bt (6)  
+
+> 8:
+
+ˆSt ← OMP (Ut(·), Bt, Mt) (Alg. 2)  
+
+> 9:
+
+Update model using ˆSt 
+
+> 10:
+
+end for  
+
+> 11:
+
+return θT +1 
+
+Algorithm 2 OMP : Weakly Submodular Maximization under a Matroid Constraint  
+
+> 1:
+
+Input: Objective Ut(·), ground set Bt, partition matroid 
+
+Mt with capacities {κtc}Cc=1 , budget κ = PCc=1 κtc 
+
+> 2:
+
+Output: Selected support ℜκ 
+
+> 3:
+
+Initialize ℜ0 ← ∅ , wℜ0 ← 0 
+
+> 4:
+
+g ← ∇ wℜ0 Ut(wℜ0 , Bt) 
+
+> 5:
+
+for i = 1 to κ do  
+
+> 6:
+
+Let Mi be a maximal independent set of M/ℜi−1 maxi-mizing P 
+
+> x∈Mi
+
+max(0 , [g]x) 
+
+> 7:
+
+Sample x uniformly at random from Mi 
+
+> 8:
+
+ℜi ← ℜ i−1 ∪ { x} 
+
+> 9:
+
+wℜi ← arg max w≥0: supp (w)⊆ℜ i Ut(w) (APGA, Alg. 3)  
+
+> 10:
+
+g ← ∇ wℜi Ut(wℜi ) 
+
+> 11:
+
+end for  
+
+> 12:
+
+return ℜκ
+
+partition Bt = UCc=1 Bct and per-block capacities {κtc}Cc=1 , so that 
+
+S ∈ I (Mt) ⇐⇒ |S ∩ B ct |≤ κtc ∀c. 
+
+For any A ⊆ B t, let ¯A ⊆ [ |B t| ] denote its index set; the map A ↔ ¯A is a bijection. We define the index-set utility 
+
+fM( ¯A) := max    
+
+> w∈R|B t|
+> +,supp (w)⊆¯A
+
+Ut(w), (7) where the subscript M merely signals the matroid context and pose the domain-aware selection problem as max  
+
+> S∈I (Mt)
+
+fM( ¯A). (8) Crucially, no per-domain sparsity constraint is needed inside fM: matroid independence S ∈ I (Mt) together with supp (w) ⊆ ¯A already forces ∥wBct ∥0= |supp (w) ∩ B ct |≤ |S ∩ B ct |≤ κtc for all c, so the budgets are enforced entirely by the matroid. Consequently, the inner program fM is convex (concave maximization over the support-restricted non-negative orthant), and the only combinatorial structure resides in the outer matroid selection. Let ζ( ¯A) := arg max   
+
+> w≥0,supp (w)⊆¯A
+
+Ut(w) be the inner maximizer, which is unique since Kθt ≻ 0 makes Ut
+
+strictly concave, so fM( ¯A) = Ut(ζ( ¯A)). Thus maximizing fM(·) over independent index sets is equivalent to maximizing Ut(·) over the corresponding partition-sparse non-negative cone. 
+
+# 5 Theoretical Results 
+
+We now state our key theoretical results; the proofs are provided in the supplementary material (Appendix C). The proof strategy relies on establishing the restricted strong concavity (RSC) and restricted smoothness (RSM) of the proposed objective. The relationship between RSC/RSM and weak submodularity has been studied in (Elenberg et al., 2018; Gurumoorthy et al., 2019), and our proofs build on those results. Our first result shows that the proposed weighted mini-batch selection objective (7) is monotone. Hence, unlike (Wang et al., 2024), the marginal gain of any element is non-negative. 
+
+Lemma 5.1. (Monotonicity) Let fM(·) be defined as in (7) . Then for any index sets ˜A ⊆ ˜B we have 
+
+fM( ˜A) ≤ fM( ˜B).
+
+6Lemma 5.2. (Lipschitz continuity of the gradient) For the utility function Ut(w) = w, μθt − ηt
+
+2 wTKθt w
+
+defined in (6) with Kθt ≻ 0, the gradient ∇U t is Lipschitz continuous (in the Euclidean norm) with Lipschitz constant L = ηt ∥Kθt ∥op = ηt ∥Gθt G⊤ 
+
+> θt
+
+∥op .
+
+Lemma 5.3. ( Finite RSC/RSM ) Let Kθt ∈ R|B t|×|B t| be symmetric positive definite and consider the concave quadratic Ut(w) := w, μθt − ηt
+
+2 wTKθt w. Then, for any sparsity level s, Ut(·) is restricted strongly concave and restricted smooth on the domain Ωs of s-sparse non-negative vectors, with parameters cs = ηt λ(s)min (Kθt )
+
+and Cs = ηt λ(s)max (Kθt ), where λ(s)min (K) := min ∥v∥0≤s, ∥v∥2=1 vTKv and λ(s)max (K) := max ∥v∥0≤s, ∥v∥2=1 vTKv 
+
+are the extremal s-sparse (restricted) eigenvalues of Kθt . In particular, since Kθt ≻ 0, we have cs > 0 for every s.
+
+Our next result shows that the proposed weighted subset-selection function is weakly submodular; positivity of the submodularity ratio is a direct consequence of Kθt ≻ 0 (Lemma 5.3 ), which forces the restricted minimum eigenvalue, and hence the RSC constant, to be strictly positive. 
+
+Lemma 5.4. The proposed function fM(·) in (7) is γ-weakly submodular with submodularity ratio γ > 0.
+
+Lemmas 5.1 and 5.4 together imply that PartitionSel (Algorithm 1) enjoys the following approximation guarantee. 
+
+Theorem 5.5. Let ˆSt ∈ I (Mt) be the subset returned by PartitionSel and let S∗ ∈ arg max S∈I (Mt) fM( ¯S)
+
+be an optimal independent set under the partition matroid Mt. Then 
+
+E
+
+h
+
+fM( ˆSt)
+
+i
+
+≥ (1 + eC1/c 2κ)−2 fM(S∗),
+
+where the expectation is taken over the internal randomness of PartitionSel .
+
+The proof follows from (Manupriya et al., 2024a, Lemma 3.3), where c2κ is the RSC constant of Ut(·) on the 2 κ-sparse domain Ω 2κ, and eC1 is the RSM constant on eΩ = {(w, w′) : ∥w − w′∥0≤ 1} (see Section 2). Note that the approximation factor (1 + eC1/c 2κ)−2 is invariant to ηt, since both eC1 and c2κ scale linearly with ηt.
+
+# 6 Algorithm 
+
+Algorithm 1 summarizes the training procedure for PartitionSel . At each training step t ∈ [T ], we receive a mini-batch Bt partitioned into C domains and specify per-domain cardinality (matroid) constraints {κtc}Cc=1 .We then form the step-specific utility Ut over subsets of Bt and invoke the orthogonal matching pursuit (OMP ) subroutine (Algorithm 2) to select a feasible support ˆSt under these constraints. Finally, we update the model parameters using the selected subset ˆSt and continue until step T .
+
+OMP subroutine. Algorithm 2 approximately maximizes the weakly submodular utility Ut subject to the partition matroid Mt (encoding the domain-wise budgets) with total sparsity κ = PCc=1 κtc. Starting from an empty support ℜ0, OMP iteratively adds one element per round. At iteration i, it computes the gradient g = ∇wUt(wℜi−1 ), constructs a maximal independent set Mi in the contracted matroid Mt/ℜi−1
+
+that maximizes the aggregate positive gradient mass P 
+
+> x∈Mi
+
+max( 0, [g]x) , samples an element uniformly from Mi, and augments the support. Given the updated support ℜi, it refits the weights by solving 
+
+wℜi ∈ arg max w≥0: supp (w)⊆ℜ i Ut(w) (via APGA) and refreshes the gradient for the next round. After κ
+
+rounds, the selected support ℜκ is returned. In step 6 of Algorithm 2, Mt/ℜ = ( Bt \ ℜ , IMt/ℜ) denotes the contraction of Mt by ℜ: a matroid on 
+
+Bt \ ℜ whose independent sets are IMt/ℜ := {S ⊆ B t \ ℜ : S ∪ ℜ ∈ I t}. We present the pseudocode for the accelerated projected gradient ascent (APGA) subroutine in Appendix F (Algorithm 3). 
+
+Complexity of Algorithm 2 : The per-iteration cost of Algorithm 2 is O(N + τ M ), where N is the cost of computing the candidate gradients (line 10), M is the gradient cost per APGA iteration (line 9), and 
+
+τ is the number of APGA iterations. Since OMP runs κ rounds, the total cost is O(κ(N + τ M )). 7Uniform Constraints. We allocate the per-domain selection budget at iteration t proportionally to domain size, κtc = ⌊κ |B ct |/|B t|⌉ , so that each domain c receives a budget in proportion to its representation in the mini-batch (rounded so that PCc=1 κtc = κ). 
+
+6.1 Independent Domain wise selection 
+
+We also consider an independent domain-selection baseline based on (Wang et al., 2024), in which each domain is allotted a budget κtc and selected separately. The resulting objective is 
+
+f ID (S) = 
+
+> C
+
+X
+
+> c=1
+
+max   
+
+> wc∈{ 0,1}|B ct|,∥wc∥0≤κtc
+
+Ut(wc, Bct ; zval ).
+
+where the overall selection is S = SCc=1 supp (wc). We term this baseline ID . Each domain-specific selection vector wc is binary-valued, inducing a hard subset selection within each domain. We additionally consider a relaxed variant ( IWD ) that performs domain-wise independent selection with continuous prototype weights, enabling soft weighting rather than combinatorial subset selection ( wc continuous): 
+
+f IWD (S) = 
+
+> C
+
+X
+
+> c=1
+
+max    
+
+> wc∈R|B ct|
+> +,∥wc∥0≤κtc
+
+Ut(wc, Bct ; zval ) (9) again with S = SCc=1 supp (wc). 
+
+6.2 Is PartitionSel a Scalable Proxy for Continuous Data Mixture Methods? 
+
+DoReMi Objective . Continuous data mixture methods such as DoReMi (Xie et al., 2023a) compute optimal domain weights by explicitly optimizing a minimax objective over domains. Formally, DoReMi solves min  
+
+> θ
+
+max 
+
+> α∈∆C
+
+L(θ, α) := 
+
+> C
+
+X
+
+> c=1
+
+αc
+
+1
+
+|V c|
+
+X
+
+> x∈V c
+
+(ℓθ (x) − ℓref (x)) .
+
+The optimal α defines a continuous mixture distribution over training data, Π α = PCc=1 αc 1
+
+> |V c|
+
+P 
+
+> x∈V c
+
+δx,
+
+which upweights domains with higher excess loss ℓθ (x) − ℓref (x). In practice this objective is optimized via Group Distributionally Robust Optimization (Group DRO) (Sagawa et al., 2019): domains exhibiting higher excess loss are upweighted, increasing their influence on subsequent gradient updates. The resulting effective data mixture is the time-averaged iterate ¯α = PTt=1 αt/T, which is then used to train the final main model (parameterized by θm): min 
+
+> θm
+
+h CX
+
+> c=1
+
+¯αc
+
+ 1
+
+|V c|
+
+X
+
+> x∈V c
+
+ℓθm (x)
+
+i 
+
+.
+
+Crucially, DoReMi represents domain importance through a continuous reweighting of the data distribution. This raises the question of whether similar information can be captured using only discrete sample selection. To this end, we view PartitionSel as inducing an implicit domain mixture through its per-step selected subset ˆSt.
+
+PartitionSel . For a direct comparison, we define the induced domain weight of PartitionSel at iteration t as αDOMW  
+
+> c,t
+
+= ˆSt ∩ V c / ˆSt , which measures the empirical mass assigned to domain c by the selected samples. We denote by αDoRM := ¯α the domain mixture obtained by DoReMi. This construction lets us interpret PartitionSel as a discrete, sample-level approximation to the continuous domain reweighting. Figure 1 and Table 3 indicate the effectiveness of our method. 
+
+# 7 Experimental Results 
+
+Baselines We compare our method PartitionSel against the following baselines (i) GREATS (Wang et al., 2024), (ii) ID : An independent domain selection baseline. While GREATS objective have a single overall 8Table 1: Downstream results on math-reasoning benchmarks after fine-tuning Qwen2.5-3B on Meta-MathQA (subset fraction=50%). 
+
+Method NumGLUE MMLU-Math GSM8K SVAMP SimulEq DeepMind AQuA SAT Avg 
+
+Random 0.5704 0.5332 0.7771 0.832 0.5027 0.3281 0.6086 0.6594 0.6014 
+
+GradNorm (Katharopoulos & Fleuret, 2018) 0.6084 0.5565 0.7612 0.8410 0.5156 0.3340 0.5945 0.6727 0.6105 
+
+COLM (Nguyen et al., 2025) 0.5988 0.5503 0.7627 0.8420 0.5156 0.3570 0.5827 0.6864 0.6119 
+
+GREATS (Wang et al., 2024) 0.5873 0.6109 0.7892 0.8480 0.5000 0.3700 0.6142 0.6727 0.6240 
+
+ID 0.5960 0.5965 0.7771 0.8540 0.5117 0.3700 0.5866 0.7182 0.6263 
+
+IWD 0.6115 0.5795 0.7699 0.8500 0.5218 0.3675 0.5980 0.6818 0.6225 
+
+PartitionSel (Ours ) 0.5998 0.6099 0.7665 0.8410 0.5467 0.3500 0.6220 0.7545 0.6363 
+
+Table 2: Performance by training Qwen2.5-3B on Mol-Instructions (Fang et al., 2023) with | ˆSt|= 128, evaluated using BLEU / Edit-distance. Reported at κ = 16 / 32, meaning subset-fractions of 12 .5 / 25%. For BLEU higher is better . For Edit-distance, lower is better . PartitionSel consistently beats baselines.                                                                                                               
+
+> Baseline Desc. guided design Forward reaction pred. Reagent pred. Retrosynthesis Average 12.5% 25% 12.5% 25% 12.5% 25% 12.5% 25% 12.5% 25%
+> Random 0.37 / 47.69 0.83 / 19.76 0.49 / 31.78 0.81 / 23.83 0.62 / 30.77
+> GradNorm 0.27 / 48.30 0.32 / 45.70 0.67 / 23.09 0.73 / 21.21 0.19 / 65.40 0.23 / 58.62 0.74 / 28.33 0.78 / 26.92 0.47 / 41.28 0.52 / 38.11
+> COLM (Nguyen et al., 2025) 0.34 / 49.30 0.28 / 46.90 0.84 /19.37 0.83 / 19.57 0.48 / 31.10 0.46 / 32.27 0.81 / 23.39 0.81 / 23.80 0.62 / 30.79 0.59 / 30.64
+> GREATS (Wang et al., 2024) 0.34 / 50.93 0.35 / 46.96 0.83 / 19.73 0.82 / 20.56 0.48 / 31.84 0.50 / 31.37 0.81 / 24.01 0.81 / 24.48 0.61 / 31.63 0.62 / 30.84
+> ID 0.35 / 47.59 0.36 / 46.70 0.83 / 20.09 0.82 / 20.50 0.49 / 31.79 0.47 / 32.50 0.81 / 24.67 0.81 / 24.10 0.62 / 31.04 0.61 / 30.95
+> IWD 0.38 / 48.25 0.42 / 47.60 0.83 / 19.73 0.83 / 19.58 0.48 / 32.92 0.47 / 33.32 0.81 / 24.39 0.81 / 23.76 0.62 / 31.32 0.63 / 31.07
+> PartitionSel (Ours )0.39 / 49.15 0.42 / 47.27 0.84 / 19.44 0.84 / 19.60 0.48 / 32.03 0.54 /28.29 0.82 / 23.44 0.82 /23.70 0.63 / 31.02 0.66 /29.71
+> 01,000 2,000 3,000
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> Steps
+> log-pplx
+> COLM
+> PartitionSel
+> ID
+> GREATS
+> 01,000 2,000 3,000
+> 0.14
+> 0.15
+> 0.15
+> 0.16
+> Steps
+> log-pplx
+> DoREMI
+> PartitionSel
+
+Table 3: Comparison of data mixture strate-gies 
+
+Dataset DoReMi PartitionSel ∆
+
+MMLU-Math 53.08 60.57 +7.49 AQuA 58.66 61.02 +2.36 SAT 72.27 76.36 +4.09 
+
+Average 61.34 65.99 +4.65 
+
+Figure 1: Validation log-pplx on MetaMathQA (Left), comparison with DoReMi in terms of validation 
+
+log-pplx (Middle), and downstream benchmark performance (Right). cardinality constraint across all the domains, ID selects mini-batches from each domain independently using 
+
+GREATS (iii) IWD as defined in Section 6.1 (iv) COLM (Nguyen et al., 2025) (v) GradNorm (Katharopoulos & Fleuret, 2018) Random : Selects mini-batches randomly. 
+
+7.1 Standard Finetuning 
+
+Models and Training Details. We evaluate on Qwen2.5 (3B and 7B) (Team, 2024), Llama3 (3B and 8B) (Dubey et al., 2024). For finetuning, we employ LoRA with rank 16, α = 96, and dropout 0 .05. Following (Nguyen et al., 2025), LoRA is applied to all attention matrices ( QKV proj ) and two fully connected layers, with a learning rate of 2e-5. 
+
+Finetuning Datasets. We train on the MetaMathQA dataset (Yu et al., 2024a), which consists of 260K instruction tuning samples curated from 14 highly imbalanced data sources. Please see Appendix D.2 for detailed description. 
+
+Evaluation datasets. Following (Yue et al., 2024), we evaluate the finetuned models on both in-domain and out-of-domain benchmarks. The in-domain set comprises GSM8K (Cobbe et al., 2021), MATH (Hendrycks et al., 2021b), and NumGLUE (Mishra et al., 2022), whereas the out-of-domain set includes SVAMP (Patel et al., 2021), Mathematics (Davies et al., 2021), SimulEq (Koncel-Kedziorski et al., 2016), MMLU (Hendrycks et al., 2021a), and AQuA (Ling et al., 2017). 
+
+Results on finetuning for Math-reasoning: We train all models for 2048 steps with batch size of 9Qwen2.5-3B  
+
+> Llama3-3B
+> Llama3-8B
+> Qwen2.5-7B
+> 0
+> 20
+> 40
+> 60
+> 80
+> Accuracy (%)
+> Random PartitionSel
+
+Figure 2: Comparing Random selection with PartitionSel for Qwen2.5 and Llama3 models for down-stream accuracy. 128 and prototype-ratio as 50% (thus effective batch size κ = 64). Table 1 shows the results of source-wise fine-tuning on MetaMathQA . The table indicates that PartitionSel is significantly better than other baselines. Additional results for Qwen2.5-7B , Llama-3.2-3B , and Llama-3.1-8B are reported in the supplementary material (Figure 9 and Tables 9 to 11). 
+
+7.2 Molecule generation Experiments 
+
+Finetuning Datasets. To determine the effectiveness of PartitionSel on out-of-domain datasets, we inspect baselines on the task of Molecule generation. Roughly, the model must generate valid and parseable molecule in the SMILES (Weininger, 1988) format, given an instruction like: 
+
+> Design a protein which possesses methylglyoxal synthase activity.
+
+Please see the Appendix D.1 for a detailed example. We utilise Mol-Instructions (Fang et al., 2023) and evaluate on four domains: 1. Description-guided design: generate a valid molecule (SMILES) from a natural-language functional description. 2. Forward reaction prediction: predict the reaction product given reactants and reagents. 3. Reagent prediction: predict auxiliary reagents given reactants and product. 4. Single-step retrosynthesis: infer feasible reactants given a target product. 
+
+Models and Training Details. We finetune Qwen2.5-3B using LoRA (Hu et al., 2022) of rank 16 and alpha 96, using a learning rate of 2e-4 for 1024 steps using Adam (Kingma & Ba, 2015). Following the experimental setup in (Wang et al., 2024), we use a validation batch of size 2 to guide the minibatch selection. We split the dataset into validation and test datasets, with each domain containing 1000 examples. We set the ˆSt, the full-batch size to be 64 for all experiments. 
+
+Results and discussion. Table 2 shows the BLEU score and Edit-distance of baselines on (Fang et al., 2023). Table 2 indicates that PartitionSel is consistently better than the baselines on both metrics and at varying selection fraction κ.10 GSM AnsAug 
+
+> GSM FOBAR
+> GSM Rephrased
+> GSM SV
+> MATH AnsAug
+> MATH FOBAR
+> MATH Rephrased
+> MATH SV
+> 0
+> 0.2
+> 0.4
+> 0.6
+> Domain weights  Assigned (uniform)
+> Learned (DoReMi)
+> PartitionSel
+
+Figure 3: DoReMi: uniform assigned weights vs learned domain mixture after 1 epoch of baseline and proxy training. 
+
+7.3 Mixture methods 
+
+As discussed in Section 6.2, to compare with offline mixture methods like (Xie et al., 2023a), we utilise the baseline and proxy model as GPT2-300M (Radford et al., 2019), and finetune on MetaMathQA (Yu et al., 2024a), using LoRA rank 16, alpha 32, dropout 0 .05 for 1 epoch using Adam (Kingma & Ba, 2015). After training the DoReMi proxy, the learned domain mixture deviates sharply from the uniform initialization. Concretely, while the proxy is trained with uniform assigned weights ( αc = 0 .125 for all c in 8 domains), the learned mixture concentrates most mass on MATH Rephrased (0 .608), with secondary weight on GSM FOBAR 
+
+(0 .177) and MATH FOBAR (0 .076); all other domains receive comparatively small mass (Fig. 3). Fig. 1 indicates that PartitionSel has consistently lower validation loss and better downstream performance as compared with DoReMi. 
+
+7.4 Reducing Gradient Conflicts across Domains 
+
+In multi-domain training, different domains can induce gradients that point in competing directions, slowing convergence and degrading transfer across tasks. This issue is amplified under subset selection, where the selected mini-batch can become overly specialized to a single domain or objective. We compare two selection strategies: (i) ID that selects samples separately within each domain and then concatenates them, and (ii) our joint selection that coordinates choices across domains under a global budget. Figure 4 illustrates the resulting reduction in conflicting gradient pairs and a more stable optimization trajectory. 
+
+# 8 Ablations 
+
+8.1 Effect of Randomised FFT 
+
+We measure the effect of performing Randomised FFT Ailon & Chazelle (2006) on the gradients to reduce inter-GPU memory traffic. Table 4 shows that FJLT enables gradient computation across more layers while providing theoretical guarantees on preserving pairwise inner products, the key quantity in our utility computation, making full high-dimensional gradients unnecessary. 
+
+8.2 Effect of number of layers for Gradients 
+
+To check the effect of finding gradients from more than 1 layer, we experiment with Qwen2.5-2B , LoRA rank 64, alpha 128. Figure 5 indicates that using more than 1 layers implies an improvement in validation loss, but comes with a relative performance penalty to just using the final layer. 11 0 100 200 300 400 500 600 700 800 900 1,000  
+
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> 60
+> Steps →
+> Gradient Conflicts
+> ⟨gi, gj ⟩ < 0
+> ID
+> PartitionSel
+
+Figure 4: Reducing gradient conflicts. ID ignores cross-domain redundancy and can pick mutually conflicting gradients. PartitionSel trades off samples across domains, improving alignment and reducing destructive interference. Table 4: Feasibility of per-example gradient computation with and without FJLT (Qwen2.5-3B, LoRA rank 64). 
+
+# Method Raw FJLT 
+
+# Grads-1 layer ✓ ✓
+
+# Grads-2 layers ✓ ✓
+
+# Grads-3 layers OOM ✓
+
+# Grads-5 layers OOM ✓
+
+8.3 Comparisons with different Models 
+
+To check the robustness of gains, we evaluate PartitionSel across Qwen2.5 (3B and 7B) and Llama3 (3B and 8B). Figure 2 shows that PartitionSel shows consistent gains for subset selection. 
+
+0 100 200 300 400 500 
+
+Steps 
+
+> log-pplx
+> 1-lyr,
+> 3-lyr,
+
+# #Layers Time (ms) 
+
+# 1-layer 2682 –grads 2272 –subsel 311 3-layer 2822.3 –grads 2468 –subsel 315 
+
+Figure 5: Latency breakdown across 1 layer vs 3-layer gradient computation. 12 9 Conclusion 
+
+We introduced PartitionSel that explicitly optimizes domain representations under partition matroid constraints. By selecting samples jointly across domains using a validation-guided gradient matching objective, our method avoids the limitations of independent per-domain selection and expensive proxy-based weighting schemes. We showed that the resulting objective is weakly submodular, enabling an efficient OMP algorithm with theoretical guarantees. Empirically, our approach consistently improves performance, while reducing gradient conflicts during training. demonstrating it as an effective principled strategy for training across diverse domains. 
+
+# Acknowledgements 
+
+PC acknowledges the Microsoft Research India PhD Award and Prime Minister Research Fellowship to support this research work. GR thanks Bank of Baroda Chair Professorship. PJ acknowledges the support of SBI Foundation Hub for Data & Analytics grant and Anusandhan National Research Foundation for ARG-MATRICS grant. 
+
+# Impact Statement 
+
+This work develops a framework for prototype-selection aiming to select points jointly across domains in multi-domain settings. There are many positive societal consequences of our work, none which we feel must be specifically highlighted here. 
+
+# References 
+
+Ailon, N. and Chazelle, B. Approximate nearest neighbors and the fast johnson-lindenstrauss transform. In 
+
+STOC , 2006. Bian, A. A., Buhmann, J. M., and Krause, A. Guarantees for greedy maximization of non-submodular functions with applications. In ICML , 2017. Bradbury, J., Frostig, R., Hawkins, P., Johnson, M. J., Leary, C., Maclaurin, D., Necula, G., Paszke, A., VanderPlas, J., Wanderman-Milne, S., and Zhang, Q. JAX: composable transformations of Python+NumPy programs, 2018. URL http://github.com/jax-ml/jax .Calinescu, G., Chekuri, C., Pal, M., and Vondr´ ak, J. Maximizing a monotone submodular function subject to a matroid constraint. SIAM Journal on Computing , 40(6):1740–1766, 2011. Chanda, P., Agrawal, P., Gurumoorthy, K., Ramakrishnan, G., Mishra, B., and Jawanpuria, P. Uniprot: Uniform prototype selection via partial optimal transport with submodular guarantees. In AISTATS , 2026. Cobbe, K., Kosaraju, V., Bavarian, M., Chen, M., Jun, H., Kaiser, L., Plappert, M., Tworek, J., Hilton, J., Nakano, R., et al. Training verifiers to solve math word problems. arXiv preprint arXiv:2110.14168 , 2021. Das, A. and Kempe, D. Approximate submodularity and its applications: Subset selection, sparse approxima-tion and dictionary selection. JMLR , 19(3):1–34, 2018. Davies, A., Veliˇ ckovi´ c, P., Buesing, L., Blackwell, S., Zheng, D., Tomaˇ sev, N., Tanburn, R., Battaglia, P., Blundell, C., Juh´ asz, A., Lackenby, M., Williamson, G., Hassabis, D., and Kohli, P. Advancing mathematics by guiding human intuition with AI. Nature , 600(7887):70–74, 2021. Deng, X., Zhong, H., Ai, R., Feng, F., Wang, Z., and He, X. Less is more: Improving llm alignment via preference data selection. arXiv preprint arXiv:2502.14560 , 2025. 13 Diao, S., Yang, Y., Fu, Y., Dong, X., Su, D., Kliegl, M., Chen, Z., Belcak, P., Suhara, Y., Yin, H., et al. Climb: Clustering-based iterative data mixture bootstrapping for language model pre-training. In NeurIPS ,2025. Dubey, A., Jauhri, A., Pandey, A., Kadian, A., Al-Dahle, A., Letman, A., Mathur, A., Schelten, A., Yang, A., Fan, A., et al. The llama 3 herd of models. arXiv preprint arXiv:2407.21783 , 2024. Elenberg, E. R., Khanna, R., Dimakis, A. G., and Negahban, S. Restricted strong convexity implies weak submodularity. Annals of Statistics , 46(6B):3539–3568, 2018. Fahrbach, M., Mirrokni, V., and Zadimoghaddam, M. Submodular maximization with nearly optimal approximation, adaptivity and query complexity. In ACM-SIAM Symposium on Discrete Algorithms , 2019. Fang, Y., Liang, X., Zhang, N., Liu, K., Huang, R., Chen, Z., Fan, X., and Chen, H. Mol-instructions: A large-scale biomolecular instruction dataset for large language models. arXiv preprint arXiv:2306.08018 ,2023. Fisher, M. L., Nemhauser, G. L., and Wolsey, L. A. An analysis of approximations for maximizing submodular set functions—ii. In Polyhedral Combinatorics: Dedicated to the memory of D.R. Fulkerson , pp. 73–87. Springer Berlin Heidelberg, 1978. Gasteiger, J., Qian, C., and G¨ unnemann, S. Influence-based mini-batching for graph neural networks. In 
+
+Learning on Graphs Conference , 2022. Gurumoorthy, K., Jawanpuria, P., and Mishra, B. SPOT: A framework for selection of prototypes using optimal transport. In European Conference on Machine Learning and Knowledge Discovery in Databases (ECML PKDD) , 2021. Gurumoorthy, K. S., Dhurandhar, A., Cecchi, G., and Aggarwal, C. Efficient data representation by selecting prototypes with importance weights. In IEEE International Conference on Data Mining (ICDM) , 2019. Hendrycks, D., Burns, C., Basart, S., Zou, A., Mazeika, M., Song, D., and Steinhardt, J. Measuring massive multitask language understanding. In ICLR , 2021a. Hendrycks, D., Burns, C., Kadavath, S., Arora, A., Basart, S., Tang, E., Song, D., and Steinhardt, J. Measuring mathematical problem solving with the math dataset. In NeurIPS , 2021b. Hu, E. J., Shen, Y., Wallis, P., Allen-Zhu, Z., Li, Y., Wang, S., Wang, L., Chen, W., et al. Lora: Low-rank adaptation of large language models. In ICLR , 2022. Katharopoulos, A. and Fleuret, F. Not all samples are created equal: Deep learning with importance sampling. In ICML , 2018. Killamsetty, K., Durga, S., Ramakrishnan, G., De, A., and Iyer, R. Grad-match: Gradient matching based data subset selection for efficient deep model training. In ICML , 2021a. Killamsetty, K., Sivasubramanian, D., Ramakrishnan, G., and Iyer, R. Glister: Generalization based data subset selection for efficient and robust learning. In AAAI , 2021b. Kim, B., Khanna, R., and Koyejo, O. O. Examples are not enough, learn to criticize! criticism for interpretability. In NeurIPS , 2016. Kingma, D. P. and Ba, J. Adam: A method for stochastic optimization. In ICLR , 2015. Koh, P. W. and Liang, P. Understanding black-box predictions via influence functions. In ICML , 2017. Koncel-Kedziorski, R., Roy, S., Amini, A., Kushman, N., and Hajishirzi, H. Mawps: A math word problem repository. In NAACL , 2016. Ling, W., Yogatama, D., Dyer, C., and Blunsom, P. Program induction by rationale generation : Learning to solve and explain algebraic word problems, 2017. 14 Liu, B., Liu, X., Jin, X., Stone, P., and Liu, Q. Conflict-averse gradient descent for multi-task learning. In 
+
+NeurIPS , 2021. Liu, Q., Zheng, X., Muennighoff, N., Zeng, G., Dou, L., Pang, T., Jiang, J., and Lin, M. Regmix: Data mixture as regression for language model pre-training. In ICLR , 2025. Liu, Z., Karbasi, A., and Rekatsinas, T. Tsds: Data selection for task-specific model finetuning. In NeurIPS ,volume 37, 2024a. Liu, Z., Karbasi, A., and Rekatsinas, T. Tsds: Data selection for task-specific model finetuning. In NeurIPS ,2024b. Manupriya, P., Jawanpuria, P., Gurumoorthy, K. S., Jagarlapudi, S., and Mishra, B. Submodular framework for structured-sparse optimal transport. In ICML , 2024a. Manupriya, P., Nath, J. S., and Jawanpuria, P. MMD-regularized unbalanced optimal transport. Transactions on Machine Learning Research , 2024b. Maurer, A., Pontil, M., and Romera-Paredes, B. The benefit of multitask representation learning. JMLR , 17 (81):1–32, 2016. Miao, S.-Y., Liang, C.-C., and Su, K.-Y. A diverse corpus for evaluating and developing english math word problem solvers, 2021. Mirzasoleiman, B., Bilmes, J., and Leskovec, J. Coresets for data-efficient training of machine learning models. In ICML , 2020a. Mirzasoleiman, B., Cao, K., and Leskovec, J. Coresets for robust training of deep neural networks against noisy labels. In NeurIPS , 2020b. Mishra, S., Mitra, A., Varshney, N., Sachdeva, B., Clark, P., Baral, C., and Kalyan, A. Numglue: A suite of fundamental yet challenging mathematical reasoning tasks. In ACL , 2022. Namkoong, H. and Duchi, J. C. Stochastic gradient methods for distributionally robust optimization with f-divergences. In NeurIPS , 2016. Nemhauser, G. L., Wolsey, L. A., and Fisher, M. L. An analysis of approximations for maximizing submodular set functions—i. Mathematical programming , 14:265–294, 1978. Nguyen, D., Yang, W., Anand, R., Yang, Y., and Mirzasoleiman, B. Mini-batch coresets for memory-efficient language model training on data mixtures. In ICLR , 2025. Patel, A., Bhattamishra, S., and Goyal, N. Are nlp models really able to solve simple math word problems? In NAACL , 2021. Pruthi, G., Liu, F., Kale, S., and Sundararajan, M. Estimating training data influence by tracing gradient descent. In NeurIPS , 2020. Radford, A., Wu, J., Child, R., Luan, D., Amodei, D., Sutskever, I., et al. Language models are unsupervised multitask learners. OpenAI blog , 1(8):9, 2019. Renduchintala, H. K., Bhatia, S., and Ramakrishnan, G. Smart: Submodular data mixture strategy for instruction tuning. In ACL , 2024. Sachdeva, N., Coleman, B., Kang, W.-C., Ni, J., Hong, L., Chi, E. H., Caverlee, J., McAuley, J., and Cheng, D. Z. How to train data-efficient LLMs. In ICLR , 2026. Sagawa, S., Koh, P. W., Hashimoto, T. B., and Liang, P. Distributionally robust neural networks for group shifts: On the importance of regularization for worst-case generalization. arXiv preprint arXiv:1911.08731 ,2019. 15 Soldaini, L., Kinney, R., Bhagia, A., Schwenk, D., Atkinson, D., Authur, R., Bogin, B., Chandu, K., Dumas, J., Elazar, Y., et al. Dolma: An open corpus of three trillion tokens for language model pretraining research. In ACL , 2024. Spall, J. Multivariate stochastic approximation using a simultaneous perturbation gradient approximation. 
+
+IEEE Transactions on Automatic Control , 37(3):332–341, 1992. Team, Q. Qwen2.5: A party of foundation models, September 2024. URL https://qwenlm.github.io/ blog/qwen2.5/ .Tishby, N. and Zaslavsky, N. Deep learning and the information bottleneck principle. In IEEE Information Theory Workshop (ITW) , 2015. Tunstall, L., Beeching, E., Lambert, N., Rajani, N., Rasul, K., Belkada, Y., Huang, S., Von Werra, L., Fourrier, C., Habib, N., et al. Zephyr: Direct distillation of lm alignment. arXiv preprint arXiv:2310.16944 ,2023. Wang, J. T., Wu, T., Song, D., Mittal, P., and Jia, R. Greats: Online selection of high-quality data for llm training in every iteration. In NeurIPS , 2024. Weininger, D. Smiles, a chemical language and information system. 1. introduction to methodology and encoding rules. Journal of chemical information and computer sciences , 28(1):31–36, 1988. Wettig, A., Gupta, A., Malik, S., and Chen, D. QuRating: Selecting high-quality data for training language models. In ICML , 2024. Xia, M., Gao, T., Zeng, Z., and Chen, D. Sheared LLaMA: Accelerating language model pre-training via structured pruning. In ICLR , 2024a. Xia, M., Malladi, S., Gururangan, S., Arora, S., and Chen, D. LESS: Selecting influential data for targeted instruction tuning. In ICML , 2024b. Xie, S. M., Pham, H., Dong, X., Du, N., Liu, H., Lu, Y., Liang, P. S., Le, Q. V., Ma, T., and Yu, A. W. Doremi: Optimizing data mixtures speeds up language model pretraining. In NeurIPS , 2023a. Xie, S. M., Santurkar, S., Ma, T., and Liang, P. Data selection for language models via importance resampling. In NeurIPS , 2023b. Yu, L., Jiang, W., Shi, H., Yu, J., Liu, Z., Zhang, Y., Kwok, J. T., Li, Z., Weller, A., and Liu, W. Metamath: Bootstrap your own mathematical questions for large language models. In ICLR , 2024a. Yu, T., Kumar, S., Gupta, A., Levine, S., Hausman, K., and Finn, C. Gradient surgery for multi-task learning. In NeurIPS , 2020. Yu, Z., Das, S., and Xiong, C. Mates: Model-aware data selection for efficient pretraining with data influence models. In NeurIPS , 2024b. Yue, X., Qu, X., Zhang, G., Fu, Y., Huang, W., Sun, H., Su, Y., and Chen, W. Mammoth: Building math generalist models through hybrid instruction tuning. In ICLR , 2024. Zhou, C., Liu, P., Xu, P., Iyer, S., Sun, J., Mao, Y., Ma, X., Efrat, A., Yu, P., Yu, L., et al. Lima: Less is more for alignment. In NeurIPS , 2023. 16 Supplementary Material: Minibatch selection for Language Models via Partition Matroid Constrained Gradient Matching 
+
+# A Organization of Appendix 
+
+The Appendix is structured as follows. We dicuss some additional related works and background in Section B. Section C summarizes the main theoretical results. Section F presents the detailed description of the proposed algorithm. Sections E and E.5 outline the implementation aspects and the specifics of the experimental setup, respectively. Finally, Section H provides a link to the publicly available codebase. 
+
+# B Background and additional related works 
+
+B.1 Submodular maximization under matroid constraints 
+
+Our analysis builds on a long line of work on (weakly) submodular maximization. The classical greedy algorithm achieves a (1 − 1/e ) approximation for monotone submodular maximization under cardinality (Nemhauser et al., 1978) and a 1 /2 guarantee under matroid constraints, improved to 1 − 1/e by continuous-greedy / pipage rounding (Calinescu et al., 2011; Fisher et al., 1978). Das & Kempe (2018) introduce the submodularity ratio for non-submodular functions, and Elenberg et al. (2018) relate restricted strong concavity to weak submodularity, yielding approximation guarantees for orthogonal matching pursuit (Bian et al., 2017; Gurumoorthy et al., 2019). We leverage these tools to obtain provable guarantees for our partition-matroid-constrained, weakly submodular objective; to our knowledge, this is the first application of partition-matroid-constrained weakly submodular maximization to domain-aware LLM mini-batch selection. 
+
+B.2 Approximate Submodularity 
+
+We adopt the notion of approximate submodularity characterized by the submodularity ratio as shown in (Das & Kempe, 2018). For a monotone set function f , the submodularity ratio with respect to a ground set V, a reference set S ⊆ V , and a parameter κ ≥ 1 is defined as 
+
+αV,κ (f ) = min   
+
+> S⊆V ,A:|A|≤ κ,
+> A∩S =∅
+
+P
+
+> u∈A
+
+(f (S ∪ { u}) − f (S)) 
+
+f (S ∪ A ) − f (S) , with 0 /0 := 1 .
+
+The function f (·) is submodular if and only if αV,κ (f ) ≥ 1. More generally, if 
+
+α ≡
+
+P
+
+> u∈A
+
+(f (S ∪ { u}) − f (S)) 
+
+f (S ∪ A ) − f (S) > 0,
+
+but not necessarily α ≥ 1, then f is said to be α-weakly submodular .
+
+B.3 Conflict-aware multi-task and multi-domain optimization 
+
+Training on heterogeneous sources frequently produces conflicting per-task gradients, motivating methods that project, scale, or reweight updates to mitigate interference (Yu et al., 2020; Liu et al., 2021). Whereas these approaches modify the optimizer at the gradient level, PartitionSel addresses gradient conflict at the data-selection level: its quadratic gradient-similarity term penalizes redundant or interfering samples within each mini-batch, which we observe empirically reduces the fraction of conflicting gradient pairs. 17 B.4 High-quality instruction tuning and alignment data 
+
+Finally, several studies show that careful curation of instruction-tuning data can yield strong performance even with comparatively small datasets (Zhou et al., 2023; Yue et al., 2024), motivating principled mixture and filtering strategies for supervised fine-tuning (Renduchintala et al., 2024; Liu et al., 2024a) and for preference/alignment training (Deng et al., 2025; Tunstall et al., 2023). 
+
+# C Theoretical Results 
+
+Lemma 5.1. (Monotonicity) Let fM(·) be defined as in (7) . Then for any index sets ˜A ⊆ ˜B we have 
+
+fM( ˜A) ≤ fM( ˜B).Proof. Let | ˜A|= n1 and | ˜B|= n2 and since ˜A ⊆ ˜B we have n1 < n 2. We index the elements in ˜B such that the first n1 elements are contained in ˜A.
+
+fM( ˜B) = max   
+
+> w∈Rn2+,supp (w)⊆˜B
+
+Ut(w) ≥ max   
+
+> w∈Rn1+,supp (w)⊆˜A
+
+Ut(w) = fM( ˜A).
+
+Lemma 5.2. (Lipschitz continuity of the gradient) For the utility function Ut(w) = w, μθt − ηt
+
+2 wTKθt w
+
+defined in (6) with Kθt ≻ 0, the gradient ∇U t is Lipschitz continuous (in the Euclidean norm) with Lipschitz constant L = ηt ∥Kθt ∥op = ηt ∥Gθt G⊤ 
+
+> θt
+
+∥op .Proof. Since Ut(w) = wTμθt − 12 wTKθt w, differentiating with respect to w gives ∇U t(w) = μθt − Kθt w.Given a batch Bt, for any w, w′ ∈ R|B t|, by the definition of the operator norm, 
+
+∥∇U t(w) − ∇U t(w′)∥2 = ∥Kθt (w − w′)∥2 ≤ ∥ Kθt ∥op ∥w − w′∥2,
+
+so ∇U t is Lipschitz continuous with constant L = ∥Kθt ∥op .Since Kθt ≻ 0 is symmetric positive definite it admits a factorisation Kθt = Gθt G⊤ 
+
+> θt
+
+, and because the operator norm satisfies ∥A∥op = sup ∥v∥2=1 ∥Av ∥2 for any matrix A, we have directly ∥Kθt ∥op = ∥Gθt G⊤ 
+
+> θt
+
+∥op .The constant L = ∥Kθt ∥op is sharp: taking w − w′ to be the leading eigenvector vmax of Kθt (with largest eigenvalue λmax ) yields ∥∇U t(w) − ∇U t(w′)∥2 = λmax ∥w − w′∥2 = ∥Kθt ∥op ∥w − w′∥2, confirming that no smaller constant suffices. 
+
+Lemma 5.3. ( Finite RSC/RSM ) Let Kθt ∈ R|B t|×|B t| be symmetric positive definite and consider the concave quadratic Ut(w) := w, μθt − ηt
+
+2 wTKθt w. Then, for any sparsity level s, Ut(·) is restricted strongly concave and restricted smooth on the domain Ωs of s-sparse non-negative vectors, with parameters cs = ηt λ(s)min (Kθt )
+
+and Cs = ηt λ(s)max (Kθt ), where λ(s)min (K) := min ∥v∥0≤s, ∥v∥2=1 vTKv and λ(s)max (K) := max ∥v∥0≤s, ∥v∥2=1 vTKv 
+
+are the extremal s-sparse (restricted) eigenvalues of Kθt . In particular, since Kθt ≻ 0, we have cs > 0 for every s.Proof. The function Ut(w) = w⊤μθt − 12 w⊤Kθt w is concave. We calculate Ut(w1)−U t(w2)−∇ ⟨U t(w2), w1 − w2⟩ =
+
+−0.5( w1 − w2)T Kθt (w1 − w2). Since w is k1 + k2 sparse, we consider w1 as k11 + k12 and w2 as k21 + k22
+
+sparse vectors respectively. Now, ∆ w = w1 − w2 has a maximum of k ≤ k11 + k12 + k21 + k22 non-zero entries. For the constants b and B satisfying −b∥∆w∥2≥ − ∆wT Kθt ∆w ≥ − B∥∆w∥2, we have b ≥ k-sparse smallest eigenvalue of Kθt and B ≤ k-sparse largest eigenvalue of Kθt .
+
+Lemma 5.4. The proposed function fM(·) in (7) is γ-weakly submodular with submodularity ratio γ > 0.Proof. Fix arbitrary disjoint index sets S, A ⊆ [ |B t| ] and let ¯κ = |S| +|A| = |S ∪ A| . For an index set T , let 
+
+ζ(T ) := arg max w≥0, supp (w)⊆T Ut(w) ∈ R|B t| 
+
+> +
+
+denote the inner maximizer (cf. (7) ), so that fM(T ) = Ut(ζ(T )). We bound the submodularity ratio 
+
+γS,A =
+
+P
+
+> j∈A
+
+[fM(S ∪ { j}) − fM(S)] 
+
+fM(S ∪ A ) − fM(S)18 from below by lower-bounding the numerator and upper-bounding the denominator. 
+
+Upper bound on the denominator. By restricted strong concavity (Section 2) applied to x = ζ(S)
+
+and y = ζ(S∪A ) (whose difference is supported on S ∪ A , hence ¯ κ-sparse), 
+
+c¯κ
+
+2 ∥ζ(S∪A ) − ζ(S)∥2 ≤ U t(ζ(S)) − U t(ζ(S∪A )) + ⟨∇U t(ζ(S)), ζ(S∪A ) − ζ(S)⟩. (10) Rearranging and upper-bounding the right-hand side by maximizing over all feasible v supported on S ∪ A 
+
+(legitimate, since ζ(S∪A ) is itself such a feasible point), 
+
+Ut(ζ(S∪A )) − U t(ζ(S)) ≤ ⟨∇U t(ζ(S)), ζ(S∪A ) − ζ(S)⟩ − c¯κ
+
+2 ∥ζ(S∪A ) − ζ(S)∥2
+
+≤ max    
+
+> v:v(S∪A )c=0,v≥0
+
+⟨∇U t(ζ(S)), v − ζ(S)⟩ − c¯κ
+
+2 ∥v − ζ(S)∥2. (11) The objective is separable and concave; its maximizer over v ≥ 0 supported on S ∪ A is 
+
+vS∪A = max 
+
+ 1
+
+c¯κ
+
+∇U t, S∪A (ζ(S)) + ζ(S)
+
+> S∪A
+
+, 0
+
+
+
+, (12) so that (v − ζ(S))S∪A = max 
+
+ 1
+
+c¯κ
+
+∇U t, S∪A (ζ(S)), −ζ(S)
+
+> S∪A
+
+
+
+. (13) The KKT conditions for fM(S) = max w≥0, supp (w)⊆S Ut(w) at ζ(S) require, for all j ∈ S ,
+
+
+
+ζ(S) 
+
+> j
+
+> 0 = ⇒ ∇U t,j (ζ(S)) = 0 ,
+
+ζ(S) 
+
+> j
+
+= 0 = ⇒ ∇U t,j (ζ(S)) ≤ 0, (14) and hence ( v − ζ(S))j = 0 for all j ∈ S . For j ∈ A we have ζ(S) 
+
+> j
+
+= 0 (as A ∩ S = ∅), so ( v − ζ(S))j =max 
+
+ 1
+
+c¯κ
+
+∇U t,j (ζ(S)), 0
+
+
+
+. Writing ∇U + 
+
+> t, A
+
+(ζ(S)) = max 
+
+n
+
+∇U t, A(ζ(S)), 0
+
+o
+
+and substituting the maximizer, 0 ≤ U t(ζ(S∪A )) − U t(ζ(S)) ≤ 12c¯κ
+
+∥∇U + 
+
+> t, A
+
+(ζ(S))∥2, (15) where the left inequality is the monotonicity of fM (Lemma 5.1 ). 
+
+Lower bound on the numerator. Fix j ∈ A . If ∇U t,j (ζ(S)) ≤ 0, then fM(S ∪ { j}) = fM(S) – mono-tonicity (Lemma 5.1 ) gives “ ≥”, while the optimality of ζ(S) with ∇U t,j ≤ 0 gives “ ≤” – so such coordinates contribute zero to both the numerator and to ∥∇U +
+
+> t, A
+
+∥2, and we may restrict to j with ∇U t,j (ζ(S)) > 0. Let 
+
+1({j}) be the j-th standard basis vector, and for α ≥ 0 set y({j}) = ζ(S) + α 1({j}), so that (ζ(S), y({j})) ∈ eΩ .Since y({j}) is feasible for fM(S ∪ { j}), restricted smoothness (Section 2) on eΩ yields 
+
+Ut(ζ(S∪{ j})) − U t(ζ(S)) ≥ U t(y({j})) − U t(ζ(S)) ≥ ⟨∇U t(ζ(S)), α 1({j})⟩ − eC1
+
+2 α2.
+
+Maximizing the right-hand side over α at α = ∇U t,j (ζ(S))/ eC1 ≥ 0 gives 
+
+fM(S ∪ { j}) − fM(S) ≥ 12 eC1
+
+(∇U t,j (ζ(S))) 2,
+
+and summing over j ∈ A ,
+
+X
+
+> j∈A
+
+[fM(S ∪ { j}) − fM(S)] ≥ 12 eC1
+
+∥∇U + 
+
+> t, A
+
+(ζ(S))∥2. (16) 19 Combining. Dividing (16) by (15), the common factor ∥∇U + 
+
+> t, A
+
+(ζ(S))∥2 cancels and 
+
+γS,A ≥ c¯κ
+
+eC1
+
+.
+
+For |S| , |A|≤ κ we have ¯ κ ≤ 2κ, hence Ω ¯κ ⊆ Ω2κ and c¯κ ≥ c2κ (Section 2). Therefore 
+
+γ = min  
+
+> S,A
+
+γS,A ≥ c2κ
+
+eC1
+
+> 0,
+
+where the strict positivity follows since Kθt ≻ 0 ensures c2κ > 0 (Lemma 5.3 ). This proves the claim. 20 D Dataset Details 
+
+D.1 Molecular Instruction Datasets 
+
+The Molecular Instructions dataset (Fang et al., 2023) is a large-scale biomolecular instruction dataset for large language models designed to enhance a model’s performance in various realms of biomolecular studies. It con-sists of three key components: (i) molecule-oriented instructions , (ii) protein-oriented instructions and biomolec-ular text instructions .0 1 2 3
+
+> Domain
+> 0
+> 1 × 10 5
+> 2 × 10 5
+> 3 × 10 5
+> 4 × 10 5
+> Count
+> Average count = 188,000
+> Description-Guided Molecule Prediction
+> Retrosynthesis
+> Forward Reaction Prediction
+> Reagent Prediction
+
+(a) Mol-Instructions 0 1 2 3 4 5 6 7 
+
+> Domain
+> 0
+> 1 × 10 4
+> 2 × 10 4
+> 3 × 10 4
+> 4 × 10 4
+> 5 × 10 4
+> 6 × 10 4
+> 7 × 10 4
+> 8 × 10 4
+> Count
+> Average count = 49375
+> GSM_Rephrased
+> GSM_AnsAug
+> MATH_AnsAug
+> MATH_Rephrased
+> GSM_SV
+> GSM_FOBAR
+> MATH_FOBAR
+> MATH_SV
+
+(b) MetaMathQA 
+
+Figure 6: Domain-wise sample distributions in Mol-Instructions and MetaMathQA , highlighting substantial domain imbalance in the number of instances contributed by different domains/tasks. 
+
+Molecular-oriented instructions consists of 148.4K instructions across six tasks, includ-ing description-guided molecule prediction , ret-rosynthesis , forward reaction prediction and 
+
+reagent prediction .The dataset distribution across various cat-egories is shown in Figure 6(a). A detailed example of this specific section of the dataset is given in D.1.1. 
+
+Protein-oriented instructions focus on predicting the the structure, function, and ac-tivity of proteins, and facilitate protein design based on textual directives. It consists of 505K instructions spanning five categories of tasks. 
+
+Biomolecular text instructions focus on bioinformatics and chemoinformatics, covering six information extraction and Q&A tasks represented through 53K instructions. 
+
+D.1.1 Detailed Description for Molecular-Oriented Instructions 
+
+Table 2 shows the results obtained for the experiments carried out using the Mol Instructions datasets. Molecular Instruction Examples Description-guided molecule design 
+
+Input: Create a molecule with the structure as the one described. The molecule is a primary arylamine in which an amino functional group is substituted for one of the benzene hydrogens. It is a primary arylamine and a member of anilines. 
+
+Output: 
+
+[N][C][=C][C][=C][C][=C][Ring1][=Branch1] 
+
+Forward reaction prediction 
+
+Input: With the provided reactants and reagents, propose a potential product. 
+
+[O][=N+1][Branch1][C][O-1][C][=C][N][=C][Branch1][C][Cl][C][Branch1][C][I][=C][Ring1][Branch2] ⌋
+
+.[Fe] ,→
+
+Output: 
+
+[N][C][=C][N][=C][Branch1][C][Cl][C][Branch1][C][I][=C][Ring1][Branch2] 
+
+Retrosynthesis 
+
+Input: Please suggest potential reactants used in the synthesis of the provided product. 
+
+[C][=C][C][C][N][C][=Branch1][C][=O][O][C][Branch1][C][C][Branch1][C][C][C] 
+
+Output: 
+
+[C][=C][C][C][N].[C][C][Branch1][C][C][Branch1][C][C][O][C][=Branch1][C][=O][O][C][=Branch1][C ⌋
+
+][=O][O][C][Branch1][C][C][Branch1][C][C][C] ,→
+
+21 Reagent prediction 
+
+Input: Please provide possible reagents based on the following chemical reaction.  
+
+> [C][C][=C][C][=C][Branch1][C][N][C][=N][Ring1][#Branch1].[O][=C][Branch1][C][Cl][C][Cl]>>[C][C ⌋
+> ][=C][C][=C][Branch1][Branch2][N][C][=Branch1][C][=O][C][Cl][C][=N][Ring1][O] ,→
+
+Output: 
+
+> [C][C][C][O][C][Ring1][Branch1].[C][C][N][Branch1][Ring1][C][C][C][C].[O]
+
+D.2 Reasoning Datasets 
+
+The MetaMathQA dataset (Yu et al., 2024a) is a large-scale mathematical question–answering dataset designed to train and evaluate large language models on mathematical reasoning. It comprises a wide range of mathematical domains, including algebra, calculus, and number theory. Each data instance contains a query (the mathematical problem) and a detailed step-by-step solution. The dataset distribution can be seen in Figure 6(b). In Table 1, we show results for experiments in which the model is trained on MetaMathQA 
+
+and evaluated on various mathematical reasoning benchmarks described below. 
+
+D.3 Evaluation Datasets 
+
+NumGLUE The NumGLUE dataset (Mishra et al., 2022) is a multi-task benchmark designed to evaluate the performance of AI systems on eight tasks that fundamentally require simple arithmetic understanding. The benchmark includes both newly created and previously existing arithmetic reasoning tasks, totaling approximately 100k questions. The tasks are intentionally imbalanced, for example, Task 1 contains around 400 examples, while Task 5 includes about 50k examples, reflecting real-world distributions in which arithmetic word problems are far more common than those requiring additional common-sense reasoning in addition to arithmetic reasoning. 
+
+MATH The MATH dataset (Hendrycks et al., 2021b) consists of 12,500 challenging competition-level mathematics problems. Each problem has a full step-by-step solution, enabling the training and evaluation of models that generate answer derivations and explanations. The dataset spans seven subjects, namely Prealgebra, Algebra, Number Theory, Counting and Probability, Geometry, Intermediate Algebra, and Precalculus. Each subject comprises of problems from different difficulty level, ranging from level 1 to level 5. 
+
+GSM8K The GSM8K dataset (Cobbe et al., 2021) consists of 8.5K high-quality linguistically diverse grade-school math word problems which are designed to exhibit substantial linguistic variation while relying only on relatively simple grade-school mathematical concepts. The dataset is divided into 7.5K training examples and 1K test examples, with each problem typically requiring between 2 and 8 reasoning steps to solve. 
+
+SVAMP The SVAMP dataset (Patel et al., 2021) (Simple Variations on Arithmetic Math Word Problems) contains one - unknown arithmetic word problems up to approximately grade - 4 level, designed by applying simple and controlled variations to problems in ASDiv (Miao et al., 2021) to highlight the brittleness of existing models when trained on standard math word-problem benchmarks. SVAMP introduces several categories of variations, including: (i) Question Sensitivity i.e. same object with different structure, different object with same structure, or different object with a different structure; 
+
+(ii) Reasoning Ability i.e. modifying relevant information, changing information, or inverting operations; and 
+
+(iii) Structural Invariance i.e. adding irrelevant information, changing the order of objects, or changing the order of phrases. 22 SimulEq SimulEq is a subset of MAWPS (Koncel-Kedziorski et al., 2016), an online repository of math word problems designed to support research in automated math word -problem solving. SimulEq contains the highest -complexity equations among all the MAWPS subsets, including single equation and multi equation word problems. 
+
+MMLU-Math For our experiments, we use the mathematics-related subsets of the MMLU benchmark (Hendrycks et al., 2021a). We focus on four tasks that fall under the Elementary Mathematics category: 
+
+formal logic , high school mathematics , abstract algebra , and college mathematics .
+
+AQuA The AQuA dataset (Ling et al., 2017) consists of 100K multiple-choice math word problems in which each question is decomposed into four parts: the problem description (the question ), the set of multiple - choice answer options (the options ), the step-by-step explanation used to reach the correct answer (the rationale ), and the correct option label. 
+
+# E Implementation Details 
+
+E.1 Hardware and License 
+
+All models are implemented in Python 3.10 using JAX . All language model training were performed on servers with NVIDIA A100 GPUs. 
+
+E.2 Finetuning experiments 
+
+We use JAX (Bradbury et al., 2018) for all our finetuning experiments. We use adam (Kingma & Ba, 2015) with learning rate of 2e-5, with ˆSt = 128. We directly use raw lora gradients for constructing similarity matrices for CoLM, GREATS, PartitionSel . For GREATS , ID and PartitionSel we randomly sample 2-random points from val-set as anchors at every train step. 
+
+E.3 Memory Efficient Gradient Computation 
+
+Since computing per-example gradients is prohibitively expensive, we rely on the last layer gradients of the LoRA params for computing the ¯μθt and ¯Kθt . Moreover, inspired by (Nguyen et al., 2025), we apply a adam-like lowpass filter on the raw gradients directly instead of their SPSA (Spall, 1992) proxy. Concretely, let ˜gθt (zi) denote the raw last-layer LoRA gradient for example zi at step t. We maintain exponentially smoothed first and second moments (bias-terms omitted for brevity) 
+
+mt(zi) = β1 mt−1(zi) + (1 − β1) ˜ gθt (zi),
+
+vt(zi) = β2 vt−1(zi) + (1 − β2) ˜ g2 
+
+> θt
+
+(zi).
+
+We then define the filtered gradient feature used in the similarity matrices as gθt (zi) = mt(zi)
+
+√vt(zi)+ ε . Finally, we apply a randomized FFT projection (Ailon & Chazelle, 2006) to obtain a compressed features for constructing ¯μθt and ¯Kθt , which reduces memory movement to improve efficiency. 
+
+E.4 Details of baselines 
+
+GREATS (Wang et al., 2024). GREATS formulates online batch selection as optimizing a set utility that measures the single-step reduction in validation loss under a gradient-descent update. Let θt be the current parameters, Bt a candidate batch, and S ⊆ B t a subset of size κ. The ideal utility at iteration t is 
+
+Ut(S) := ℓ(zval ; θt) − ℓ
+
+
+
+zval ; ˜θt+1 (S)
+
+
+
+(17) and selection solves arg max S⊆B t, |S| =κ Ut(S). Since exact evaluation is intractable, GREATS applies a Taylor approximation to obtain a closed-form surrogate for the marginal gain of adding a training point zi:
+
+∆Ut(zi | S ) = ℓ(zval ; ˜θt+1 (S)) − ℓ(zval ; ˜θt+1 (S ∪ { zi})) 
+
+≈ ηt gθt (zi), gθt (zval ) − η2 
+
+> t
+
+gθt (zi), Hzval (θt)( P 
+
+> z∈S
+
+gθt (z)) .
+
+23 In practice, GREATS further approximates Hzval (θt) ≈ I, yielding a gradient inner-product scoring with a correction term. A greedy procedure iteratively adds the point with largest approximate marginal gain until k points are selected. To avoid materializing per-example model-sized gradients, GREATS computes all required gradient inner-products in a single backpropagation via a “ghost inner-product” reparameterization that expresses layerwise gradient inner-products using already-available activations and output gradients, and merges selection with the update without extra passes. 
+
+CoLM (Nguyen et al., 2025). CoLM casts mini-batch construction as coreset selection in gradient space for memory-efficient fine-tuning. CoLM first addresses imbalance by including all examples from “small” sources (those with insufficient sample count in the large batch), while selecting representatives (medoids) from each “big” source. To align selection with Adam, per-example gradients are normalized by the optimizer’s exponential-moving-average statistics, yielding normalized directions proportional to mt/(ϵ + √vt). To reduce dimensionality and denoise, CoLM estimates the gradient of the last V -projection parameters (e.g., LoRA V ) using a zeroth-order SPSA estimator with two perturbed forward passes and precached penultimate activations, then sparsifies by keeping the coordinates with largest normalized magnitudes. Within each big source, a greedy medoid selection is performed in the projected, sparsified, Adam-normalized gradient space so that the aggregated coreset gradient approximates that of the full large batch; the final mini-batch is the union of all small-source examples and the selected big-source medoids. 
+
+GradNorm (Katharopoulos & Fleuret, 2018) Given a large batch B, compute per-example gradient features and rank by norm. For parameters θ and loss ℓi = ℓ(fθ (xi), y i), define raw gradient gi = ∇θ ℓi.To align with Adam, each coordinate is normalized as ˜gi = mt√vt+ϵ ⊙ gi where ( mt, vt) are the exponential moving averages of first and second moments. Instead of ℓ2 distance, GradNorm computes similarity in this normalized gradient space using cosine: sij = ⟨ ˜gi, ˜gj ⟩∥ ˜gi∥2 ∥ ˜gj ∥2
+
+.
+
+Each example is scored by its (smoothed) gradient norm ∥ ˜gi∥2, and the top-k are selected. This yields a subset whose update direction emphasizes examples with largest effective gradient magnitude under the optimizer’s scaling. 
+
+E.5 Training Details 
+
+Following the configuration in Yue et al. (2024), we employ a learning rate of 2 × 10 −5 with a cosine decay scheduler. The learning rate is linearly warmed up from 0 to 2 × 10 −5 during the first 3% of training steps and subsequently decays to 0 following a cosine schedule. We fix the maximum sequence length to 512 tokens. Unless otherwise stated, all experiments on MetaMathQA are trained for the equivalent of 2K gradient update steps. For randomised FFT projections, we project the gradients to respective models output embedding dimension. For parameter-efficient fine-tuning, we adopt LoRA (Hu et al., 2022) with rank 64, scaling parameter 
+
+α = 128, and a dropout rate of 0.05. All experiments are conducted on A100 GPUs, and each configuration is repeated three times to account for variance in training. 
+
+# F Additional Algorithms 
+
+This section provides implementation details for the inner optimization routine used by our selection objective. Recall from the main paper (Section 6) that the OMP subroutine (Algorithm 2) repeatedly solves a constrained concave maximization over weights supported on the current candidate set. Concretely, for a fixed support S,we optimize the utility Ut(w) over nonnegative weights w ≥ 0 with supp (w) ⊆ S.Algorithm 3 describes the accelerated projected gradient ascent (APGA) solver (Manupriya et al., 2024b) we use for this inner problem. It is a standard Nesterov-style accelerated method with a projection step onto the nonnegative orthant, using a step size 1 /L where L is any Lipschitz constant of ∇U t (see Lemma 5.2 in the main paper). In our implementation, we warm-start APGA from the previous iterate whenever possible, and terminate when the relative improvement in objective becomes small (or after a fixed iteration budget), which keeps the overall overhead negligible. 24 Algorithm 3 APGA : Accelerated Projected Gradient Ascent for the inner program (7)  
+
+> 1:
+
+Input: objective Ut(w); Lipschitz constant L; initial point w0 ∈ R|B t| 
+
+> +
+
+. 
+
+> 2:
+
+Initialize y ← w0, w ← w0, t ← 1.  
+
+> 3:
+
+while not converged do  
+
+> 4:
+
+w+ ← Proj ≥0
+
+ y + 1 
+
+> L
+
+∇U t(y). 
+
+> 5:
+
+t+ ← 1+ 
+
+√1+4 t2 
+
+> 2
+
+. 
+
+> 6:
+
+y ← w+ + t−1 
+
+> t+
+
+(w+ − w).  
+
+> 7:
+
+(w, t ) ← (w+, t +).  
+
+> 8:
+
+end while  
+
+> 9:
+
+return w .
+
+# G Additional Experiments 
+
+G.1 End-to-end wall-clock time and peak GPU memory 
+
+Here, we provide an end-to-end wall-clock time details for each baseline used in our experiments. 
+
+Experimental setup. To showcase the end-to-end wall-clock time for PartitionSel as compared to other baselines, we train a Qwen2.5-3B model using a batch size of 16 with a selection fraction κ = 0 .25 for 1K training steps. Table 5: End-to-end wall-clock time (minutes) 
+
+Method Time (mins) 
+
+PartitionSel (Ours) 51:08 
+
+GREATS 50.67 
+
+COLM 47:29 
+
+ID 53:25 
+
+Random 44.17 
+
+Table 6: Peak GPU memory consumption. 
+
+Method Memory 
+
+PartitionSel (Ours) 31.5 GB 
+
+ID 32.9 GB 
+
+GREATS 32.8 GB 
+
+COLM 32.7 GB 
+
+Random 28.0 GB 
+
+Efficiency-Accuracy Tradeoff . Overall, PartitionSel incurs comparable end-to-end training time relative to existing approaches, while achieving better accuracy and log-perplexity trade-offs as shown in our experiment analysis, demonstrating that its computational overhead is negligible in practice. 
+
+Peak GPU memeory Cost . We additionally report the peak GPU memory cost incurred by 
+
+PartitionSel against other baselines in Table 6. We observe that the peak GPU memory consump-tion of PartitionSel is similar to existing gradient-based baselines. Random consumes the least peak memory as it does not perform subset selection and incurs no gradient computation. 
+
+G.2 Handling extreme imbalance under proportional constraints 
+
+In our current data mixture experiments, we employ the MetaMathQA dataset for training, which is imbalanced. Figure 6(b) showcases the imbalance across different domains, where the minority domains are 
+
+MATH FOBAR and MATH SV . In Figure 7, we provide the percentage of samples per domain ( MetaMathQA ). 
+
+> GSM AnsAug
+> GSM FOBAR
+> GSM Rephrased
+> GSM SV
+> MATH AnsAug
+> MATH Rephrased
+> MATH FOBAR
+> MATH SV
+
+010 20 20 .3 
+
+> 10 .1
+> 20 .3
+> 10 .1
+> 18 .9
+> 12 .7
+> 3.83.8
+> Percentage (%)
+
+In Figure 4 , we showcase the domain weights assigned by PartitionSel where the minority do-main weights are within a similar range as those as-signed by DoReMi , thereby showing that the domain weight scheme of PartitionSel (line 311) is robust to domain imbalance. We provide the log-perplexity curves in Figure , where PartitionSel has bet-ter log-pplx reduction than DoReMi by 12.5% and 9.4% on minority ( MATH FOBAR , MATH SV ) domains, 25 Table 7: Pretraining validation log-pplx over training steps. 
+
+Step PartitionSel ID 
+
+5K 8.72 8.80 10K 7.58 7.77 20K 7.43 7.63 35K 7.35 7.58 50K 7.32 7.55 
+
+respectively. For completeness, Figure 8 shows rep-resentative values from the log-pplx plot. 
+
+G.3 Pretraining and validation-set as-sumptions 
+
+It is unclear if the assumptions (e.g., access to a clean validation set) hold or scale effectively to the pre-training phase, where data mixtures are significantly larger and more diverse. While our primary empirical validation is in the supervised fine-tuning setting, we follow Wang et al. (2024) to implement pretraining as well. Since pretraining with DoReMI is a computational constraint for us (it requires additional overheads such as pretraining an additional proxy model before the main model pretraining begins), we compare against the independent coreset selection baseline ID .Figure 8: Minority-domain validation log-pplx over training steps.          
+
+> 128 256 512 768 1024 1536 2048
+> 0.25
+> 0.3
+> 0.35
+> 0.4
+> Training Step →
+> log-pplx
+> MATH SV ( DoReMi )MATH SV ( PartitionSel )
+> MATH FOBAR ( DoReMi )MATH FOBAR ( PartitionSel )
+
+We train a Llama-3.2-1B model on 1.5B to-kens from a multi-domain corpus ( Dolma (Sol-daini et al., 2024)) spanning heterogeneous sources (Common Crawl, Wikipedia, StackEx-change, Reddit; ∼2.9M chunks total). We use a batch size of 16k tokens (32 sequences of length 512), learning rate of 3 ×10 −4 with linear decay, warmup of 1000 steps, and AdamW. In Table 7, we observe that our approach achieves better log-pplx reduction than domain-wise indepen-dent selection by 4.53%. 
+
+G.4 Additional Results on Llama-3.1-8B 
+
+Table 9 reports the performance of Llama3.1-8B on MetamathQA (Yu et al., 2024a). We train the model for 2048 steps, with ˆSt as 128 and κ as 16, thus admitting a subset selection ratio of 12 .5%. 8 reports the performance on molecule generation (Fang et al., 2023), trained for 1024 steps. 
+
+G.5 Additional Results on Llama-3.2-3B 
+
+Setup. We report results for Llama-3.2-3B fine-tuned on MetaMathQA (Yu et al., 2024a) for 2048 optimization steps using a full batch size | ˆSt|= 128 and a selection budget κ = 16, corresponding to a 12 .5% subset ratio. We evaluate the resulting model on eight math-reasoning benchmarks and report accuracy (%) in Table 10. 26 Table 8: Subset selection performance on four molecule generation datasets using BLEU / Edit Distance, evaluated with Llama-3.2-3B .
+
+Baseline Desc. guided design Forward reaction pred. Reagent pred. Retrosynthesis Average 
+
+Random 0.23 / 56.10 0.79 / 20.54 0.31 / 42.54 0.80 / 24.18 0.53 / 35.84 
+
+COLM 0.36 / 49.83 0.83 / 20.41 0.29 / 31.46 0.80 / 23.67 0.57 / 31.34 
+
+GradNorm 0.31 / 47.83 0.65 / 22.62 0.28 / 46.28 0.73 / 30.26 0.49 / 36.75 
+
+GREATS 0.33 / 51.80 0.83 / 20.51 0.50 / 25.44 0.82 / 24.11 0.62 / 30.46 
+
+ID 0.38 / 50.54 0.83 / 20.66 0.35 / 28.05 0.81 / 24.24 0.59 / 30.87 
+
+IWD 0.37 / 48.36 0.83 / 20.31 0.29 / 26.45 0.81 / 23.95 0.57 / 29.77 
+
+PartitionSel 0.40 / 46.64 0.82 / 20.23 0.44 / 33.89 0.81 / 24.17 0.62 / 31.23                                                
+
+> Method NumGLUE MMLU-Math GSM8K SVAMP SimulEq DeepMind AQuA SAT Avg
+> COLM (Nguyen et al., 2025) 38.00 40.35 48.22 60.80 17.12 16.60 31.50 39.09 36.46
+> GradNorm (Katharopoulos & Fleuret, 2018) 36.85 39.53 44.81 54.10 11.28 15.80 31.50 40.91 34.35
+> ID 41.27 36.65 48.90 58.40 18.87 15.80 34.25 38.64 36.60
+> PartitionSel 43.95 39.01 49.13 56.70 19.65 15.90 36.61 44.09 38.13
+
+Table 9: Downstream Accuracy (%) on evaluation datasets for Llama-3.1-8B trained on MetaMathQA 
+
+with a 12.5% subset ratio.                                                 
+
+> Method NumGLUE MMLU-Math GSM8K SVAMP SimulEq DeepMind AQuA SAT Avg
+> COLM (Nguyen et al., 2025) 47.02 37.68 58.07 71.70 24.51 23.30 46.06 46.36 44.34
+> GradNorm (Katharopoulos & Fleuret, 2018) 47.60 45.99 59.21 71.00 22.96 22.60 40.55 45.91 44.48
+> GREATS (Wang et al., 2024) 49.81 32.65 60.65 67.90 25.88 20.60 41.34 52.27 43.89
+> PartitionSel 50.29 39.63 59.82 69.90 30.16 24.00 37.40 51.36 45.32
+
+Table 10: Downstream Accuracy (%) on evaluation datasets for Llama-3.2-3B trained on MetaMathQA 
+
+with a 12.5% subset ratio. 
+
+Results and discussion. Across the suite of benchmarks, PartitionSel achieves the best average performance (45.32) among the baselines reported, while remaining competitive on individual tasks. We observe consistent gains on several compositional and multi-step reasoning benchmarks (e.g., NumGLUE and SimulEq), suggesting that coordinating subset selection across domains helps preserve a broader set of skills compared to domain-wise selection strategies. Moreover, relative to COLM and GradNorm, the improvements are achieved without requiring a separate domain-weight learning stage, aligning with our goal of a simple batch-level selection mechanism. 
+
+G.6 Additional Results on Qwen2.5-7B 
+
+Setup. We report results for Qwen2.5-7B fine-tuned on MetaMathQA (Yu et al., 2024a) for 2048 steps with full batch size | ˆSt|= 128 and a selection budget κ = 16 (subset ratio 12 .5%). We evaluate accuracy (%) on the same set of eight math-reasoning benchmarks used in the main paper; results are summarized in Table 11. 
+
+Method NumGLUE MMLU-Math GSM8K SVAMP SimulEq DeepMind AQuA SAT Avg 
+
+ID 57.68 64.68 80.52 84.60 41.44 37.90 60.24 78.18 63.15 
+
+PartitionSel 56.43 64.58 83.47 86.40 38.72 38.10 63.78 83.64 64.39 
+
+Table 11: Downstream Accuracy (%) on evaluation datasets for Qwen2.5-7B trained on MetaMathQA 
+
+with a 12.5% subset ratio. 27 0 1,000 2,000 3,000 
+
+0.3
+
+0.4
+
+0.5
+
+Steps 
+
+> log-pplx
+
+COLM 
+
+PartitionSel 
+
+ID 
+
+GREATS  
+
+> (a) Llama-3.2-3B
+
+0 1,000 2,000 3,000 
+
+0.2
+
+0.4
+
+0.6
+
+0.8
+
+Steps 
+
+> log-pplx
+
+COLM 
+
+PartitionSel 
+
+ID 
+
+GREATS  
+
+> (b) Llama-3.1-8B
+
+Figure 9: Validation log-pplx on MetaMathQA .
+
+Results and discussion. PartitionSel improves the average accuracy over the strongest reported baseline ( ID ) from 63.15 to 64.39, with particularly notable gains on GSM8K, SVAMP, AQuA, and SAT. Interestingly, ID remains slightly better on NumGLUE and SimulEq, suggesting that while joint selection generally improves breadth, some benchmarks may benefit from more domain-specialized selections. Overall, the results reinforce that the proposed joint selection strategy scales to larger backbones (7B) and preserves the accuracy gains observed in the 3B setting. 
+
+# H Code 
+
+Our Code is available at https://github.com/efficiency-learning/PartitionSEL 
+
+28

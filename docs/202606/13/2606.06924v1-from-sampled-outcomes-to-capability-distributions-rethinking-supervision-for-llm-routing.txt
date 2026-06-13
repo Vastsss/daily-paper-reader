@@ -1,0 +1,926 @@
+Title: From Sampled Outcomes to Capability Distributions: Rethinking Supervision for LLM Routing
+
+URL Source: https://arxiv.org/pdf/2606.06924v1
+
+Published Time: Mon, 08 Jun 2026 00:29:40 GMT
+
+Number of Pages: 20
+
+Markdown Content:
+# From Sampled Outcomes to Capability Distributions: Rethinking Supervision for LLM Routing 
+
+Guannan Lai 1,2, Haoran Hu 1,2, Long Chen 3, Zhenguo Li 3,4, Han-Jia Ye 1,2(B) 
+
+> 1
+
+School of Artificial Intelligence, Nanjing University  
+
+> 2
+
+National Key Laboratory for Novel Software Technology, Nanjing University  
+
+> 3
+
+Hong Kong University of Science and Technology  
+
+> 4
+
+Frontier Robotics 
+
+{laign,yehj}@lamda.nju.edu.cn, huhr@smail.nju.edu.cn, longchen@ust.hk, zhenguol@gmail.com 
+
+Datasets Source Code 
+
+Abstract 
+
+Existing LLM routing methods typically treat a model’s single response to a query as its ca-pability label for training routers. However, because LLM generation is inherently stochas-tic, such single-shot supervision provides only a noisy observation of a query-model pair’s behavior rather than a reliable capability es-timate. We show that this assumption intro-duces systematic noise into routing supervi-sion, making learned routing policies less reli-able. To address this issue, we propose DARS 
+
+(Distribution-Aware Routing Supervision), a framework that constructs routing supervision from a distributional view of model behavior. Instead of relying on a single generated re-sponse, DARS considers uncertainty from both the input side and the output side, capturing how semantically equivalent query formula-tions and stochastic generations affect model performance. Based on these distribution-aware observations, DARS builds more reliable supervision signals for routing. Experiments across diverse tasks show that single-shot labels can be misleading for model selection, while distribution-aware supervision provides more stable labels and improves learned routing be-havior. Our results suggest that reliable LLM routing should move beyond single-response observations and be grounded in query-level model capability distributions. 
+
+1 Introduction 
+
+Large language models (LLMs) are increasingly deployed as heterogeneous model pools rather than isolated single systems. In practice, different mod-els exhibit distinct strengths: lightweight models can often handle simple instructions or factual queries, while larger or more specialized models may be required for complex reasoning, mathe-matical problem solving, biomedical question an-swering, or long-context understanding. These models also differ substantially in inference cost, Original Query  
+
+> Model A Model B
+> Model C Model A region
+> Model B region
+> Model C region
+> Repeated samples
+> Original query
+> Single-shot sample
+
+Figure 1: Illustration of the single-shot label issue in LLM routing. The colored regions represent different models that are preferred in different parts of the query-behavior space. For the same original query, repeated generations may lead to multiple observed outcomes across these regions, while single-shot supervision only observes one sampled outcome and may therefore pro-duce an unstable routing label. 
+
+latency, context length, and availability. As a re-sult, LLM routing has become an important mech-anism for cost-effective deployment: given an in-put query, a router selects an appropriate model from a candidate pool, aiming to balance response quality and serving cost. Recent routing methods and benchmarks have made substantial progress in learning such query-dependent model selection policies (Chen et al., 2023; Ong et al., 2025; Hu et al., 2024; Huang et al., 2025). Despite this progress, most routing supervision still represents each query-model pair with a sin-gle generated response and its score. This point-estimate view may be adequate for deterministic prediction or closed-form classification, but it is poorly aligned with free-form LLM generation, where outputs are inherently stochastic. Prior work on uncertainty estimation and hallucination detec-tion has shown that LLM generations can be sensi-tive to sampling randomness and may vary in both surface form and semantic content (Kuhn et al., 2023; Manakul et al., 2023; Farquhar et al., 2024). 1
+
+> arXiv:2606.06924v1 [cs.LG] 5 Jun 2026
+
+As illustrated in Figure 1, even for the same origi-nal query, different sampled outcomes may suggest different model preferences. This raises a funda-mental question for LLM routing: can a single sampled response reliably serve as the supervision signal for model selection? This mismatch can propagate through the entire routing pipeline. Variability in a model’s sampled response may alter its observed score; changes in observed scores may change which model appears preferable for a query; and routers trained on such sample-dependent labels may learn policies that reflect incidental generation noise rather than sta-ble differences in model capability. These issues motivate a distribution-aware view of routing super-vision, where labels are constructed from repeated observations of query-model behavior rather than from isolated sampled outputs. In this paper, we propose DARS (Distribution-
+
+Aware Routing Supervision), a framework for con-structing distribution-aware supervision signals for LLM routing. DARS considers uncertainty from both the input side and the output side: it uses se-mantically preserving prompt rewrites to capture sensitivity to query formulation, and repeated de-coding to capture stochastic variation in generation. Based on these observations, DARS constructs more reliable routing labels that reflect query-level model behavior rather than isolated outputs. We evaluate DARS on diverse tasks spanning multiple-choice scientific reasoning, mathematical problem solving, and reading comprehension, using a het-erogeneous pool of six LLMs. Our analysis shows that single-shot labels can be unstable and mislead-ing for model selection, while a small number of distributional observations already yield substan-tially more reliable supervision. Further experi-ments show that routers trained with DARS super-vision achieve more stable and effective routing behavior than those trained from single-response labels. Our contributions are threefold: • We identify and systematically analyze the 
+
+single-shot label assumption in LLM routing, showing that representing query-model behav-ior with one generated response can introduce unstable and noisy routing supervision. • We introduce DARS , a distribution-aware rout-ing supervision framework that accounts for both input-side and output-side uncertainty through prompt rewrites and repeated decoding. • We provide empirical evidence across diverse datasets and models that distribution-aware su-pervision yields more reliable routing labels and improves learned routing policies compared with single-response supervision. 
+
+2 Related Work 
+
+LLM routing. LLM routing aims to select an appropriate model from a heterogeneous model pool for each input query, usually balancing re-sponse quality and inference cost. Early work studies cost-aware model selection and cascading strategies, showing that using multiple LLMs adap-tively can reduce inference cost while maintaining or even improving performance (Chen et al., 2023; Zhang et al., 2023; Aggarwal et al., 2024; Yue et al., 2023; Lai and Ye, 2026). Recent methods further learn query-dependent routing policies with differ-ent supervision and modeling strategies. For ex-ample, Hybrid LLM and BEST-Route study adap-tive routing under quality-cost constraints (Ding et al., 2024, 2025); RouteLLM learns routing from preference data (Ong et al., 2025); TensorOpera Router, EmbedLLM, IRT-Router, GraphRouter, and causal routing develop different learned routers based on regression, representation learning, item response theory, graph modeling, or regret min-imization (Stripelis et al., 2024; Zhuang et al., 2024; Song et al., 2025; Feng et al., 2025; Tsiour-vas et al., 2025; Ma et al., 2026). Other studies investigate training-free, retrieval-based, control-lable, or preference-aware routing strategies (Zhao et al., 2024; Li, 2025; Mei et al., 2025; Piskala et al., 2025). Benchmarks such as RouterBench and RouterEval provide systematic evaluation settings for multi-LLM routing (Hu et al., 2024; Huang et al., 2025). Unlike these works, we do not fo-cus on designing a new router architecture; instead, we revisit the supervision used to train or evaluate routers. 
+
+Uncertainty-aware and efficient LLM inference. 
+
+Several lines of work improve LLM inference ef-ficiency by estimating uncertainty, deciding when to defer to stronger models, or allocating compu-tation adaptively. For example, uncertainty-based two-tier selection and related caching or distilla-tion strategies reduce expensive model calls by identifying when a cheaper model is sufficient (Ramírez et al., 2024, 2023). Other work studies budget- and quality-controllable routing, quality-of-service-aware routing, or dynamic routing under 2deployment constraints (Mei et al., 2025; Yang et al., 2025b; Wang et al., 2025). Recent studies also examine routing robustness and vulnerabili-ties, showing that routing policies can be fragile under distribution shifts, adversarial settings, or lifecycle changes (Shafran et al., 2025; Lin et al., 2025; Kassem et al., 2025). These works high-light the importance of reliable model selection, but they typically assume that the observed score of a query-model pair is a suitable supervision signal. In contrast, DARS argues that such observations are themselves stochastic and should be treated as samples from an underlying capability distribution. 
+
+Uncertainty and robustness in language model generation. Our work is also related to uncer-tainty estimation and robustness analysis for LLM generation. Prior studies show that LLM outputs can vary substantially under sampling randomness, and that inconsistency across generations can re-veal uncertainty or hallucination risk (Kuhn et al., 2023; Manakul et al., 2023; Farquhar et al., 2024). Another line of work studies prompt robustness, showing that semantically similar or adversarially perturbed prompts may lead to different model pre-dictions (Gan and Mori, 2023; Zhu et al., 2023). These findings suggest that a model’s behavior on a query cannot be fully characterized by a single generated response. DARS brings this insight to LLM routing: instead of constructing routing la-bels from isolated sampled outcomes, it uses query rewrites and repeated stochastic decoding to esti-mate distribution-aware capability signals for each query-model pair. 
+
+3 Preliminaries 
+
+3.1 Single-shot Supervision for LLM Routing 
+
+LLM routing considers a candidate model pool 
+
+M = {m1, . . . , m K } and aims to select an appro-priate model for each input query x. Given a rout-ing function r(·), the selected model is r(x) ∈ M .The goal is to achieve a favorable trade-off between response quality and inference cost: the router should assign difficult queries to more capable mod-els when necessary, while avoiding unnecessary use of expensive models for queries that can be handled by cheaper alternatives. In a typical routing setup, each model m pro-duces a response y for query x. The response is evaluated along two dimensions. First, a task-specific performance function s(·) measures the quality of the response, such as accuracy for multiple-choice or mathematical tasks, or F1 for reading-comprehension tasks. Second, a cost func-tion κ(·) measures the inference cost of producing the response, which may depend on the model, the query, the output length, and the decoding process. Thus, for a query-model pair (xi, m ), a generated response induces both a performance observation and a cost observation. Most existing routing datasets construct super-vision from a single observed response for each query-model pair. Specifically, for each query xi
+
+and model m, one response is generated: 
+
+ysingle  
+
+> i,m
+
+∼ P (y | xi, m ),
+
+and the corresponding single-shot observations are recorded as 
+
+qsingle  
+
+> i,m
+
+= s(ysingle  
+
+> i,m
+
+, x i), csingle  
+
+> i,m
+
+= κ(ysingle  
+
+> i,m
+
+, x i, m ).
+
+Here, qsingle  
+
+> i,m
+
+denotes the observed performance of model m on query xi, while csingle  
+
+> i,m
+
+denotes the observed cost of this particular generation. Impor-tantly, the cost is not necessarily a model-level con-stant: even for the same model, it may vary across queries and sampled outputs due to differences in prompt length, completion length, and generation behavior. Given a dataset D = {xi}Ni=1 and a cost budget 
+
+Cmax , the routing objective can be formulated as a constrained optimization problem: 
+
+max 
+
+> r
+
+1
+
+N
+
+> N
+
+X
+
+> i=1
+
+qsingle  
+
+> i,r (xi)
+
+s.t. 1
+
+N
+
+> N
+
+X
+
+> i=1
+
+csingle  
+
+> i,r (xi)
+
+≤ Cmax .
+
+That is, the router aims to maximize average per-formance while keeping the average inference cost within a prescribed budget. This protocol is simple and scalable, which ex-plains its prevalence in routing benchmarks and learned routing systems. However, it implicitly treats one sampled generation as a reliable estimate of both the performance and cost behavior of a query-model pair. The next section examines why this single-shot view can be problematic for LLM routing. 
+
+3.2 Uncertainty in Query-Model Behavior 
+
+The reliability of single-shot routing supervision depends on whether a query-model pair has stable behavior under natural variations. In this work, we distinguish two sources of uncertainty that are particularly relevant to LLM routing. 3Input-side uncertainty. The first source comes from variations in how the same query is expressed. In real applications, semantically equivalent user requests may differ in wording, structure, level of detail, or prompt format. Ideally, a model’s capabil-ity on a query should be stable under such meaning-preserving variations. However, prior work on prompt robustness has shown that LLMs can be sensitive to prompt formulations, and that small changes in prompts may lead to different predic-tions or performance degradation (Zhu et al., 2023; Gan and Mori, 2023). For routing, this means that the estimated suitability of a model may depend not only on the underlying task, but also on the particular surface form of the input. We refer to this source of variability as input-side uncertainty .
+
+Output-side uncertainty. The second source comes from stochastic generation itself. Even when the input query and model are fixed, decoding can produce different responses, which may vary in factuality, reasoning path, final answer, or seman-tic content. Prior work on uncertainty estimation and hallucination detection has shown that such variation is informative: inconsistent generations often indicate higher uncertainty or lower reliabil-ity (Kuhn et al., 2023; Manakul et al., 2023; Far-quhar et al., 2024). For routing, this implies that a single generated response may be insufficient to characterize how well a model can handle a query. We refer to this source of variability as output-side uncertainty .
+
+3.3 Limitations of Single-shot Routing Supervision 
+
+To examine whether single-shot supervision pro-vides reliable routing signals, we conduct a diag-nostic analysis across tasks with different output formats and evaluation protocols. This section fo-cuses only on the limitations of existing supervision protocols, leaving the design of distribution-aware routing to the next section. 
+
+Experimental setup. We use three datasets cov-ering complementary task types. GPQA is a graduate-level multiple-choice question answer-ing benchmark covering biology, physics, and chemistry (Rein et al., 2023). MATH-500 is a 500-problem subset of the MATH benchmark for mathematical problem solving (Hendrycks et al., 2021; Lightman et al., 2024). DROP-800 is an 800-problem subset of the reading-comprehension benchmark requiring discrete reasoning over para-graphs, such as counting, sorting, and arithmetic reasoning (Dua et al., 2019). For each dataset, we sample 200 training queries for constructing repeated observations. To capture input-side un-certainty, we generate five semantically preserv-ing rewrites for each query using GPT-4o (Hurst et al., 2024), while keeping the gold answer and candidate choices unchanged. To capture output-side uncertainty, for each rewritten query and each model, we perform five independent decoding runs under the same evaluation protocol. This results in a 5 × 5 observation matrix for each query-model pair, where each entry records both the response quality and the corresponding inference cost. Our model pool includes Gemma-3-12B-IT (Team et al., 2025), Mistral-Small-3.2-24B-Instruct (Mistral AI, 2025), Qwen3-32B (Yang et al., 2025a), Llama-3.3-70B-Instruct (Meta AI, 2024), Gemini-2.5-Flash-Lite (Google, 2025), and DeepSeek-Chat-V3.1 (DeepSeek-AI et al., 2024). 
+
+Observation 1: Single-shot labels are unsta-ble across datasets. 
+
+Figure 2a shows that single-shot supervision is unstable across all three datasets. We report three diagnostic metrics. Outcome instability measures whether repeated observations of the same query-model pair produce different scores. Winner flip rate measures whether the model selected as the best candidate for a query changes under different single-shot samples. Single vs. DA disagreement 
+
+measures how often a single-shot routing label dis-agrees with the distribution-aware label estimated from repeated observations. The results show that instability is not limited to response scores, but propagates to model selec-tion. GPQA exhibits the strongest instability, with an outcome instability of 0.715 and a winner flip rate of 0.970. DROP-800 also shows substantial instability, with a winner flip rate of 0.665 and a single-vs.-DA disagreement rate of 0.471. Even on MATH-500, where the task is more constrained, the winner flip rate remains 0.645. These results indi-cate that single-shot labels are not merely noisy measurements; they can directly change which model is selected for a query. 
+
+Observation 2: Different tasks exhibit differ-ent uncertainty profiles. 
+
+Figure 2b decomposes uncertainty into input-4GPQA MATH-500 DROP-800  
+
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Rate
+> 0.715
+> 0.429
+> 0.590
+> 0.970
+> 0.645 0.665
+> 0.565
+> 0.259
+> 0.471
+> Outcome instability
+> Winner flip rate
+> Single vs DA disagreement
+
+(a) Label instability GPQA MATH-500 DROP-800  
+
+> 0.00
+> 0.02
+> 0.04
+> 0.06
+> 0.08
+> 0.10
+> Mean variance
+> 0.028
+> 0.018
+> 0.043
+> 0.099
+> 0.053
+> 0.035
+> Input-side uncertainty
+> Output-side uncertainty
+
+(b) Uncertainty sources GPQA MATH-500 DROP-800  
+
+> 0.35
+> 0.40
+> 0.45
+> 0.50
+> 0.55
+> 0.60
+> 0.65
+> 0.70
+> Test utility
+> std=0.018
+> [0.332, 0.432]
+> std=0.011
+> [0.652, 0.719]
+> std=0.008
+> [0.665, 0.707]
+
+(c) Router variance 
+
+Figure 2: Diagnostic analysis of single-shot routing supervision. (a) Single-shot labels are unstable at the outcome, winner, and label levels. (b) Input-side and output-side uncertainty contribute differently across datasets. (c) Routers trained from different single-shot samples exhibit non-negligible performance variation. 
+
+side and output-side components. GPQA and MATH-500 are dominated by output-side uncer-tainty: their output-side variances are 0.099 and 
+
+0.053 , respectively, clearly higher than their input-side variances. This indicates that repeated decod-ing alone can substantially change observed model behavior on scientific and mathematical reason-ing tasks. In contrast, DROP-800 shows compa-rable input-side and output-side uncertainty, with input-side uncertainty slightly higher ( 0.0428 vs. 
+
+0.0350 ). This suggests that reading-comprehension performance is also sensitive to how the query is formulated. Therefore, single-shot supervision can fail in different ways across tasks: some tasks are mainly affected by stochastic generation, while oth-ers are also sensitive to meaning-preserving input variations. 
+
+Observation 3: Single-shot supervision in-duces unstable learned routers. 
+
+To test whether label instability affects router learning, we construct 100 single-shot training sets by randomly sampling one observation from the 
+
+5 × 5 matrix for each query-model pair, and train one router on each sampled training set. Figure 2c reports the resulting test performance distribution. Since all routers use the same model pool, data split, and architecture, the performance variation mainly comes from the random single-shot supervi-sion used for training. The observed spread across the 100 routers indicates that single-shot supervi-sion can lead to non-negligible policy variance. Thus, the issue is not limited to label construc-tion: stochastic supervision can propagate into the learned router and make the final model-selection policy less reliable. 
+
+4 DARS: Distribution-Aware Routing Supervision 
+
+4.1 Overview of DARS 
+
+LLM routing aims to select an appropriate model from a candidate pool M for each input query x,typically balancing response quality and inference cost. Existing routing methods often construct supervision from a single sampled response for each query-model pair, where the observed quality and cost are used to estimate a single-shot utility 
+
+Usingle (x, m ) = q(x, m ) − λc (x, m ). While sim-ple, this point-estimate protocol is unreliable for stochastic LLM generation: semantically equiva-lent query formulations and repeated decoding runs may produce different responses, scores, and even model preferences. As a result, routers trained on single-shot observations may learn incidental sam-pling noise rather than stable differences in model capability. To address this issue, we propose DARS , a distribution-aware supervision framework for LLM routing. As shown in Figure 3, DARS replaces isolated single-shot observations with repeated ob-servations obtained through query rewriting and stochastic decoding. For each query-model pair, these observations are summarized into distribu-tional capability signals, including expected perfor-mance, expected cost, and aggregate performance variability. DARS then constructs a risk-aware util-ity: 
+
+U (x, m ) = μq(x, m ) − λμ c(x, m ) − βσ q(x, m ),
+
+where μq(x, m ), μc(x, m ), and σq(x, m ) denote the expected quality, expected cost, and overall performance variability, respectively. By incorpo-rating both cost and risk into supervision, DARS encourages routers to select models that are not 5DARS                     
+
+> Single -Shot
+> Training
+> Dataset Model Pool
+> Query
+> Query
+> Rewrite 𝑵
+> Quer ies
+> Random
+> Decoding
+> M×
+> Random
+> Decoding
+> 𝑀 ×𝑁 observations for each model
+> Single observation for each model
+> Routing Policy
+> 𝑼 𝒙 ,𝒎 =𝝁 𝒒 −𝝀 𝝁 𝒄 −𝜷 𝝈 𝒒
+> 𝑼 𝒙 ,𝒎 =𝝁 𝒒 −𝝀 𝝁 𝒄
+> Performance
+> Cost
+> Risk
+> Cost Performance
+
+Figure 3: Overview of the proposed DARS framework. Conventional single-shot supervision obtains only one stochastic observation for each query-model pair and constructs routing supervision from the observed performance and cost. DARS instead collects multiple observations through query rewriting and repeated stochastic decoding, from which it estimates distributional capability signals, including expected performance, expected cost, and performance variability. These signals are then used to construct risk-aware supervision for learning a more reliable routing policy. 
+
+only accurate and cost-effective, but also stable under natural input and output variations. 
+
+4.2 DARS Workflow 
+
+DARS consists of four main stages: repeated ob-servation construction, distributional capability es-timation, risk-aware supervision construction, and routing policy learning. 
+
+Repeated observation construction. Given a training query x, DARS first uses a strong language model to generate a set of semantically equivalent rewritten queries: 
+
+X (x) = {x(1) , x (2) , . . . , x (N )}.
+
+These rewrites preserve the original task seman-tics and gold answer, while varying the surface form, wording, or prompt structure. This step is intended to introduce controlled input-side pertur-bations. By observing how each candidate model behaves across these meaning-preserving variants, DARS can estimate whether the model’s perfor-mance is stable with respect to different formula-tions of the same underlying query. For each candidate model m ∈ M , DARS then applies stochastic decoding to the rewritten queries multiple times. This step captures output-side vari-ability: even when the input formulation is fixed, different decoding runs may lead to different rea-soning paths, final answers, or response lengths. For each generated response, DARS records its task-specific quality score and inference cost. To-gether with the rewritten-query dimension, these repeated decoding results form a set of observations for each query-model pair, which will be summa-rized into distributional capability signals in the next stage. 
+
+Distributional capability estimation. Let 
+
+Ox,m = {(q(n,j ) 
+
+> m
+
+, c (n,j ) 
+
+> m
+
+)}
+
+denote the repeated observations collected for model m on query x. DARS summarizes this ob-servation set into three capability signals. The ex-pected quality and expected cost are computed as 
+
+μq(x, m ) = Mean 
+
+
+
+{q(n,j ) 
+
+> m
+
+}(n,j )
+
+
+
+,μc(x, m ) = Mean 
+
+
+
+{c(n,j ) 
+
+> m
+
+}(n,j )
+
+
+
+.
+
+The performance risk is estimated by the standard deviation of the observed quality scores: 
+
+σq(x, m ) = Std 
+
+
+
+{q(n,j ) 
+
+> m
+
+}(n,j )
+
+
+
+.
+
+This risk term captures the aggregate variability caused by query rewriting and stochastic decod-ing. We use this overall variability as a practical risk signal for router training, rather than explic-itly decomposing it into input-side and output-side components. 6Risk-aware supervision construction. DARS combines the estimated capability signals into the following risk-aware utility: 
+
+U (x, m ) = μq(x, m ) − λμ c(x, m ) − βσ q(x, m ).
+
+The first term favors models with higher expected performance, the second term penalizes inference cost, and the third term penalizes unstable behavior. Based on this utility, the preferred model for query 
+
+x is 
+
+m∗(x) = arg max  
+
+> m∈M
+
+U (x, m ).
+
+Compared with single-shot supervision, this la-bel is estimated from repeated observations and is therefore less sensitive to incidental sampled out-comes. 
+
+Routing policy learning. Finally, DARS pro-vides distribution-aware supervision for learning the routing policy. Since DARS constructs model-wise capability signals rather than prescribing a spe-cific router architecture, the resulting supervision can be adapted to a variety of learning paradigms. For regression-based routers, DARS provides continuous targets such as expected quality, ex-pected cost, and performance risk. The router can learn to predict these quantities for each candi-date model and derive the final routing score from the predicted capability signals. For utility-based routers, the risk-aware utility U (x, m ) can be di-rectly used as the learning target, so that the router learns to approximate the final model-selection cri-terion. For classification-based routers, the model with the largest DARS utility can be used as a hard routing label, replacing the single-shot best-model label with a more stable distribution-aware label. For probabilistic classification routers, DARS utilities can further be converted into a soft categor-ical target over the candidate model pool: 
+
+pDARS (m | x) = exp( U (x, m )/τ )
+
+P 
+
+> m′∈M
+
+exp( U (x, m ′)/τ ) ,
+
+where τ is a temperature parameter controlling the sharpness of the target distribution. This formu-lation treats model routing as a multi-class pre-diction problem, where candidate models are re-garded as classes and the router is trained to match the DARS-induced model preference distribution. Compared with a hard label m∗(x), the soft tar-get preserves relative preferences among models, especially when several candidates have similar risk-aware utilities. DARS can also support ranking-based routers. In this case, the utility scores of candidate models are transformed into pairwise or listwise prefer-ences, allowing the router to learn which model should be preferred for a given query. Similarly, for preference-based routing methods, DARS can provide more reliable preference labels by compar-ing models according to their distribution-aware utilities rather than single sampled outcomes. For non-parametric or retrieval-based routers, the esti-mated capability signals can be aggregated from similar training queries to infer the suitability of each candidate model for a new query. For cluster-based routers, DARS statistics can be summarized at the cluster level, enabling model selection based on the distributional behavior of queries with simi-lar representations. At inference time, the router selects the model with the highest predicted routing score, i.e., 
+
+r(x) = arg max m∈M ˆUθ(x, m ).Overall, DARS decouples supervision construc-tion from router design. By replacing noisy single-shot labels with distributional capability es-timates, it provides a unified supervision source for regression-based, utility-based, classification-based, ranking-based, preference-based, retrieval-based, and cluster-based routing methods. 
+
+5 Experiments 
+
+5.1 Experimental Setup Datasets and model pool. We evaluate DARS on the same datasets and model pool used in Section 3.3. The datasets cover different task formats and reasoning abilities, including scien-tific multiple-choice reasoning, mathematical prob-lem solving, and reading comprehension. The candidate model pool contains heterogeneous LLMs with different capability and cost pro-files. This setting allows us to examine whether distribution-aware supervision improves routing behavior across diverse tasks and model choices. 
+
+Test-time observation protocol. For evaluation, we construct two types of test observations for each query-model pair. First, we generate three seman-tically preserving rewrites for each test query to evaluate routing robustness under input-side vari-ations. Second, we perform three stochastic de-coding runs on the original query to evaluate ro-bustness under output-side randomness. Based on these two observation groups, we report two test scores: rewrite-based utility, denoted as Urew , and 7decoding-based utility, denoted as Udec . The for-mer measures whether the selected model remains effective when the query is expressed in different but equivalent forms, while the latter measures whether the selected model remains reliable under repeated stochastic generations. 
+
+Compared methods. We compare DARS with routing methods from different learning paradigms to evaluate whether distribution-aware supervision can benefit diverse router architectures. We con-sider MLPRouter (Stripelis et al., 2024), MIRT (Song et al., 2025), and EmbedLLM (Zhuang et al., 2024) as regression-based routing methods; RM-Softmax (Tsiourvas et al., 2025) and GraphRouter (Feng et al., 2025) as classification-based methods; AvengersPro (Zhang et al., 2025) as a clustering-based method; and kNNRouter (Stripelis et al., 2024) as a non-parametric retrieval-based method. All methods are trained and evaluated under the same data split, model pool, and cost-quality trade-off setting for a fair comparison. 
+
+5.2 Experimental Results Overall comparison. Table 1 compares single-shot routing with DARS-enhanced routing across different router families, with all utilities com-puted using λ = 0 .05 . For each baseline router, the single-shot result is averaged over 100 inde-pendently sampled single-shot training sets, while DARS keeps the same router architecture and only replaces the supervision with distribution-aware signals from repeated observations. This setup iso-lates the effect of supervision construction. Overall, DARS improves almost all routers across the three datasets, showing that its bene-fit is not tied to a specific router design. The gains are especially clear on GPQA, where single-shot supervision is highly unstable, and on MATH-500, where DARS turns MIRT from a relatively weak baseline into the best-performing router. These re-sults indicate that distribution-aware supervision provides more reliable training signals for stable model selection. 
+
+Ablation study. Table 2 reports the component ablation results of DARS. We compare several vari-ants to isolate the contribution of different compo-nents. Input-only DA constructs supervision using only rewritten queries, while Output-only DA uses only repeated decoding samples from the original query. DARS w/o Risk removes the performance-variability term and uses only expected quality and 
+
+Table 1: Comparison between single-shot routing and DARS-enhanced routing.                                                                                             
+
+> Router DROP-800 GPQA MATH-500
+> Urew Udec Urew Udec Urew Udec
+> MLP 0.661 0.709 0.382 0.400 0.682 0.698 + DARS 0.675 0.726 0.399 0.413 0.687 0.696 kNN 0.713 0.759 0.441 0.469 0.720 0.733 + DARS 0.749 0.791 0.461 0.489 0.730 0.742 EmbedLLM 0.739 0.785 0.469 0.496 0.706 0.728 + DARS 0.763 0.805 0.473 0.480 0.719 0.747 AvengersPro 0.731 0.775 0.464 0.490 0.720 0.736 + DARS 0.762 0.807 0.480 0.496 0.734 0.742 GraphRouter 0.762 0.805 0.462 0.487 0.746 0.755 + DARS 0.765 0.807 0.496 0.516 0.757 0.758 MIRT 0.687 0.734 0.409 0.433 0.697 0.714 + DARS 0.705 0.751 0.444 0.468 0.759 0.760
+> RM-Softmax 0.740 0.787 0.453 0.475 0.721 0.746 + DARS 0.761 0.804 0.477 0.512 0.731 0.749
+
+Table 2: Component ablation of DARS. The average score is computed over all reported rewrite-based and decoding-based utilities.                                                           
+
+> Variant DROP-800 GPQA MATH-500 Avg.
+> Urew Udec Urew Udec Urew Udec
+> single-shot 0.687 0.734 0.409 0.433 0.697 0.714 0.612 Input-only DA 0.695 0.742 0.423 0.452 0.735 0.742 0.632 Output-only DA 0.693 0.747 0.425 0.442 0.723 0.718 0.625 DARS w/o Risk 0.692 0.731 0.413 0.441 0.746 0.730 0.626 DARS w/ Rew. Risk 0.697 0.745 0.431 0.456 0.758 0.749 0.639 DARS w/ Dec. Risk 0.703 0.749 0.430 0.449 0.750 0.758 0.640 Full DARS 0.705 0.751 0.444 0.468 0.759 0.760 0.648
+
+expected cost. DARS w/ Rew. Risk and DARS w/ Dec. Risk incorporate only rewrite-induced or decoding-induced risk, respectively. The results show that both input-only and output-only variants improve over the single-shot baseline, indicating that query rewriting and repeated decoding each provide useful supervision signals. However, nei-ther variant matches full DARS, suggesting that input-side and output-side observations are comple-mentary. The risk term is also important: removing it leads to lower average performance, while using either rewrite-side or decoding-side risk improves the result. Full DARS achieves the best average score, confirming that reliable routing supervision benefits from both repeated observations and ex-plicit modeling of performance variability. 
+
+Sample efficiency of DARS. Figure 4a analyzes the effect of different observation protocols on DARS. The results show that increasing the number of observations generally improves routing utility, but the gain quickly saturates. In particular, the 81×1 1×3 3×1 3×3 5×5 
+
+> Observation protocol
+> 0.00
+> 0.01
+> 0.02
+> 0.03
+> 0.04
+> 0.05
+> 0.06
+> Avg. utility gain over 1×1
+> +0.035
+> +0.054
+> +0.017
+> GPQA
+> MATH-500
+> DROP-800
+
+(a) Sample efficiency of DARS. 0.1 0.2 0.3  
+
+> Average normalized routing cost
+> 0.325
+> 0.350
+> 0.375
+> 0.400
+> 0.425
+> 0.450
+> 0.475
+> 0.500
+> Average score
+> Method
+> AvengersPro
+> EmbedLLM
+> GraphRouter
+> MIRT
+> MLP
+> RM-Softmax
+> kNN
+> Supervision
+> DARS
+> Single-shot
+> Best fixed
+
+(b) Cost-quality trade-off under different cost constraints. 0 0.01 0.02 0.05 0.1 0.2 0.5     
+
+> Risk coefficient β
+> −0.006
+> −0.004
+> −0.002
+> 0.000
+> 0.002
+> 0.004
+> 0.006
+> 0.008
+> Avg. score gain over  β = 0
+> β= 0.2
+> β= 0.2
+> β= 0
+> GPQA
+> MATH-500
+> DROP-800
+
+(c) Sensitivity to the risk coefficient β.
+
+Figure 4: Further analysis of DARS. (a) Sample efficiency analysis evaluates how the number of repeated observa-tions affects routing performance. (b) Cost-quality trade-off analysis compares routing performance under different cost constraints. (c) Sensitivity analysis studies the effect of the risk coefficient β on routing utility. 
+
+3 × 3 protocol already achieves performance close to the full 5 × 5 setting across datasets, suggest-ing that DARS does not necessarily require a large sampling budget to be effective. This finding is im-portant for practical deployment: although DARS is built on repeated observations, a moderate num-ber of query rewrites and decoding samples is often sufficient to obtain reliable supervision, making the additional data-construction cost more manageable than under a fully exhaustive sampling protocol. 
+
+Cost-quality trade-off under different cost con-straints. Figure 4b compares the cost-quality trade-off on GPQA under different routing cost con-straints. DARS consistently improves the Pareto frontier over single-shot supervision across dif-ferent router families, indicating that distribution-aware supervision remains effective under both strict and relaxed cost budgets. Notably, DARS-enhanced routers can surpass the best fixed-model baseline in several cost regions, showing that the learned routing policy can provide a better cost-quality balance than always using a single strong model. This result suggests that DARS does not merely improve average routing utility, but also leads to more favorable deployment trade-offs un-der practical budget constraints. 
+
+Sensitivity to the risk coefficient. Figure 4c studies the sensitivity of DARS to the risk coef-ficient β. Overall, the results are stable across a wide range of β values, with performance differ-ences remaining within a small range. This indi-cates that DARS is not highly sensitive to the exact choice of the risk penalty. Among the tested values, 
+
+β = 0 .2 provides a strong and stable setting across datasets, and we therefore use β = 0 .2 in our main experiments. 
+
+6 Conclusion 
+
+In this paper, we identify the limitation of single-shot supervision in LLM routing and propose DARS, a distribution-aware supervision framework that estimates model capability from repeated ob-servations across query rewrites and stochastic de-coding. Experiments show that DARS provides more reliable routing signals and generally im-proves routing performance across diverse router families under cost-quality-risk trade-offs. 9References 
+
+Pranjal Aggarwal, Aman Madaan, Ankit Anand, Sriv-idya Pranavi Potharaju, Swaroop Mishra, Pei Zhou, Aditya Gupta, Dheeraj Rajagopal, Karthik Kappa-ganthu, Yiming Yang, Shyam Upadhyay, Manaal Faruqui, and Mausam Mausam. 2024. Automix: Au-tomatically mixing language models. In NeurIPS .Lingjiao Chen, Matei Zaharia, and James Zou. 2023. Frugalgpt: How to use large language models while reducing cost and improving performance. arXiv preprint arXiv:2305.05176 .DeepSeek-AI, Aixin Liu, Bei Feng, Bing Xue, Bingx-uan Wang, Bochao Wu, Chengda Lu, Chenggang Zhao, Chengqi Deng, Chenyu Zhang, Chong Ruan, Damai Dai, Daya Guo, Dejian Yang, Deli Chen, Dongjie Ji, Erhang Li, Fangyun Lin, Fucong Dai, and 181 others. 2024. Deepseek-v3 technical report. 
+
+arXiv preprint arXiv:2412.19437 .Dujian Ding, Ankur Mallick, Chi Wang, Robert Sim, Subhabrata Mukherjee, Victor Rühle, Laks V. S. Lak-shmanan, and Ahmed Hassan Awadallah. 2024. Hy-brid LLM: Cost-efficient and quality-aware query routing. In ICLR .Dujian Ding, Ankur Mallick, Shaokun Zhang, Chi Wang, Daniel Madrigal, Mirian Del Carmen Hipolito Garcia, Menglin Xia, Laks VS Lakshmanan, Qingyun Wu, and Victor Rühle. 2025. Best-route: Adaptive llm routing with test-time optimal compute. In ICML .Dheeru Dua, Yizhong Wang, Pradeep Dasigi, Gabriel Stanovsky, Sameer Singh, and Matt Gardner. 2019. Drop: A reading comprehension benchmark requir-ing discrete reasoning over paragraphs. In Proceed-ings of NAACL .Sebastian Farquhar, Jannik Kossen, Lorenz Kuhn, and Yarin Gal. 2024. Detecting hallucinations in large language models using semantic entropy. Nature .Tao Feng, Yanzhen Shen, and Jiaxuan You. 2025. Graphrouter: A graph-based router for llm selections. In ICLR .Chengguang Gan and Tatsunori Mori. 2023. Sensitivity and robustness of large language models to prompt template in japanese text classification tasks. In Pro-ceedings of PACLIC .Google. 2025. Gemini 2.5 flash-lite. Gemini API docu-mentation. Dan Hendrycks, Collin Burns, Saurav Kadavath, Akul Arora, Steven Basart, Eric Tang, Dawn Song, and Ja-cob Steinhardt. 2021. Measuring mathematical prob-lem solving with the math dataset. arXiv preprint arXiv:2103.03874 .Qitian Jason Hu, Jacob Bieker, Xiuyu Li, Nan Jiang, Benjamin Keigwin, Gaurav Ranganath, Kurt Keutzer, and Shriyash Kaustubh Upadhyay. 2024. Router-bench: A benchmark for multi-llm routing system. In arXiv preprint arXiv:2403.12031 .Zhongzhan Huang, Guoming Ling, Yupei Lin, Yandong Chen, Shanshan Zhong, Hefeng Wu, and Liang Lin. 2025. Routereval: A comprehensive benchmark for routing llms to explore model-level scaling up in llms. In EMNLP .Aaron Hurst, Adam Lerer, Adam P Goucher, Adam Perelman, Aditya Ramesh, Aidan Clark, AJ Ostrow, Akila Welihinda, Alan Hayes, Alec Radford, and 1 others. 2024. Gpt-4o system card. arXiv preprint arXiv:2410.21276 .Aly M Kassem, Bernhard Schölkopf, and Zhijing Jin. 2025. How robust are router-llms? analysis of the fragility of llm routing capabilities. arXiv preprint arXiv:2504.07113 .Lorenz Kuhn, Yarin Gal, and Sebastian Farquhar. 2023. Semantic uncertainty: Linguistic invariances for un-certainty estimation in natural language generation. In ICLR .Guannan Lai and Han-Jia Ye. 2026. When routing collapses: On the degenerate convergence of llm routers. arXiv preprint arXiv:2602.03478 .Yang Li. 2025. Rethinking predictive modeling for llm routing: When simple knn beats complex learned routers. arXiv preprint arXiv:2505.12601 .Hunter Lightman, Vineet Kosaraju, Yuri Burda, Harri-son Edwards, Bowen Baker, Teddy Lee, Jan Leike, John Schulman, Ilya Sutskever, and Karl Cobbe. 2024. Let’s verify step by step. In ICLR .Qiqi Lin, Xiaoyang Ji, Shengfang Zhai, Qingni Shen, Zhi Zhang, Yuejian Fang, and Yansong Gao. 2025. Life-cycle routing vulnerabilities of llm router. arXiv preprint arXiv:2503.08704 .Haoxuan Ma, Guannan Lai, and Han-Jia Ye. 2026. Mmr-bench: A comprehensive benchmark for multi-modal llm routing. arXiv preprint arXiv:2601.17814 .Potsawee Manakul, Adian Liusie, and Mark Gales. 2023. SelfCheckGPT: Zero-resource black-box hallucina-tion detection for generative large language models. In Proceedings of EMNLP .Kai Mei, Wujiang Xu, Minghao Guo, Shuhang Lin, and Yongfeng Zhang. 2025. Omnirouter: Budget and performance controllable multi-llm routing. arXiv preprint arXiv:2502.20576 .Meta AI. 2024. Llama 3.3 70b instruct. Model card. Mistral AI. 2025. Mistral-small-3.2-24b-instruct-2506. Hugging Face model card. Isaac Ong, Amjad Almahairi, Vincent Wu, Wei-Lin Chiang, Tianhao Wu, Joseph E. Gonzalez, M Waleed Kadous, and Ion Stoica. 2025. RouteLLM: Learning to route LLMs from preference data. In ICLR .
+
+10 Deepak Babu Piskala, Vijay Raajaa, Sachin Mishra, and Bruno Bozza. 2025. Dynamic llm routing and selection based on user preferences: Balanc-ing performance, cost, and ethics. arXiv preprint arXiv:2502.16696 .Guillem Ramírez, Alexandra Birch, and Ivan Titov. 2024. Optimising calls to large language models with uncertainty-based two-tier selection. arXiv preprint arXiv:2405.02134 .Guillem Ramírez, Matthias Lindemann, Alexandra Birch, and Ivan Titov. 2023. Cache & distil: Op-timising api calls to large language models. arXiv preprint arXiv:2310.13561 .David Rein, Betty Li Hou, Asa Cooper Stickland, Jack-son Petty, Richard Yuanzhe Pang, Julien Dirani, Ju-lian Michael, and Samuel R Bowman. 2023. Gpqa: A graduate-level google-proof q&a benchmark. arXiv preprint arXiv:2311.12022 .Avital Shafran, Roei Schuster, Thomas Ristenpart, and Vitaly Shmatikov. 2025. Rerouting llm routers. 
+
+arXiv preprint arXiv:2501.01818 .Wei Song, Zhenya Huang, Cheng Cheng, Weibo Gao, Bihan Xu, GuanHao Zhao, Fei Wang, and Runze Wu. 2025. IRT-router: Effective and interpretable multi-LLM routing via item response theory. In ACL .Dimitris Stripelis, Zijian Hu, Jipeng Zhang, Zhaozhuo Xu, Alay Dilipbhai Shah, Han Jin, Yuhang Yao, Salman Avestimehr, and Chaoyang He. 2024. Ten-soropera router: A multi-model router for efficient llm inference. In EMNLP .Gemma Team, Aishwarya Kamath, Johan Ferret, Shreya Pathak, Nino Vieillard, Ramona Merhej, Sarah Perrin, Tatiana Matejovicova, Alexandre Ramé, Morgane Rivière, Louis Rouillard, Thomas Mesnard, Geoffrey Cideron, Jean bastien Grill, Sabela Ramos, Edouard Yvinec, Michelle Casbon, Etienne Pot, Ivo Penchev, and 197 others. 2025. Gemma 3 technical report. Asterios Tsiourvas, Wei Sun, and Georgia Perakis. 2025. Causal llm routing: End-to-end regret minimization from observational data. In NeurIPS .Xinyuan Wang, Yanchi Liu, Wei Cheng, Xujiang Zhao, Zhengzhang Chen, Wenchao Yu, Yanjie Fu, and Haifeng Chen. 2025. Mixllm: Dynamic routing in mixed large language models. arXiv preprint arXiv:2502.18482 .An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, Chujie Zheng, Dayi-heng Liu, Fan Zhou, Fei Huang, Feng Hu, Hao Ge, Haoran Wei, Huan Lin, Jialong Tang, and 41 oth-ers. 2025a. Qwen3 technical report. arXiv preprint arXiv:2505.09388 .Jin Yang, Qiong Wu, Zhiying Feng, Zhi Zhou, Deke Guo, and Xu Chen. 2025b. Quality-of-service aware llm routing for edge computing with multiple experts. 
+
+IEEE Transactions on Mobile Computing .Murong Yue, Jie Zhao, Min Zhang, Liang Du, and Ziyu Yao. 2023. Large language model cascades with mixture of thoughts representations for cost-efficient reasoning. arXiv preprint arXiv:2310.03094 .Jieyu Zhang, Ranjay Krishna, Ahmed H Awadallah, and Chi Wang. 2023. Ecoassistant: Using llm assis-tant more affordably and accurately. arXiv preprint arXiv:2310.03046 .Yiqun Zhang, Hao Li, Jianhao Chen, Hangfan Zhang, Peng Ye, Lei Bai, and Shuyue Hu. 2025. Beyond gpt-5: Making llms cheaper and better via performance-efficiency optimized routing. In DAI .Zesen Zhao, Shuowei Jin, and Z Morley Mao. 2024. Eagle: Efficient training-free router for multi-llm inference. arXiv preprint arXiv:2409.15518 .Kaijie Zhu, Jindong Wang, Jiaheng Zhou, Zichen Wang, Hao Chen, Yidong Wang, Linyi Yang, Wei Ye, Yue Zhang, Neil Zhenqiang Gong, and Xing Xie. 2023. Promptrobust: Towards evaluating the robustness of large language models on adversarial prompts. arXiv preprint arXiv:2306.04528 .Richard Zhuang, Tianhao Wu, Zhaojin Wen, Andrew Li, Jiantao Jiao, and Kannan Ramchandran. 2024. Em-bedllm: Learning compact representations of large language models. In ICLR .
+
+11 Appendix A Dataset and Model Details 
+
+Datasets. We evaluate DARS on three datasets that cover different task formats and reasoning re-quirements. GPQA is a graduate-level multiple-choice question answering benchmark covering challenging scientific domains such as biology, physics, and chemistry (Rein et al., 2023). MATH-500 is a 500-problem subset of the MATH bench-mark, focusing on mathematical problem solving and multi-step reasoning (Hendrycks et al., 2021; Lightman et al., 2024). DROP-800 is a subset of the DROP reading-comprehension benchmark, where questions require discrete reasoning over paragraphs, such as counting, sorting, comparison, and arithmetic reasoning (Dua et al., 2019). These datasets are selected because they differ in output format, reasoning style, and sensitivity to input/out-put variations, allowing us to evaluate whether distribution-aware supervision is useful across het-erogeneous routing scenarios. 
+
+Data split. For each dataset, we construct a train-ing split for learning routing policies and a held-out test split for evaluation. Following the diagnostic analysis in the main paper, we sample 200 train-ing queries from each dataset to construct repeated observations for supervision. The remaining held-out queries are used for test-time evaluation. All routers are trained and evaluated using the same split to ensure that performance differences come from the supervision construction method rather than from different data partitions. 
+
+Training observation protocol. For each train-ing query, we construct distribution-aware observa-tions for every candidate model. To capture input-side variation, we use a strong language model to generate five semantically preserving rewrites of the original query. The rewriting process preserves the original task semantics, gold answer, and can-didate choices when applicable. To capture output-side stochasticity, each candidate model is evalu-ated with five independent decoding runs for each rewritten query. This gives a 5 × 5 observation ma-trix for every query-model pair, where each entry records the response quality and the corresponding inference cost. DARS summarizes these repeated observations into expected quality, expected cost, and performance variability, which are then used to construct distribution-aware supervision signals. 
+
+Single-shot training protocol. For the single-shot baseline, each query-model pair is represented by one sampled observation. To reduce the ef-fect of a particular random draw, we construct 100 independently sampled single-shot training sets. Each single-shot training set contains one ran-domly selected observation for every query-model pair, and the reported single-shot result is aver-aged over the 100 trained routers. In contrast, the DARS-enhanced version keeps the router architec-ture unchanged and replaces only the single-shot su-pervision with distribution-aware supervision con-structed from repeated observations. 
+
+Test-time evaluation protocol. At test time, the router receives only the original query and selects one model from the candidate pool. Repeated test observations are used only to evaluate the selected model, not to provide additional information to the router. For each test query, we construct two evalu-ation groups. The first group contains three seman-tically preserving rewrites of the query, which is used to compute the rewrite-based utility Urew . The second group contains three independent stochastic decoding runs on the original query, which is used to compute the decoding-based utility Udec . The former measures whether the routing decision is robust to input-side variations, while the latter mea-sures whether the selected model remains reliable under output-side randomness. 
+
+Model pool. We use a heterogeneous pool of six LLMs with different capability and cost profiles: Gemma-3-12B-IT (Team et al., 2025), Mistral-Small-3.2-24B-Instruct (Mistral AI, 2025), Qwen3-32B (Yang et al., 2025a), Llama-3.3-70B-Instruct (Meta AI, 2024), Gemini-2.5-Flash-Lite (Google, 2025), and DeepSeek-Chat-V3.1 (DeepSeek-AI et al., 2024). This model pool contains both open-source and API-based models, as well as models with different sizes and deployment costs. Such het-erogeneity is important for evaluating LLM routing, since the router must learn when a cheaper model is sufficient and when a stronger model is worth the additional cost. 
+
+Evaluation metric and cost setting. For each generated response, we compute a task-specific quality score and an inference cost. Quality is mea-sured by the corresponding task metric, such as ac-curacy for multiple-choice and mathematical tasks, and F1-style matching for reading-comprehension tasks. Inference cost is normalized within each 12 dataset before computing routing utilities. Unless otherwise specified, we use the cost coefficient 
+
+λ = 0 .05 and the risk coefficient β = 0 .2 in the main experiments. 
+
+B Query Rewriting Prompt and Decoding Protocol 
+
+Query rewriting. For each training query, we generate semantically preserving rewrites using a strong language model. The purpose of rewrit-ing is to introduce controlled input-side variation while keeping the underlying task unchanged. We use dataset-specific rewriting instructions to avoid changing the gold answer, answer choices, mathe-matical conditions, or passage-grounded evidence. The rewriting constraints are shown below. For GPQA, only the question stem is rewritten, while the answer choices are kept unchanged. For MATH-500, all mathematical constraints and re-quested quantities must be preserved. For DROP-800, only the question is rewritten and the passage remains fixed. These constraints ensure that each rewrite remains a valid variant of the original query and can be evaluated using the same gold answer. 
+
+Dataset-specific rewriting instructions    
+
+> GPQA. This is a graduate-level multiple-choice sci-ence question. Rewrite only the question stem. Do not modify, reorder, remove, or paraphrase the an-swer choices. The correct option after rewriting must remain exactly the same.
+> MATH-500. This is a free-form mathematics prob-lem. Rewrite only the problem statement. Preserve every mathematical condition, number, variable, equa-tion, unit, constraint, and requested quantity. The final mathematical answer must remain exactly the same. Do not simplify the problem, add hints, or reveal the answer.
+> DROP-800. This is a reading-comprehension ques-tion over a fixed passage. Rewrite only the question. Do not rewrite the passage. The rewritten question must be answerable from the same passage and must have the same gold answer. Do not add information that is not supported by the passage.
+
+Prompt format for model generation. After obtaining rewritten queries, we construct dataset-specific prompts for candidate models. All prompts require the model to output a clearly marked Final Answer: line, so that responses can be parsed and evaluated consistently. For GPQA, the prompt in-cludes the rewritten question and the original an-swer choices, and asks the model to return one option letter. For MATH-500, the prompt asks the model to solve the rewritten mathematics problem and put only the final result after Final Answer: .For DROP-800, the prompt provides the fixed pas-sage and the rewritten question, and asks the model to answer using only the passage. 
+
+Shared system instruction for generation    
+
+> You are answering benchmark questions for an LLM routing experiment. Follow the user instructions ex-actly. You may reason internally, but the final re-sponse must contain a clearly marked Final Answer:
+> line. Do not mention that this is a paraphrase or dataset example.
+
+Training decoding protocol. For each training query, DARS uses rewritten prompt variants rather than the original query by default. Specifically, we use N = 5 rewritten variants for each query. For every rewritten variant and every candidate model, we perform M = 5 independent stochastic decod-ing runs. This produces 5 × 5 observations for each query-model pair. Each observation records the generated response, task-specific quality score, to-ken usage, and inference cost. These observations are then aggregated into expected quality, expected cost, and performance variability for constructing DARS supervision. 
+
+Decoding configuration. All model generations are collected through the same decoding interface using the same sampling configuration unless oth-erwise specified. We use temperature 0.7 and top-p 
+
+0.95 to induce stochastic generations. The maxi-mum generation length is capped according to the dataset: 768 tokens for GPQA, 3072 tokens for MATH-500, and 512 tokens for DROP-800. Inde-pendent decoding samples are obtained by issuing separate generation calls with the same prompt and decoding configuration. We use the same candidate model pool as described in Appendix A. 
+
+Test-time decoding protocol. At test time, the router receives only the original query and selects a candidate model. The repeated test observations are used only for evaluation and are not provided to the router. For each selected model, we compute two evaluation views. The rewrite-based utility 
+
+Urew is evaluated using three semantically preserv-ing rewrites of the test query, while the decoding-based utility Udec is evaluated using three stochas-tic decoding runs on the original query. This proto-col allows us to separately evaluate robustness to input-side query variation and output-side genera-tion randomness. 13 C Supplementary Experimental Details and Results 
+
+C.1 Baseline Implementation Details 
+
+This section provides implementation details for the routing baselines used in our experiments. All baselines are implemented in the same codebase and share the same data loader, query feature extrac-tion pipeline, candidate model pool, supervision construction protocol, and evaluation procedure unless otherwise specified. 
+
+Common setup. All methods are evaluated on GPQA, MATH-500, and DROP-800 using the same six-model candidate pool described in Appendix A. Each method reads scored generations from the same training and test files. For query representa-tion, we use one feature vector per query. By de-fault, the feature text contains both the question and available context fields; context can be removed for ablation. Neural and retrieval-based methods use the same query encoder interface. When available, we use a local sentence-transformer encoder; other-wise, we fall back to TF-IDF features. The default TF-IDF dimensionality is 20,000. 
+
+Single-shot and DARS supervision. Each base-line is evaluated under two supervision modes. In the single-shot setting, each query-model pair is represented by one sampled scored observation. To reduce the effect of a particular random draw, we re-peat this process with 100 independently sampled single-shot training sets and report the averaged result. In the DARS setting, the router architec-ture is kept unchanged, but the supervision signal is replaced by distribution-aware statistics aggre-gated from repeated observations. Specifically, for each query-model pair, we compute the mean score, mean cost, and score standard deviation. The de-fault inference utility is based on the risk-aware objective score − λ · cost − β · risk , where the cost coefficient is set to λ = 0 .05 .
+
+Test views. Each trained router predicts one model for each test query. The selected model is evaluated under two views. The rewrite view uses observations generated from semantically preserv-ing query rewrites, while the decoding view uses repeated stochastic decoding samples from the orig-inal query. These test observations are used only for evaluation and are not provided to the router during model selection. 
+
+Regression-based routers. MLP trains separate regressors for model score, model cost, and, under DARS, score standard deviation. Each regressor predicts a vector over the candidate models for a given query representation, and the router selects the model with the largest predicted risk-adjusted utility. We use scikit-learn MLP regressors with standardized input features. 
+
+MIRT implements a multi-dimensional item-response-theory router. It maps each query into a latent ability vector and learns model-specific discrimination and difficulty parameters. Separate prediction heads are used for score, cost, and score standard deviation. Under DARS, MIRT learns all three distributional targets and selects models according to the predicted risk-aware utility. 
+
+EmbedLLM learns compact model embeddings and a query projection to predict query-model per-formance. It jointly trains a performance head and a model-cost head. Under DARS, the score tar-get is adjusted using the performance-risk term, while the implementation does not explicitly pre-dict query-specific uncertainty at inference time; the risk information is incorporated through the training target. 
+
+Classification-based routers. RM-Softmax im-plements a regret-minimization router. It augments each query embedding with a cost-weight value and trains a neural classifier over candidate models across a grid of cost coefficients. Under DARS, the target performance is risk-adjusted before training, so the classifier learns model preferences induced by distribution-aware supervision. 
+
+GraphRouter treats each query-model pair as an edge between a query node and a model node. Query features and model descriptions are pro-jected into a shared space, and an edge predictor estimates model-wise score, cost, and uncertainty. Under DARS, these targets correspond to the aggre-gated mean score, mean cost, and score standard deviation for each query-model pair. 
+
+Non-parametric and cluster-based routers. kNNRouter is a non-parametric retrieval-based router. It stores training query embeddings and their query-model target matrices. For a test query, it retrieves the nearest training queries and averages their model-wise score, cost, and uncertainty statis-tics using inverse-distance weights. Under DARS, the stored targets are distribution-aware statistics rather than single-shot observations. 
+
+AvengersPro is implemented as a cluster-based 14 Table 3: Summary of baseline implementations and how DARS supervision is incorporated.                 
+
+> Router Learning paradigm DARS-enhanced supervision MLP Regression-based routing Predicts mean score, mean cost, and score standard deviation. MIRT IRT-style regression Learns score, cost, and uncertainty through separate IRT-style heads. EmbedLLM Model-embedding regression Uses risk-adjusted performance targets with learned model embeddings. RM-Softmax Classification / regret minimization Trains on risk-adjusted utilities across cost coefficients. GraphRouter Query-model edge prediction Predicts distribution-aware edge-level score, cost, and uncertainty. kNNRouter Non-parametric retrieval Aggregates distribution-aware targets from nearest training queries. AvengersPro Cluster-based routing Aggregates DARS statistics at the query-cluster level.
+
+router. Training queries are clustered in feature space, and each cluster stores the average score, cost, and uncertainty for each candidate model. For a new query, the router retrieves the nearest clus-ters and estimates model utility by aggregating their stored statistics. Under DARS, these cluster-level statistics are computed from distribution-aware query-model observations. 
+
+C.2 Additional Experimental Results 
+
+Table 4 provides an expanded version of the main comparison table. For the single-shot setting, we report the mean and standard deviation over 100 independently sampled single-shot training sets when run-level standard deviations are avail-able. For DARS, each router is trained once using distribution-aware supervision constructed from repeated observations. The results show that single-shot supervision can exhibit non-negligible vari-ance across random sampled training sets, espe-cially on GPQA. In contrast, replacing single-shot labels with DARS supervision consistently im-proves the mean performance of most routers, con-firming that the gains in the main table come from more reliable supervision construction rather than changes to the router architecture. 
+
+C.3 Ablation Details 
+
+This section describes how each ablation variant in Table 2 is constructed. All variants use the same router architecture, training split, candidate model pool, and evaluation protocol. The only difference is how the supervision signal is constructed from repeated observations. 
+
+Single-shot. The single-shot baseline follows the standard routing supervision protocol. For each query-model pair, we randomly sample one scored observation from the available observation set and use it as the training target. Since the target contains only one observed score and cost, no performance-variability term is used. To reduce dependence on a particular random draw, we re-peat this process with 100 independently sampled single-shot training sets and report the averaged result. 
+
+Input-only DA. This variant isolates the effect of query rewriting. For each query-model pair, we aggregate observations across rewritten queries, but do not use repeated decoding samples for each rewrite. In practice, this variant estimates model behavior from meaning-preserving input variations, so the resulting supervision captures sensitivity to query formulation while excluding output-side stochasticity as much as possible. 
+
+Output-only DA. This variant isolates the effect of stochastic decoding. Instead of aggregating over rewritten queries, it uses repeated decoding sam-ples from the original query. The supervision signal therefore captures how model performance changes under generation randomness while keeping the in-put formulation fixed. 
+
+DARS w/o Risk. This variant uses the same re-peated observations as full DARS, but removes the performance-variability term from the utility. It constructs supervision only from expected qual-ity and expected cost. This ablation tests whether the benefit of DARS comes only from averaging repeated observations, or whether explicitly model-ing instability provides additional value. 
+
+DARS w/ Rew. Risk. This variant includes a risk term estimated only from rewrite-induced variabil-ity. It measures how much the model’s performance changes across semantically equivalent query for-mulations, while not explicitly incorporating the variability caused by repeated decoding under the same formulation. 
+
+DARS w/ Dec. Risk. This variant includes a risk term estimated only from decoding-induced variability. It measures how much the model’s per-formance changes across stochastic generations of 15 Table 4: Extended comparison between single-shot routing and DARS-enhanced routing. For single-shot routing, values are averaged over 100 independently sampled training sets, and we report mean ± standard deviation when run-level standard deviations are logged.                                                                                                                                              
+
+> Router Dataset Single Urew DARS Urew Single Udec DARS Udec
+> MLP DROP-800 0.661 ±0.009 0.675 0.709 ±0.011 0.726 GPQA 0.382 ±0.020 0.399 0.400 ±0.023 0.413 MATH-500 0.682 ±0.013 0.687 0.698 ±0.013 0.696 KNNRouter DROP-800 0.713 0.749 0.759 0.791 GPQA 0.441 0.461 0.469 0.489 MATH-500 0.720 0.730 0.733 0.742 EmbedLLM DROP-800 0.739 ±0.023 0.763 0.785 ±0.020 0.805 GPQA 0.469 ±0.022 0.473 0.496 ±0.021 0.480 MATH-500 0.706 ±0.019 0.719 0.728 ±0.022 0.747 AvengersPro DROP-800 0.731 0.762 0.775 0.807 GPQA 0.464 0.480 0.490 0.496 MATH-500 0.720 0.734 0.736 0.742 GraphRouter DROP-800 0.762 ±0.010 0.765 0.805 ±0.007 0.807 GPQA 0.462 ±0.025 0.496 0.487 ±0.022 0.516 MATH-500 0.746 ±0.013 0.757 0.755 ±0.007 0.758 MIRT DROP-800 0.687 0.705 0.734 0.751 GPQA 0.409 0.444 0.433 0.468 MATH-500 0.697 0.759 0.714 0.760 RM-Softmax DROP-800 0.740 ±0.012 0.761 0.787 ±0.013 0.804 GPQA 0.453 ±0.016 0.477 0.475 ±0.018 0.512 MATH-500 0.721 ±0.004 0.731 0.746 ±0.004 0.749
+
+the same input query, while not explicitly incorpo-rating rewrite-induced variability. 
+
+Full DARS. Full DARS aggregates observations across both rewritten queries and repeated stochas-tic decoding runs. It estimates expected quality, expected cost, and aggregate performance variabil-ity from the complete observation set. This variant therefore captures both input-side and output-side uncertainty, and uses the resulting risk-aware utility to construct the final supervision signal. 
+
+C.4 Utility Computation and Evaluation Details 
+
+This section provides additional details on how routing utilities and evaluation scores are com-puted. 
+
+Per-observation utility. Each generated re-sponse is associated with a task-specific quality score and an inference cost. Let q(o) 
+
+> i,m
+
+and c(o)
+
+> i,m
+
+denote the quality score and normalized cost of model m on query xi under observation o. The per-observation utility is computed as 
+
+u(o) 
+
+> i,m
+
+= q(o) 
+
+> i,m
+
+− λc (o)
+
+> i,m
+
+.
+
+In all main experiments, we set λ = 0 .05 .
+
+Rewrite-based utility. The rewrite-based utility evaluates whether the selected model remains ef-fective under semantically equivalent query formu-lations. For each test query, the router receives only the original query and selects one model r(xi). We then evaluate the selected model on the rewrite-view observations, which contain three rewritten versions of the test query. The rewrite-based utility 
+
+Urew is the average per-observation utility of the se-lected model over these rewrite-view observations and all test queries:   
+
+> Urew (r) =
+> P
+> xi∈D test
+> P
+> o∈O rew
+> i
+> 
+> q(o)
+> i,r (xi)−λc (o)
+> i,r (xi)
+> 
+> |O rew
+> i|
+> |D test |,
+
+where Orew  
+
+> i
+
+denotes the rewrite-view observations of query xi.
+
+Decoding-based utility. The decoding-based utility evaluates whether the selected model re-mains reliable under stochastic generation. The router again receives only the original query and selects one model r(xi). We then evaluate this se-lected model on the decoding-view observations, which contain three independent stochastic decod-ing runs on the original query. The decoding-based utility Udec is computed as 16 Udec (r) =   
+
+> P
+> xi∈D test
+> P
+> o∈O dec
+> i
+> 
+> q(o)
+> i,r (xi)−λc (o)
+> i,r (xi)
+> 
+> |O dec
+> i|
+> |D test |,
+
+where Odec  
+
+> i
+
+denotes the decoding-view observa-tions of query xi.
+
+Cost normalization. Raw inference costs can have different scales across datasets, models, and generation lengths. To make the cost term com-parable with the quality score, we normalize costs before computing utilities. Let craw  
+
+> i,m,o
+
+denote the raw inference cost recorded for an observation in dataset d. We use a dataset-level normalization: 
+
+c(o) 
+
+> i,m
+
+= craw 
+
+> i,m,o
+
+Zd
+
+, Zd = max  
+
+> i,m,o
+
+craw 
+
+> i,m,o
+
+.
+
+After normalization, the cost values are on a compa-rable scale across models within the same dataset. All reported utilities use normalized costs. 
+
+Choice of λ. The cost coefficient λ controls the trade-off between response quality and inference cost. We use λ = 0 .05 for all main experiments. This value gives a moderate cost penalty after nor-malization: it is large enough to discourage un-necessarily expensive model choices, while avoid-ing a degenerate setting where the router always prefers the cheapest model. We keep λ fixed across datasets and routers so that differences in perfor-mance reflect the routing method and supervision signal rather than per-method tuning. 
+
+Best fixed baseline. The best fixed baseline rep-resents the strongest non-routing strategy. It selects one single model and uses it for all test queries. For each dataset and evaluation view, we compute the average utility of every candidate model over all test queries, and report the best-performing fixed model:   
+
+> m∗
+> fixed = arg max
+> m∈M
+> P
+> xi∈D test
+> P
+> o∈O i
+> 
+> q(o)
+> i,m −λc (o)
+> i,m
+> 
+> |O i|
+> |D test |.
+
+This baseline is useful for evaluating whether a learned router provides a better cost-quality trade-off than always using the same strong model. 
+
+Use of test observations. Repeated test observa-tions are used only for evaluation. At inference time, the router receives the original query and pre-dicts one model. The rewrite-view and decoding-view observations are not provided to the router and are not used to revise its decision. This en-sures that Urew and Udec evaluate the robustness of the selected model rather than giving the router additional test-time information. 
+
+C.5 Detailed Explanation of the Diagnostic Analysis 
+
+This section provides additional details on the di-agnostic analysis in Section 3.3. The goal of this analysis is to examine whether the standard single-shot supervision protocol provides reliable routing labels. We focus on three aspects: whether the observed outcome of a query-model pair is stable, whether the best model selected for a query is sta-ble, and whether single-shot routing labels agree with labels estimated from repeated observations. For each query xi and candidate model m ∈ M ,we collect a set of repeated observations through query rewriting and stochastic decoding. Specifi-cally, let 
+
+Oi,m = {(q(n,j ) 
+
+> i,m
+
+, c (n,j ) 
+
+> i,m
+
+)}N,M n=1 ,j =1 
+
+denote the observations of model m on query xi,where n indexes rewritten query variants and j
+
+indexes independent decoding runs. Here, q(n,j )
+
+> i,m
+
+is the task-specific quality score and c(n,j ) 
+
+> i,m
+
+is the corresponding normalized inference cost. We also define the per-observation utility as 
+
+u(n,j ) 
+
+> i,m
+
+= q(n,j ) 
+
+> i,m
+
+− λc (n,j ) 
+
+> i,m
+
+.
+
+Outcome instability. Outcome instability mea-sures whether repeated observations of the same query-model pair lead to different observed per-formance scores. For each query-model pair, we check whether the quality scores vary across re-peated observations:       
+
+> Instab out (i, m ) = I
+> 
+> max
+> n,j q(n,j )
+> i,m −min
+> n,j q(n,j )
+> i,m > ϵ
+> 
+> ,
+
+where ϵ is a small tolerance used to avoid nu-merical artifacts. The overall outcome instability is computed by averaging this indicator over all queries and candidate models:  
+
+> OutcomeInstability = 1
+> |D||M|
+> |D|
+> X
+> i=1
+> X
+> m∈M
+> Instab out (i, m ).
+
+A higher value means that the same model can receive different scores on the same underlying query under natural input or output variations. 17 Winner flip rate. Outcome instability at the query-model level does not necessarily imply that the routing label changes. Therefore, we further measure whether the model selected as the best can-didate for a query changes across repeated single-shot observations. For each observation index 
+
+(n, j ), we construct a single-shot routing label by selecting the model with the largest observed util-ity: 
+
+w(n,j ) 
+
+> i
+
+= arg max  
+
+> m∈M
+
+u(n,j ) 
+
+> i,m
+
+.
+
+The winner flip indicator for query xi is then de-fined as               
+
+> Flip( i) = I
+> h
+> {w(n,j )
+> i: 1 ≤n≤N, 1≤j≤M}>1
+> i
+> .
+
+The winner flip rate is the average of this indicator over all queries: 
+
+WinnerFlipRate = 1
+
+|D| 
+
+> |D|
+
+X
+
+> i=1
+
+Flip( i).
+
+This metric captures whether different single-shot samples can lead to different best-model labels for the same query. 
+
+Single-shot versus distribution-aware disagree-ment. We also compare the single-shot routing label with a distribution-aware label estimated from all repeated observations. For each query-model pair, we first compute the expected quality and ex-pected cost: 
+
+μq(i, m ) = 
+
+PNn=1 
+
+PMj=1 q(n,j )
+
+> i,m
+
+N M ,μc(i, m ) = 
+
+PNn=1 
+
+PMj=1 c(n,j )
+
+> i,m
+
+N M .
+
+The distribution-aware utility used in the diagnostic analysis is 
+
+¯ui,m = μq(i, m ) − λμ c(i, m ),
+
+and the corresponding distribution-aware routing label is 
+
+wDA  
+
+> i
+
+= arg max  
+
+> m∈M
+
+¯ui,m .
+
+For each single-shot observation (n, j ), we com-pute whether its selected model disagrees with the distribution-aware label: 
+
+Disagree (n,j )(i) = I
+
+h
+
+w(n,j )
+
+> i
+
+̸ = wDA 
+
+> i
+
+i
+
+.
+
+The final disagreement rate is averaged over all queries and single-shot observations: 
+
+P|D| 
+
+> i=1
+
+PNn=1 
+
+PMj=1 Disagree (n,j )(i).
+
+|D| N M 
+
+This metric measures how often a routing label constructed from one sampled observation differs from the label obtained by aggregating repeated observations. 
+
+Router variance under single-shot supervision. 
+
+Finally, we examine whether the instability of single-shot labels propagates to the learned router. We construct multiple single-shot training sets by randomly sampling one observation for each query-model pair. Each sampled training set is used to train the same router architecture under the same data split and model pool. Since the only changing factor is the sampled supervision signal, the varia-tion in test utility reflects the sensitivity of learned routing policies to single-shot supervision noise. 
+
+D Validity Checks 
+
+DARS relies on two preprocessing components: query rewriting for constructing input-side varia-tions, and automatic scoring for evaluating repeated model outputs. We therefore conduct additional validity checks to examine whether these compo-nents introduce obvious artifacts. These checks are intended as lightweight sanity checks rather than formal guarantees of semantic equivalence or scoring correctness. 
+
+D.1 Rewrite Validity Check 
+
+The purpose of query rewriting is to introduce con-trolled input-side variations while preserving the underlying task semantics. To assess the quality of the generated rewrites, we perform an automatic validity check over all rewritten queries used in our experiments. The check covers five aspects: (1) whether all required rewrites are successfully gen-erated, (2) whether rewritten queries duplicate the original query or duplicate each other, (3) whether dataset-specific structural constraints are preserved, (4) whether the rewritten query remains close to the original query in sentence-embedding space, and (5) whether numeric tokens are preserved. For structural constraints, GPQA rewrites are required to keep the answer choices unchanged; MATH-500 rewrites are required to preserve the mathematical problem structure; and DROP-800 18 rewrites are required to keep the passage un-changed and rewrite only the question. Sentence similarity is computed using the same sentence-transformer backend as in our query representa-tion pipeline. We additionally flag rewrites with low semantic similarity or numeric-token mismatch for manual inspection. These flags are conserva-tive: a flagged rewrite is not necessarily invalid, since paraphrasing can legitimately change surface forms, symbols, or numeric formatting. The results are summarized in Table 5. The results show that all datasets achieve full rewrite completion, no duplicate rewrites are de-tected, and all rewrites pass the dataset-specific structural checks. Sentence similarity is also high on average across datasets. DROP-800 has the lowest review-flag rate, while GPQA has a higher numeric-mismatch flag rate. This is expected be-cause scientific questions often contain symbols, quantities, abbreviations, and domain-specific ex-pressions whose surface forms may change under paraphrasing. We therefore treat the review flag as a conservative diagnostic signal rather than direct evidence of invalid rewrites. 
+
+D.2 Scoring Validity Check 
+
+We also verify the automatic scoring pipeline used to evaluate generated responses. For each stored generation, we recompute the score using the unified dataset-specific scoring script and check whether the output can be parsed, whether the score is finite, whether the score lies in the valid range 
+
+[0 , 1] , whether the expected score type is produced, whether rescoring agrees with the stored score, and whether duplicate generation keys exist. The re-sults are shown in Table 6. The scoring pipeline achieves near-perfect parse coverage across all datasets, and all parsed scores are finite and lie within the valid range. We also find no duplicate generation keys. The small num-ber of rescoring differences is caused by scorer-version inconsistencies in intermediate stored files. To avoid propagating such inconsistencies, all re-ported experimental results are computed after ap-plying the same unified scoring pipeline to the stored generations. 19 Table 5: Automatic validity check for query rewrites. Complete denotes the fraction of original queries for which all rewrites are generated. Original dup. and Rewrite dup. denote duplicate rates with the original query and among rewrites, respectively. Structural pass checks dataset-specific constraints. Review flag marks rewrites selected for further inspection due to low similarity or numeric mismatch.                                                                              
+
+> Dataset Split Records Rewrites Complete Orig. dup. Rew. dup. Sim. mean Sim. p05 Num. preserved Struct. pass Review flag GPQA train 200 1000 1.0000 0.0000 0.0000 0.8723 0.6267 0.6474 1.0000 0.2910 GPQA test 248 1240 1.0000 0.0000 0.0000 0.8815 0.6656 0.6533 1.0000 0.3016 MATH-500 train 200 1000 1.0000 0.0000 0.0000 0.9191 0.8034 0.8564 1.0000 0.1350 MATH-500 test 300 1500 1.0000 0.0000 0.0000 0.9248 0.8093 0.8615 1.0000 0.1333 DROP-800 train 200 1000 1.0000 0.0000 0.0000 0.8875 0.7449 0.9030 1.0000 0.0400 DROP-800 test 600 3000 1.0000 0.0000 0.0000 0.8937 0.7451 0.8893 1.0000 0.0467
+
+Table 6: Validity check for the automatic scoring pipeline. Parse success measures whether a generated response can be parsed into the expected answer format. Finite and In [0 , 1] check numerical validity. Score type checks whether the dataset-specific scorer returns the expected score type. Rescore agreement measures agreement between stored scores and scores recomputed by the unified scorer. 
+
+Dataset Split Rows Parse success Finite In [0 , 1] Score type Rescore agreement Rescore diff. Duplicate keys GPQA train 30000 0.9996 1.0000 1.0000 1.0000 0.9998 7 0GPQA test 8928 0.9999 1.0000 1.0000 1.0000 0.9998 2 0MATH-500 train 30000 0.9992 1.0000 1.0000 1.0000 1.0000 0 0MATH-500 test 10800 0.9984 1.0000 1.0000 1.0000 1.0000 0 0DROP-800 train 30000 0.9998 1.0000 1.0000 1.0000 0.9996 13 0DROP-800 test 21600 0.9999 1.0000 1.0000 1.0000 0.9999 2 0
+
+20

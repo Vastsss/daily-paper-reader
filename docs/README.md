@@ -6,122 +6,130 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-06-08
-- 运行时间：2026-06-08 22:24:38 UTC
+- 最新运行日期：2026-06-13
+- 运行时间：2026-06-13 21:54:26 UTC
 - 运行状态：成功
-- 本次总论文数：34
-- 精读区：20
+- 本次总论文数：36
+- 精读区：22
 - 速读区：14
 
 ### 今日简报（AI）
-今日精读20篇，速读14篇，重点关注时间序列基础模型与零样本预测。最值得看的是满分论文《TS-ICL》提出的时间索引上下文学习框架，以及9分论文《Feature to Dynamics》的特征到自回归策略。建议优先精读这两篇，速读中《Why Do Time Series Models Need Long Context Windows?》有助于理解长上下文重要性。
-- 详情：[/202606/08/README](/202606/08/README)
+今日精选36篇论文，重点推荐次二次架构与大语言模型图计算潜力，同步关注时间序列表征与预测新方法。  
+最值得聚焦：次二次架构从应用到原理的转化，以及LLM在图计算领域的适用性评估；时间序列方向CF-JEPA与Trio模型引入注意力与因果先验。  
+建议优先精读《On Subquadratic Architectures》与《Are Large Language Models Suitable for Graph Computation》，速读部分关注CF-JEPA和Trio的时间序列注意力机制。
+- 详情：[/202606/13/README](/202606/13/README)
 
 ### 精读区论文标签
-1. [TS-ICL: A Flexible Time-Indexed Foundation Model for Time Series via In-Context Learning](/202606/08/2606.05878v1-ts-icl-a-flexible-time-indexed-foundation-model-for-time-series-via-in-context-learning)  
-   标签：评分：10.0/10、query:llm-ts
-   evidence：时间序列基础模型，使用上下文学习实现零样本预测和插补
-2. [Feature to Dynamics: Feature-space to Autoregression strategy for Zero-shot Time Series Forecasting](/202606/08/2606.01289v1-feature-to-dynamics-feature-space-to-autoregression-strategy-for-zero-shot-time-series-forecasting)  
+1. [On Subquadratic Architectures: From Applications to Principles](/202606/13/2606.12364v1-on-subquadratic-architectures-from-applications-to-principles)  
+   标签：评分：10.0/10、query:ts-fm
+   evidence：时间序列基础模型的预训练
+2. [Are Large Language Models Suitable for Graph Computation? Progress and Prospects](/202606/13/2606.06865v1-are-large-language-models-suitable-for-graph-computation-progress-and-prospects)  
    标签：评分：9.0/10、query:llm-ts
-   evidence：通过特征到自回归映射实现零样本时间序列预测
-3. [ChronosAD: Leveraging Time Series Foundation Models for Accurate Anomaly Detection](/202606/08/2606.01300v1-chronosad-leveraging-time-series-foundation-models-for-accurate-anomaly-detection)  
+   evidence：关于LLM的综述论文
+3. [GlucoFM-Bench: Benchmarking Time-Series Foundation Models for Blood Glucose Forecasting](/202606/13/2606.06881v1-glucofm-bench-benchmarking-time-series-foundation-models-for-blood-glucose-forecasting)  
    标签：评分：9.0/10、query:ts-fm
-   evidence：利用时序基础模型进行零样本特征提取的异常检测方法
-4. [FreqLite: A Lightweight Frequency-Decomposed Linear Model with Adaptive Reversible Normalization for Robust Long-Term Time-Series Forecasting](/202606/08/2606.01339v1-freqlite-a-lightweight-frequency-decomposed-linear-model-with-adaptive-reversible-normalization-for-robust-long-term-time-series-forecasting)  
+   evidence：时间序列基础模型血糖预测基准测试
+4. [DataEvolver: Automatic Data Preparation for Large Language Models through Multi-Level Self-Evolving](/202606/13/2606.07001v2-dataevolver-automatic-data-preparation-for-large-language-models-through-multi-level-self-evolving)  
    标签：评分：9.0/10、query:llm-ts
-   evidence：提出一种轻量级频率分解线性模型用于长期时间序列预测
-5. [TimeBlocks: Foundational and Continual Time-Series Blockbase -- Extended Version](/202606/08/2606.02142v1-timeblocks-foundational-and-continual-time-series-blockbase----extended-version)  
+   evidence：LLM自动数据准备系统
+5. [Time series Foundation Models based on Physics-Informed Synthetic Histories for Cold-Start Photovoltaic Forecasting](/202606/13/2606.07457v1-time-series-foundation-models-based-on-physics-informed-synthetic-histories-for-cold-start-photovoltaic-forecasting)  
+   标签：评分：9.0/10、query:ts-fm
+   evidence：使用时间序列基础模型进行零样本光伏预测
+6. [Causal Semantic Alignment for LLM-based Time Series Forecasting](/202606/13/2606.08262v1-causal-semantic-alignment-for-llm-based-time-series-forecasting)  
    标签：评分：9.0/10、query:llm-ts
-   evidence：支持多任务和持续学习的时间序列基础模型
-6. [Investment and Operational Planning for electricity markets with massive entry of renewable energy](/202606/08/2606.02165v1-investment-and-operational-planning-for-electricity-markets-with-massive-entry-of-renewable-energy)  
+   evidence：基于大语言模型的因果语义对齐时间序列预测
+7. [Personalized and Robust Proactive Robot Assistance with Uncertainty-Guided LLM Reasoning](/202606/13/2606.08458v1-personalized-and-robust-proactive-robot-assistance-with-uncertainty-guided-llm-reasoning)  
+   标签：评分：9.0/10、query:llm-ts
+   evidence：LLM推理与时间行为预测相结合
+8. [Lost in the Non-convex Loss Landscape: How to Fine-tune the Large Time Series Model?](/202606/13/2606.08578v1-lost-in-the-non-convex-loss-landscape-how-to-fine-tune-the-large-time-series-model)  
+   标签：评分：9.0/10、query:llm-ts
+   evidence：提出平滑全微调（SFF）方法解决大型时间序列模型微调中的非凸损失景观问题
+9. [InA-Probe: Instruction-Aware Active Probing for Time Series Forecasting with LLMs](/202606/13/2606.08601v1-ina-probe-instruction-aware-active-probing-for-time-series-forecasting-with-llms)  
+   标签：评分：9.0/10、query:llm-ts
+   evidence：提出指令感知主动探测机制用于基于大语言模型的时间序列预测
+10. [Report the Floor: A Training-Free Conformal Interval Is a Mandatory Baseline for Probabilistic Time-Series Forecasting](/202606/13/2606.09473v1-report-the-floor-a-training-free-conformal-interval-is-a-mandatory-baseline-for-probabilistic-time-series-forecasting)  
+   标签：评分：9.0/10、query:llm-ts
+   evidence：概率时间序列预测基线
+11. [Mix, Don't Pick: Why Synthetic Corpus Composition Matters for Time Series Foundation Model Pretraining](/202606/13/2606.09912v1-mix-dont-pick-why-synthetic-corpus-composition-matters-for-time-series-foundation-model-pretraining)  
+   标签：评分：9.0/10、query:ts-fm
+   evidence：时间序列基础模型预训练的合成数据混合策略
+12. [SPDM: Geometry-Modulated State Space Modeling with Manifold Constraints for Time Series Forecasting](/202606/13/2606.09917v1-spdm-geometry-modulated-state-space-modeling-with-manifold-constraints-for-time-series-forecasting)  
+   标签：评分：9.0/10、query:llm-ts
+   evidence：几何调制状态空间模型用于时间序列预测
+13. [Does Normalization Choice Matter for Causal Large Time-Series Models?](/202606/13/2606.09954v1-does-normalization-choice-matter-for-causal-large-time-series-models)  
+   标签：评分：9.0/10、query:ts-fm
+   evidence：因果大时间序列模型归一化影响研究
+14. [UPLOTS: A Unified Pretrained Language Model for Constrained Time-series Generation](/202606/13/2606.10466v1-uplots-a-unified-pretrained-language-model-for-constrained-time-series-generation)  
+   标签：评分：9.0/10、query:llm-ts
+   evidence：基于预训练语言模型的时间序列生成
+15. [Embedding Hybrid Systems into Continuous Latent Vector Fields](/202606/13/2606.10596v1-embedding-hybrid-systems-into-continuous-latent-vector-fields)  
+   标签：评分：9.0/10、query:llm-ts
+   evidence：利用神经ODE从时间序列数据学习混合系统动态
+16. [Dynamic Linear Attention](/202606/13/2606.10650v1-dynamic-linear-attention)  
+   标签：评分：9.0/10、query:llm-ts
+   evidence：LLM的线性注意力机制
+17. [CITRAS-FM: Tiny Time Series Foundation Model for Covariate-Informed Zero-Shot Forecasting](/202606/13/2606.10798v1-citras-fm-tiny-time-series-foundation-model-for-covariate-informed-zero-shot-forecasting)  
+   标签：评分：9.0/10、query:llm-ts
+   evidence：基于基础模型的零样本时间序列预测
+18. [LLM-Mediated Demand Response Coordination in Smart Microgrids](/202606/13/2606.11050v1-llm-mediated-demand-response-coordination-in-smart-microgrids)  
    标签：评分：9.0/10、query:llm
-   evidence：电力市场中的可再生能源整合与管理
-7. [Forget Attention: Importance-Aware Attention Is All You Need](/202606/08/2606.02332v2-forget-attention-importance-aware-attention-is-all-you-need)  
-   标签：评分：9.0/10、query:llm-ts
-   evidence：提出LLM注意力机制改进
-8. [Bridging the Last Mile of Time Series Forecasting with LLM Agents](/202606/08/2606.02497v1-bridging-the-last-mile-of-time-series-forecasting-with-llm-agents)  
-   标签：评分：9.0/10、query:llm-ts
-   evidence：利用LLM代理结合业务上下文修正时间序列预测，直接结合了大语言模型和时间序列。
-9. [From Long News to Accurate Forecast: Importance-Aware Fusion and PRM-Guided Reflection for Time Series Forecasting](/202606/08/2606.03097v1-from-long-news-to-accurate-forecast-importance-aware-fusion-and-prm-guided-reflection-for-time-series-forecasting)  
-   标签：评分：9.0/10、query:llm-ts
-   evidence：跨模态学习：将新闻文本融入时间序列预测
-10. [Reasoning over Grammar: Can Synthetic Linguistic Reasoning Traces Enhance Low-Resource Machine Translation?](/202606/08/2606.03782v1-reasoning-over-grammar-can-synthetic-linguistic-reasoning-traces-enhance-low-resource-machine-translation)  
-   标签：评分：9.0/10、query:llm-ts
-   evidence：大语言模型用于低资源机器翻译
-11. [Stationarity-Aware Retrieval-Augmented Time Series Forecasting](/202606/08/2606.04135v1-stationarity-aware-retrieval-augmented-time-series-forecasting)  
-   标签：评分：9.0/10、query:llm-ts
-   evidence：基于检索增强的时间序列预测方法，考虑平稳性
-12. [REGEN: Reference-Guided Synthetic Multivariate Time Series Generation for Forecasting](/202606/08/2606.05264v1-regen-reference-guided-synthetic-multivariate-time-series-generation-for-forecasting)  
-   标签：评分：9.0/10、query:llm-ts
-   evidence：参考引导的合成多变量时间序列生成方法用于预测
-13. [GITCO: Gated Inference-Time Context Optimization in TSFMs](/202606/08/2606.05332v1-gitco-gated-inference-time-context-optimization-in-tsfms)  
-   标签：评分：9.0/10、query:llm-ts
-   evidence：通过上下文优化提升零样本时间序列预测质量
-14. [Harnessing Generalist Agents for Contextualized Time Series](/202606/08/2606.05404v1-harnessing-generalist-agents-for-contextualized-time-series)  
-   标签：评分：9.0/10、query:llm-ts
-   evidence：利用LLM智能体进行上下文时间序列推理
-15. [Towards Unified and Data-Efficient Prognostics and Health Management with Tabular Foundation Models](/202606/08/2606.05481v1-towards-unified-and-data-efficient-prognostics-and-health-management-with-tabular-foundation-models)  
+   evidence：LLM中介的需求响应协调，直接针对电力系统优化与生成式AI应用
+19. [LakeFM: Toward a Foundation Model for Aquatic Ecosystems Using Irregular Multivariate Multi-depth Time Series Data](/202606/13/2606.11268v1-lakefm-toward-a-foundation-model-for-aquatic-ecosystems-using-irregular-multivariate-multi-depth-time-series-data)  
    标签：评分：9.0/10、query:ts-fm
-   evidence：提出使用表格基础模型通过上下文学习处理工业时间序列的框架
-16. [GenAutoML: An Agentic Framework for Dynamic Architecture Generation and Optimization in Time-Series Analysis](/202606/08/2606.05860v1-genautoml-an-agentic-framework-for-dynamic-architecture-generation-and-optimization-in-time-series-analysis)  
+   evidence：湖泊时序基础模型
+20. [APEX: A Network-Native Time-Series Foundation Model for Forecasting and Anomaly Detection for Wireless Edge Operations](/202606/13/2606.11553v1-apex-a-network-native-time-series-foundation-model-for-forecasting-and-anomaly-detection-for-wireless-edge-operations)  
+   标签：评分：9.0/10、query:ts-fm
+   evidence：时间序列基础模型
+21. [TimeRouter: Efficient and Adaptive Routing of Time-Series Foundation Models](/202606/13/2606.11625v1-timerouter-efficient-and-adaptive-routing-of-time-series-foundation-models)  
    标签：评分：9.0/10、query:llm-ts
-   evidence：使用LLM作为神经架构师设计时间序列模型
-17. [TRACE: A Temporal Conditional Estimation for Multimodal Time Series Foundation Models](/202606/08/2606.06285v1-trace-a-temporal-conditional-estimation-for-multimodal-time-series-foundation-models)  
+   evidence：时间序列基础模型的路由框架
+22. [Time-Series Foundation Model Embeddings for Remaining Useful Life Estimation](/202606/13/2606.11990v1-time-series-foundation-model-embeddings-for-remaining-useful-life-estimation)  
    标签：评分：9.0/10、query:ts-fm
-   evidence：提出多模态时间序列基础模型的条件估计范式
-18. [CF-JEPA: Mask-free forward prediction with asymmetric encoder utilization for time-series representation learning](/202606/08/2606.07031v1-cf-jepa-mask-free-forward-prediction-with-asymmetric-encoder-utilization-for-time-series-representation-learning)  
-   标签：评分：9.0/10、query:ts-fm
-   evidence：提出CF-JEPA，一种无掩码的自监督时间序列表示学习方法，利用前向预测。
-19. [Trio: Learning Time-Series Forecasting with Temporal-Spatial-Sample Attention and Structural Causal Priors](/202606/08/2606.07291v1-trio-learning-time-series-forecasting-with-temporal-spatial-sample-attention-and-structural-causal-priors)  
-   标签：评分：9.0/10、query:llm-ts
-   evidence：使用注意力和因果先验的多变量时间序列预测
-20. [Time series Foundation Models based on Physics-Informed Synthetic Histories for Cold-Start Photovoltaic Forecasting](/202606/08/2606.07457v1-time-series-foundation-models-based-on-physics-informed-synthetic-histories-for-cold-start-photovoltaic-forecasting)  
-   标签：评分：9.0/10、query:ts-fm
-   evidence：利用时间序列基础模型对光伏冷启动进行零样本预测
+   evidence：利用冻结预训练的时间序列基础模型Chronos-2进行剩余寿命估计
 
 ### 速读区论文标签
-1. [Soft-NBCE: Entropy-Weighted Chunk Fusion for Long-Context](/202606/08/2606.01101v1-soft-nbce-entropy-weighted-chunk-fusion-for-long-context)  
+1. [CF-JEPA: Mask-free forward prediction with asymmetric encoder utilization for time-series representation learning](/202606/13/2606.07031v1-cf-jepa-mask-free-forward-prediction-with-asymmetric-encoder-utilization-for-time-series-representation-learning)  
+   标签：评分：8.0/10、query:ts-fm
+   evidence：无掩码的时间序列自监督表示学习
+2. [Trio: Learning Time-Series Forecasting with Temporal-Spatial-Sample Attention and Structural Causal Priors](/202606/13/2606.07291v1-trio-learning-time-series-forecasting-with-temporal-spatial-sample-attention-and-structural-causal-priors)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：提出基于熵加权的分块融合方法改进LLM长上下文推理
-2. [TimeSage-MT: A Multi-Turn Benchmark for Evaluating Agentic Time Series Reasoning](/202606/08/2606.01498v1-timesage-mt-a-multi-turn-benchmark-for-evaluating-agentic-time-series-reasoning)  
+   evidence：基于时空样本注意力的多元时间序列预测
+3. [Unified Geometry-Guided ML-FTLE for Tracking Transient Chaos from Scalar Time Series](/202606/13/2606.07385v1-unified-geometry-guided-ml-ftle-for-tracking-transient-chaos-from-scalar-time-series)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：基于LLM代理的多轮时间序列推理基准
-3. [Why Do Time Series Models Need Long Context Windows?](/202606/08/2606.01999v1-why-do-time-series-models-need-long-context-windows)  
+   evidence：基于几何引导的机器学习从标量时间序列追踪瞬态混沌
+4. [Vessel Traffic Flow Prediction on Sparse Data via Spatio-Temporal Graph Neural Networks with a Learnable Tweedie Head](/202606/13/2606.07694v1-vessel-traffic-flow-prediction-on-sparse-data-via-spatio-temporal-graph-neural-networks-with-a-learnable-tweedie-head)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：时间序列预测中长上下文窗口的理论分析
-4. [ProbRes: Volatility Learning for Probabilistic Time-Series Forecasting](/202606/08/2606.02117v1-probres-volatility-learning-for-probabilistic-time-series-forecasting)  
+   evidence：稀疏数据下的船舶交通流时间序列预测
+5. [PDE-Agents: An LLM-Orchestrated Multi-Agent Framework for Automated Finite Element Simulations with Knowledge Graph-Augmented Reasoning](/202606/13/2606.07850v1-pde-agents-an-llm-orchestrated-multi-agent-framework-for-automated-finite-element-simulations-with-knowledge-graph-augmented-reasoning)  
    标签：评分：8.0/10、query:llm-ts
-   evidence：提出一种基于波动率学习的后验概率校准方法用于概率时间序列预测
-5. [Identifiable Markov Switching Models with Instantaneous Effects and Exponential Families](/202606/08/2606.02231v1-identifiable-markov-switching-models-with-instantaneous-effects-and-exponential-families)  
-   标签：评分：8.0/10、query:llm-ts
-   evidence：可识别的马尔可夫切换模型用于非平稳时间序列分析
-6. [DAG-MoE: From Simple Mixture to Structural Aggregation in Mixture-of-Experts](/202606/08/2606.01062v1-dag-moe-from-simple-mixture-to-structural-aggregation-in-mixture-of-experts)  
+   evidence：LLM编排的多智能体仿真框架
+6. [DataEvolver: Automatic Data Preparation for Large Language Models through Multi-Level Self-Evolving](/202606/13/2606.07001v1-dataevolver-automatic-data-preparation-for-large-language-models-through-multi-level-self-evolving)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：大语言模型混合专家中的结构聚合
-7. [FAiT: Frequency-Aware Inverted Transformer for Multivariate Time Series Forecasting](/202606/08/2606.01306v1-fait-frequency-aware-inverted-transformer-for-multivariate-time-series-forecasting)  
+   evidence：为大型语言模型自动准备数据
+7. [DSFNet: Learning Dual-Domain Spectral Operators for Multi-Modality Spatio-Temporal Forecasting in Urban Transportation Systems](/202606/13/2606.07695v1-dsfnet-learning-dual-domain-spectral-operators-for-multi-modality-spatio-temporal-forecasting-in-urban-transportation-systems)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：面向多元时间序列预测的频率感知Transformer
-8. [PortBERT: Navigating the Depths of Portuguese Language Models](/202606/08/2606.02100v1-portbert-navigating-the-depths-of-portuguese-language-models)  
+   evidence：用于多模态时空预测的双域频谱滤波
+8. [Minibatch Selection via Partition Matroid Constrained Gradient Matching](/202606/13/2606.07954v1-minibatch-selection-via-partition-matroid-constrained-gradient-matching)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：基于RoBERTa的葡萄牙语语言模型
-9. [VLBM: Variational Latent Basis Modeling for OOD Robust Multivariate Time Series Forecasting](/202606/08/2606.02138v1-vlbm-variational-latent-basis-modeling-for-ood-robust-multivariate-time-series-forecasting)  
+   evidence：用于训练LLM的小批量选择方法
+9. [Fast LLM-Based Semantic Filtering: From a Unified Framework to an Adaptive Two-Phase Method](/202606/13/2606.08090v1-fast-llm-based-semantic-filtering-from-a-unified-framework-to-an-adaptive-two-phase-method)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：提出VLBM用于对异常事件鲁棒的多元时间序列预测
-10. [AdaWeather: Adaptively Mixing Probabilistic Weather Forecasts with Logarithmic Regret](/202606/08/2606.02663v1-adaweather-adaptively-mixing-probabilistic-weather-forecasts-with-logarithmic-regret)  
+   evidence：基于LLM的语义过滤框架
+10. [Toward Human-Centered Multi-Agent Systems: Integrating Cognition, Culture, Values, and Cooperation in AI Agents](/202606/13/2606.08274v1-toward-human-centered-multi-agent-systems-integrating-cognition-culture-values-and-cooperation-in-ai-agents)  
    标签：评分：7.0/10、query:llm-ts
-   evidence：用于时间序列的自适应概率天气预报组合方法
-11. [FlowTime: Towards Continuous Generative Watch Time Prediction via Flow-based Personalized Priors](/202606/08/2606.01352v1-flowtime-towards-continuous-generative-watch-time-prediction-via-flow-based-personalized-priors)  
+   evidence：LLM智能体与多智能体系统的综述
+11. [From Sampled Outcomes to Capability Distributions: Rethinking Supervision for LLM Routing](/202606/13/2606.06924v1-from-sampled-outcomes-to-capability-distributions-rethinking-supervision-for-llm-routing)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：观看时间预测作为时间序列预测
-12. [E4GEN: Event-level Explainable Extreme-Enhanced Time-series Generation](/202606/08/2606.01634v1-e4gen-event-level-explainable-extreme-enhanced-time-series-generation)  
+   evidence：面向LLM路由的分布感知监督框架
+12. [Forecast and Model Predictive Control of Distributed Energy Resource Aggregators for Net-Demand Balancing](/202606/13/2606.06932v1-forecast-and-model-predictive-control-of-distributed-energy-resource-aggregators-for-net-demand-balancing)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：极端事件感知的时间序列扩散生成
-13. [S3TS: Stochastic Scenario-Structured Tree Search for Advanced Planning Under Uncertainty](/202606/08/2606.02151v1-s3ts-stochastic-scenario-structured-tree-search-for-advanced-planning-under-uncertainty)  
-   标签：评分：6.0/10、query:llm
-   evidence：基于随机场景结构树搜索的能源调度
-14. [RESCAST-100K: A Comprehensive Dataset for Cross-Domain Residential Load and Indoor Temperature Forecasting](/202606/08/2606.02852v1-rescast-100k-a-comprehensive-dataset-for-cross-domain-residential-load-and-indoor-temperature-forecasting)  
+   evidence：可再生能源需求平衡的预测与控制
+13. [Tree-of-Experience: A Structured Experience-Management Solution for Self-Evolving Agents under Low-Repetition and Implicit-Reward Environments](/202606/13/2606.06960v1-tree-of-experience-a-structured-experience-management-solution-for-self-evolving-agents-under-low-repetition-and-implicit-reward-environments)  
    标签：评分：6.0/10、query:llm-ts
-   evidence：提出RESCAST-100K，一个大规模的住宅负荷与室内温度预测基准，支持跨域评估。
+   evidence：LLM智能体经验管理
+14. [Inference for High-Dimensional Sparse Spectral Precision Matrices](/202606/13/2606.07986v1-inference-for-high-dimensional-sparse-spectral-precision-matrices)  
+   标签：评分：6.0/10、query:llm-ts
+   evidence：面向时间序列的高维谱精度矩阵推断
 
 
 <div class="dpr-home-promo-card">
