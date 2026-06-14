@@ -1,0 +1,341 @@
+Title: Fast Exact Nearest-Neighbor Learning for High-Frequency Financial Time Series
+
+URL Source: https://arxiv.org/pdf/2606.10219v1
+
+Published Time: Wed, 10 Jun 2026 00:24:21 GMT
+
+Number of Pages: 15
+
+Markdown Content:
+# Fast Exact Nearest-Neighbor Learning for High-Frequency Financial Time Series 
+
+Henry Han 1[0000 −0003 −0273 −6719] ⋆ and Diane Li 2 
+
+> 1
+
+Data Science and Artificial Intelligence Innovation Laboratory, School of Engineering and Computer Science, Baylor University, Waco, TX 76798, USA 
+
+henry_han@baylor.edu  
+
+> 2
+
+Department of Business, Management and Accounting, University of Maryland Eastern Shore, USA 
+
+dli@umes.edu 
+
+Abstract. AI efficiency at scale is becoming critical in finance as market data volumes surge across equities, ETFs, FX, options, and high-frequency trading streams. This growth creates a core challenge for mature financial AI systems: models must learn from larger historical corpora while still meeting real-time latency constraints in trading, risk management, and derivative pricing. We use exact nearest-neighbor learning for high-frequency financial time series as a concrete case study to show that Mojo-based financial AI can address this challenge. We introduce a Mojo SIMD k-d tree with variance-based splitting, contiguous flat-buffer storage, and compile-time vectorized distance computation. We also provide a runtime result showing that, under standard pruning and implementation-cost assumptions, the Mojo SIMD k-d tree asymptotically dominates Mojo SIMD brute force and scikit-learn’s k-d tree in the fixed-stock, large-n,moderate-dimensional regime. Empirically, across eight financial datasets on x86 and ARM64 with up to 277K training samples, the method achieves 17.5–21.6 × speedup over scikit-learn’s k-d tree on x86 and 28.1–43.5 × over scikit-learn brute force on ARM64 equity/ETF datasets, while preserving exact outputs. Beyond nearest-neighbor inference, Mojo’s compiled execution enables an Extra Trees-based implied-volatility pricing model to train on 10 × more options data, reducing put-IV RMSE by 8.0%. These results position Mojo as a scalable, production-ready stack for financial AI and a promising foundation for efficient AI in other data-intensive fields. 
+
+Keywords: Financial AI · AI Efficiency · Mojo · SIMD · K-D Trees · KNN · High-Frequency Trading ·
+
+Financial Time Series · Scaling 
+
+# 1 Introduction 
+
+Financial AI is entering a scaling era. Modern models now ingest streaming prices, order flow, volatility surfaces, and cross-asset signals to support trading, allocation, risk control, liquidity provision, and derivative pricing [1–3]. As these decisions move closer to real time, the key bottleneck is no longer model design alone; it is AI efficiency at scale : the ability to learn from expanding financial corpora while responding within strict latency budgets. This challenge exposes a gap in today’s financial AI stack. Python, NumPy, and scikit-learn [4] remain the dominant research tools because they are flexible and deeply integrated with machine learning workflows. Yet at financial scale, where analysts and trading systems must query hundreds of thousands of historical market states, Python-based pipelines face runtime overhead, memory-bandwidth saturation, and cache-locality limits even on powerful compute infrastructure. C ++ , CUDA, and FPGA systems can improve speed, but they are not the native language of modern AI research; maintaining separate research and production code slows iteration, increases translation cost, and introduces model-drift risk. Mojo [5], a compiled systems language with Python-compatible syntax, offers a practical path between these two extremes. We use exact nearest-neighbor learning for high-frequency financial time series as a case study because KNN is interpretable and broadly useful for regime retrieval, signal lookup, implied-volatility modeling, and historical risk search, yet its inference cost grows directly with data volume. Our prior work showed that SIMD-vectorized brute-force KNN in Mojo is highly effective on cache-friendly benchmark datasets, but its gains may shrink once large working sets saturate the memory hierarchy [6].  
+
+> ⋆
+
+Corresponding author.  
+
+> arXiv:2606.10219v1 [cs.LG] 8 Jun 2026 2H. Han and D. Li
+
+This gap motivates the central step of this paper: moving from faster distance computation to fewer distance computations. We therefore introduce a Mojo SIMD k-d tree for large financial time-series corpora, combining variance-based pruning, contiguous flat-buffer memory layout, and compile-time vectorized distance kernels. This design resolves the brute-force scaling ceiling by reducing candidate comparisons while preserving Mojo’s hardware-level throughput. More broadly, this benchmark shows that Mojo can serve as a practical component of the financial AI efficiency stack, especially for workloads where inference latency, data scale, and research-to-production transfer matter simultaneously. Table 1 summarizes how Python/scikit-learn, C ++ /BLAS, and Mojo differ across the main scaling bottlenecks for distance-based ML inference in financial systems. Simply put, Python is convenient but hits runtime and memory-layout limits; C ++ is fast but widens the production gap; Mojo aims to combine compiled performance with a Python-compatible workflow.                      
+
+> Table 1. Scaling bottlenecks for distance-based ML inference in financial systems. Bottleneck Python/sklearn C++/BLAS Mojo Interpreter overhead per query High None None GIL-constrained parallelism Yes No No SIMD utilization Implicit BLAS Manual intrinsics Native, compile-time Memory layout control Limited Manual Manual, AOT-specialized Tree traversal cache efficiency Pointer-based Pointer-based Contiguous buffer Research-to-production gap Large Large Small, Python-compatible
+
+Nearest-neighbor learning and scaling. Nearest-neighbor learning is widely used across AI for its interpretability and retrieval-based prediction [7]. K-d trees reduce brute-force cost through spatial partitioning and pruning [9, 10], but practical speed depends on split quality, memory layout, and cache-efficient traversal. In finance, similar historical market states (volatility regimes, momentum profiles, volume patterns, option-surface states) may imply similar near-future outcomes [1, 2]. High-frequency data creates large historical corpora while trading, pricing, and risk applications demand low-latency inference. Approximate methods (IVF, HNSW [12, 13]) trade exactness for speed. To the best of our knowledge, exact nearest-neighbor inference remains underexplored as a financial-AI efficiency problem at scale, despite its direct relevance to retrieval-based learning across data-intensive AI domains. Building on our prior Mojo KNN work [6], this paper addresses the financial-scale efficiency challenge by moving from faster brute-force distance computation to pruned, cache-efficient exact search. Our contributions are: 1. We introduce a Mojo SIMD k-d tree with variance-based splitting, contiguous flat-buffer storage, and compile-time vectorized distance kernels for exact KNN on large financial time-series corpora. 2. We provide a theoretical runtime analysis showing that, under standard pruning and implementation-cost assumptions, the Mojo SIMD k-d tree asymptotically outperforms Mojo SIMD brute force and scikit-learn’s k-d tree in the fixed-stock, large-n, moderate-dimensional regime. 3. We develop a finance–hardware co-design in which standardized OHLCV features are stored as float32 vectors aligned with SIMD-width distance computation, preserving financial interpretability while improving throughput. 4. We evaluate eight financial datasets across equities, ETFs, and FX on x86 and ARM64, showing 17.5–21.6 ×
+
+speedup over scikit-learn’s k-d tree on x86 and 28.1–43.5 × over scikit-learn brute force on ARM64 equity/ETF datasets, with Wilcoxon significance p < 0.01 .5. We demonstrate broader financial-AI scaling through Extra Trees-based implied-volatility pricing, where Mojo trains on 10 × more options data and reduces put-IV RMSE by 8.0%. To the best of our knowledge, this is the first open-source, Python-compatible, system-level study of financial AI inference efficiency at scale, showing that co-design across algorithm, memory layout, hardware, and language yields operationally meaningful acceleration without sacrificing exactness or Python compatibility. Fast Exact NN Learning for HF Financial Time Series 3
+
+# 2 SIMD-Accelerated Exact KNN for Financial Feature Spaces 
+
+We use exact K-nearest neighbors (KNN) as a representative workload to show how Mojo SIMD can improve the scaling of financial AI inference. Exact KNN is simple, interpretable, and widely applicable, but its inference cost grows linearly with both the number of historical states and the feature dimension. 
+
+2.1 KNN Scaling in Financial Feature Spaces 
+
+KNN formalizes financial “market memory”: similar historical market states may contain useful information about near-future outcomes. Given a current query state xq ∈ Rd and a historical database T = {(xi, y i)}ni=1 ,exact KNN retrieves the k nearest historical states by minimizing squared Euclidean distance: 
+
+d(xq , xi) = 
+
+> d
+
+X
+
+> j=1
+
+(xq,j − xi,j )2 . (1) We use squared Euclidean distance as a standard, SIMD-friendly baseline that enables direct comparison across implementations. It is not assumed to be the universally optimal metric for all financial tasks; alternative metrics such as Manhattan, Mahalanobis, or learned distances may be preferable when features have heavy tails, heterogeneous scales, or strong cross-correlations. 
+
+KNN for high-frequency trading classification. In our HFT setting, xi ∈ Rd encodes a one-minute intraday market snapshot (OHLCV prices, momentum, realized volatility, and volume-ratio indicators derived from tick data), and yi = 1[ri+1 > 0] ∈ { 0, 1} is the next-minute price-direction label, where ri+1 is the mid-price return of the subsequent interval [8]. Given the k-nearest-neighbor index set Nk(xq ), the classifier assigns 
+
+ˆyq = 1
+
+ X   
+
+> i∈ N k(xq)
+
+yi > k
+
+> 2
+
+ , (2) with k = 5 throughout; all four methods in this study apply this same rule. Beyond directional classification, KNN is useful for regime lookup, volatility forecasting, historical risk search, and option-state retrieval [2]. These tasks require fast access to large historical feature spaces, where latency directly affects trading signals, hedge updates, and intraday risk decisions [11]. However, exact brute-force retrieval costs O(n · d) per query. For n = 10 7 historical states and d = 24 features, a single query requires roughly 2.4 × 10 8 feature-level distance operations. This linear scan is difficult to reconcile with real-time trading, option repricing, and intraday risk monitoring. 
+
+Limits of conventional k-d tree implementations. K-d trees reduce this bottleneck by partitioning the feature space and pruning regions that cannot contain closer neighbors [9, 10]. In practice, however, their realized speed depends not only on asymptotic pruning but also on memory layout, cache behavior, branching overhead, and distance-computation throughput. In popular Python-ecosystem financial AI pipelines, generic data containers, runtime dispatch, and limited control over contiguous memory layout can erode the gains from tree pruning. C ++ 
+
+implementations can recover low-level speed, but they often require a separate production codebase, manual optimization, and costly translation from Python research prototypes, widening the research-to-production gap. This motivates a Mojo-based architecture. K-d tree pruning reduces the number of candidate comparisons; SIMD accelerates the remaining distance calculations; and Mojo provides compile-time vectorization with contiguous memory control inside a Python-compatible financial AI stack. The resulting design targets a central scaling problem in financial AI: preserving exact nearest-neighbor retrieval while reducing the latency of large-scale inference. 
+
+2.2 Mojo SIMD for Financial AI Efficiency SIMD Efficiency for Distance Computation SIMD is well-suited for KNN acceleration because squared Euclidean distance is inherently SIMD-friendly: each per-feature term (xq,j − xi,j )2 is computed independently, and all d operations map directly onto a parallel SIMD register. For a d = 16 float32 feature vector, the full 4 H. Han and D. Li                        
+
+> Table 2. Financial datasets used for exact KNN inference. ntrain /ntest : chronological 80/20 split. †denotes ARM64 Apple M3 with d= 24 ; all other datasets use x86 with d= 16 .Dataset ntrain dntest Asset class Source CPRI 143,695 16 35,924 U.S. equity Tiingo JPM 167,852 16 41,963 U.S. equity Tiingo WMT 185,823 16 46,456 U.S. equity Tiingo AAPL 277,117 16 69,280 U.S. equity Tiingo BAC †269,352 24 57,704 U.S. equity Tiingo SPY †156,242 24 33,466 ETF Tiingo QQQ †103,511 24 22,166 ETF Tiingo EURUSD †63,963 24 13,692 FX Tiingo
+
+distance requires only two SIMD passes (three for d = 24 ), reducing instruction count by the register width relative to scalar execution. SIMD does not change the nearest-neighbor rule; it makes each candidate comparison substantially cheaper. Speed alone is insufficient at financial scale. For AAPL ( n = 277 K, q = 69 K, d = 16 ), brute-force inference requires ∼6.1 × 10 11 floating-point operations. Once the training corpus exceeds the CPU cache, data movement, not arithmetic, becomes the binding constraint: fast distance kernels stall waiting for memory if the data layout forces repeated cache misses. Mojo [5] is purpose-built for this co-design challenge. It provides native compile-time SIMD vectorization and deterministic contiguous memory control within a Python-compatible syntax, giving financial AI researchers systems-level throughput without a separate C ++ codebase. The compound result: k-d tree pruning reduces com-parisons, SIMD accelerates each remaining one, and cache-friendly flat-buffer storage ensures those comparisons land in cache. 
+
+Financial Feature Engineering Let pt = ( ot, h t, l t, c t, v t)⊤ be the OHLCV vector at minute t. Following [2], we apply a causal feature map ϕw over a rolling window of width w:
+
+xt = ϕw(pt−w+1 , . . . , pt) ∈ Rd, (3) where ϕw extracts log returns, rolling volatility, momentum, and volume-ratio statistics from five groups: returns, volatility, momentum, volume, and microstructure. Features are standardized by training-set statistics before inference. The base set ( d = 16 ) covers five indicator groups; the ARM64 set ( d = 24 ) adds directional and pseudo-volatility features. Both dimensions are hardware-aligned: 16 and 24 float32 values map to exactly two and three SIMD register widths respectively, eliminating remainder loops in the distance kernel. 
+
+2.3 Mojo SIMD K-D Tree for Financial-Scale KNN Datasets We evaluate exact KNN inference on eight minute-bar financial datasets spanning three asset classes (U.S. equities, ETFs, and FX), all sourced from Tiingo (Table 2). Experiments run on two hardware platforms, x86 and ARM64 (Apple M3), to characterize the full speedup landscape across processor architectures. The x86 experiments use a base d = 16 OHLCV-derived feature set, while the ARM64 experiments use an extended 
+
+d = 24 feature set, marked by †.
+
+Mojo SIMD K-D Tree The implementation combines three complementary optimizations matched to the structure of large HFT feature data. 
+
+Variance-based partitioning. At each internal node covering index set S, the split axis is 
+
+j∗ = arg max  
+
+> j=1 ,...,d
+
+Var( {xi,j }i∈S ) , (4) with the split value set to the median of {xi,j ∗ }i∈S . Recursion halts when |S| ≤ L (leaf size L = 10 ), at which point candidates are scanned exhaustively. Financial features exhibit heterogeneous dispersion across return, volatility, momentum, and volume groups; variance-based axis selection concentrates early splits on the most discriminative dimensions, producing tighter subregions and stronger pruning. Fast Exact NN Learning for HF Financial Time Series 5
+
+Table 3. Left: mean inference time in seconds (10 runs). Right: Mojo KD-tree speedup over each baseline, computed as baseline time / Mojo KD time. †ARM64 Apple M3 ( d = 24 ); others x86 ( d = 16 ). ‡ARM64 Mojo Brute uses comptime SW=8 (x86-optimal, 256-bit); the platform-corrected SW=4 kernel reduces ARM64 Mojo Brute times by 4.3× (see text), so the geometric mean vs. Mojo Brute reflects a platform mismatch, not a fair comparison. Inference Time (s) Mojo KD Speedup vs. Dataset SK Brute SK KD Mojo Brute ‡
+
+> Mojo KD SK Brute SK KD Mojo Brute ‡
+
+CPRI 1.052 14.54 1.596 0.829 1.3 × 17.5 × 1.9 ×
+
+JPM 1.407 20.20 2.195 1.197 1.2 × 16.9 × 1.8 ×
+
+WMT 1.700 25.47 2.673 1.449 1.2 × 17.6 × 1.8 ×
+
+AAPL 3.833 65.48 7.139 3.037 1.3 × 21.6 × 2.4 ×
+
+BAC † 3.434 0.697 122.4 0.079 43.5 × 8.8 × 1549 ×
+
+SPY † 1.189 0.380 38.55 0.036 32.8 × 10.5 × 1048 ×
+
+QQQ † 0.591 0.231 17.09 0.021 28.1 × 11.0 × 780 ×
+
+EURUSD † 0.339 0.344 6.537 0.209 1.6 × 1.6 × 30.8 ×
+
+Geom. mean 5.1 × 10.8 × 29.5 ×
+
+Contiguous memory layout. Training vectors are stored row-major in a flat buffer X ∈ Rn×d, indexed via a permuted array π. Each node v records integer offsets (lo v , hi v ); the |Sv | = hi v − lo v leaf candidates are 
+
+{Xπ[i]}hi v −1 
+
+> i=lo v
+
+, read as a contiguous memory block. This eliminates pointer-linked heap traversal and keeps leaf scans cache-line aligned. 
+
+SIMD distance kernel. Denote the p-th register-width block of x as x(p) = ( xpW +1 , . . . , x (p+1) W )⊤ with W = 8 .The squared Euclidean distance decomposes as 
+
+d(xq , xi) =  
+
+> d/W −1
+
+X
+
+> p=0
+
+x(p) 
+
+> q
+
+− x(p)
+
+> i
+> 2
+
+, (5) requiring d/W passes: two for d = 16 , three for d = 24 . Since d, W , L, and k= 5 are compile-time constants, Mojo emits fully unrolled, scalar-free kernels without runtime dimension checks. 
+
+Benchmarking protocol. All methods use the same chronological train-test splits and k = 5 . We compare four exact KNN implementations: Mojo SIMD brute force, Mojo SIMD k-d tree, scikit-learn brute force (algorithm=’brute’ ), and scikit-learn k-d tree ( algorithm=’kd_tree’ ). We report mean wall-clock inference time over 10 runs on the held-out test set, excluding data loading and feature construction. Experiments use Mojo 25.1.1, Python 3.12, and scikit-learn 1.5.0. To assess scaling behavior, we fit T (n) = Cn α by OLS on log T =
+
+α log n+ log C, using AAPL with fixed d = 16 and chronological training sizes n ∈ { 1K, 3K, 10 K, 30 K, 100 K, 346 K},isolating the effect of n from asset, dimensionality, and hardware variation. 
+
+# 3 Results 
+
+3.1 Runtime Performance Across Financial Datasets 
+
+The Mojo KD-tree achieves 17.5–21.6 × speedup over scikit-learn’s KD-tree on x86 and 28.1–43.5 × over scikit-learn brute force on ARM64 equity/ETF datasets, with the two platforms exhibiting qualitatively different performance regimes (Figure 1, Table 3). 
+
+x86 Financial Datasets ( d = 16 ). On the four x86 datasets (CPRI, JPM, WMT, AAPL; 143K–277K training samples), the Mojo k-d tree achieves a consistent 1.2–1.3 × speedup over scikit-learn’s brute-force and a decisive 
+
+17.5–21.6 × over scikit-learn’s k-d tree (Figure 2, left). The right panel of Figure 2 shows that the Mojo k-d 6 H. Han and D. Li        
+
+> Fig. 1. Speedup of Mojo KD-tree over sklearn baselines across all eight financial datasets (log scale). Geometric mean:
+> 5.1×vs SK Brute, 10 .8×vs SK KD. Wilcoxon signed-rank test ( W= 0 ,p < 0.01 ) confirms Mojo KD is strictly faster than sklearn KD on every dataset.
+
+tree’s 1.2–1.3 × advantage over sklearn brute-force holds uniformly as training corpus size grows from 180K to 346K total samples, while sklearn’s k-d tree degrades to ≈ 0.07 × of sklearn brute-force, confirming that the pointer-chasing overhead compounds with dataset size. The consistency across four securities from different market sectors (technology, retail, luxury goods, banking) confirms the advantage is structural rather than data-specific. On x86, sklearn KD is the primary Python baseline: sklearn brute-force incurs O(n2) total inference cost when the test set grows proportionally with training, so the 17.5–21.6 × speedup over sklearn KD is the operationally relevant x86 comparison. 
+
+ARM64 Financial Datasets ( d = 24 , Apple M3). On ARM64 with the enriched d = 24 feature set, the Mojo k-d tree achieves 43.5 × over sklearn brute-force for BAC (79 ms vs. 3.434 s), 32.8 × for SPY (36 ms vs. 1.189 s), and 28.1 × for QQQ (21 ms vs. 0.591 s), shown in Figure 3. The ARM64 platform inverts the x86 SK-Brute vs. SK-KD relationship: Apple M3’s cache hierarchy handles pointer-chasing traversal sufficiently that sklearn’s k-d tree outperforms its brute-force backend; the Mojo flat-buffer design is nonetheless even better matched to Apple Silicon and remains the fastest method by a wide margin. EUR/USD yields a more modest 
+
+1.6× speedup, consistent with its smaller corpus (64K training samples) limiting the pruning benefit. A striking new finding on ARM64 is that the Mojo SIMD brute-force is 780–1549 × slower than the Mojo k-d tree (BAC: 122.4 s, SPY: 38.55 s, QQQ: 17.09 s, EURUSD: 6.54 s), whereas on x86 the same brute-force kernel is only 1.8–2.4 × slower. The root cause is a hardware difference in SIMD register width between the two platforms :x86 processors provide 256-bit registers (processing 8 float32 values per instruction), while Apple M3 (ARM64) provides only 128-bit registers (4 float32 values per instruction). Our distance kernel fixes the SIMD width at compile time via comptime SW = 8 , which is optimal for x86 but requires two hardware instructions on ARM64 for every operation that takes one on x86. Concretely, each 8-wide vector load and horizontal sum requires twice as many hardware steps on ARM64 as on x86. This per-comparison penalty directly causes Mojo brute-force Fast Exact NN Learning for HF Financial Time Series 7             
+
+> Fig. 2. x86 scaling experiment (CPRI, JPM, WMT, AAPL; d= 16 ,K= 5 ). Left : log-log mean inference time vs. total dataset size; shaded bands show ±1std over 10 timed runs. Right : speedup relative to sklearn brute-force as dataset grows. The Mojo KD-tree (green) maintains a consistent 1.2–1.3 ×advantage over sklearn brute-force and roughly 14 ×
+> over sklearn KD-tree across all dataset sizes. ARM64 datasets (BAC, SPY, QQQ, EURUSD) are excluded as they use a different hardware platform and d= 24 feature set.
+
+to slow down on ARM64: multiplied over 22K–58K test queries each scanning 100K–270K training points, the extra instruction overhead accumulates into tens of seconds. Scikit-learn’s brute-force avoids this because its NumPy/BLAS backend adapts to the native register width at runtime, whereas Mojo’s comptime specialization is fixed at build time and is not width-adaptive across processor architectures. The k-d tree is immune to this slowdown: variance-based pruning reduces candidates per query from O(n) to O(n1−1/d ), so only a few hundred distance computations are performed per query regardless of n, and the 100 × reduction in comparison count overwhelms any per-comparison instruction overhead. The pruning benefit is thus platform-portable in a way that SIMD throughput is not, and it is the primary source of the k-d tree’s ARM64 advantage. To validate the SIMD-width hypothesis, we re-ran the brute-force kernel with comptime SW = 4 , matching ARM64’s native 128-bit register width. The improvement is consistent across all four ARM64 datasets: BAC 
+
+4.6× (122.4 s → 26.4 s), SPY 4.3× (38.55 s → 9.04 s), QQQ 4.3× (17.09 s → 3.97 s), EURUSD 4.3× (6.54 s →
+
+1.51 s), confirming that the register-width mismatch is responsible for a predictable ≈ 4× overhead. Nevertheless, even the width-corrected SW=4 brute-force remains 189–334 × slower than the Mojo k-d tree on the equity/ETF datasets (SPY: 9.04 s vs. 0.036 s; QQQ: 3.97 s vs. 0.021 s; BAC: 26.4 s vs. 0.079 s), demonstrating that algorithmic pruning (not SIMD width) is the decisive factor. 8 H. Han and D. Li 
+
+Fig. 3. ARM64 scaling experiment (EURUSD, QQQ, SPY, BAC; d = 24 , K = 5 , Apple M3). Left : log-log mean inference time vs. total dataset size with ±1 std shading. Right : speedup relative to sklearn brute-force. The Mojo KD-tree (green) achieves 28–44 × speedup on equity/ETF datasets; sklearn KD-tree also outperforms sklearn brute-force on Apple Silicon (3–5 ×), but Mojo’s flat-buffer design remains decisively faster. EUR/USD yields a more modest gain due to its smaller corpus. Fast Exact NN Learning for HF Financial Time Series 9
+
+3.2 Theoretical Explanation of Runtime Dominance 
+
+The following lemma and theorem formalize the runtime dominance observed in Figure 1. Lemma 1 establishes that k-d tree pruning eventually dominates brute-force search; Theorem 1 adds that Mojo’s flat-buffer layout and compile-time SIMD kernel give it a lower cost than scikit-learn’s k-d tree. These results serve as theoretical grounding for the empirical observations; the proofs are straightforward applications of standard k-d tree complexity analysis. 
+
+Lemma 1 (Sub-quadratic dominance over Mojo brute force). Consider a fixed stock with training set Xn ⊂ Rd, d
+
+fixed, and test queries qn = ρn for constant ρ > 0. Suppose the Mojo SIMD k-d tree visits O(nα) candidates per query for some α < 1. Then there exists n0 such that for all n ≥ n0,
+
+TMSKD (n) < T MBF (n), (6) where TMSKD and TMBF denote query-only inference times of the Mojo SIMD k-d tree and Mojo SIMD brute force, respectively. (Proof: Appendix A.) Theorem 1 captures the systems advantage through two conditions: a smaller or equal scaling exponent (α ≤ β) and, when equal, a smaller constant ( CM < C S ), reflecting Mojo’s contiguous memory layout and compile-time SIMD specialization relative to scikit-learn’s pointer-based tree. 
+
+Theorem 1 (Within-stock runtime dominance of Mojo SIMD k-d tree). Under the setting of Lemma 1, assume scikit-learn’s k-d tree has effective query cost TSKD (n) = Ω(CS n1+ β ) with β ≥ α, and Mojo SIMD k-d tree has query cost TMSKD (n) = O(CM n1+ α) with CM < C S when β = α. Then there exists n1 such that for all n ≥ n1,
+
+TMSKD (n) < min {TMBF (n), T SKD (n)}. (7) (Proof: Appendix A.) 
+
+Empirical instantiation. The fitted power-law exponents in Table 4 correspond to 1 + α and 1 + β in Theorem 1: Mojo k-d tree query time gives 1 + α = 1 .755 and scikit-learn’s k-d tree gives 1 + β = 2 .320 (Figure 4), confirming 
+
+β > α . The Mojo brute-force exponent 1.885 ≈ 2 is consistent with the Θ(n2) bound in Lemma 1. Across all eight datasets in Figure 1, the Mojo SIMD k-d tree is faster than both baselines in every case, achieving a geometric mean speedup of 10 .8× over scikit-learn’s k-d tree. 
+
+3.3 Empirical Runtime Complexity                       
+
+> Table 4. Empirical scaling exponents, controlled protocol (AAPL, d= 16 ). Method k(scaling exponent) R2
+> Mojo brute-force SIMD 1.885 0.993 Mojo k-d tree (query only) 1.755 0.997 Mojo k-d tree (build + query) 2.002 0.993 10 H. Han and D. Li
+> Fig. 4. Left : Grouped bar chart of mean inference time (seconds) for SK Brute-Force, SK KD-Tree, and Mojo KD-Tree across all eight financial datasets. Right : Empirical runtime complexity curves on AAPL ( d= 16 ) extrapolated from calibrated power-law fits ( kMojo KD = 1 .755 ,kSK KD = 2 .320 ). Mojo KD-tree’s sub-quadratic scaling increasingly dominates at larger corpus sizes, projecting 8−10 ×inference advantage at n= 1 M observations.
+
+Table 4 and Figure 4 report scaling exponents from the controlled AAPL protocol. Here R2 = 1 − SS res /SS tot is the coefficient of determination from the OLS fit of log T = α log n + log C, measuring the fraction of variance in log-runtime explained by the power-law model; R2 close to 1 indicates the model fits the observed runtimes well across all six training sizes. The R2 > 0.993 for all methods confirms excellent power-law fit when confounds are eliminated, in contrast to R2 ≈ 0.87 −0.90 under the cross-dataset protocol [6]. The k-d tree query exponent of 
+
+k = 1 .755 is meaningfully sub-quadratic: at n = 346 K, the absolute time savings over brute-force are substantial. The combined build-plus-query exponent of k = 2 .002 reflects a near-quadratic one-time build cost: since the query-only exponent is 1.755 , the build itself dominates the combined scaling at large n. This is not a concern in practice, as the tree is built once and queried many times. At AAPL scale ( q = 69 K test queries), the cumulative query savings over brute-force exceed the build cost after fewer than 25 queries, so the sub-quadratic query efficiency ( k = 1 .755 ) determines operational throughput. 
+
+3.4 Verification Prediction Quality Prediction quality is verified as equivalent across all four methods for every financial dataset, confirming that Mojo computes exact (not approximate) nearest neighbors. All eight financial datasets achieve 50.0–53.2% accuracy for next-bar direction prediction, consistent with the efficient market hypothesis for short-horizon forecasting from historical features [14]. 
+
+Statistical Significance A Wilcoxon signed-rank test [15] comparing Mojo KD vs. sklearn KD across all eight financial datasets yields W = 0 (all signed ranks favor Mojo KD), p = 3 .91 × 10 −3 (one-tailed), with rank biserial correlation rB = 1 .0 (maximum possible effect size), confirming at the 1% level that Mojo KD is strictly faster on every evaluated dataset. A one-sample t-test on the log-transformed speedup ratios provides magnitude-sensitive confirmation: t(7) = 8 .09 , p < 0.0001 (one-tailed), rejecting the null hypothesis that the geometric mean speedup equals 1× with high confidence. A 95% bootstrap confidence interval (10,000 resamples) on the geometric mean speedup yields 10 .83 × with CI [5 .94 ×, 16 .62 ×] (Table 5). Even under the least favourable subset of the eight datasets, the Mojo k-d tree remains nearly 6 × faster than scikit-learn’s k-d tree. Fast Exact NN Learning for HF Financial Time Series 11                                
+
+> Table 5. Statistical evidence for Mojo KD-tree speedup over scikit-learn KD-tree across eight financial datasets. Evidence Statistic p-value Effect / interval Wilcoxon signed-rank W= 0 3.91 ×10 −3rB= 1 .0
+> One-sample ttest on log-speedups t(7) = 8 .09 <10 −4rejects 1×baseline Bootstrap geometric mean 10 .83 ×—95 % CI [ 5.94 ×,16 .62 ×]
+> Fig. 5. Mojo SIMD KD-tree speedup over two scikit-learn baselines across all eight financial datasets (log scale). Blue bars: vs SK Brute-Force; red bars: vs SK KD-Tree. Dotted horizontals mark geometric means. The Mojo k-d tree is strictly faster than sklearn KD on all eight datasets (Wilcoxon W= 0 ,p < 0.01 ; geometric mean 10 .8×, 95 % CI [ 5.9×,
+> 16 .6×]). ARM64 datasets (BAC, SPY, QQQ marked with *) achieve 28–44 ×over sklearn brute-force; x86 datasets ( †)achieve 17–22 ×over sklearn KD-tree.
+
+# 4 Mojo’s Advantage in Extra Trees Implied Volatility Pricing 
+
+The KNN experiments establish one half of the efficiency argument: Mojo’s compiled throughput reduces inference latency. This section tests the other half: whether that throughput translates into a larger accessible training set and, consequently, better predictions, using a structurally different tree ensemble on a distinct financial task to show the principle is architectural, not KNN-specific. We apply an Extra Trees [16] regression ensemble to AAPL options implied volatility pricing. This experiment uses a separate AAPL options contract dataset (distinct from the minute-bar equity dataset in Table 2), comprising 250,000 chronologically ordered option contracts with associated market observables. Let xi ∈ Rd denote the feature vector for option contract i, where d ∈ { 7, 8}
+
+encodes log-moneyness, time to expiry, underlying price, volume, open interest, bid-ask spread, and delta ( d = 8 
+
+for the mixed partition), and let yi = σIV ,i be the market-implied volatility target [17]. The Extra Trees ensemble of T = 20 regression trees predicts 
+
+ˆσIV (x) = 1
+
+T
+
+> T
+
+X
+
+> t=1
+
+ht(x), (8) where each tree ht draws a split threshold for feature j uniformly from the observed range of that feature without impurity evaluation, and recursion halts at minimum leaf size L = 10 . Prediction quality is RMSE =pq−1 Pqi=1 (ˆ σi − σi)2, with σ in decimal form (e.g., 0.333 corresponds to 33.3% annualized IV), over q = 50 ,000 
+
+held-out test contracts. We compare Mojo (trained on nMojo = 200 ,000 samples) against the Python baseline (limited to nsk = 20 ,000 samples by time budget) across three partitions: mixed calls and puts ( d = 8 ), calls only (d = 7 ), and puts only ( d = 7 ). We are unable to run sklearn at 200,000 samples within the same time budget; the 1.8× per-sample throughput advantage is what enables the 10 × data scale. 12 H. Han and D. Li                                  
+
+> Table 6. Extra Trees for AAPL implied volatility, three option partitions. Mojo trains on 10 ×more data; separating calls and puts reduces RMSE by 27–31%. Dataset Method Train nBuild (ms) RMSE MAE Mixed, d= 8 sklearn ExTraReg 20,000 37.8 0.505 0.265
+> Mojo ExTraReg 200,000 213.4 0.483 0.251
+> Calls only, d= 7 sklearn ExTraReg 20,000 46.9 0.367 0.212
+> Mojo ExTraReg 200,000 208.8 0.369 0.199
+> Puts only, d= 7 sklearn ExTraReg 20,000 46.4 0.361 0.228
+> Mojo ExTraReg 200,000 207.3 0.333 0.210
+
+Table 6 shows two distinct scaling advantages. First, training throughput : Mojo processes 10 × more data in only 4.4–5.6× the build time, a 1.8× per-sample throughput advantage. Second, prediction quality from scale :the additional training data reduces put-IV RMSE by 8.0% (0.333 vs. 0.361). Put IV has well-defined volatility skew (demand for downside protection creates systematic structure in strike-DTE space), so the extra training samples provide genuinely informative coverage of the IV surface. Separating calls and puts rather than mixing them reduces RMSE by 27–31% (0.505 →0.369 for calls, 0.483 →0.333 for puts), confirming that put-call IV asymmetry is a strong structural signal that call/put-specific models should exploit independently. 
+
+# 5 Discussion 
+
+5.1 Co-Design Drives Financial AI Efficiency 
+
+Inference efficiency is a function of co-design across algorithm, memory layout, and hardware, not any single optimization in isolation. The Mojo k-d tree’s 10.8 × geometric mean speedup arises from three decisions working in concert: variance-based splitting concentrates pruning on the most discriminative financial features; contiguous flat-buffer storage converts traversal and leaf scans into cache-sequential reads; and float32 SIMD vectorization executes each distance at hardware-peak throughput. The sub-quadratic query exponent ( k = 1 .755 vs. brute-force 
+
+k = 1 .885 ) means the advantage widens as financial corpora grow. The Extra Trees result confirms the same principle beyond KNN: Mojo’s compiled throughput processes 10 × more option data in only 4.4–5.6× the build time, translating directly into an 8.0% put-IV RMSE reduction that a Python-budget model cannot achieve. 
+
+5.2 Platform Bottlenecks 
+
+On x86 ( d = 16 , n = 143 –277 K), large working sets saturate L2 cache and performance depends on access predictability. Mojo’s contiguous layout gives the hardware prefetcher a regular pattern; scikit-learn’s pointer-based tree cannot. On ARM64 (Apple M3, d = 24 ), the bottleneck shifts: 128-bit native registers make each SIMD distance twice as expensive as on x86’s 256-bit registers, producing the 780–1549 × brute-force slowdown on large equity/ETF corpora. K-d tree pruning is platform-portable in a way that SIMD throughput is not: reducing candidates from O(n) to O(n0.755 ) per query overwhelms any per-comparison overhead, yielding 28–44 ×
+
+speedups on ARM64. 
+
+5.3 Mojo vs. C++: Compiled Performance with Research Ergonomics 
+
+A C++ implementation of the identical flat-buffer k-d tree, compiled with clang++ -O3 -march=native ,benchmarks at 24, 15, and 92 ms on SPY, QQQ, and EURUSD versus Mojo’s 36, 21, and 209 ms, a geometric mean of 1.70 × faster. The gap traces to Mojo’s value-ownership model: heap candidates are stored in List[Float32] 
+
+(heap-allocated) versus C++ stack arrays. Mojo delivers ≈59% of C++ throughput while offering Python-compatible syntax, ISA-portable SIMD, and comptime specialization without architecture-specific intrinsics: 10 ×
+
+faster than scikit-learn at 60% of C++ speed, with no separate production codebase required. 
+
+5.4 Nearest-Neighbor Search Across Finance and AI 
+
+Exact nearest-neighbor retrieval is a foundational primitive across AI, and the co-design principles here transfer directly beyond KNN on financial time series. In finance alone the applications are immediate: IV surface fitting Fast Exact NN Learning for HF Financial Time Series 13 
+
+via KNN over (strike, DTE, underlying price, volume) for sub-millisecond Greeks computation; cross-sectional factor investing via regime-aware KNN over momentum, quality, and volatility features across broad equity universes; historical VaR via nearest-neighbor search over the P&L database conditioned on factor exposures; and smart-order routing via tick-level KNN over bid-ask imbalance, trade arrival rate, and midprice momentum. Beyond finance, any domain producing large, moderate-dimensional sequential data benefits directly from the same SIMD flat-buffer architecture. Biosequence similarity in genomics, anomaly detection in network intrusion monitoring, and clinical time-series analysis all share the large-n, moderate-d, low-latency retrieval structure the Mojo k-d tree is designed for. The sub-quadratic scaling ( k = 1 .755 , R2 > 0.99 ) and platform-portable pruning make it a broadly applicable engine wherever corpus growth outpaces the Python-ecosystem inference ceiling. 
+
+5.5 Future Directions 
+
+Immediate extensions include tick-by-tick order-book corpora (millions of events per day), FX and futures markets, and broad equity universes (S&P 500, Russell 2000) where the sub-quadratic advantage widens further. On the systems side, Mojo’s emerging GPU backend enables a single-codebase path to GPU acceleration: the flat buffer and SIMD-aligned kernel map directly to coalesced global memory reads and warp-level FMA reductions. Algorithmic improvements including PCA-aligned axis selection, time-decay neighbor weighting, int8 quantized storage, and integration of approximate indices (IVF, HNSW [12, 13]) each offer 2–4 × additional gains within the existing architecture. 
+
+5.6 Limitations 
+
+Datasets cover U.S. equities, ETFs, and FX at minute-bar frequency; fixed income, futures, and tick-level order-book microstructure remain unexplored. The Wilcoxon test spans eight datasets; additional instruments would tighten confidence intervals. Results may differ on processors with different cache hierarchies or wider SIMD (e.g., AVX-512). Approximate nearest-neighbor methods (HNSW, LSH) may offer better tradeoffs at higher dimensionalities beyond d = 24 .
+
+# 6 Conclusion 
+
+Financial AI inference efficiency. Across eight financial datasets spanning U.S. equities, ETFs, and FX on x86 and ARM64 (Apple M3), the Mojo k-d tree achieves 17.5–21.6 × speedup over scikit-learn’s k-d tree on x86 ( d = 16 ) and 28.1–43.5 × over scikit-learn’s brute-force on ARM64 equity/ETF datasets ( d = 24 ). A Wilcoxon signed-rank test ( W = 0 , p < 0.01 ) confirms these gains hold uniformly across all eight datasets, with a bootstrap 95% CI of [5 .94 ×, 16 .62 ×] on the geometric mean speedup versus sklearn’s k-d tree. The combination of variance-based pruning (algorithmic), contiguous flat-buffer layout (systems), float32 SIMD-aligned feature engineering (hardware-software co-design), and Mojo’s ahead-of-time compilation delivers statistically confirmed, operationally meaningful inference acceleration that no single component achieves in isolation. 
+
+AI scaling efficiency at financial scale. To the best of our knowledge, this is the first open-source, Python-compatible, system-level study addressing financial AI inference efficiency at scale. The paper demonstrates that AI efficiency in finance requires co-design across the full stack (algorithm, language, memory layout, and hardware), with Mojo providing the platform to execute this co-design within a single Python-compatible codebase. The sub-quadratic scaling exponent ( k = 1 .755 , R2 > 0.99 ) confirms that the Mojo k-d tree’s advantage widens as financial corpora grow, positioning it for the tick-level data volumes that institutional financial AI is rapidly approaching. The Extra Trees result (10 × more data in 1.8× per-sample time, 8.0% put-IV RMSE reduction) shows that this efficiency translates directly into prediction quality, closing the loop between AI scaling efficiency and operational financial outcomes. 
+
+Generality beyond finance. The co-design principles established here extend beyond financial time series [18, 19]: any domain producing large, moderate-dimensional sequential data with heterogeneous feature variance stands to benefit from the same SIMD flat-buffer stack. In bioinformatics, gene expression analysis [20] and translational genomics [21] demand exact, high-throughput nearest-neighbor retrieval at scale; in cybersecurity, network intrusion detection [22, 23] and clinical monitoring [24] impose the same inference-latency constraints. The sub-quadratic scaling ( k = 1 .755 , R2 > 0.99 ) and hardware-aligned memory layout are domain-agnostic, making the Mojo SIMD KD-tree a broadly applicable engine wherever time-series scale outpaces the Python-ecosystem inference ceiling.  
+
+> Source code and demonstration data: https://github.com/hank08819/MojoKtreeFin .
+
+14 H. Han and D. Li 
+
+Acknowledgments. The authors thank the Data Science and Artificial Intelligence Innovation Laboratory at Baylor University for providing resources and support. This work is partially supported by NASA Grant 80NSSC22K1015, NSF 2229138, and the McCollum endowed chair startup fund. 
+
+# References 
+
+1. Han, H., Teng, J., Xia, J., Wang, Y., Guo, Z., Li, D.: Predict high-frequency trading marker via manifold learning. Knowledge-Based Systems 213 , 106662 (2021) 2. Han, H., Forrest, J.Y.L., Wang, J., Yuan, S., Han, F., Li, D.: Explainable machine learning for high frequency trading dynamics discovery. Information Sciences 684 , 121286 (2024) 3. Gu, S., Kelly, B., Xiu, D.: Empirical asset pricing via machine learning. Review of Financial Studies 33 (5), 2223–2273 (2020) 4. Pedregosa, F., et al.: Scikit-learn: Machine Learning in Python. Journal of Machine Learning Research 12 , 2825–2830 (2011) 5. Lattner, C.: Introducing Mojo: A Programming Language for All AI Developers. Modular Inc. blog post (2023). Available at https://www.modular.com/blog/mojo-programming-language 
+
+6. Kolli, S., Wu, C., Han, H.: Unleashing Mojo: Accelerating K-Nearest Neighbor Learning. In: Southwest Data Science Conference, pp. 39–57. Springer Nature Switzerland, Cham (2025) 7. Cover, T., Hart, P.: Nearest neighbor pattern classification. IEEE Transactions on Information Theory 13 (1), 21–27 (1967) 8. Lo, A.W., MacKinlay, A.C.: Stock market prices do not follow random walks: Evidence from a simple specification test. Review of Financial Studies 1(1), 41–66 (1988) 9. Bentley, J.L.: Multidimensional binary search trees used for associative searching. Communications of the ACM 18 (9), 509–517 (1975) 10. Friedman, J.H., Bentley, J.L., Finkel, R.A.: An algorithm for finding best matches in logarithmic expected time. ACM Transactions on Mathematical Software 3(3), 209–226 (1977) 11. Chordia, T., Roll, R., Subrahmanyam, A.: Liquidity and market efficiency. Journal of Financial Economics 87 (2), 249–268 (2008) 12. Johnson, J., Douze, M., Jégou, H.: Billion-scale similarity search with GPUs. IEEE Transactions on Big Data 7(3), 535–547 (2021) 13. Malkov, Y.A., Yashunin, D.A.: Efficient and robust approximate nearest neighbor search using Hierarchical Navigable Small World graphs. IEEE Transactions on Pattern Analysis and Machine Intelligence 42 (4), 824–836 (2018) 14. Fama, E.F.: Efficient capital markets: A review of theory and empirical work. Journal of Finance 25 (2), 383–417 (1970) 15. Wilcoxon, F.: Individual comparisons by ranking methods. Biometrics Bulletin 1(6), 80–83 (1945) 16. Geurts, P., Ernst, D., Wehenkel, L.: Extremely randomized trees. Machine Learning 63 (1), 3–42 (2006) 17. Hull, J., White, A.: The pricing of options on assets with stochastic volatilities. Journal of Finance 42 (2), 281–300 (1987) 18. Bagnall, A., Lines, J., Bostrom, A., Large, J., Keogh, E.: The great time series classification bake off: A review and experimental evaluation of recent algorithmic advances. Data Mining and Knowledge Discovery 31 (3), 606–660 (2017) 19. Keogh, E., Kasetty, S.: On the need for time series data mining benchmarks: A survey and empirical demonstration. Data Mining and Knowledge Discovery 7(4), 349–371 (2003) 20. Bar-Joseph, Z.: Analyzing time series gene expression data. Bioinformatics 20 (16), 2493–2503 (2004) 21. Han, H.: Diagnostic biases in translational bioinformatics. BMC Medical Genomics 8(1), 46 (2015) 22. Sommer, R., Paxson, V.: Outside the closed world: On using machine learning for network intrusion detection. In: 2010 IEEE Symposium on Security and Privacy, pp. 305–316. IEEE (2010) 23. Chandola, V., Banerjee, A., Kumar, V.: Anomaly detection: A survey. ACM Computing Surveys 41 (3), 15:1–15:58 (2009) 24. Topol, E.J.: High-performance medicine: The convergence of human and artificial intelligence. Nature Medicine 25 (1), 44–56 (2019) 
+
+# A Proofs of Lemma 1 and Theorem 1 
+
+Proof of Lemma 1. Since d and SIMD width W are compile-time constants, each distance evaluation costs O(1) .Mojo brute force scans all n training points per query: 
+
+TMBF (n) = Θ(qnn) = Θ(n2). (9) Fast Exact NN Learning for HF Financial Time Series 15 
+
+The k-d tree visits O(nα) candidates plus O(log n) traversal overhead per query: 
+
+TMSKD (n) = O(qn(nα + log n)) = O(n1+ α). (10) Since α < 1,
+
+TMSKD (n)
+
+TMBF (n) = O(nα−1) → 0, (11) so TMSKD (n) < T MBF (n) for all sufficiently large n. □
+
+Proof of Theorem 1. TMSKD (n) < T MBF (n) for large n follows from Lemma 1. For the comparison with TSKD : if 
+
+β > α ,
+
+TMSKD (n)
+
+TSKD (n) = O(nα−β ) → 0, (12) so TMSKD (n) < T SKD (n) for large n. If β = α, set ϵ = ( CS − CM )/4 > 0. For large enough n,
+
+TMSKD (n) ≤ (CM + ϵ)n1+ α < (CS − ϵ)n1+ α ≤ TSKD (n). (13) Combining both cases with Lemma 1 yields the result. □

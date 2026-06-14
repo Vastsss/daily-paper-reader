@@ -1,0 +1,1346 @@
+Title: TSseek: Regular Expression-Based Similarity Search for Distributed Time Series Datasets
+
+URL Source: https://arxiv.org/pdf/2606.09824v2
+
+Published Time: Thu, 11 Jun 2026 00:57:41 GMT
+
+Number of Pages: 17
+
+Markdown Content:
+# TSseek : Regular Expression-Based Similarity Search for Distributed Time Series Datasets 
+
+# Xiaoshuai Li +, Khalid Alnuaim +, Mohamed Y. Eltabakh ∗, and Elke A. Rundensteiner +
+
+> +
+
+Worcester Polytechnic Institute, ∗Qatar Computing Research Institute Worcester, MA, USA Doha, Qatar {xli3, kalnuaim, rundenst}@wpi.edu meltabakh@hbku.edu.qa 
+
+## ABSTRACT 
+
+Similarity search is a fundamental operation in time series analy-sis. Most existing techniques, however, require users to supply a precise sequence of values (typically an entire time series object) as the query input. This rigid requirement limits real-world ap-plications, where users instead want to express patterns, trends, or value ranges. Flexible, pattern-based search has been explored in text retrieval and complex event processing, but remains un-derexplored for large-scale distributed time series. To close this gap, we propose TSseek , a regular-expression-powered search framework for distributed time series datasets. TSseek ’s query lan-guage enables users to compose patterns encompassing trends, value ranges, and wildcard segments. We show that conventional approximation techniques (e.g., PAA and SAX) and their index structures are ill-suited for such queries because they cannot op-erate on regular-expression query constructs. In TSseek , we map the time series objects and the query constructs into the same space by approximating time series objects as sequences of line segments that retain both trend (slope direction) and value range, and translating query constructs into bounding rectangles. To sup-port efficient processing, we build TSseek-X , a distributed spatial index over the time series segments. TSseek supports two funda-mental query types, namely whole-matching queries (over entire series) and subsequence-matching queries (over arbitrary windows within a series). Across benchmark and real-world datasets, full-scan, model-based, and SAX-based baselines all sacrifice either accu-racy or speed, whereas TSseek returns exact answers efficiently. For subsequence workloads, it achieves consistent speedups over the closest pattern-based baseline, with the gap widening as datasets grow. 
+
+## KEYWORDS 
+
+Time series indexing, similarity search, pattern-based search, dis-tributed processing 
+
+## 1 INTRODUCTION 
+
+Time series data are pervasive across a diverse array of domains, including finance, healthcare, scientific research, the Internet of Things (IoT), and sensor networks [ 10 , 12 , 17 , 27 , 43 , 57 , 58 , 68 ]. The complexity and variety of tasks in these fields highlight the vital role of time series analysis methods, such as classification, clustering, prediction, anomaly detection, and forecasting [ 29 , 46 , 49 , 56 , 76 ]. At the heart of such time series analysis lies the fundamental operation of similarity search , which facilitates the identification of similar time series objects within a data set. Similarity search approaches fall into two primary categories: 
+
+whole matching , which compares complete time series data [ 4 , 9,34 , 59 ], and sub-sequence matching , which searches for specific segments within a series [ 14 , 38 , 71 , 81 ]. TSseek covers both cat-egories. What sets TSseek apart is what the query can express, i.e., a unified regex-inspired vocabulary of singletons, value ranges, trend patterns (with optional length and magnitude constraints), and wildcards, composable into expressive queries. Each compa-rable time series similarity system covers only a narrow slice of this design space— TARDIS [ 78 ] and SEAnet [ 67 ] accept only a full-sequence value query and support only whole-matching; whereas 
+
+T-ReX [28 ] accepts pattern-based subsequence queries but executes via full-pass scans without a persistent index. Traditional approaches in both categories commonly use query-by-example, where users provide a precise sequence of readings to search for. In the context of whole matching, most existing ap-proaches require the entire time series as input query [ 20 , 45 , 59 , 78 –80 ]. While pattern-based search has been explored in other domains (e.g., shape-based queries in centralized systems and CEP event pat-terns [ 18 , 77 ]), it remains an overlooked area for expressive pattern-based search over large-scale distributed time series datasets. This limitation restricts flexibility for many real-world applications, es-pecially when users seek to express patterns, trends, or value ranges rather than exact value sequence loop-ups. The need for a more expressive query language arises not only from practical application demands but also from the intrinsic prop-erties of time series data. These data are typically high-dimensional, often consisting of hundreds or thousands of readings in each ob-ject, and exhibit value proximity that renders exact matches un-necessary in practice. For example, temperature readings of 90 and 89 may effectively be equivalent for many applications. To accommodate this approximation, existing similarity-search tech-niques employ k-nearest neighbors (kNN) and related distance-based queries [ 7 , 19 , 41 , 78 –80 ]. In TSseek , we give the flexibility to the end-user during query construction instead of pushing it to the processing algorithm. 
+
+Motivating Example: Searching for and analyzing specific pat-terns in financial time series data can improve the understanding of financial market dynamics, help in investment risk management, and inform sophisticated investment strategies. Identifying such pat-terns may lead us to discover actionable insights that could guide decision-making and the development of financial products. Consider a financial analyst, Stephen, tasked with identifying stocks that exhibit a specific pattern of price movements: a consistent price increase over a period, followed by a stabilization period, and then a decline. Recognizing this pattern in large-scale historical stock data enables him to pinpoint entry and exit opportunities, helping investors maximize returns and minimize risks. By identifying less obvious patterns, Stephen seeks to exploit market inefficiencies and 
+
+> arXiv:2606.09824v2 [cs.DB] 10 Jun 2026 Xiaoshuai Li +, Khalid Alnuaim +, Mohamed Y. Eltabakh ∗, and Elke A. Rundensteiner +
+
+reduce uncertainty. To do this effectively, he requires a flexible yet robust query tool empowered by a pattern-matching language that allows Stephen to express fine-grained constraints such as specifying a 5% increase over four months, followed by two months of stability, and a 3% drop thereafter. The ability to adjust these parameters allows exploration of pattern variations in large-scale datasets. 
+
+To address these limitations, we propose a framework for sup-porting regular-expression-based search over distributed time series datasets. This requires us to address two main challenges: (1) Com-patible Feature Extraction for Query and Dataset Objects. 
+
+TSseek ’s query objects are pattern-based representations, not stan-dard time series objects, expressed at a different abstraction level than the dataset they target—they cannot be directly compared without an intermediate representation. We design a feature ex-traction mechanism that produces compatible features from both kinds of object—explaining why existing methods such as SAX [ 37 ]and PAA [ 31 ] are ineffective in our context. Because the same fea-ture representation must serve as the substrate for the indexing and query-processing layer (Challenge 2 below), it must also be amenable to spatial indexing. (2) Distributed Scalable Query Pro-cessing. Time series data, often massive, is often stored across an array of distributed data servers. Further, pattern-based search in-troduces significant computational complexity, and straightforward methods like finite state automata are computationally prohibitive at scale. Therefore, TSseek necessitates the development of efficient indexing structures and scalable query processing algorithms that can handle millions of time series efficiently. In this paper, we introduce TSseek , a scalable framework for regular-expression-based similarity search on distributed time se-ries datasets. TSseek ’s query constructs let users compose pat-terns from trends, value ranges, singletons, and wildcards into either whole-matching queries (spanning the entire stored series) or subsequence-matching queries (matching a contiguous window inside an unconstrained host series) [4, 9, 34, 59]. During preprocessing, TSseek approximates each time series as a sequence of line segments enriched with slope and value-range metadata and indexes them spatially. At query time, each construct is mapped into a bounding rectangle over the same segment space; a two-tier prune-and-refine pipeline retrieves candidate series via spatial intersection and then validates each candidate with a finite-state-automaton (FSA) refinement step. The same pipeline supports subsequence-matching with two specializations: a segment-level composite filter (instead of per-construct probes) and a windowed-enumeration DFA (instead of position-locked validation). In a nutshell, our work makes the following contributions: 
+
+• Pattern-powered query constructs for time series sim-ilarity search. We identify the limitation of existing similarity search techniques for time series data, which often require an ac-tual time series object (i.e., a precise sequence of values) to be presented as the query object. To address this, we introduce query constructs adopted from regular expressions that allow users to define a broader range of pattern types within the query object. 
+
+• Compatible feature extraction and indexing mechanism. 
+
+We propose segmentation-based feature extraction that generates compatible and comparable representation for both the time series data and the pattern-based query object. Such compatibility makes it feasible to construct TSseek-X , our distributed spatial index over these segments, and leverage it for efficient search. 
+
+• Efficient Query Processing & Search Algorithms We em-ploy a distributed index-based prune-and-refine search algorithm over our segment representation that is applicable for both whole-match and subsequence-match queries, with an additional segment-level pruning specific to the subsequence case. 
+
+• Extensive Experimental Study We conduct extensive exper-iments on several benchmark and real world datasets and demon-strate that existing whole-match methods either fail to support pattern-based queries or have unacceptable results’ accuracy below 30%. Moreover, for subsequence matching, TSseek achieves consis-tent speedups over the closest pattern-based baseline, with larger gains as the indexed candidate-pruning advantage grows with data size. 
+
+Remainder of Paper: In Sec. 2, we present an overview of related work and its limitations. Sec. 3 introduces the preliminaries and problem statement. In Sec. 4 and 5, we present TSseek ’s query constructs and index structure, respectively. The query processing technique is presented in Sec. 6. Finally, the experimental evaluation and concluding remarks are included in Sec. 7 and 8, respectively. 
+
+## 2 RELATED WORK 
+
+Whole and Sub-Sequence Similarity Search: Similarity search is a core operation in many time series analysis tasks [ 60 ]. Existing methods fall into two primary categories: whole matching , e.g., [ 4, 9, 34 , 59 ], and subsequence matching, e.g.,[ 14 , 38 , 71 , 81 ]. In both categories, prevailing search strategies require users to specify an exact sequence of time series values −either a complete time series object or a segment thereof [ 20 , 45 , 70 ]. As discussed in Sec. 1, this approach is often inflexible, limiting users’ ability to express more abstract or general patterns within query objects. 
+
+TSseek addresses this limitation by introducing an expressive yet user-friendly search paradigm. Only a few studies have explored pattern-based search in time series data [ 23 , 28 , 39 , 55 , 74 ]. However, unlike TSseek , these meth-ods are often tailored to specific use cases. For example, the method in [ 23 ] is designed for detecting head-and-shoulder patterns in fi-nancial datasets, while SAXRegEx [ 74 ] focuses on symbolic pattern matching in multivariate automotive sensor data. It focuses on handling certain distortion types that commonly exist in automo-tive time series datasets. RelaQ [ 39 ] also addresses pattern-based time-series querying, but through a visual GUI for analyst-driven ex-ploration of inter-series relations (correlation, causality, lag) rather than scalable pattern retrieval. 
+
+Pattern-Based Subsequence Matching. The closest existing system to our subsequence pipeline is T-ReX [28 ], a segment-based subsequence pattern search engine that allows users to express pattern queries through segment variables and compositional op-erators. T-ReX evaluates queries directly over raw series with a tree-based executor and a cost-based optimizer; it does not maintain a persistent disk-based index, so every query incurs full-pass cost over the entire collection. TSseek ’s subsequence extension instead reuses the same offline segment index built for whole-matching, and we adopt T-ReX as the primary subsequence baseline in our evaluation. TSseek : Regular Expression-Based Similarity Search for Distributed Time Series Datasets 
+
+Exact vs. Approximate Similarity Search: Independent of the whole vs. sub-sequence classification, similarity search techniques can also be distinguished as either exact or approximate . In exact search, the result set is guaranteed to satisfy the query object and associated criteria (e.g., exact match or k-nearest neighbors) [ 19 , 34 ]. In contrast, approximate search may yield results that include false positives or false negatives relative to the exact result set −typically in exchange for improved indexing efficiency and faster query processing [ 41 , 64 , 66 ]. Neither approximate nor kNN methods fulfill TSseek ’s objectives, as none expose user-defined pattern or trend/value-range constructs; TSseek is thus complementary to them. 
+
+Regex over Other Data Types: Pattern and regular expression (regex) search has been studied for other data types, e.g., complex event processing (CEP) [ 18 , 77 ]. Such techniques are not directly applicable to time series, however, due to fundamental differences in structure and semantics. For example, regex in text retrieval is optimized for character sequences and lacks support for numerical trends such as “a sequence of ten increasing values” . Similarly, CEP techniques are tailored for streaming and real-time data, making them unsuitable for the disk-based time series datasets assumed in 
+
+TSseek and previous methods [26, 40]. 
+
+Feature Extraction & Indexing Techniques: Many feature ex-traction techniques have been proposed in the literature including DFT [ 20 ], DWT [ 13 ], PAA [ 31 ], SAX [ 37 ], and iSAX [ 59 ]. Associ-ated with each representation, index structures have been designed ranging from traditional Spatial Access Methods (SAMs) such as the Rtree [ 25 ] or its variants [ 5, 8 , 30 ] to custom-designed indexes such as iSAX Binary Tree [ 11 ] and sigTree [ 78 ]. Notably, these feature extraction and indexing approaches are designed with the assumption that the query object is an exact sequence of time series values. As a result, they are not compatible with the TSseek query paradigm, which relies on pattern-based query objects that cannot be directly transformed into representations such as PAA or SAX. Consequently, TSseek introduces its novel feature extraction and indexing framework tailored to operate effectively within this new query setting. 
+
+Deep Learning-Based Similarity Search Models: Another emerging direction, departing from symbolic feature-based index-ing, leverages deep representation learning to model semantic sim-ilarity in time series data [ 21 , 67 ]. For example, SEAnet [ 67 ], a contrastively trained autoencoder is designed to preserve seman-tic proximity in the embedding space, while Series2Vec [ 21 ], a self-supervised framework, is designed to capture both time and frequency domain characteristics. These new approaches, as we have demonstrated experimentally, face several challenges that preclude them from deployment in practice, including sensitivity to the training data quality and domain, not scaling well to large real-world-sized time series datasets, and not natively supporting the pattern-based queries proposed in TSseek .
+
+Full-Fledged Time Series Database Systems: Popular time series database engines, such as Apache IoTDB [ 65 ], InfluxDB [ 6], and TrajStore [ 69 ], provide highly efficient storage and compression mechanisms, high-throughput data ingestion and processing, and support for online aggregations and analytical tasks. However, these systems do not support the regular-expression search capabilities 
+
+TSseek provides. 
+
+## 3 TSSEEK PRELIMINARIES 
+
+Definition 1. Time Series: A time series 𝑋 =< 𝑥 1, 𝑥 2, . . . , 𝑥 𝑚 >,where 𝑥 𝑖 ∈ R for all 1 ≤ 𝑖 ≤ 𝑚 , is an ordered sequence of 𝑚 real-valued variables. We assume that the readings arrive at fixed time granularities, and hence timestamps are implicit. 
+
+Definition 2. Time Series Dataset: A time series dataset T =
+
+{𝑋 1, 𝑋 2, . . . , 𝑋 𝑛 } is a collection of 𝑁 time series objects 𝑋 𝑖 , each of length 𝑚 , meaning, all objects have the same length. The proposed query constructs in TSseek enable users to express their queries using regular expressions by embedding patterns, value ranges, direction, and wild card segments into the query objects. A TSseek query object consists of one or more of these constructs as follows. 
+
+Definition 3. TSseek Query Object: A TSseek query object 𝑄 
+
+consists of a sequence of TSseek query constructs 𝑄 =< 𝑞 1, 𝑞 2, ..., 𝑞 𝑘 >,where each construct 𝑞 𝑖 has an associated type and location (start and end positions). The length of each construct 𝑞 𝑖 is determined by |𝑞 𝑖 | = ( 𝑞 𝑖 .end - 𝑞 𝑖 .start + 1). The length of the overall query ob-ject |𝑄 | = Í𝑘 𝑖 =1 |𝑞 𝑖 | ≤ 𝑚 , with 𝑚 the length of TS objects in the dataset; whole-matching queries are the special case |𝑄 | = 𝑚 , and subsequence-matching queries are the general case |𝑄 | < 𝑚 , where 
+
+𝑄 must match some contiguous window of the host series. The types and properties of the query constructs will be pre-sented in detail in Sec. 4.2. Per Def. 3, our work supports both whole-matching queries ( |𝑄 | = 𝑚 ) and subsequence-matching queries (|𝑄 | < 𝑚 ); whole-matching is the more common formulation in the literature [ 3, 20 , 36 ]. Unlike previous work where the precise 
+
+𝑚 values must be defined, in TSseek , only the non-wildcard con-structs must be explicitly defined, i.e., gaps (missing segments) in the query object are implicitly assumed to be wildcard constructs. 
+
+Example 1: An example TSseek query object starts with ten precise values 𝑥 1, ..., 𝑥 10 , followed by an increasing twenty values falling in the range between 50 and 100, then a sequence of decreasing five values, and the rest can be anything. This query object consists of a sequence of four constructs; one for the fixed values of length 10, followed by an increasing trend of length 20, and then a decreasing trend of length 5, and finally the rest is a do-not-care (wildcard) segment. 
+
+Definition 4. Problem Statement: Given a TSseek query object 𝑄 
+
+and a time series dataset T , find all TS objects 𝑋 ∈ T that matches 
+
+𝑄 (whose syntax is formally defined via query constructs in Sec. 6). Per Def. 4, we support exact similarity search , similar to previous work in the literature [ 3, 32 , 34 , 59 ]. However, the advantage of 
+
+TSseek over existing work is that its query object 𝑄 is pattern-based, and hence it is more expressive compared to a strict sequence of precise values adopted in previous work. 
+
+## 4 SYSTEM OVERVIEW 4.1 TSseek System Architecture 
+
+In Fig. 1, we illustrate the high-level system architecture of TSseek ,which operates in two distinct modes: offline data processing 
+
+and online query processing .In the offline mode, datasets undergo feature extraction, index construction, and distributed storage. While our focus is on static Xiaoshuai Li +, Khalid Alnuaim +, Mohamed Y. Eltabakh ∗, and Elke A. Rundensteiner +Feature Extraction     
+
+> (in Spatial Space)
+> Index Construction
+> Distributed Storage
+> (raw data, extracted
+> features, indexes)
+> Time series dataset
+> Sys. Admin
+> Query representation
+> in feature’s space
+> Query rewrite and
+> optimization
+> Index lookup (Filter
+> phase)
+> State Automata
+> check (Refine phase)
+> End user
+> *[20, 30] ±
+> Query expressed in
+> TSssek query Lang.
+> Offline Data Processing Online Query Processing
+> Final answer
+
+Figure 1: TSseek System Architecture. 
+
+datasets, the framework can be naturally extended to support incre-mental batch updates. In the online mode, users formulate queries using TSseek ’s pattern language. These queries are transformed into representations aligned with the extracted feature space, after which they pass through a query rewriting and optimization stage prior to execution. As depicted in Fig. 1, query execution proceeds in two phases: (i) a filtering phase , which employs the constructed indexes to retrieve a set of candidates ensuring that all matches are safely contained within the intermediate result set, and (ii) arefinement phase , which leverages a State Automaton for the final correct answer set. 
+
+Common Pipeline for whole and subsequence matching. 
+
+Both modes go through the identical two-phase architecture above (filter then refine) over the same offline segment index. They differ only in the form of the filter-phase lookup (a per-construct probe set for whole-matching versus one composite scan for subsequence-matching) and in the placement check the refine-phase DFA per-forms (a position-locked test versus a windowed enumeration under ordering and gap constraints). Sec. 6 gives the algorithmic detail for both modes. 
+
+## 4.2 TSseek Query Constructs and Language 
+
+A promising strategy for designing an expressive pattern-based query language for time series retrieval is to leverage regular-expression-inspired constructs. Regular expressions, widely rec-ognized for their expressiveness, have been extensively applied in various domains, including text search [ 16 , 62 ], complex event processing (CEP) [ 18 , 77 ], and programming languages [ 2 , 22 , 51 ]. Over the years, regular expressions have evolved to include a rich set of advanced expressive constructs [42, 47, 51]. In TSseek , we adopt a minimalist approach by incorporating a limited set of constructs capable of capturing common time series patterns. This design choice enables an end-to-end exploration of the system’s key components, including efficient feature extraction, indexing, and query processing techniques. Future work will focus on enriching the query language with more sophisticated pattern constructs. 
+
+TSseek currently supports four primary types of query con-structs that can be parameterized to allow flexible and expressive pattern specification. These constructs can be combined to form complex query expressions (see Example 2 below). The supported constructs include (refer to Table 1): 
+
+Singleton (S): The simplest construct, representing fixed nu-meric value(s) at specific positions within the query object. Tradi-tional techniques that operate on exact sequences typically support (only) this construct. 
+
+Range (R): Specifies a valid range interval for a value at a given position in the query object. As shown in Table 1, range boundaries may be inclusive or exclusive. 
+
+Pattern (P): A semantically rich construct that captures trends across sequences of values (e.g., increasing, decreasing). This con-struct is defined using four parameters (see Table 1). The domain 
+
+parameter specifies the allowable range of values in the pattern, the direction parameter indicates the trend as “+” (increasing), “-” (decreasing), “=” (steady), and “?” (unconstrained), and the length 
+
+parameter specifies the desired sequence length, either as a fixed value or a range. The fourth parameter, referred to as magnitude , is an optional parameter that specifies the step size (value difference) between consecutive values in the pattern. 
+
+Wildcard (W): Allows for any value to be at specific positions in the query object. Under whole-matching semantics, where the query object and the stored time series must be of equal length, any unspecified positions in the query are implicitly treated as wild-cards. Under subsequence-matching, positions outside the matched window are unconstrained by definition, so no trailing wildcard is needed (see the two forms in Example 2). 
+
+Example 2 (ECG QRS-and-T-wave morphology): Consider an electrocardiogram (ECG) lead-II recording sampled at 500 Hz, whose normal heartbeat is a P-wave baseline near 0 mV, a QRS spike, and a T-wave [ 24 ]. A clinician may issue (i) a full-beat template match 
+
+flagging beats whose QRS-and-T morphology deviates from a healthy template, or (ii) a lighter-weight QRS-spike scan locating only the ventricular spike (R-upstroke and S-downstroke) anywhere in the recording. These map onto a whole-matching form and a subsequence-matching form, respectively. 
+
+Whole-matching form (the query exactly fills the 128 -sample stored segment; positions are locked, with a trailing wildcard ab-sorbing the post-T baseline): D                               
+
+> [− 0.05 ,0.05 ]=
+> —(15 )
+> |{z }
+> (a)
+> ,[− 0.30 ,0.00 ]−
+> —(5)
+> |{z }
+> (b)
+> ,[− 0.30 ,1.50 ]+[0.05 ,0.20 ](12 )
+> |{z }
+> (c)
+> ,[− 0.50 ,1.50 ]−[− 0.20 ,−0.05 ](12 )
+> |{z }
+> (d)
+> ,[0.00 ,0.40 ]+
+> —(8,15 )
+> |{z }
+> (e)
+> ,𝑊
+> |{z}
+> (f)
+> E
+
+Subsequence-matching form (just the QRS spike — the R-upstroke and S-downstroke constructs from above, reused in isola-tion; the pattern matches any contiguous window of the host series, with positions outside that window unconstrained): 
+
+SUBSEQ 
+
+D
+
+[− 0.30 , 1.50 ] +[0.05 ,0.20 ] (12 )
+
+| {z }
+
+> (c)
+
+, [− 0.50 , 1.50 ] −[− 0.20 ,−0.05 ] (12 )
+
+| {z }
+
+> (d)
+
+E
+
+The constructs are: (a) A “P” construct with a steady ( =) trend of length 15 and mV in [− 0.05 , 0.05 ]: the pre-QRS isoelectric baseline (tail of the PR-segment) — whole-matching form only , (b) A “P” con-struct with a decreasing trend of length 5 and mV in [− 0.30 , 0.0]:the small Q-wave dip — whole-matching form only , (c) A “P” con-struct with an increasing trend of length 12, mV in [− 0.30 , 1.50 ],and an inter-sample magnitude in [0.05 , 0.20 ] mV: the R-wave up-stroke, the sharp ventricular spike — used in both forms; first half of the QRS spike , (d) A “P” construct with a decreasing trend of TSseek : Regular Expression-Based Similarity Search for Distributed Time Series Datasets 
+
+Table 1: Description of TSseek Query Constructs      
+
+> Type Desc. Parameters Parameter Desc. Singleton (S) Expresses an explicit number value
+
+𝑣 Self explanatory   
+
+> Range (R) Expresses an allowed range for a value with inclusive “[ ]” or exclusive “( )” boundaries Range of values, e.g.,
+
+[𝑣 1, 𝑣 2 ) Self explanatory  
+
+> Pattern (P) Expresses a trend over a sequence of values, e.g., increasing, decreasing, or steady sequence of values.
+
+(domain ) direction magnitude (length ) domain : Allowed values within the pattern. Takes the form of a Range construct.  
+
+> direction :
+
++ (increasing) − (decreasing) = (steady) ? (unspecified)   
+
+> length : The length of the pattern. Takes the form of either a Singleton (for fixed-length patterns), or Range (for varying-length patterns).
+> magnitude : The step between consecutive values in the pattern. Can be expressed in absolute or relative terms. Takes the form of either a Singleton (for fixed-length step), or Range (for varying-length step).
+> Wildcard (W)
+> Expresses any value is allowed
+
+∗ or (∗ , length ) length : The length of the wildcard values. It can be either a Singleton (for fixed-length wildcard), or Range (for varying-length wildcard). 
+
+length 12, mV in [− 0.50 , 1.50 ], and an inter-sample magnitude in 
+
+[− 0.20 , −0.05 ] mV: the S-wave downstroke that drops past baseline — used in both forms; together with (c) forms the QRS spike that the subsequence form scans for , (e) A “P” construct with an increasing trend of length between 8 and 15 and mV in [0.0, 0.40 ]: the T-wave upstroke, whose duration varies with heart rate — whole-matching form only . Finally, (f) appears only in the whole-matching form : a 
+
+“W” construct extends through the remainder of the 128 -sample window (covering the post-T-wave baseline). Under subsequence matching, the host series is unconstrained outside the matched QRS-spike window — the surrounding P-wave, T-wave, and baselines may take any shape. 
+
+TSseek Query Language: For ease of use and thus likelihood of adoption, queries in TSseek can be expressed in a SQL-like declarative language. The following example illustrates such syntax. 
+
+Example 3: The two query forms in Example 2 translate into the SQL-like declarative language as follows. The whole-matching form uses the MATCHES operator with all six constructs (including the trail-ing wildcard); the subsequence-matching form uses MATCHES_SUBSEQUENCE 
+
+with only the QRS-spike constructs (c) and (d).                                                       
+
+> --Whole - matching form ( Example 2, top )
+> SELECT *FROM < ECG Dataset >
+> WHERE MATCHES (PATTERN ( DOM =[ -0.05 ,0.05] , DIR = '=',LEN =15) , PATTERN ( DOM =[ -0.30 ,0.00] , DIR = '-',LEN =5) , PATTERN ( DOM =[ -0.30 ,1.50] , DIR = '+',MAG =[0.05 ,0.20] , LEN =12) , PATTERN ( DOM =[ -0.50 ,1.50] , DIR = '-',MAG =[ -0.20 , -0.05] , LEN =12) , PATTERN ( DOM =[0.00 ,0.40] , DIR = '+',LEN =[8 ,15]) , WC ([*]) ) --Subsequence - matching form ( Example 2, bottom )
+> SELECT *FROM < ECG Dataset >
+> WHERE MATCHES_SUBSEQUENCE (PATTERN ( DOM =[ -0.30 ,1.50] , DIR ='+',MAG =[0.05 ,0.20] , LEN =12) , PATTERN ( DOM =[ -0.50 ,1.50] , DIR ='-',MAG =[ -0.20 , -0.05] , LEN =12) )
+
+Notice that the TSseek query object is composed of an ordered sequence of query constructs, together representing a set of con-junctive predicates that must all be fulfilled by a corresponding database time series object. 
+
+## 5 TSSEEK INDEXING FRAMEWORK 
+
+For large-scale datasets comprised of hundreds of millions of time series objects, efficient indexing techniques are essential to cir-cumvent the prohibitive costs associated with naive search strate-gies such as full dataset scans [ 11 , 48 , 53 , 59 ]. Intrinsic to these indexing techniques are the feature extraction methods that gen-erate compact feature-based representations of the data in lower-dimensional spaces, upon which index structures are subsequently built [13, 20, 31, 37, 59]. However, conventional feature extraction techniques and their corresponding index structures cannot be directly applied in the context of TSseek . This is because the query object in TSseek is not a standard time series object (see Examples 2 and 3). Conse-quently, representations such as PAA [ 31 ], SAX [ 37 ], or Pivot-based methods [ 44 , 61 , 73 ] are not perfectly suitable for such queries. The fundamental challenge, therefore, lies in devising feature repre-sentations for both the dataset’s time series objects and the query objects that are mutually compatible—ensuring they can be com-pared within a shared representation space. Only then, an index be constructed over the extracted representation and effectively exploited during query execution. In Sec. 5.1 and 5.2, we present the TSseek ’s feature extraction and index structure, respectively, specifically designed to overcome the aforementioned limitation. 
+
+## 5.1 TSseek Feature Extraction 
+
+Key Insight. A close examination of the supported query con-structs (e.g., singletons, ranges, and patterns) reveals that they primarily constrain the search space to specific regions within a two-dimensional domain, where the x-axis corresponds to the tem-poral dimension (equivalent to the sequence position), while the y-axis corresponds to the value dimension. For instance, consider the following representative query of length 24, composed of sin-gletons, ranges, and trend patterns: < 5, 10, 12, 15,  [10, 20] , [20, 30] , | [40,60]  + (8)|  , | (50, 70)  - (10)|      
+
+> [1, 3]
+> >
+> <| [10,15] +(10)|, | (10, 70)
+
+- (5, 10)|,        
+
+> [1, 3]
+> | [15,15] =(5)|, [10, 20] ,[20, 30] ,[20, 25] >
+> +
+
+-=        
+
+> < 5, 10, 12, 15, [10, 20] ,[20, 30] ,| [40,60] +(8)| ,| (50, 70)
+
+- (10, 15)| ,      
+
+> [1, 3]
+> (*, λሻ>
+> (a) (b) (c) (d) (e)
+
+This query can be naturally visualized within the two-dimensional space, as shown in Fig. 2. Certainly, variable-length patterns, large ranges, and wild card segments will add to the complexity of such two-dimensional constraints, e.g., the bounding rectangles for seg-ments d and e could have a variable end and/or start, respectively. Such complexities will be accommodated for during query process-ing (Sec. 6). Xiaoshuai Li +, Khalid Alnuaim +, Mohamed Y. Eltabakh ∗, and Elke A. Rundensteiner +60          
+
+> 50
+> 40
+> 10
+> 30
+> 70
+> 20
+> 5
+> 12315 520 10 25 30 …
+> Time (or Position) dimension
+> Value dimension
+> (a)
+> (b)
+> (c)
+> (d 1)(d 2)
+> …
+> (e 1)(e 2)
+
+Figure 2: Two-dimensional visualization for an illustrative query object. 
+
+Figure 3: Example of piecewise linear approximation on sam-ple time series. 
+
+Building on this observation, our key insight is to extract features from time series objects by approximating them as sequences of two-dimensional line segments. This ensures that both the dataset objects and the query representations are mapped into the same fea-ture space. Consequently, spatial index structures can be efficiently employed to accelerate query processing. 
+
+TSseek Feature Extraction Algorithm. The segmentation algorithm transforms each time series object into an ordered se-quence of segments, as outlined in Alg. 1. For a time series 𝑡 , the algorithm employs Piecewise Linear Approximation (PLA) [ 33 , 35 ]left-to-right [ 15 ]. The first two points form the initial segment (Lines 3–5); it then iteratively extends the segment to the next point while the approximation error stays within 𝜀 (Lines 8–12). Oth-erwise, the segment is terminated and a new one initiated (Lines 13–18). 
+
+Example 4: As illustrated in Fig. 3, let 𝜀 = 6.0 and consider the first 6 points of a time series: ⟨( 1, 5), (2, 10 ), (3, 12 ), (4, 15 ), (5, 14 ), (6, 26 )⟩ .The initialization step creates a segment connecting Points 𝑋 1 and 𝑋 2.The segment will extend to Points 𝑋 3 and 𝑋 4 because the computed error is 3.0 and 5.0, respectively, which is less than 𝜀 . Then, at Point 
+
+𝑋 5, the computed error is 11 .0 > 𝜀 , and hence, the 1𝑠𝑡 line segment ends at 𝑋 4, and a new line segment starts by connecting 𝑋 5 and 𝑋 6.
+
+As illustrated in Example 4, Alg. 1 retains the initial slope of a line segment once it is initialized, thereby eliminating the need for re-computation with each newly processed point. This simple design achieves efficiency, since each data point is examined only once, resulting in a linear time complexity of 𝑂 (𝑛 ), where 𝑛 denotes the length of the time series. Further, the threshold 𝜀 constrains the maximum permissible approximation error for any point in the sequence. This provides a tunable balance between the number of Cluster of machines, each containing multiple databases, each 
+
+> storing millions of raw TS objects)
+> Distributed databases storing the extracted
+> features (line segments + metadata)
+> Distributed spatial indexes on the
+> line segments
+> Distributed feature extraction (segmentation) algorithm
+> Distributed DB bulk insertion and index construction
+
+# …
+
+# …
+
+Figure 4: TSseek Storage and Indexing Layer. 
+
+segments and the approximation’s accuracy. We adopt a data-driven strategy that uses sampling data statistics during preprocessing to autonomously select 𝜀 in a manner that is robust across datasets of varying scales and noise characteristics, ensuring an effective trade-off between efficiency and precision. 
+
+## 5.2 TSseek Index Structure 
+
+Distributed Raw Dataset. TSseek is implemented as a fully dis-tributed system on top of Apache Spark [ 75 ]. The storage layer leverages Postgres DBs instead of HDFS for efficient spatial stor-age and indexing (see Fig. 4). The time series dataset is partitioned and distributed across the databases over the cluster nodes. Each time series object 𝑋 =< 𝑥 1, 𝑥 2, . . . , 𝑥 𝑚 > is stored as a single object (single tuple in a database table). A single table contains millions of time series objects. The entire dataset typically spans a large number of such tables. 
+
+Distributed Spatial Index ( TSseek-X ). The indexing frame-work of TSseek , which we refer to as TSseek-X , is built on a distributed spatial index constructed from the line segments of each time series. The construction process, summarized in Alg. 2 and illustrated in Fig. 4, is executed in a fully distributed manner. For each time series object 𝑋 with a unique identifier 𝑋 𝑖𝑑 , Alg. 1 is called for extracting 𝑋 ’s line segments list 𝐿 𝑋 (Line 4). The list 
+
+𝐿 𝑋 is then hashed using 𝑋 𝑖𝑑 into a target partition 𝑃 ℎ (𝑋 𝑖𝑑 ) (Line 5). This hashing strategy ensures that all line segments of the same time series remain co-located, while also maintaining balanced distribution across partitions. After the line segments are distributed to their assigned parti-tions, each partition is bulk-inserted into a PostgreSQL table (Line 9). PostgreSQL is selected because of its spatial extension PostGIS [ 52 ], which provides efficient storage, indexing, and querying of geo-metric objects. In our implementation, time series segments are represented using the LINESTRING data type, which is well-suited TSseek : Regular Expression-Based Similarity Search for Distributed Time Series Datasets 
+
+Algorithm 1: Piecewise Linear Approximation for Time Series Data Segmentation 
+
+Input: Time Series Data 𝑋 , max-allowed-error threshold 𝜀 
+
+Output: List of linear segments 𝐿 𝑋  
+
+> 1
+
+begin  
+
+> 2
+
+// Initialization  
+
+> 3
+
+Construct initial segment 𝑆 1 by connecting 𝑋 1 and 𝑋 2 
+
+> 4
+
+Set current segment index 𝑖 ← 1 
+
+> 5
+
+Initialize 𝑗 ← 3 // The 3rd reading in the time series  
+
+> 6
+
+while 𝑗 ≤ length (𝑋 ) do  
+
+> 7
+
+Project 𝑋 𝑗 onto the extended line of 𝑆 𝑖 to get projection point 𝑃 𝑗  
+
+> 8
+
+// Error Evaluation  
+
+> 9
+
+Compute the approximation error 𝐸 as the distance from 
+
+𝑋 𝑗 to 𝑃 𝑗  
+
+> 10
+
+if 𝐸 < 𝜀 OR 𝑗 = length (𝑋 ) then  
+
+> 11
+
+Extend 𝑆 𝑖 to point 𝑃 𝑗 // maintains same slope  
+
+> 12
+
+else  
+
+> 13
+
+Finalize current segment 𝑆 𝑖  
+
+> 14
+
+Construct 𝑆 𝑖 +1 by connecting 𝑋 𝑗 and 𝑋 𝑗 +1 
+
+> 15
+
+Increment segment index 𝑖 ← 𝑖 + 1 
+
+> 16
+
+Increment 𝑗 ← 𝑗 + 1 // skip the next reading  
+
+> 17
+
+Increment 𝑗 ← 𝑗 + 1 // jump to the next reading  
+
+> 18
+
+return and store all segments 𝑆 𝑖 in list 𝐿 𝑋 
+
+Algorithm 2: Spatial Index Construction for Time Series Segments 
+
+Input: Time series dataset 𝐷 stored in HDFS, threshold 𝜀 
+
+Output: Distributed spatial index on cluster machines  
+
+> 1
+
+begin  
+
+> 2
+
+// Segmentation and Distribution  
+
+> 3
+
+foreach time series 𝑋 in dataset 𝐷 do  
+
+> 4
+
+𝐿 𝑋 ← Algorithm 1 ( 𝑋 , 𝜀 ) 
+
+> 5
+
+Compute target partition 𝑃 = hash (𝑋 𝑖𝑑 ) 
+
+> 6
+
+Distribute segments 𝐿 𝑋 to partition 𝑃 across the cluster  
+
+> 7
+
+// Local Index Construction  
+
+> 8
+
+foreach partition 𝑃 do  
+
+> 9
+
+Table 𝑇 𝑃 ← Bulk-insert P into PostgreSQL table  
+
+> 10
+
+Create GiST R-tree index on the LINESTRING geometry column in 𝑇 𝑃  
+
+> 11
+
+Store partition metadata for query routing 
+
+for modeling line segments. An R-Tree index is then built on this column within PostGIS to enable efficient spatial query processing. 
+
+Collecting Data Statistics. During index construction, TSseek 
+
+collects statistics capturing the distribution of segments within the search space. These statistics serve an important role in query processing, as they are used to estimate query selectivity for each of 
+
+TSseek ’s query constructs. To achieve this, the search space—where the x-axis corresponds to time and the y-axis corresponds to values (as illustrated in Fig. 2)—is partitioned into an M*N grid. We then maintain the count of intersecting line segments per grid cell. Computing statistics over the entire dataset (every segment’s grid-cell intersections) does not scale, so we instead use a random sample: for each sampled segment, all intersecting grid cells are identified and their counts incremented. These statistics later guide query distribution and execution (Sec. 6.2). 
+
+## 6 QUERY PROCESSING 
+
+Per Def. 4, TSseek aims to find the exact answer set matching the given query object 𝑄 . Both whole-matching and subsequence-matching queries follow through the same three-step pipeline: 
+
+query rewriting and simplification , selectivity estimation , and dis-tributed query execution as presented next. 
+
+## 6.1 Query Rewriting and Simplification 
+
+We employ a set of rewriting and simplification rules designed to enhance the efficiency of query execution. Representative examples of these rules are described below. Throughout this subsection we use a representative query of length 24 (visualized in Fig. 2) as a running illustration of the rewriting rules. 
+
+Resizing variable-length and wildcard patterns. Variable-length and wildcard patterns can be resized—or, in some cases, entirely eliminated—to enforce the whole-match constraint. This constraint requires the length of the query object to match the length of the dataset objects. For instance, consider the illustrative query depicted in Fig. 2. Given a time series length of 24, the query can be reformulated as follows. < 5, 10, 12, 15,  [10, 20] , [20, 30] , | [40,60]  + (8)|  , | (50, 70)  - (10)| 
+
+> [1, 3]
+
+>
+
+< | [10,15]  + (10)|,  | (10, 70)  - (5, 10)|, 
+
+> [1, 3]
+
+| [15,15]  = (5)|,  [10, 20] , [20, 30] , [20, 25]  >
+
+< | [10,15]  + (10)|,  | (10, 70)  - (5, 6)|, 
+
+[1, 3] 
+
+| [15,15]  = (5)|,  [10, 20] , [20, 30] , [20, 25]  >
+
+< 5, 10, 12, 15,  [10, 20] , [20, 30] , | [40,60]  + (8)|  , | (50, 70)  - (10, 15)| ,
+
+> [1, 3]
+
+(*, λሻ    
+
+> (a) (b) (c) (d) (e)
+
+Similarly, under the same length of 24, the following query: < 5, 10, 12, 15,  [10, 20] , [20, 30] , | [40,60]  + (8)|  , | (50, 70)  - (10)|      
+
+> [1, 3]
+> >
+> <| [10,15] +(10)|, | (20, 40)
+
+- (5, 10)|,           
+
+> [1, 3]
+> | [15,15] =(5)|,
+> < 5, 10, 12, 15, [10, 20] ,[20, 30] ,| [40,60] +(8)| ,| (50, 70)
+
+- (10, 15)| ,               
+
+> [1, 3]
+> (*, λሻ>
+> (a) (b) (c) (d) (e)
+> | [30, ͶͲ ]+(2,8)| >
+> <| [10,15] +(10)|, | (20, 40)
+
+- (5, 7)|,        
+
+> [1, 3]
+> | [15,15] =(5)|, | [30, ͶͲ ]+(2,4)| >
+
+can be re-written as below. More specifically, the minimum length requirement from all patterns in the query is 10 + 5 + 5 + 2 = 22. Therefore, the variability in the last two patterns can be constrained to the remaining 2 positions. The re-written query is shown in Fig. 5(a). < 5, 10, 12, 15,  [10, 20] , [20, 30] , | [40,60]  + (8)|  , | (50, 70)  - (10)|      
+
+> [1, 3]
+> >
+> <| [10,15] +(10)|, | (20, 40)
+
+- (5, 10)|,           
+
+> [1, 3]
+> | [15,15] =(5)|,
+> < 5, 10, 12, 15, [10, 20] ,[20, 30] ,| [40,60] +(8)| ,| (50, 70)
+
+- (10, 15)| ,               
+
+> [1, 3]
+> (*, λሻ>
+> (a) (b) (c) (d) (e)
+> | [30, ͶͲ ]+(2,8)| >
+> <| [10,15] +(10)|, | (20, 40)
+
+- (5, 7)|,        
+
+> [1, 3]
+> | [15,15] =(5)|, | [30, ͶͲ ]+(2,4)| >
+
+Superset coverage of overlapping regions. The boundaries formed by the ending position of a variable-length pattern and the starting position of the subsequent pattern define a region referred to as the overlapping region (see Fig. 2 and Fig. 5(a)). Ultimately, this region is associated with either the preceding or the succeeding pattern. To simplify the overlapping region for potential exploitation later in selectivity estimation and query optimization, we rewrite such regions to the superset ranges covering the overlapping patterns. This ensures the candidates retrieved from the index are a correct superset of the actual answer set. The refinement phase during query execution (Sec. 6.3) will then filter out any false-positive candidates. As an example, referring to the region ( 𝑑 2 & 𝑒 1) illustrated in Fig. 2, the superset coverage for these positions is 𝑒 1. Hence the Xiaoshuai Li +, Khalid Alnuaim +, Mohamed Y. Eltabakh ∗, and Elke A. Rundensteiner +40                 
+
+> 10
+> 30
+> 20
+> 5
+> 12315 520 10 25
+> Value dimension
+> 40
+> 10
+> 30
+> 20
+> 5
+> 12315 520 10 25
+> Value dimension
+> Overlapping
+> region
+> 40
+> 10
+> 30
+> 20
+> 5
+> 12315 520 10 25
+> Time (or Position) dimension
+> Value dimension  Vertical expansion
+> by ±𝜺
+> (c)
+> (b)
+> (a)
+> Replacing the overlapping
+> region by superset ranges
+
+l3
+
+l2
+
+l3l2
+
+l1
+
+Figure 5: Example of query re-writing and expansion. 
+
+query, for the index retrieval purposes, can be simplified as stated below. < 5, 10, 12, 15,  [10, 20] , [20, 30] , | [40,60]  + (8)|  , | (50, 70)  - (10)|,   
+
+> [1, 3]
+> <| [10,15]
+
++ (10)|,  | (20, 40)  - (5, 10)|,  
+
+> [1, 3]
+> | [15,15]
+
+= (5)|,     
+
+> < 5, 10, 12, 15, [10, 20] ,[20, 30] ,| [40,60]
+
++ (8)|  , | (50, 70)  - (10, 15)| ,        
+
+> [1, 3]
+> (*, λሻ>
+> (a) (b) (c) (d) (e)
+> | [30, ͶͲ ]
+
++ (2,8)| >  
+
+> <| [10,15]
+
++ (10)|,  | (20, 40)  - (5, 7)|,  
+
+> [1, 3]
+> | [15,15]
+
+= (5)|,  | [30, ͶͲ ] + (2,4)| >       
+
+> (*, λሻ>
+> <| [10,15] +(10)|, | (20, 40)
+
+- (5)|,  
+
+> [1, 3]
+> | [15,15]
+
+= (5)|,  | [30, ͶͲ ] + (2)| >[20, 40] , [20, 40] ,
+
+Similarly, the overlapping region in the query depicted in Fig. 5(a) can be simplified as illustrated in Fig. 5(b). The two positions in the overlapping region either belong to the decreasing pattern having range (20,40) or the increasing pattern having range (30,40). Therefore, their superset coverage is the range of (20,40), but with an unconstrained direction. The simplified expression is given below. [40,60]  + (8)|  , | (50, 70)  - (10)|,                                            
+
+> [1, 3]
+> | (20, 40) -(5, 10)|,
+> [1, 3]
+> =(5)|,
+> 0, 30] ,| [40,60] +(8)| ,| (50, 70) -(10, 15)| ,
+> [1, 3]
+> (*, λሻ>
+> (c) (d) (e)
+> | [30, ͶͲ ]+(2,8)| >
+> | (20, 40) -(5, 7)|,
+> [1, 3]
+> =(5)|, | [30, ͶͲ ]+(2,4)| >
+> (*, λሻ>
+> <| [10,15] +(10)|, | (20, 40) -(5)|,
+> [1, 3]
+> | [15,15] =(5)|, | [30, ͶͲ ]+(2)| >[20, 40] ,[20, 40] ,
+
+Early termination due to conflicting constraints. The sys-tem employs early termination for queries that are guaranteed to yield no results due to conflicting constraints. This is applied at both the individual pattern level and the overall query level. For instance, at the pattern level, consider the following query pattern:           
+
+> PATTERN(DOMAIN =(10,20), DIRECTION =’+’, MAGNITUDE =3, LENGTH =10)
+
+. This pattern is unsatisfiable because it is not possible to fit 10 values, each increasing by a step of 3, within the specified range of (10, 20). 
+
+## 6.2 Selectivity Estimation for Index Lookup 
+
+Conversion rules. Each construct of a query object 𝑄 = ⟨𝑞 1, 𝑞 2, . . . , 𝑞 𝑚 ⟩
+
+is mapped to a spatial probe over the segment index according to the following rules. Let 𝑝 denote the construct’s start position, 𝐿 its length, [𝑣 min , 𝑣 max ] its value-domain bounds, and 𝜀 the max-error tolerance from Sec. 6.4. 
+
+• A singleton 𝑆 (𝑣 ) at position 𝑝 contributes the point-probe rectangle [𝑝, 𝑝 ] × [ 𝑣 −𝜀, 𝑣 +𝜀 ].
+
+• A range 𝑅 [𝑣 min , 𝑣 max ] at position 𝑝 contributes [𝑝, 𝑝 ] × [𝑣 min −𝜀, 𝑣 max +𝜀 ].
+
+• A pattern 𝑃 𝑑 [𝑣 min , 𝑣 max ]𝐿 with direction 𝑑 ∈ {+ , −, =, ?} at position 𝑝 contributes the strip-probe rectangle [𝑝, 𝑝 +𝐿 −1]× [𝑣 min −𝜀, 𝑣 max +𝜀 ] together with the metadata filter slope 𝑑 0
+
+(applied when 𝑑 ∈ {+ , −, =}; omitted when 𝑑 = ?); if the pattern also specifies a magnitude range [𝑚 min , 𝑚 max ], the additional inter-sample filter 𝑚 min ≤ Δ𝑦 ≤ 𝑚 max is applied (signed: positive bounds for direction +, negative bounds for direction −). 
+
+• A wildcard 𝑊 over positions [𝑎, 𝑏 ] imposes no constraint and is omitted from the probe set. The 𝜀 inflation on every value-range bound enforces the com-pleteness guarantee discussed below: any segment whose original (unsmoothed) values fall within the construct’s intended range is guaranteed to intersect the inflated rectangle, so no candidate is lost during pruning. Referring to the visual representation of a query, each time win-dow (including as default a window of length zero, i.e., a time position) along the x-axis can form a spatial query for probing 
+
+TSseek-X . The process of determining which spatial query to execute involves two main steps: 
+
+Step 1 ( 𝜀 expansion): As outlined in the feature extraction and segmentation method (Alg. 1), the maximum permissible approxi-mation error is 𝜀 (see Fig. 3). To guarantee that the index lookup retrieves a superset of the correct query results, this approximation error must be accounted for during query formulation. Accordingly, each query component is expanded vertically by ±𝜀 .
+
+Completeness guarantee. During segmentation, each segment’s maximum vertical approximation error is bounded by 𝜀 . Therefore, a segment with approximated range [𝑦 ′
+
+> min
+
+, 𝑦 ′
+
+> max
+
+] may represent original points in [𝑦 ′ 
+
+> min
+
+− 𝜀, 𝑦 ′ 
+
+> max
+
++ 𝜀 ]. By expanding each query window [𝑦 min , 𝑦 max ] vertically by ±𝜀 to [𝑦 min −𝜀, 𝑦 max +𝜀 ], we guar-antee spatial intersection with all segments whose original points fall within the query range. Importantly, errors do not compound across segments because each segment is independently approx-imated from the raw data–the 𝜀 bound applies to each segment, not cumulatively. This ensures completeness (no false negatives) for queries of any length, though false positives may occur and are filtered during subsequent refinement. 
+
+Step 2 (Selectivity estimation): The second step involves se-lecting from the set of potential queries derived from the user’s input, the specific spatial query to execute on the TSseek index. The goal is to identify the query with the highest selectivity, thereby enhancing performance and ensuring efficient execution. For each non-wildcard construct, probing only the left-most and right-most boundary positions (each 𝜀 -expanded vertically) suffices: a segment covering the construct’s full span intersects 
+
+both boundary windows, so interior positions add no discriminating power. This shrinks the candidate-probe pool from |𝑄 | to roughly 
+
+2 𝑘 constructs (e.g., a length-24 query with 5 non-wildcard constructs yields 10 candidate probes instead of 24), from which we select the single most-selective construct. A series qualifies only if hit by every boundary window: per table, the probe id-sets are intersected, then unioned across the 𝑁 tables, with remaining false positives removed during FSA refinement. TSseek : Regular Expression-Based Similarity Search for Distributed Time Series Datasets 
+
+Finally, for each candidate spatial query, we estimate its selectiv-ity using the grid-based data statistics collected during the index construction step. We then choose the most selective one. 
+
+## 6.3 Distributed Query Execution 
+
+The end-to-end query execution workflow is summarized in Alg. 3. Given a query 𝑄 , the process begins with query rewriting (per the rules described above), followed by selectivity estimation, which selects the single most-selective construct 𝑐 ∗ as the index probe (Sec. 6.2). The remaining constructs are not probed at the index stage; the full conjunctive query—all constructs of 𝑄 —is instead enforced by the FSA refinement step. The next phase distributes 
+
+𝑐 ∗’s boundary probe(s) across all machines to perform spatial inter-section queries over the database tables. Two key design decisions motivate the ( 𝑁 )-tables/( 𝑀 )-machines architecture. First, ( 𝑁 > 𝑀 ), ensuring that segments are distributed across a greater number of logical partitions than there are physical hosts. This enables spatial-index scans to be parallelized at a finer granularity than would be possible using host-level parallelism alone. Second, during preprocessing, the segments associated with each table are batch-loaded into the PostgreSQL instance running on the host assigned to that table, ensuring co-location of the table and its corresponding segment data on disk. Spark orchestrates distributed preprocessing and cross-partition aggregation, while PostgreSQL with PostGIS executes indexed spatial retrieval locally on each partition. The output of these queries consists of the identifiers of match-ing line segments, along with their associated metadata (e.g., slope and the parent time-series id , which links each segment back to the original time series from which it was extracted during pre-processing). At this stage, the algorithm incorporates the pattern direction specified in the query (if provided) and compares it with the slope direction of the retrieved line segments to further refine the candidate set. For instance, if the selected probe carries an increasing-trend constraint, segments whose stored slope is not increasing are discarded directly within the index scan. Slope-based filtering is essentially free, happening entirely within PostgreSQL’s index layer: each segment’s pre-computed slope and fluctuation flag are indexed columns. PostgreSQL’s query optimizer automatically combines the spatial GIST index scan with the B-tree slope index, eliminating a lot of false positives. Once this local filtering is applied, the per-table boundary-probe result sets are intersected (keeping series hit by every boundary window) and then unioned across the 𝑁 tables into the candidate set carried forward. In the final stage, the algorithm retrieves the raw time series data corresponding to the candidate IDs and immediately evaluates them against the exact query using a DFA-based refinement test. The time series data are stored in distributed PostgreSQL tables across the cluster nodes. Each table is indexed using a B-tree on the time series IDs to enable efficient lookups. Retrieval queries utilize these B-tree indexes to minimize network round trips, with each index occupying approximately 40 MB and fully residing in memory. Retrieval and refinement are executed in a streaming pipeline: candidate IDs are fetched in batches, and each batch is refined on the fly using DFA-based pattern matching, eliminating the need for intermediate storage. Only matching results are retained in memory. This process is distributed across Spark executors, where each PostgreSQL table is processed independently and in parallel, with DFA refinement executed locally on the corresponding data storage node. 
+
+## 6.4 Data-Driven Configuration 
+
+Threshold 𝜀 . The max-error tolerance 𝜀 used by the segmentation algorithm (Alg. 1) is calibrated to each dataset. From a small sample of raw values we compute span 90 = p95 − p5, the difference between the 95th and 5th percentiles of the value distribution, which captures the typical amplitude of the central 90% of the data. We then set 
+
+𝜀 = 𝛼 · span 90 for a user-chosen scaling factor 𝛼 ∈ ( 0, 1]: a small 𝛼 
+
+preserves fine detail of the data, a large 𝛼 tolerates more variation. Sec. 7 reports how 𝛼 trades off setup and query-processing time. 
+
+Grid cell size. During the same sample pass, we record for each emitted segment its horizontal extent |Δ𝑥 | (in samples) and vertical span |Δ𝑦 | (value change). We then choose grid-cell width and height so that a typical (| Δ𝑥 |, |Δ𝑦 |) pair spans about two cells along each axis. This keeps most segments confined to a small neighborhood of cells—which improves index selectivity during query processing— and lets the grid size adapt to the observed data rather than relying on hand-tuned constants. 
+
+## 6.5 Subsequence-Matching: Filter and Refinement Specialization 
+
+We now describe the two places where the pipeline of Sec. 6.2 and 6.3 above specializes for subsequence-matching queries. The offline index and segmentation layers are reused unchanged; only the SQL filter emitted to PostgreSQL (Stage 1) and the placement check performed by the refinement DFA (Stage 2) differ. A subsequence query 𝑄 consists of 𝑘 ≥ 1 sub-patterns, each of which must match a contiguous window of the host series; for multi-pattern queries (𝑘 ≥ 2) the relative positions of those windows are governed by the query’s ordering and gap constraints. The two stages are now detailed in turn: 
+
+(Stage 1) PostgreSQL composite filter. A subsequence query is decomposed into 𝑘 ≥ 1 sub-patterns 𝑝 1, . . . , 𝑝 𝑘 , each of which is a 
+
+TSseek trend-pattern construct. Each sub-pattern is compiled into a spatial-index probe predicate 𝜙 𝑖 over the segment table. Rather than issue 𝑘 separate probes and intersect their per-id outputs, the executor fuses them into a single SQL scan with a GROUP BY ts_id HAVING clause that AND s a bool_or( 𝜙 𝑖 ) aggregate per sub-pattern ( bool_or returns TRUE iff any row in the group satisfies the predicate):  
+
+> SELECT ts_id FROM segments GROUP BY ts_id HAVING bool_or(phi_1) AND bool_or(phi_2) AND bool_or(phi_k);
+
+A time-series id is emitted only if every sub-pattern is matched at some segment of that series. Crucially: (i) the query does not 
+
+enforce ordering, gap, or relative-position constraints in this stage— those are deferred to refinement; (ii) PostgreSQL evaluates the aggregate in a single GiST + B-tree co-scan over the segment table per partition, so the cost is dominated by one index sweep per node regardless of 𝑘 ; (iii) the metadata-based pruning (e.g., slope Xiaoshuai Li +, Khalid Alnuaim +, Mohamed Y. Eltabakh ∗, and Elke A. Rundensteiner +
+
+Algorithm 3: TSseek Whole-Matching Query Processing Workflow 
+
+Input: Time series dataset 𝐷 , INDEX(D), Query 𝑄 
+
+Output: 𝐹 = { } // The final answer set to 𝑄  
+
+> 1
+
+begin  
+
+> 2
+
+𝑄 ′ ← Apply query rewriting rules to 𝑄 . 
+
+> 3
+
+// Selectivity estimation (Sec. 6.2)  
+
+> 4
+
+foreach non-wildcard construct 𝑐 in 𝑄 ′ do  
+
+> 5
+
+𝑊 𝑐 ← the 𝜀 -expanded boundary window(s) of 𝑐 (one window for a singleton/range; left and right for a fixed pattern).  
+
+> 6
+
+𝑠𝑒𝑙 𝑐 ← estimated number of segments intersecting 𝑊 𝑐 
+
+from grid statistics.  
+
+> 7
+
+𝑐 ∗ ← the single most selective construct (smallest 𝑠𝑒𝑙 𝑐 ).  
+
+> 8
+
+𝐶𝑎𝑛𝑑 ← ∅  
+
+> 9
+
+foreach table 𝑇 among all 𝑁 tables across the 𝑀 machines do  
+
+> 10
+
+foreach boundary window 𝑤 in 𝑊 𝑐 ∗ do  
+
+> 11
+
+𝐼 𝑤 ← DISTINCT parent time-series ids whose segments intersect 𝑤 in 𝑇 (slope/direction-filtered in-DB).  
+
+> 12
+
+𝐶𝑎𝑛𝑑 𝑇 ← Ñ𝑤 ∈𝑊 𝑐 ∗ 𝐼 𝑤 // per-table intersection: series with segments on every boundary window  
+
+> 13
+
+𝐶𝑎𝑛𝑑 ← 𝐶𝑎𝑛𝑑 ∪ 𝐶𝑎𝑛𝑑 𝑇 // union across tables  
+
+> 14
+
+𝑇 𝑆 𝐿𝑖𝑠𝑡 ← Retrieve the raw time series objects for 𝐶𝑎𝑛𝑑 . 
+
+> 15
+
+foreach time series 𝑡 in 𝑇 𝑆 𝐿𝑖𝑠𝑡 do  
+
+> 16
+
+if FSA(Q, t) = true then  
+
+> 17
+
+𝐹 = 𝐹 ∪ 𝑡 // 𝑡 passes the full-query FSA test.  
+
+> 18
+
+Return F 
+
+direction) described in Sec. 6.3 is applied to each 𝜙 𝑖 for free as part of the index scan. 
+
+(Stage 2) Vectorized DFA refinement with prefix-sum window check. The candidate id list returned by Stage 1 is shipped to the Spark executor co-located with the data partition. For each candi-date series of length 𝑛 , the refiner precomputes, per sub-pattern 
+
+𝑝 𝑖 , two prefix-sum arrays in 𝑂 (𝑛 ) time: counts of positions whose value lies within 𝑝 𝑖 ’s y-range, and counts of inter-sample transitions whose sign matches 𝑝 𝑖 ’s direction. Given any candidate placement window [𝑎, 𝑎 +𝐿 −1] for 𝑝 𝑖 , the test of whether 𝑝 𝑖 is fully matched on that window—i.e., all 𝐿 values lie in 𝑝 𝑖 ’s y-range and all 𝐿 −1
+
+transitions follow 𝑝 𝑖 ’s direction—reduces to two 𝑂 (1) subtractions on these prefix sums. The DFA enumerates the legal placements dictated by the query: for a single sub-pattern ( 𝑘 =1), this is a set of (start , length ) pairs constrained by the query’s positioning (free, bounded, or fixed start) and length (fixed or dynamic); for multiple sub-patterns ( 𝑘 ≥ 2), it is a set of (𝑠 1, 𝐿 1, . . . , 𝑠 𝑘 , 𝐿 𝑘 ) tuples subject to the query’s ordering and gap constraints (e.g., adjacent, fixed gap, range gap, or flexible gap). The 𝑂 (1) window test is applied at each candidate placement; concrete refinement timings across dataset sizes are reported in Sec. 7. The algorithm for the subsequence matching mirrors the main flow of Alg. 3 with the integration of Stage-1 filter and the Stage-2 DFA into the execution pipeline. The detailed algorithm is given in Alg. 4. 
+
+Algorithm 4: TSseek Subsequence-Matching Workflow 
+
+Input: Time series dataset 𝐷 , INDEX(D), subsequence query 𝑄 
+
+with sub-patterns 𝑝 1, . . . , 𝑝 𝑘 and a query-class constraint Ω
+
+(positioning, length, ordering, gap) 
+
+Output: 𝐹 // the answer set to 𝑄  
+
+> 1
+
+begin  
+
+> 2
+
+𝐹 ← ∅ 
+
+// Stage 1: PostgreSQL composite filter  
+
+> 3
+
+for 𝑖 ← 1 to 𝑘 do  
+
+> 4
+
+𝜙 𝑖 ← Compile 𝑝 𝑖 into a spatial-index predicate (y-range +
+
+direction + fluctuation).  
+
+> 5
+
+𝑇 𝑆 𝐼𝑑𝑠 ← Issue distributed composite SQL SELECT ts_id FROM segments GROUP BY ts_id HAVING bool_or( 𝜙 1)AND · · · AND bool_or( 𝜙 𝑘 ) over INDEX(D).  
+
+> 6
+
+𝑇 𝑆 𝐿𝑖𝑠𝑡 ← Retrieve raw time-series objects for 𝑇 𝑆 𝐼𝑑𝑠 from local DB partitions. 
+
+// Stage 2: vectorized DFA refinement  
+
+> 7
+
+foreach time series 𝑡 ∈ 𝑇 𝑆 𝐿𝑖𝑠𝑡 of length 𝑛 do  
+
+> 8
+
+for 𝑖 ← 1 to 𝑘 do  
+
+> 9
+
+PR 𝑖 ← prefix sums over 𝑡 of “value ∈ 𝑝 𝑖 ’s y-range”.  
+
+> 10
+
+PM 𝑖 ← prefix sums over 𝑡 of “transition matches 𝑝 𝑖 ’s direction”.  
+
+> 11
+
+if DFA Ω
+
+ 𝑡, {PR 𝑖 }, {PM 𝑖 } = true then  
+
+> 12
+
+𝐹 ← 𝐹 ∪ { 𝑡 } 
+
+> 13
+
+return 𝐹 
+
+Design notes. Both stages are tuned for the dominant scaling cost of subsequence search. The composite Stage-1 filter folds 𝑘 per-sub-pattern probes into a single SQL pass, avoiding the 𝑘 separate JDBC round trips per partition and the driver-side 𝑘 -way id-set intersection that a sub-pattern-by-sub-pattern plan would incur. The Stage-2 prefix-sum machinery makes each candidate-window test 𝑂 (1) regardless of window length, which matters most for queries with many candidate placements (free-position and flex-gap). Together these two design choices account for the speedup over T-ReX [28] reported in Sec. 7. 
+
+## 7 EXPERIMENTAL EVALUATION 7.1 Experimental Methodology and Setup 
+
+Cluster Setup & Implementation. All experiments were con-ducted in our locally deployed cluster consisting of 112 CPU cores of type Intel Xeon E5-2690, each with 16 GB RAM and a total of 3.5 TB SATA hard drive. The cluster runs Debian with Spark 3.5.0 and PostgreSQL-15. All algorithmic modules of TSseek are imple-mented in a fully distributed fashion on top of Apache Spark. The storage layer uses PostgreSQL DB extended with PostGIS for spatial indexing. 
+
+Spark + PostgreSQL + PostGIS. TSseek ’s runtime combines Apache Spark with distributed PostgreSQL instances (each extended with PostGIS). Spark serves three coordinated roles: (i) distributed feature extraction during preprocessing, where each of the 𝑁 parti-tions is fed by a separate Spark task; (ii) coordination of the dis-tributed PostgreSQL probes , where Spark issues parallel queries across all partition databases and collects/intersects their candidate id sets; and (iii) distributed DFA refinement , where each candidate TSseek : Regular Expression-Based Similarity Search for Distributed Time Series Datasets 
+
+batch is verified locally on the partition’s data-resident node. Post-greSQL with PostGIS supplies the indexed storage and the GiST spatial index; the single-runtime division of labor avoids reimple-menting distributed coordination on top of PostgreSQL or spatial indexing on top of Spark. 
+
+Datasets. We evaluate TSseek using three datasets: 
+
+(1) ECG (Electrocardiogram) Real-World Dataset. This dataset is derived from a large-scale 12-Lead Electrocardiogram Database for Arrhythmia Study (v1.0) [ 1], which contains over 40,000 ECG recordings sampled at 500 Hz across 12 leads, with detailed ar-rhythmia annotations. From each recording, we extract leads I–IV, convert amplitude measurements from μV to mV, and apply a 128-sample (0.256 s) sliding window with 75% overlap (stride = 32) to produce time-series segments. 
+
+(2) Random-Walk Benchmark Dataset. This is a widely adopted benchmark for evaluating time series analysis techniques [ 11 , 50 ,53 , 59 , 72 , 78 ]. This dataset contains up to one billion data series objects, each having 128 points. 
+
+(3) TSBS Fuel Consumption Synthetic Dataset. The Time Series Benchmark Suite (TSBS) [ 63 ] provides synthetic telemetry data. We utilize the fuel consumption metric generated from 4,000 simulated truck devices to assess query scalability under industrial-like workloads. For each dataset, we generate four scale variants containing {25, 50, 100, and 200} million time series objects, each consisting of 128 readings. 
+
+Default Parameter Settings. In all our datasets and experi-ments, the length of the time series objects is set to 128. For the data-driven maximum error threshold 𝜀 is set to 𝜀 ECG = 0.15 , 𝜀 RW = 1.59 ,and 𝜀 TSBS = 27 .18 . In query processing, each reported point in the results is repeated five times, and the average is taken across the five readings. Finally, as the dataset size increases, the number of partitions storing the data should also increase (as in distributed file systems by default). For our database setting, we use 40 tables at the scale of 25 M datasets and double the number of tables as the dataset size doubles. 
+
+## 7.2 Baselines 
+
+We compare TSseek against four representative techniques: 
+
+(1) Deterministic Finite Automata (DFA) [54 ]: a classical pattern-matching model implemented on Apache Spark; performs a full dataset scan and serves as our exact ground-truth baseline. 
+
+(2) TARDIS [ 78 ]: a distributed iSAX-based kNN index on Spark for whole-sequence search. We adapt it to pattern queries by ex-panding each pattern into its matching instances and re-issuing with a large 𝐾 , followed by DFA refinement (no false positives, but false negatives are possible). 
+
+(3) SEAnet [ 67 ]: a learned-embedding approach that trains an autoencoder; embeddings are symbolized to SAX [ 37 ] and indexed with an iSAX-style tree [ 11 , 59 ] for kNN search. Like TARDIS, SEAnet is whole-matching-only—pattern and subsequence queries fall outside its native query model—so we adapt it via the same pattern-expansion-plus-refinement scheme. 
+
+(4) T-ReX [ 28 ]: a segment-based subsequence engine that eval-uates pattern queries directly over raw series without a persistent 25M 50M 100M 200M                       
+
+> Dataset size (M series)
+> 0
+> 20
+> 40
+> Setup time (min)
+> 1.5 2.6 4.4 7.5 8.9
+> 15.4
+> 26.8
+> 46.6
+> 8.0
+> 14.5
+> 26.3
+> 47.8
+> TSBS preprocess
+> TSBS insert
+> ECG preprocess
+> ECG insert
+> RandomWalk preprocess
+> RandomWalk insert
+> (a) TSseek overheads 25M 50M 100M 200M
+> Dataset size (M series)
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> Time (min)
+> 7.8
+> 13.7
+> 25.5
+> 49.0
+> 8.0
+> 14.5
+> 26.3
+> 47.8 TARDIS: Index creation (global+local)
+> TSseek: Preprocess+Insert (total)
+> (b) TSseek vs. TARDIS overheads Training 25M 50M 100M 200M
+> 0
+> 50
+> 100
+> 150
+> 200
+> 250
+> Time (min)
+> 240
+> 6.5 13.0 26.0
+> 52.0
+> 8.0 14.5 26.3
+> 47.8
+> SEAnet Training (one-time)
+> SEAnet: Embedding (per corpus)
+> TSseek: Preprocess+Insert (total)
+> (c) TSseek vs. SEAnet overheads
+
+Figure 6: Preprocessing and index (or model) construction cost for different techniques: (a) TSseek ; (b) TSseek vs. 
+
+TARDIS ; (c) TSseek vs. SEAnet. 
+
+index. T-ReX is subsequence-only; we translate each query pattern into its T-ReX equivalent when possible. 
+
+## 7.3 Evaluation of Preprocessing and Index Construction 
+
+Fig. 6a–c present the overheads associated with data preprocessing and index construction across the various data sizes. 
+
+TSseek overheads (Fig. 6a). This cost involves two main phases, the segment creation phase, and insertion and index con-struction within the PostgreSQL DB. Roughly, the segmentation procedure contributes by 60% to the cost while the insertion and index construction contributes by 40%. Both costs scale linearly as the dataset sizes increase. 
+
+TARDIS comparison (Fig. 6b). TARDIS setup cost is compara-ble to TSseek ’s and scales similarly with dataset size. However, as will be presented next, since TARDIS is not designed for pattern-based queries, its query accuracy drops to around 30% (vs. TSseek ’s exact answers) and its query response time is approximately an order of magnitude higher. 
+
+SEAnet comparison (Fig. 6c). SEAnet incurs a one-time train-ing cost, which can be substantial as illustrated in the figure, plus a per-corpus embedding pass that scales with size. As depicted, the SEAnet’s per-corpus embedding cost is comparable to TSseek’s Xiaoshuai Li +, Khalid Alnuaim +, Mohamed Y. Eltabakh ∗, and Elke A. Rundensteiner +Type 1 Type 2 Type 3 Type 3L Type 4 Type 4L 
+
+> Query type
+> 0
+> 10
+> 20
+> 30
+> 40
+> Total time (s)
+> TSBS (index lookup)
+> TSBS (refine)
+> ECG (index lookup)
+> ECG (refine)
+> RandomWalk (index lookup)
+> RandomWalk (refine)
+
+(a) Total query time (index lookup + refine) by type at 25M 25M 50M 100M 200M 
+
+> Dataset size
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> Avg total time (s)
+> full scan: 190 s
+> full scan: 380 s
+> full scan: 755 s
+> full scan: 1520 s
+> Type 1
+> Type 2
+> Type 3
+> Type 3L
+> Type 4
+> Type 4L
+
+(b) Avg total query time across datasets (Random Walk, ECG, TSBS) vs. size; yellow bubbles show full-scan baseline 
+
+Figure 7: TSseek query performance. (a) Total time by query type at 25M (stacked: index lookup + refine). (b) Avg total time across 3 datasets vs. size (25M–200M); yellow bubbles show full-scan baseline. 
+
+total cost. Therefore, for first-time deployment, SEAnet’s training cost dominates the overall cost. As will be presented next, SEAnet performance at query time is too low to be practically useful for the problem at hand. 
+
+## 7.4 Evaluation of Query Processing 
+
+Query Types (Whole-Matching) 
+
+We compose each query from four building blocks: S (singleton value), R (range for a single reading), PF (fixed–length pattern block), and PV (variable–length pattern block). In Types 1–4, pattern blocks are relatively short ; in the “L” variants (3L, 4L) pattern blocks are relatively long . Given a target query length 𝐿 , we allocate length to the four block categories in the stated proportions and then instantiate blocks accordingly. 
+
+• Type 1 : Balanced singletons/ranges/patterns, no variable–length patterns. Length allocation across (𝑆, 𝑅, 𝑃 𝐹 , 𝑃 𝑉 ): { 13 , 13 , 13 , 0 }.
+
+• Type 2 : All four building block types are included. Length alloca-tion: { 14 , 14 , 14 , 14 }.
+
+• Type 3 : No singletons; ranges plus patterns of both fixed and variable length (short). Length allocation: { 0, 13 , 13 , 13 }.
+
+• Type 3L : Same composition as Type 3, but with fewer, longer patterns. Length allocation: { 0, 13 , 13 , 13 }.
+
+• Type 4 : Patterns only (no singletons or ranges), half fixed and half variable length (short). Length allocation: { 0, 0, 12 , 12 }.
+
+• Type 4L : Same composition as Type 4 but with fewer (and longer) patterns. Length allocation: { 0, 0, 12 , 12 }.
+
+Per-Query-Type Performance (Whole-Matching). Fig. 7a re-ports TSseek ’s per-query-type total time at 25M across the three datasets (TSBS, ECG, RandomWalk). Query Types 1 & 2 include many singletons and ranges, giving strong point-wise selectivity, Type 1 Type 2 Type 3 Type 3L Type 4 Type 4L      
+
+> query type
+> 0
+> 100
+> 200
+> 300
+> 400
+> time (s)
+> 57% 54%
+> 26% 22% 12% 10%
+> TSSEEK TARDIS
+
+(a) TSseek vs. TARDIS Type 1 Type 2 Type 3 Type 3L Type 4 Type 4L       
+
+> query type
+> 0
+> 50
+> 100
+> 150
+> time (s)  8% 5% 0% 0% 0% 0%
+> TSSEEK SEAnet
+
+(b) TSseek vs. SEAnet 
+
+Figure 8: Whole-matching baseline comparison on Random Walk (25M) across six query types. Bars show query time; bubbles above each baseline bar show that baseline’s recall (%). (a) TSseek vs. TARDIS . (b) TSseek vs. SEAnet . TSseek 
+
+recall = 100% on all query types. 
+
+short candidate lists, and short processing time. In contrast, Types 3 & 4 are pattern-dominated (no singletons in 3/3L; patterns only in 4/4L), loosening early pruning and shifting more work to the refine-ment phase. The longer variants (3L, 4L) involve longer patterns, further increasing refinement cost. 
+
+Scalability vs. Full Scan. Fig. 7(b) reports the average total query time across the three datasets as dataset size grows from 25M to 200M for all six query types. TSseek ’s total time grows linearly with dataset size and stays under 100 s even at 200M. In contrast, the full-scan baseline (yellow bubbles in Fig. 7(b)) is substantially more expensive (190 s at 25M growing to 1520 s at 200M). Overall, 
+
+TSseek achieves approximately 20 × speedup at scale. 
+
+Query Evaluation of TSseek vs. TARDIS . As described in Sec. 7.2, we adapt TARDIS via upper- and lower-bound queries on Random Walk (25M); all answers are verified through a DFA phase; reported recall counts only false positives. Fig. 8(a) shows the comparison. 
+
+TARDIS achieves moderate recall on point-wise Types 1-2 (54-57%) but degrades sharply on pattern-dominated Types 3-4L (10-26%): bounding queries cannot fully cover the search space defined by pattern predicates ( PF/PV). Query time follows the same trend: tens of seconds on Types 1-2 but ∼218 s on Types 3, 3L, 4, and 4L. After z-normalization, Types 1-2 segments (anchored by constants and narrow ranges) yield distinctive SAX words and small candi-date sets, while pattern-dominated Types 3-4L segments collapse to similar SAX representations and explode the kNN candidate set. TSseek , natively designed for pattern-based processing with efficient index retrieval and pruning, attains 100% recall and stable TSseek : Regular Expression-Based Similarity Search for Distributed Time Series Datasets 
+
+Table 2: Eleven subsequence-matching query classes used in the evaluation. Column 𝑘 gives the number of sub-patterns per query. 
+
+Class Group Description 𝑘 
+
+Q1 single FREE positioning, fixed length 1Q2 single FREE positioning, dynamic length 1Q3 single BOUNDED start, fixed length 1Q4 single BOUNDED start, dynamic length 1Q5 single FIXED start, fixed length 1Q6 single FIXED start, dynamic length 1Q7 multi Adjacent (zero-gap, ordered) ≥ 2
+
+Q8 multi Fixed gap (ordered) ≥ 2
+
+Q9 multi Range gap (ordered) ≥ 2
+
+Q10 multi Flex gap, ordered ≥ 2
+
+Q11 multi Flex gap, unordered ≥ 2
+
+query times (10.7-25.9 s), achieving a 3.5×-12 × speedup (largest gap on pattern-dominated types). 
+
+Query Evaluation of TSseek vs. SEAnet . Following the same bounding-query adaptation with 𝐾 =100 ,000 , we evaluate SEAnet 
+
+on the same six query types. SEAnet ’s embeddings are queried via approximate nearest-neighbor search [ 41 ]. Training SEAnet 
+
+on 1M of 25M series required ∼4 h, plus ∼6.5 min to embed the full corpus and ∼2 s per query. Fig. 8(b) shows that SEAnet achieves only 8% and 5% recall on Types 1 and 2, and 0% on Types 3, 3L, 4, and 4L—learned embeddings cannot represent pattern-based queries. Query times are 82-89 s across all types vs. TSseek ’s 10.7-25.9 s ( 3.4×-7.7× speedup), with the gap narrowing as pattern content increases. TSseek maintains 100% recall. We now turn to the subsequence-matching workload, run over the same offline index via the Stage-1/Stage-2 pipeline of Sec. 6.5. 
+
+Query Types (Subsequence-Matching). For subsequence match-ing, the query specifies a pattern that must match a contiguous win-dow in a time series; the pattern need not span the full series length. We organize the workload into eleven query classes (Q1–Q11) that span the design space along three orthogonal axes: positioning (free, bounded, or fixed start), length (fixed or dynamic), and composition 
+
+(single sub-pattern, or multiple sub-patterns with ordering and gap constraints). Q1–Q6 form the single-pattern group; Q7–Q11 form the multi-pattern group. Table 2 summarizes the eleven classes. Each class is instantiated against three datasets (ECG, RandomWalk, TSBS) at four scales (25M, 50M, 100M, and 200M time series) and run against both TSseek (DFA, Sec. 6.5) and the T-ReX subsequence engine [28] as the baseline. 
+
+Query Evaluation of Query Types (Subsequence-Matching). 
+
+Both systems use the same cluster configuration, data partitions, and query semantics. Exact refinement is used to validate returned subsequence matches. Fig. 9 and Fig. 10 show per-class query time at 25M and 200M, re-spectively. At 25M, TSseek is consistently faster than T-ReX: about 5–6 × for single-pattern classes (Q1–Q6) and 7–8 × for multi-pattern classes (Q7–Q11). At 200M, the gap widens because T-ReX pays full-pass cost while TSseek prunes candidates through its persistent Q1 Q2 Q3 Q4 Q5 Q6 Q7 Q8 Q9 Q10 Q11 
+
+> Subsequence-matching query case
+> 0
+> 10
+> 20
+> 30
+> Query time (s)
+> TSBS (T-ReX)
+> TSBS (TSSEEK)
+> ECG (T-ReX)
+> ECG (TSSEEK)
+> RandomWalk (T-ReX)
+> RandomWalk (TSSEEK)
+
+Figure 9: Per-case subsequence query time at 25M. Six bars per class encode dataset–method combinations using grayscale fills and hatches. 
+
+segment index before refinement. The per-class ordering is consis-tent across datasets: single-pattern fixed-start classes (Q5, Q6) are cheapest because the start position is locked, bounded variants (Q3, Q4) follow, free-position single-pattern classes (Q1, Q2) are next, and multi-pattern classes (Q7–Q11) are the most expensive. The 
+
+TSseek -vs-T-ReX gap is largest on multi-pattern queries because T-ReX must enumerate per-pattern matches and verify gap/order constraints over many possible window placements, while TSseek ’s Stage-1 filtering prunes at the time-series-id level before exact re-finement. Fig. 11 reports scaling averaged over single-pattern (Q1–Q6) and multi-pattern (Q7–Q11) classes. T-ReX grows near-linearly because it performs a non-indexed full pass over the collection. TSseek 
+
+grows more slowly because the persistent segment index prunes many series before refinement, so the gap widens as data grow. Fig. 12 summarizes the ECG speedup trend. At 25M, the speedup ranges from 5–8 × across the eleven classes. At 200M, the speedup increases to roughly 9–11 × for single-pattern classes and about 11–15 × for most multi-pattern classes, with unordered flexible-gap matching as the upper-end case. This trend follows the query struc-ture: flexible multi-pattern queries require T-ReX to consider many more legal window combinations, whereas TSseek first reduces the candidate set through indexed segment-level predicates and only then performs exact refinement. 
+
+Findings. TSseek is faster for every subsequence query class, and this advantage grows with data size because T-ReX pays full-pass cost while TSseek is index-driven. The largest gains occur for flexible multi-pattern queries (Q10/Q11), which create the largest placement space for T-ReX and therefore most benefit from candi-date pruning before refinement. 
+
+## 7.5 TSseek Ablation Studies 
+
+Selecting the Threshold ( 𝜀 ). The threshold 𝜀 governs two critical stages of the pipeline of TSseek : setup (preprocessing) and query processing. During preprocessing, it controls how much error we allow when approximating each time series. Thus 𝜀 determines both the number of segment records we emit and later bulk-load, and the padding we apply when we construct segment query windows during query processing. To pick a practical tolerance we ran an ablation on TSBS (25 M time series) sweeping 𝛼 ∈ {0.1, 0.25 , 0.5, 0.6, 0.7, 0.75 , 1.0}. (See Sec. 6.4 for the definitions of 𝛼 and span 90 .) Varying 𝛼 (i.e., the Xiaoshuai Li +, Khalid Alnuaim +, Mohamed Y. Eltabakh ∗, and Elke A. Rundensteiner +Q1 Q2 Q3 Q4 Q5 Q6 Q7 Q8 Q9 Q10 Q11 
+
+> Subsequence-matching query case
+> 0
+> 50
+> 100
+> 150
+> 200
+> 250
+> Query time (s)
+> TSBS (T-ReX)
+> TSBS (TSSEEK)
+> ECG (T-ReX)
+> ECG (TSSEEK)
+> RandomWalk (T-ReX)
+> RandomWalk (TSSEEK)
+
+Figure 10: Per-case subsequence query time at 200M. Same grayscale/hatch encoding as Fig. 9; the TSseek -over-T-ReX gap widens at scale because T-ReX remains full-pass while 
+
+TSseek uses indexed candidate pruning. 25M 50M 100M 200M    
+
+> Dataset size
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> Avg total time (s)
+> Single-pattern (avg of Q1 Q6)
+> 25M 50M 100M 200M
+> Dataset size
+> 0
+> 25
+> 50
+> 75
+> 100
+> 125
+> 150
+> 175
+> Avg total time (s)
+> Multi-pattern (avg of Q7 Q11)
+> TSBS (T-ReX)
+> TSBS (TSSEEK)
+> ECG (T-ReX)
+> ECG (TSSEEK)
+> RandomWalk (T-ReX)
+> RandomWalk (TSSEEK)
+
+Figure 11: Average subsequence query time vs. dataset size. Left: single-pattern classes (avg of Q1–Q6); Right: multi-pattern classes (avg of Q7–Q11). Q1 Q2 Q3 Q4 Q5 Q6 Q7 Q8 Q9 Q10 Q11    
+
+> Subsequence-matching query class
+> 0
+> 5
+> 10
+> 15
+> Speedup (×)
+> 25M 50M 100M 200M
+
+Figure 12: TSseek -over-T-ReX speedup on ECG as a function of query class and dataset size. 
+
+segmentation tolerance 𝜀 = 𝛼 · span 90 ) trades off setup and query costs: as 𝛼 increases, setup time drops (fewer segments to emit/in-sert) but index-lookup time rises (longer segments reduce selec-tivity), yielding a clear balance point (Fig. 13). Our ablation shows that total cost is minimized when the average segment count is about 7–9 per series. Accordingly, for any new dataset we sample a small slice, sweep a coarse grid of 𝛼 , and choose the value that yields 7–9 segments per series; this operating point transfers well and balances setup cost with query processing time. In TSBS, this procedure selects 𝛼 ∗ ≈ 0.6.
+
+Slope-Based Pruning. To evaluate the effectiveness of our slope-based filtering mechanism in index lookup, we conducted an ablation study on the TSBS 25M dataset using a query of Type 4L. We compared two configurations: (i) baseline with slope filtering 0.1 0.25 0.5 0.6 0.7 0.75 1.0                         
+
+> α
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> 7
+> Setup time (min)
+> (a) αvs. setup
+> Preprocessing
+> Batch insertion
+> 0.1 0.25 0.5 0.6 0.7 0.75 1.0
+> α
+> 2
+> 4
+> 6
+> 8
+> 10
+> 12
+> Query time (s)
+> (b) αvs. query time
+> Index lookup (s)
+> Retrieval+Refine (s)
+> 0.1 0.25 0.5 0.6 0.7 0.75 1.0
+> α
+> 5
+> 10
+> 15
+> 20
+> 25
+> 30
+> 35
+> 40
+> Avg. segments / series
+> α∗
+> (c) αvs. avg. segments/series
+> 510 15 20 25 30 35 40
+> Avg. segments / series
+> 2
+> 3
+> 4
+> 5
+> 6
+> 7
+> Total time (min)
+> 0.1
+> 0.25
+> 0.5
+> 0.6 0.7
+> 0.75 1.0
+> (d) Avg. segments vs. total time
+
+Figure 13: Ablation on 𝛼 (TSBS), ordered by decision flow: (a) setup time; (b) query time; (c) implied average segments with target band 7–9 and 𝛼 ∗; (d) total cost showing the elbow near 
+
+∼8 segments. 
+
+enabled, where PostgreSQL queries include slope constraints (e.g., segment slope > 0 for Increasing patterns), and (ii) ablation with slope filtering disabled, using only spatial intersection. Both ex-periments used the same infrastructure: 40 distributed PostgreSQL tables across node machines with PostGIS GiST spatial indexes and B-tree indexes on segment slopes. The results demonstrate that slope filtering provides substantial performance benefits across all query stages. With slope filtering enabled, the system retrieved only 5,926 candidates in 5.6 seconds, completing the retrieval and refinement in 6.0 seconds for a total query time of 11.6 seconds. With slope filtering disabled, the system retrieved 731,705 candidates (about 124 × more) in 7.7 seconds, with the retrieval and refinement taking around 17 seconds for a total of 24.7 seconds. The slope-disabled configuration exhibited a signifi-cantly slower index lookup (7.7s vs 5.6s) due to increased network transfer overhead and PostgreSQL result set serialization costs for the 124 × larger candidate set. This shows that slope filtering not only reduces candidates by 99.2% but also improves PostgreSQL query efficiency, resulting in higher selectivity and much smaller candidate sets for refinement. 
+
+Sensitivity to Time-Series Length. We evaluate TSseek ’s whole-matching performance on ECG-25M at three series lengths: 
+
+𝑛 =64 , 𝑛 =128 , and 𝑛 =256 samples. Fig. 14 reports the per-query breakdown into index-lookup and DFA-refinement times for each length, together with the fitted scaling exponent 𝛼 above each group (where total time ∝ 𝑛 𝛼 ; 𝛼 =1 is linear in 𝑛 , 𝛼 < 1 is sub-linear). Two scaling regimes drive the per-type behavior. The index-lookup phase grows sub-linearly with 𝑛 (𝛼 ≈ 0.45 across all query types: at 𝑛 =256 the lookup cost is only 1.86 × its 𝑛 =64 value, even though 𝑛 itself has grown 4×), because our PLA-based segmen-tation (Alg. 1) emits a sub-linearly growing number of segments per series. The DFA-refinement phase walks each candidate series end-to-end and therefore scales linearly ( 𝛼 = 1.0). The composite exponent annotated above each query group in Fig. 14 sits between TSseek : Regular Expression-Based Similarity Search for Distributed Time Series Datasets Type 1 Type 2 Type 3 Type 3L Type 4 Type 4L   
+
+> Query type
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> Total time (s)
+> 0.67 0.70
+> 0.68
+> 0.74
+> 0.70 0.75
+> length 64 (index lookup)
+> length 64 (refine)
+> length 128 (index lookup)
+> length 128 (refine)
+> length 256 (index lookup)
+> length 256 (refine)
+
+Figure 14: TSseek whole-matching time on ECG-25M across series lengths 𝑛 ∈ { 64 , 128 , 256 }. Stacked bars give the index-lookup and DFA-refinement components per query type; the fitted exponent 𝛼 above each group satisfies total time ∝ 𝑛 𝛼 
+
+(𝛼 =1 is linear in 𝑛 ). 
+
+these two regimes, pulled toward one or the other by how much pattern content the query carries. Short-pattern queries (Types 1– 4), whose constructs are individually narrow or short, generate compact refinement workloads and stay close to the lookup-phase exponent at 𝛼 ≈ 0.67 –0.70 ; long-pattern queries (Types 3L and 4L), whose patterns span larger windows, accumulate more refinement work per candidate as 𝑛 grows and shift toward the refine-phase exponent, reaching 𝛼 ≈ 0.74 –0.75 . Across all six query types total query time stays in the tens of seconds even at 𝑛 = 256 , and no query type reaches linear scaling. 
+
+## 8 CONCLUSIONS 
+
+We proposed TSseek , a regular-expression-powered search sys-tem for distributed time series that lets users specify patterns over trends, value ranges, and wildcard segments. TSseek combines a segmentation-based feature extraction method with TSseek-X ,a distributed spatial index over the resulting line segments, serv-ing both whole-matching and subsequence-matching queries from one index. Experiments across three datasets (ECG, TSBS, Random Walk) at 25M to 200M series demonstrate its effectiveness and scal-ability. Future work includes variable-rate sampling and combining exact pattern retrieval with approximate 𝑘 -NN search. 
+
+## ACKNOWLEDGMENTS 
+
+The authors used AI-based language tools (e.g., ChatGPT) solely for grammar and phrasing refinement; all technical content, analyses, experiments, and ideas are the authors’ own. 
+
+## ARTIFACTS 
+
+The TSseek implementation, covering segmentation-based feature extraction, distributed TSseek-X spatial index, and whole-matching and subsequence-matching query processing pipelines, together with the experiment scripts, is publicly available at https://github.c om/sslee8778960/TSseek. Due to their size, the full datasets are not hosted, but instead the datasets are reproducible from their sources, the ECG recordings from the public PhysioNet database [ 1], the TSBS telemetry via the TSBS generator [ 63 ], and the Random Walk series via the standard random-walk procedure (after conversion to the time-series input format documented in the repository). 
+
+## REFERENCES 
+
+[1] 2020. A Large-scale 12-Lead Electrocardiogram Database for Arrhythmia Study, version 1.0. https://physionet.org/content/a- large- scale- 12- lead-electrocardiogram-database-for-arrhythmia-study/1.0.0/. [2] 2024. POSIX.1-2024 – Portable Operating System Interface (Base Specifications, Issue 8), Regular Expressions. https://pubs.opengroup.org/onlinepubs/97999197 99/ [3] Rakesh Agrawal, Christos Faloutsos, and Arun Swami. 1993. Efficient Similarity Search in Sequence Databases. In Proc. Foundations of Data Organization and Algorithms (FODO) (LNCS, Vol. 730) . Springer, 69–84. [4] Rakesh Agrawal, King-Ip Lin, Harpreet S. Sawhney, and Kyuseok Shim. 1995. Fast Similarity Search in the Presence of Noise, Scaling, and Translation in Time-Series Databases. In Proceedings of the 21st International Conference on Very Large Data Bases (VLDB) . Morgan Kaufmann, Zurich, Switzerland, 490–501. https://www.vldb.org/conf/1995/P490.PDF [5] Lars Arge, Mark De Berg, Herman Haverkort, and Ke Yi. 2008. The priority R-tree: A practically efficient and worst-case optimal R-tree. TALG 4, 1 (2008), 1–30. [6] Andreas Bader, Oliver Kopp, and Michael Falkenthal. 2017. Survey and Compari-son of Open Source Time Series Databases .[7] Anthony Bagnall and Jason Lines. 2014. An Experimental Evaluation of Nearest Neighbour Time Series Classification. arXiv:1406.4757 [cs.LG] https://arxiv.org/ abs/1406.4757 [8] Norbert Beckmann, Hans-Peter Kriegel, Ralf Schneider, and Bernhard Seeger. 1990. The R*-tree: an efficient and robust access method for points and rectangles. In SIGMOD , Vol. 19. ACM, 322–331. [9] Donald J. Berndt and James Clifford. 1994. Using Dynamic Time Warping to Find Patterns in Time Series. In Proceedings of the 3rd International Conference on Knowledge Discovery and Data Mining (KDD Workshop) . AAAI Press, Seattle, WA, USA, 359–370. [10] Siddhartha Bhandari, Neil Bergmann, Raja Jurdak, and Branislav Kusy. 2017. Time Series Data Analysis of Wireless Sensor Network Measurements of Temperature. 
+
+Sensors 17 (05 2017), 1221. doi:10.3390/s17061221 [11] Alessandro Camerra, Themis Palpanas, Jin Shieh, and Eamonn Keogh. 2010. iSAX 2.0: Indexing and Mining One Billion Time Series. In 2010 IEEE International Conference on Data Mining (ICDM) . 58–67. doi:10.1109/ICDM.2010.124 [12] A. Chakraborti, M. Patriarca, and M. S. Santhanam. [n. d.]. Financial Time-series Analysis: a Brief Overview . Springer Milan, 51–67. doi:10.1007/978-88-470-0665-2_4 [13] Kin-Pong Chan and Ada Wai-Chee Fu. 1999. Efficient time series matching by wavelets. In ICDE . IEEE, 126–133. [14] Georgios Chatzigeorgakidis, Dimitrios Skoutas, Kostas Patroumpas, Themis Palpanas, Spiros Athanasiou, and Spiros Skiadopoulos. 2021. Twin Subsequence Search in Time Series. arXiv:2104.06874 [cs.DS] https://arxiv.org/abs/2104.06874 [15] Chia-Shang James Chu. 1995. Time Series Segmentation: A Sliding Window Approach. Information Sciences 85, 1–3 (1995), 147–173. doi:10.1016/0020-0255(95)00021-G [16] Charles L. A. Clarke. 1995. On the Use of Regular Expressions for Searching Text .Technical Report. University of Waterloo. https://cs.uwaterloo.ca/research/tr/ 1995/07/regexp.pdf [17] Andrew A. Cook, Göksel Mısırlı, and Zhong Fan. 2020. Anomaly Detection for IoT Time-Series Data: A Survey. IEEE Internet of Things Journal 7, 7 (2020), 6481–6494. doi:10.1109/JIOT.2019.2958185 [18] Gianpaolo Cugola and Alessandro Margara. 2012. The Complex Event Processing Paradigm. In Data Management in Pervasive Systems , F. Colace, M. De Santo, V. Moscato, A. Picariello, F. A. Schreiber, and L. Tanca (Eds.). Springer, 113–133. doi:10.1007/978-3-319-20062-0_6 [19] Hui Ding, Goce Trajcevski, Peter Scheuermann, Xiaoyue Wang, and Eamonn Keogh. 2008. Querying and Mining of Time Series Data: Experimental Com-parison of Representations and Distance Measures. Proceedings of the VLDB Endowment 1, 2 (2008), 1542–1552. doi:10.14778/1454159.1454226 [20] Christos Faloutsos, M. Ranganathan, and Yannis Manolopoulos. 1994. Fast sub-sequence matching in time-series databases. In Proceedings of the 1994 ACM SIGMOD International Conference on Management of Data (Minneapolis, Min-nesota, USA) (SIGMOD ’94) . Association for Computing Machinery, New York, NY, USA, 419–429. doi:10.1145/191839.191925 [21] Navid Mohammadi Foumani, Chang Wei Tan, Geoffrey I Webb, Hamid Rezatofighi, and Mahsa Salehi. 2024. Series2Vec: similarity -based self -supervised representation learning for time series classification. Data Mining and Knowledge Discovery 38, 4 (2024), 2520–2544. doi:10.1007/s10618-024-01043-w [22] Jeffrey E. F. Friedl. 2006. Mastering Regular Expressions (3rd ed.). O’Reilly. Xiaoshuai Li +, Khalid Alnuaim +, Mohamed Y. Eltabakh ∗, and Elke A. Rundensteiner +
+
+[23] Tak-chung Fu, Fu-lai Chung, Robert Luk, and Chak-man Ng. 2007. Stock time series pattern matching: Template-based vs. rule-based approaches. Eng. Appl. Artif. Intell. 20, 3 (April 2007), 347–364. doi:10.1016/j.engappai.2006.07.003 [24] A. L. Goldberger, L. A. N. Amaral, L. Glass, J. M. Hausdorff, P. C. Ivanov, R. G. Mark, J. E. Mietus, G. B. Moody, C. K. Peng, and H. E. Stanley. 2000. PhysioBank, PhysioToolkit, and PhysioNet: Components of a New Research Resource for Complex Physiologic Signals. Circulation 101, 23 (2000), e215–e220. doi:10.1161/ 01.cir.101.23.e215 PMID: 10851218. [25] Antonin Guttman. 1984. R-trees: A dynamic index structure for spatial searching. In Proceedings of the 1984 ACM SIGMOD international conference on Management of data . 47–57. [26] Sylvain Hallé. 2017. From Complex Event Processing to Simple Event Processing. arXiv:1702.08051 [cs.DB] https://arxiv.org/abs/1702.08051 [27] Chaochen Hu, Zihan Sun, Chao Li, Yong Zhang, and Chunxiao Xing. 2023. Survey of Time Series Data Generation in IoT. Sensors 23 (2023). doi:10.3390/s23156976 [28] Silu Huang, Erkang Zhu, Surajit Chaudhuri, and Leonhard Spiegelberg. 2023. T-Rex: Optimizing Pattern Search on Time Series. Proc. ACM Manag. Data 1, 2, Article 130 (June 2023), 26 pages. doi:10.1145/3589275 [29] Hassan Ismail Fawaz, Germain Forestier, Jonathan Weber, Lhassane Idoumghar, and Pierre-Alain Muller. 2019. Deep Learning for Time Series Classification: A Review. Data Mining and Knowledge Discovery 33, 4 (2019), 917–963. doi:10.100 7/s10618-019-00619-1 [30] Ibrahim Kamel and Christos Faloutsos. 1993. Hilbert R-tree: An improved R-tree using fractals . Technical Report. [31] Eamonn Keogh, Kaushik Chakrabarti, Michael Pazzani, and Sharad Mehrotra. 2001. Dimensionality reduction for fast similarity search in large time series databases. KAIS 3 (2001), 263–286. [32] Eamonn Keogh, Kaushik Chakrabarti, Michael Pazzani, and Sharad Mehrotra. 2001. Locally Adaptive Dimensionality Reduction for Indexing Large Time Series Databases. In Proc. ACM SIGMOD Int. Conf. on Management of Data .[33] Eamonn Keogh, Selina Chu, David Hart, and Michael Pazzani. 2004. Segmenting Time Series: A Survey and Novel Approach. In Data Mining in Time Series Databases . World Scientific, 1–22. doi:10.1142/9789812565402_0001 [34] Eamonn Keogh and Chotirat Ann Ratanamahatana. 2005. Exact indexing of dynamic time warping. Knowledge and Information Systems 7, 3 (2005), 358–386. doi:10.1007/s10115-004-0154-9 [35] Eamonn J. Keogh, Selina Chu, David M. Hart, and Michael J. Pazzani. 2001. An Online Algorithm for Segmenting Time Series. In Proc. IEEE Int. Conf. on Data Mining (ICDM) . 289–296. doi:10.1109/ICDM.2001.989531 [36] Jessica Lin, Eamonn Keogh, and Stefano Lonardi. 2005. Visualizing and Dis-covering Non-Trivial Patterns in Large Time Series Databases. Information Visualization 4, 2 (2005), 61–82. [37] Jessica Lin, Eamonn Keogh, Li Wei, and Stefano Lonardi. 2007. Experiencing SAX: a novel symbolic representation of time series. Data Mining and knowledge discovery 15 (2007), 107–144. [38] Michele Linardi and Themis Palpanas. 2020. Scalable Data Series Subsequence Matching with ULISSE. arXiv:2009.10373 [cs.DB] https://arxiv.org/abs/2009.103 73 [39] Shuhan Liu, Yuan Tian, Zikun Deng, Weiwei Cui, Haidong Zhang, Di Weng, and Yingcai Wu. 2025. Relation-Driven Query of Multiple Time Series. IEEE Transactions on Visualization and Computer Graphics 31, 8 (2025), 4210–4225. doi:10.1109/TVCG.2024.3397554 [40] David C. Luckham. 2001. The Power of Events: An Introduction to Complex Event Processing in Distributed Enterprise Systems . Addison-Wesley Longman Publishing Co., Inc., USA. [41] Yu. A. Malkov and D. A. Yashunin. 2018. Efficient and robust approximate nearest neighbor search using Hierarchical Navigable Small World graphs. arXiv:1603.09320 [cs.DS] https://arxiv.org/abs/1603.09320 [42] Konstantinos Mamouras and Agnishom Chattopadhyay. 2024. Efficient Matching of Regular Expressions with Lookaround Assertions. Proc. ACM Program. Lang. 
+
+8, POPL, Article 92 (Jan. 2024), 31 pages. doi:10.1145/3632934 [43] Gautier Marti, Sébastien Andler, Frank Nielsen, and Philippe Donnat. 2016. Clus-tering Financial Time Series: How Long is Enough? arXiv:1603.04017 [stat.ML] https://arxiv.org/abs/1603.04017 [44] M. L. Micó, J. Oncina, and E. Vidal. 1994. A new version of the nearest-neighbour approximating and eliminating search algorithm (AESA) with linear preprocess-ing time and memory requirements. Pattern Recognition Letters 15, 1 (1994), 9–17. doi:10.1016/0167-8655(94)90095-7 [45] Young Soo Moon, H. V. Jagadish, Christos Faloutsos, and Joel H. Saltz. 2001. Duality-Based Subsequence Matching in Time-Series Databases. In Proceedings of the 17th International Conference on Data Engineering (ICDE) . 263–272. [46] Cristina Morariu and Theodor Borangiu. 2018. Time series forecasting for dynamic scheduling of manufacturing processes. In 2018 IEEE International Conference on Automation, Quality and Testing, Robotics (AQTR) . 1–6. doi:10.110 9/AQTR.2018.8402748 [47] Taisei Nogami and Tachio Terauchi. 2023. On the Expressive Power of Regular Expressions with Backreferences. arXiv:2307.08531 [cs.FL] https://arxiv.org/ab s/2307.08531 [48] Themis Palpanas. 2015. Data Series Management: The Road to Big Sequence Analytics. ACM SIGMOD Record 44, 2 (2015), 47–52. [49] John Paparrizos and Luis Gravano. 2015. k-Shape: Efficient and Accurate Clus-tering of Time Series. In Proceedings of the 2015 ACM SIGMOD International Conference on Management of Data (Melbourne, Victoria, Australia) (SIGMOD ’15) . Association for Computing Machinery, New York, NY, USA, 1855–1870. doi:10.1145/2723372.2737793 [50] Botao Peng. 2020. Data Series Indexing Gone Parallel. In 2020 IEEE 36th Interna-tional Conference on Data Engineering (ICDE) . 2059–2063. doi:10.1109/ICDE4830 7.2020.00244 [51] Perl Community. 2024. perlre — Perl Regular Expressions . https://perldoc.perl.o rg/perlre Perl documentation. [52] PostGIS Development Team. 2024. PostGIS Documentation. https://postgis.net/ documentation Accessed: 2024-04-17. [53] Thanawin Rakthanmanon, Bilson Campana, Abdullah Mueen, Gustavo Batista, Brandon Westover, Qiang Zhu, Jesin Zakaria, and Eamonn Keogh. 2012. Search-ing and Mining Trillions of Time Series Subsequences under Dynamic Time Warping. In Proceedings of the 18th ACM SIGKDD International Conference on Knowledge Discovery and Data Mining . 262–270. doi:10.1145/2339530.2339576 [54] Bala Ravikumar. 1998. Parallel algorithms for finite automata problems. In 
+
+Advances in Randomized Parallel Computing . Springer, 209–239. [55] Asif Salekin, Md Mustafizur Rahman, and Mohammad Islam. 2012. Composite pattern matching in time series. Proceeding of the 15th International Conference on Computer and Information Technology, ICCIT 2012 , 173–178. doi:10.1109/ICCI Techn.2012.6509784 [56] Nicholas I. Sapankevych and Ravi Sankar. 2009. Time series prediction using support vector machines: a survey. Comp. Intell. Mag. 4, 2 (May 2009), 24–38. doi:10.1109/MCI.2009.932254 [57] Jeffrey D. Scargle, Jay P. Norris, Brad Jackson, and James Chiang. 2013. STUDIES IN ASTRONOMICAL TIME SERIES ANALYSIS. VI. BAYESIAN BLOCK REPRE-SENTATIONS. The Astrophysical Journal 764, 2 (Feb. 2013), 167. doi:10.1088/0004-637x/764/2/167 [58] Eli Sherman, Hitinder Gurm, Ulysses Balis, Scott Owens, and Jenna Wiens. 2018. Leveraging Clinical Time-Series Data for Prediction: A Cautionary Tale. arXiv:1811.12520 [cs.LG] https://arxiv.org/abs/1811.12520 [59] Jin Shieh and Eamonn Keogh. 2008. iSAX: indexing and mining terabyte sized time series. In Proceedings of the 14th ACM SIGKDD International Conference on Knowledge Discovery and Data Mining (Las Vegas, Nevada, USA) (KDD ’08) .Association for Computing Machinery, New York, NY, USA, 623–631. doi:10.114 5/1401890.1401966 [60] R.H. Shumway and D.S. Stoffer. 2010. Time Series Analysis and Its Applications: With R Examples . Springer New York. https://books.google.com/books?id=db S5IQ8P5gYC [61] Tomáš Skopal, Jaroslav Pokorný, and Václav Snášel. 2004. PM-tree: Pivoting Metric Tree for Similarity Search in Multimedia Databases. In Proceedings of ADBIS (Local Proceedings) . 803–815. [62] Ken Thompson. 1968. Regular Expression Search Algorithm. Commun. ACM 11, 6 (1968), 419–422. [63] Timescale. [n. d.]. Time Series Benchmark Suite (TSBS). GitHub repository. [Online]. Available: https://github.com/timescale/tsbs. Accessed: Oct. 10, 2025. [64] Ryota TOMODA and Hisashi Koga. 2025. Section Min-Hash Approximating Time Series Search based on Dynamic Time Warping. IEICE Transactions on Information and Systems (01 2025). doi:10.1587/transinf.2024DAP0004 [65] Chen Wang, Xiangdong Huang, Jialin Qiao, Tian Jiang, Lei Rui, Jinrui Zhang, Rong Kang, Julian Feinauer, Kevin A. McGrail, Peng Wang, Diaohan Luo, Jun Yuan, Jianmin Wang, and Jiaguang Sun. 2020. Apache IoTDB: Time-series Database for Internet of Things. Proceedings of the VLDB Endowment 13, 12 (2020), 2901–2904. doi:10.14778/3415478.3415504 [66] Mengzhao Wang, Xiaoliang Xu, Qiang Yue, and Yuxiang Wang. 2021. A com-prehensive survey and experimental comparison of graph-based approximate nearest neighbor search. Proc. VLDB Endow. 14, 11 (July 2021), 1964–1978. doi:10.14778/3476249.3476255 [67] Qitong Wang and Themis Palpanas. 2021. Deep Learning Embeddings for Data Series Similarity Search. In Proceedings of the 27th ACM SIGKDD Conference on Knowledge Discovery and Data Mining (KDD) . Association for Computing Machinery, New York, NY, USA, 1708–1716. doi:10.1145/3447548.3467317 [68] Will Wang, Ina Chen, Leeor Hershkovich, Jiamu Yang, Ayush Shetty, Geetika Singh, Yihang Jiang, Aditya Kotla, Jason Shang, Rushil Yerrabelli, Ali Roghanizad, Md Shandhi, and Jessilyn Dunn. 2022. A Systematic Review of Time Series Classification Techniques Used in Biomedical Applications. Sensors 22 (10 2022), 8016. doi:10.3390/s22208016 [69] Eugene Wu, Philippe Cudre-Mauroux, and Samuel Madden. 2009. Demonstration of the TrajStore System. PVLDB 2 (08 2009), 1554–1557. doi:10.14778/1687553.1 687589 [70] Huanmei Wu, Betty Salzberg, Gregory C Sharp, Steve B Jiang, Hiroki Shirato, and David Kaeli. 2005. Subsequence matching on structured time series data. In 
+
+Proceedings of the 2005 ACM SIGMOD International Conference on Management of Data (Baltimore, Maryland) (SIGMOD ’05) . Association for Computing Machinery, TSseek : Regular Expression-Based Similarity Search for Distributed Time Series Datasets 
+
+New York, NY, USA, 682–693. doi:10.1145/1066157.1066235 [71] Jiaye Wu, Peng Wang, Ningting Pan, Chen Wang, Wei Wang, and Jianmin Wang. 2019. KV-Match: A Subsequence Matching Approach Supporting Normalization and Time Warping. In 2019 IEEE 35th International Conference on Data Engineering (ICDE) . 866–877. doi:10.1109/ICDE.2019.00082 [72] Djamel Edine Yagoubi, Reza Akbarinia, Florent Masseglia, and Themis Palpanas. 2017. DPiSAX: Massively Distributed Partitioned iSAX. In 2017 IEEE International Conference on Data Mining (ICDM) . 1135–1140. doi:10.1109/ICDM.2017.151 [73] Peter N. Yianilos. 1993. Data Structures and Algorithms for Nearest Neighbor Search in General Metric Spaces. In Proceedings of the 4th Annual ACM-SIAM Symposium on Discrete Algorithms (SODA) . 311–321. doi:10.1145/313559.313789 [74] Yuncong Yu, Tim Becker, Le Trinh, and Michael Behrisch. 2022. Saxregex: Multivariate Time Series Pattern Search with Symbolic Representation, Regular Expression, and Query Expansion. SSRN Electronic Journal (01 2022). doi:10.213 9/ssrn.4248588 [75] Matei Zaharia, Reynold S. Xin, Patrick Wendell, Tathagata Das, Michael Armbrust, Ankur Dave, Xiangrui Meng, Josh Rosen, Shivaram Venkataraman, Michael J. Franklin, Ali Ghodsi, Joseph Gonzalez, Scott Shenker, and Ion Stoica. 2016. Apache Spark: A Unified Engine for Big Data Processing. Commun. ACM 59, 11 (2016), 56–65. doi:10.1145/2934664 [76] Zahra Zamanzadeh Darban, Geoffrey I. Webb, Shirui Pan, Charu Aggarwal, and Mahsa Salehi. 2024. Deep Learning for Time Series Anomaly Detection: A Survey. 
+
+Comput. Surveys 57, 1 (Oct. 2024), 1–42. doi:10.1145/3691338 [77] Jia-wei ZHANG, Hu-sheng LIAO, Hong-yu GAO, and Chang SU. 2018. Research on Complex Event Detection over Streams Supporting Interval Temporal Logic and Regular Expression Pattern Matching. DEStech Transactions on Engineering and Technology Research (06 2018). doi:10.12783/dtetr/icmeit2018/23460 [78] Liang Zhang, Noura Alghamdi, Mohamed Y. Eltabakh, and Elke A. Rundensteiner. 2019. TARDIS: Distributed Indexing Framework for Big Time Series Data. In 
+
+2019 IEEE 35th International Conference on Data Engineering (ICDE) . 1202–1213. doi:10.1109/ICDE.2019.00110 [79] Liang Zhang, Noura Alghamdi, Huayi Zhang, Mohamed Y. Eltabakh, and Elke A. Rundensteiner. 2022. PARROT: pattern-based correlation exploitation in big partitioned data series. The VLDB Journal 32, 3 (Oct. 2022), 665–688. [80] Liang Zhang, Mohamed Y. Eltabakh, Elke A. Rundensteiner, and Khalid Alnuaim. 2024. CLIMBER: Pivot-Based Approximate Similarity Search Over Big Data Series. In 2024 IEEE 40th International Conference on Data Engineering (ICDE) .3933–3946. [81] Sheng Zhong and Abdullah Mueen. 2024. MASS: distance profile of a query over a time series. Data Min. Knowl. Discov. 38, 3 (Feb. 2024), 1466–1492. doi:10.1007/ s10618-024-01005-2

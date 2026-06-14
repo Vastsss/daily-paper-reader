@@ -1,0 +1,1155 @@
+Title: Navigating the Safety-Fidelity Trade-off: Massive-Variate Time Series Forecasting for Power Systems via Probabilistic Scenarios
+
+URL Source: https://arxiv.org/pdf/2606.13338v1
+
+Published Time: Fri, 12 Jun 2026 01:08:13 GMT
+
+Number of Pages: 24
+
+Markdown Content:
+# Navigating the Safety-Fidelity Trade-off: Massive-Variate Time Series Forecasting for Power Systems via Probabilistic Scenarios 
+
+Kaijie Xu 
+
+ZJU-UIUC Institute Zhejiang University Hangzhou, China 
+
+Kaijie.23@intl.zju.edu.cn 
+
+Anqi Wang 
+
+ZJU-UIUC Institute Zhejiang University Hangzhou, China 
+
+anqi.23@intl.zju.edu.cn 
+
+Xilin Dai ∗
+
+ZJU-UIUC Institute Zhejiang University Hangzhou, China 
+
+xilin2023@zju.edu.cn 
+
+## Abstract 
+
+Probabilistic forecasting models are increasingly deployed on multivariate systems with distinct channel physics and operational constraints, but existing benchmarks evaluate neither property at scale. Public canonical multivariate benchmarks cap out at 2,000 channels, while power-system benchmarks either lack temporal structure or probabilistic evaluation. We introduce PowerPhase, a probabilistic forecasting benchmark built on six transmission grids ranging from 2,000 to 36 ,964 jointly forecasted channels, more than an order of magnitude beyond popular canonical multivariate benchmarks. Each target trajectory is the output of an AC power-flow solve, and PowerPhase ships with constraint-aware metrics (Safety_mBrier, NECV, 
+
+CVaR α) that complement CRPS and Distortion. Across eight baselines and three seeds, distributional accuracy and constraint satisfaction rank models differently, a trade-off we term safety–fidelity . We further propose PowerForge, a scenario-based quantile forecaster with type-specific decoding heads and a causal bridge between variable groups, which achieves the best average rank on every grid. 
+
+## 1 Introduction 
+
+Multivariate time series forecasting underlies decision-making in domains as diverse as retail demand, transportation, climate, healthcare, and finance [ 6; 26 ; 3 ; 12 ]. Forecasting on power systems has become one of the most operationally consequential instances of this problem [ 21 ], because short-term predictions of grid state feed into reserve scheduling, contingency screening, and short-term market clearing [ 29 ; 51 ; 50 ]. As renewables and distributed loads push grids toward more stochastic operation [ 20 ; 54 ], probabilistic forecasts of grid state have moved from a research curiosity to a routine operational tool [37]. Yet forecasting on a transmission grid is more constrained than the classic multivariate setting. At every bus, an operator observes four physically coupled quantities: the active power P , the reactive power Q, the voltage magnitude V , and the voltage angle θ [ 15 ]. These quantities are tied together through the AC power flow equations [ 47 ], so a useful forecast must respect not only temporal dependencies across channels but also instantaneous physical feasibility. This creates two difficulties that existing benchmarks and models do not address . First, standard probabilistic scoring rules such as CRPS and log-likelihood average over the full forecast distribution and do not distinguish whether errors fall inside or outside the operating envelope. A model that achieves low CRPS while systematically underestimating voltage excursions can be more dangerous in practice than one with slightly worse distributional fit but reliable constraint satisfaction. Second, the number of channels 
+
+> ∗Corresponding author. Preprint.
+> arXiv:2606.13338v1 [cs.LG] 11 Jun 2026
+
+grows linearly with the network, which means a moderately sized transmission system already exceeds the scale at which most public multivariate benchmarks live. Existing public benchmarks reflect this gap. The multivariate suites commonly used in the machine learning literature, including ETT [ 56 ], Electricity, Traffic [ 24 ], and the Wikipedia Web Traffic series in the multivariate configuration of Salinas et al. [39] , top out at roughly 2,000 jointly forecasted channels. None of these datasets distinguishes channels by physical role or ships with a feasibility model, so there is no standard way to measure whether a probabilistic forecast respects the physical constraints of the system it describes. The power-systems community has developed the opposite kind of artifact [ 8 ]. Tools such as pandapower [ 42 ] and the PEGASE test cases [ 22 ] expose network models with thousands of buses [ 28 ], but they are simulators rather than benchmarks. They provide neither standardized forecasting splits nor probabilistic metrics, and they are typically used without strong learning baselines. Existing bridges between the two communities cover either snapshot regression or small-scale temporal data, leaving the transmission-scale probabilistic regime unaddressed. On the modeling side, multivariate probabilistic forecasting has progressed quickly, but largely on smaller settings. Autoregressive likelihood models such as DeepAR [ 40 ], conditioned flow models such as Transformer-TempFlow [ 34 ], diffusion approaches such as TimeGrad [ 35 ], and copula-based models such as TACTiS [ 14 ] all rely on per-step density estimation, which scales poorly when the number of channels reaches tens of thousands. A complementary line of work replaces density estimation with a small set of weighted scenarios, as in TimeMCL [ 9] and TimePrism [ 10 ]. This scenario-based view is well aligned with how grid operators already reason about uncertainty in terms of finite contingencies, but it has not yet been pushed to transmission scale. We address both the benchmarking gap and the modeling gap. On the modeling side, we pro-pose PowerForge , a probabilistic forecasting model whose design is driven by the constraints that transmission-scale grids impose. To evaluate PowerForge and future methods under these constraints, we release PowerPhase , a companion benchmark. Our contributions are: 
+
+Contributions. 
+
+• We release PowerPhase , a multivariate probabilistic forecasting benchmark covering six trans-mission networks of up to 36 ,964 physically typed channels, more than an order of magnitude beyond the largest canonical multivariate benchmark (Wiki, 2,000 channels), bringing the high-dimensional regime into reach of standard forecasting evaluation. • PowerPhase introduces voltage-safety evaluation into the protocol. Each series is generated by AC power flow on perturbed load and generation profiles, and the benchmark ships with a constraint-aware metric suite (Safety_mBrier, NECV, CVaR α) that complements average-case scores such as CRPS, so models are assessed on voltage safety in addition to distributional accuracy. Evaluation across five grid sizes, three seeds, and eight baselines reveals that distributional accuracy and constraint satisfaction rank models differently, a trade-off we term safety–fidelity .• We propose PowerForge , a scenario-based probabilistic model designed for this regime. It predicts a small set of ordered quantile scenarios that keep training and inference tractable at tens of thousands of channels. Three architectural priors drive the design: an anchor-based residual representation that removes the dominant diurnal component before encoding, type-aware decoding heads for channels with structurally different supports, and a causal cross-type bridge that encodes a known directional dependence as an architectural prior. Training uses an ordered-quantile objective with physics terms that remain tractable at the full PowerPhase scale. 
+
+## 2 Related Work 
+
+Multivariate probabilistic forecasting. Approaches to multivariate probabilistic forecasting differ in how they parameterize the predictive distribution [ 16 ]. DeepAR [ 40 ] learns an autoregressive parametric likelihood, deep state-space models combine recurrent latent dynamics with probabilistic emissions [ 33 ], and Salinas et al. [39] extends this idea with a low-rank Gaussian copula. Normalizing-flow variants such as TempFlow and Transformer-TempFlow [ 34 ] replace the parametric head with a conditioned flow, and TimeGrad [ 35 ] and ScoreGrad [ 53 ] parameterize the per-step conditional through denoising diffusion or score matching. Attentional copula models go further by factoring the joint distribution through an explicit copula transformer, as in TACTiS [ 14 ] and TACTiS-2 [ 4]. Instead, scenario-based line of work, including TimeMCL [ 9] and TimePrism [ 10 ], predicts a small 2set of weighted hypotheses. How these approaches behave when channel numbers are in the tens of thousands remains untested. 
+
+Multivariate time series benchmarks. The methods above are typically validated on a series of public benchmarks. Commonly used datasets in time series, like ETT, Electricity, Traffic, Solar, Exchange-Rate, and Wiki datasets by Lai et al. [24] ; Salinas et al. [39] ; Zhou et al. [56] ; Wu et al. [48] push channel counts up to roughly 2,000 . Related high-dimensional forecasting work has explored global-local architectures [ 41 ], but not in transmission-scale grid-state benchmarks. Aggregated repositories such as the Monash Forecasting Archive [ 18 ], the GluonTS benchmark suite [ 1], and LOTSA [ 46 ] broaden coverage across domains but do not focus on per-dataset dimensionality. Meanwhile, these benchmarks have not exposed the physical structure required for probabilistic forecasters at the scale of an actual transmission grid [52]. 
+
+Power-system data for machine learning. Machine learning benchmarks derived from power grids have grown rapidly [ 43 ], but each covers only part of the evaluation. One group supplies physical models without temporal structure [ 5]: PF ∆ [36 ] benchmarks steady-state power-flow regression up to 2,000 buses, and OPFData [ 27 ] provides collections of optimal-power-flow instances. Both offer data snapshots in an independent operating point with no temporal ordering, so neither can be used for time-series evaluation. A second group provides temporal signals but lacks the scale or the physical evaluation that transmission grids demand. PSML [ 55 ] builds multi-scale time series from a joint transmission-distribution co-simulation on a 23-bus transmission network and 13-bus distribution feeders, focusing on cross-scale dynamics rather than the transmission-scale, bus-level probabilistic forecasting with AC-feasibility-aware evaluation considered here. Real PMU recordings aggregated through Open Power System Data [ 45 ] are partially observable and carry no feasibility ground truth. 
+
+PowerPhase is, to our knowledge, the first benchmark that combines transmission-scale channel counts, physically typed per-bus variables, temporal trajectory structure, and probabilistic evaluation with constraint-aware metrics. Risk-aware and constraint-aware evaluation. On the training side, risk-aware losses based on conditional value-at-risk [ 38 ] and distributionally robust objectives [ 31 ] reweight tail behaviour so that the model pays more attention to extreme outcomes, and physics-informed approaches [ 32 ; 13 ; 11 ]encode governing equations as soft regularizers to encourage physically consistent predictions. On the evaluation side, conformal prediction [ 2] and its time-series extensions [ 49 ] offer marginal coverage guarantees but do not measure the magnitude of constraint violations when coverage fails. Across both groups, results are reported on datasets with standard distributional metrics with limited benchmark-level assessment on how methods satisfy physical constraints. 
+
+## 3 The PowerPhase Benchmark 
+
+3.1 Generation Procedure Source signals and networks. We use German TSO data from Open Power System Data [ 45 ]covering 2015 and 2016 at 15 -minute resolution, retaining the aggregate load, solar generation, and wind generation series after linear interpolation of missing entries. The resulting record has 70 ,176 
+
+time steps. We instantiate six standard pandapower test cases [ 42 ] ranging from 500 to 9,241 buses, listed with per-network citations in Table 1. 
+
+Per-node injection synthesis. Each load bus is assigned one of five daily-shape profiles (Figure 1) and a per-node power factor; spatially correlated regional noise is added before the power-flow solve. Profile assignment rules, noise levels, and power-factor ranges are detailed in Appendix A.1. 
+
+AC power-flow solve. For every time step we run AC power flow through pandapower using Newton–Raphson with iterative back-off on the injection magnitudes until convergence. Failed steps, which account for fewer than 1% of the record on every network, are forward-filled with the last converged state. The final output for each bus is the four-vector (P, Q, V, θ ).300:00 06:00 12:00 18:00 00:00 06:00 12:00 18:00 00:00 06:00 12:00 18:00       
+
+> Local time, CET, Mon 2015-04-13 to Wed 2015-04-15
+> −0.5
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> 2.0
+> 2.5
+> Normalized load (mean = 1)
+> Mon Apr 13 Tue Apr 14 Wed Apr 15
+> Industrial Baseline residential PV-correlated Wind-correlated EV-correlated
+
+Figure 1: The five daily-shape load profiles used in the per-node injection synthesis, shown over three consecutive days in April 2015 and normalised to unit mean. Industrial profiles are nearly flat, baseline residential follows a morning-evening double peak, PV- and wind-correlated profiles track renewable availability, and EV-correlated profiles peak in the late evening. Each load bus is assigned one profile at instantiation; high-voltage buses are preferentially assigned industrial profiles. Table 1: The six networks in PowerPhase. PQ is the number of load buses; the remaining buses are voltage-controlled (PV) or the reference bus. Channels equals 4 × buses. Steps is the total length at 
+
+15 -minute resolution; Test is the number of rolling-origin prediction windows per network. 
+
+Network Buses PQ Channels Steps Pred. Test ACTIVSg 500 [7] 500 410 2,000 70 ,176 96 10 
+
+PEGASE 1354 [22] 1,354 1,094 5,416 70 ,176 96 10 
+
+Polish 2383 [57] 2,383 2,056 9,532 70 ,176 96 10 
+
+PEGASE 2869 [22] 2,869 2,359 11 ,476 70 ,176 96 10 
+
+Polish 3120 [57] 3,120 2,771 12 ,480 70 ,176 96 10 
+
+PEGASE 9241 [22] 9,241 7,796 36 ,964 70 ,176 96 10 
+
+3.2 Forecasting Task 
+
+A network with N buses produces a multivariate signal Zt ∈ R4N ordered as [Pn, Q n, V n, θ n]Nn=1 .Given a context of length Th = 672 , the task is to model the joint predictive distribution over 
+
+Zt+1: t+Tp with Tp = 96 , corresponding to a one-day horizon at 15 -minute resolution. Evaluation uses rolling-origin testing with ten equally spaced prediction windows per network. Normalisation conventions for each variable type are given in Appendix A.2. 
+
+3.3 Metric Suite 
+
+We score forecasters along two axes. Statistical fidelity uses CRPS [ 17 ] averaged over channels and time, plus Distortion [ 9] for scenario models. Definitions and the probability-weighted CRPS variant [19] are deferred to Appendix A.3. Operational voltage safety is evaluated on the voltage band [Vmin , V max ] = [0 .95 , 1.05] p .u.. For each voltage-channel evaluation point (t, d ) ∈ V , let Yt,d = 1{Vt,d /∈ [Vmin , V max ]} and ˆY (k) 
+
+> t,d
+
+=
+
+1{ ˆV (k) 
+
+> t,d
+
+/∈ [Vmin , V max ]}. We also define the scenario violation magnitude 
+
+δ(k) 
+
+> t,d
+
+= ( Vmin − ˆV (k) 
+
+> t,d
+
+)+ + ( ˆV (k) 
+
+> t,d
+
+− Vmax )+.
+
+4(B,T,C )                  
+
+> Past series X ( TxC)
+> 4 vars per node
+> 𝐀 ,𝐀 ,𝐀 ,𝐀
+> V（P.U.)
+> 𝐀 （P.U.)
+> P,Q(P.U.)
+> Dynamic Covariates
+> Z（TxF)
+> Calendar features
+> (time-of-day,day-of-week)
+> Mon.
+> Sun.
+> 024 12
+> Pre-backbone
+> 𝐀 /𝐀 gate
+> Channel Encoder
+> Low-Rank
+> Global Mixer
+> 𝐀 𝐀 𝐀 X
+> (CxK) (Kx H)
+> k=64
+> Anchor
+> delta
+> S = 7
+> segments
+> Attention Weights
+> Variable-Aware
+> Decoder
+> P,Q head
+> Ordered Quantile
+> scenarios
+> 90%
+> 70%
+> 50%
+> 30%
+> median
+> forecast horizon
+> Forecast fan
+> (median&intervals)
+> +
+> −
+> Node + Var
+> Embedding
+
+...                    
+
+> B: batch size T: input length Tp:forecast horizon
+> C: channels M: numbers of scenarios N: total nodes
+> K: low-rank dimension S: number of anchor segments
+> +addition −subtract ion
+> main flow attention weight
+> All tensors shown as (Batch,Time,Channels) 𝐀 ∈ℝ𝐀 ×𝐀 ，𝐀 ∈ℝ𝐀 ×𝐀
+> cross-attention bridge:
+> attend (𝐀 ,𝐀 ) → 𝐀 /𝐀
+> k=5
+> k=25
+> k=97
+> seg=96
+
+𝐀 𝐀𭠀 
+
+𝐀 𝐀𴐀𝐀𲐀          
+
+> Ordered-
+> Quantile
+> loss
+> (B,M,
+> Tp,C/2 )
+> (B,T,F )
+> (B,C,H )
+> concat
+> Multi-scale
+> Temporal Backbone
+> Node
+> embed
+> Var
+> embed
+> +
+> (B,S,C )
+> (B,T p,C )
+> V, 𝐀 head
+> (B,M,
+> Tp,C/2 )
+> (B,M,T p,C )
+> scenario index
+> 𝐀 (scenario weights from
+> quantile-bin masses)
+> Physics regs;
+> V range
+> 𝐀 smoothness
+
+Figure 2: PowerForge architecture. The past series X ∈ RT ×C is anchor-subtracted and passed through a channel encoder (multi-scale temporal backbone with kernels {5, 25 , 97 }, node and variable embeddings, and a low-rank global mixer). Calendar covariates Z are injected as time-aggregated context. A variable-aware decoder produces M scenario branches with separate P, Q and V, θ heads linked by a causal cross-attention bridge from ˆP , ˆQ to V, θ . The anchor is added back, and pointwise sorting along the scenario axis yields ordered quantile scenarios with quantile-bin weights ω. The model is trained with an ordered-quantile pinball loss LOQ and physics regularisers Lphys .For scenario weights wk (uniform 1/K for sample-based methods), we report 
+
+Safety _mBrier = 1
+
+|V| 
+
+X
+
+(t,d )∈V 
+
+X
+
+k
+
+wk
+
+  ˆY (k)
+
+t,d − Yt,d 
+
+2, (1) 
+
+NECV = 1
+
+|V| 
+
+X
+
+(t,d )∈V 
+
+X
+
+k
+
+wk δ(k)
+
+t,d , (2) 
+
+CVaR 0.1 = 1
+
+|V| 
+
+X
+
+(t,d )∈V 
+
+1
+
+⌈0.1K⌉
+
+X
+
+k∈T 0.1(t,d )
+
+δ(k)
+
+t,d , (3) where T0.1(t, d ) contains the ⌈0.1K⌉ scenarios with the largest δ(k)
+
+t,d . Safety_mBrier measures violation detection, whereas NECV and CVaR 0.1 measure average and worst-decile violation severity. Additional details, including the relation to the standard Brier score [ 30 ], are given in Appendix A.3. 
+
+## 4 The PowerForge Model 
+
+4.1 Overview 
+
+The PowerForge architecture is shaped by three constraints of the PowerPhase regime. First, cross-variable interaction must be sub-quadratic in the channel count, since C on the larger PowerPhase grids reaches 10 4. Second, decoding must be type-heterogeneous, since the four physical quantities have structurally different supports. Third, when the variable types carry a known directional dependence, the architecture should reflect that structure rather than discover it from gradients. Figure 2 traces these principles through the model. The past series X ∈ RT ×C is first projected into a residual space by subtracting an anchor Zref that captures the dominant diurnal pattern (§4.2). The residual is then consumed by a channel encoder and a low-rank global mixer that exchanges information across all C channels through K ≪ C shared tokens (§4.3). A variable-aware decoder (§4.4) emits M scenario branches through separate P, Q and V, θ heads, with a causal cross-attention bridge that conditions V, θ on the predicted ˆP , ˆQ and reflects the AC power-flow direction. Adding the anchor back and sorting along the scenario axis produces ordered quantile trajectories {( ˆZ(m), w m)}Mm=1 . With M in the low tens, all scenarios are produced in a single forward pass, in contrast to the per-step sampling of autoregressive density baselines. Training uses an ordered-quantile pinball loss with physics regularisers (§4.5). 54.2 Reference-Anchored Residual Space 
+
+The model operates in a residual space defined relative to a learned reference Zref ∈ RL×C . The reference is subtracted from the input history before encoding, and added back to the decoder output to recover absolute predictions. Working in this space removes the dominant diurnal component shared across all power-grid signals, leaving the encoder and decoder to model only the deviations. The reference is built from the recent history. The last S daily segments of length L are extracted, and each channel forms its own reference as a per-channel attention-weighted average. Let X(s)
+
+> c
+
+denote the s-th segment of channel c and Xquery  
+
+> c
+
+the last Q steps of the input. Then 
+
+Zref  
+
+> c
+
+=
+
+> S
+
+X
+
+> s=1
+
+as,c X(s) 
+
+> c
+
+, as,c = exp  ρ(X(s) 
+
+> c
+
+, X query  
+
+> c
+
+)/τ PSs′=1 exp  ρ(X(s′) 
+
+> c
+
+, X query  
+
+> c
+
+)/τ  , (4) where ρ is the Pearson correlation between the last Q steps of X(s) 
+
+> c
+
+and Xquery  
+
+> c
+
+, computed per channel so different channels can favour different segments. A short bias correction further aligns the reference to the most recent observations near the input boundary. Details are in Appendix B.1. 
+
+4.3 Channel Encoder and Global Token Mixer 
+
+The channel encoder (Appendix B.3) maps the residual input into a per-channel representation 
+
+h ∈ RB×C×H via a multi-scale temporal backbone with kernel sizes {5, 25 , 97 } together with node, variable, and calendar embeddings. Self-attention across channels would scale as O(C2), which is prohibitive at this scale [ 44 ]. We replace this dense interaction with a low-rank mixer that maintains 
+
+K learnable global tokens G ∈ RK×H and alternates read and write attention. Channel states first attend to G (read), G then attends back to the updated channels (write), and a second read propagates the refreshed tokens to the channels, with the two read steps sharing projection weights. Both directions cost O(CK ) with K ≪ C, so the total cost is linear in C. The K tokens act as a rank-K
+
+bottleneck on cross-channel interaction, which is well matched to grids where system-wide load and renewable generation mix a handful of latent factors into thousands of channels. 
+
+4.4 Type-Aware Decoder with Cross-Type Bridge 
+
+The decoder operates in the residual space defined in §4.2, producing M hypothesis trajectories through per-type output heads and a causal cross-type bridge, instantiated on PowerPhase with 
+
+{P, Q, V, θ }.
+
+Type-specific heads. Each channel state hc is fused with M learnable scenario embeddings through the additive injection h(m) 
+
+> c
+
+= hc + em, so the M branches differ at the embedding level before any per-type processing. A per-type head then maps each fused state to a residual prediction δ(m) 
+
+> c
+
+,with the parameterisation chosen to match the support of each variable. The P and Q heads emit an unbounded linear projection of the fused state, with a small Gaussian perturbation added as a stochastic regulariser. The V and θ heads pass a learned projection through a tanh gate scaled by a per-type magnitude ∆c, matching the narrow dynamic range these channels occupy after anchor subtraction. Full head equations and angular wrapping for θ are given in Appendix B.2. 
+
+Causal cross-type bridge. The AC power-flow equations determine bus voltages and angles given the active and reactive power injections [ 47 ]. The decoder reflects this direction by producing P and 
+
+Q predictions first, projecting each predicted trajectory into a hidden token ϕ(u) 
+
+> c
+
+for u ∈ { P, Q }, and letting the V and θ hidden states attend to them through scaled dot-product attention, 
+
+h(m,t ) 
+
+> c
+
+← h(m,t ) 
+
+> c
+
++ γ · Attn  Wq h(m,t ) 
+
+> c
+
+, W k Φ(m) 
+
+> c
+
+, W v Φ(m)
+
+> c
+
+, t ∈ { V, θ }, (5) where Φ(m) 
+
+> c
+
+= {ϕ(P ) 
+
+> c
+
+, ϕ (Q) 
+
+> c
+
+} collects the two source tokens, Wq , W k, W v are projections shared across nodes and scenarios, and γ is a scale initialised at 1. The bridge is an inductive bias rather than a hard constraint, since the projection weights can downweight the attention output when the conditioning is uninformative. 64.5 Training Objective 
+
+After the per-type heads emit residuals and the anchor is added back, the M trajectories are pointwise sorted along the scenario axis, so branch m is interpreted as the quantile estimator at level τm, with 
+
+τ1 < · · · < τ M controlled by a learnable Beta( α, β ) shape. Each branch is supervised by a pinball loss at its assigned level [23], 
+
+LOQ = 1
+
+BM T pC
+
+X
+
+> b,m,t,c
+
+ρτm
+
+ Zb,t,c − ˆZ(m)
+
+> b,t,c
+
+, ρτ (u) = u τ − 1{u < 0}. (6) where B is the batch size and the sum runs over the Tp forecast steps. Four learnable per-type coefficients (one each for P, Q, V, θ ) scale the per-type contributions to balance gradients across variables, initialised from inverse volatility on a small set of calibration batches. A physics regulariser dampens the voltage-residual magnitude and penalises temporal discontinuities in the angle channel. Scenario weights wm derived from the τm grid (Appendix B.4) are used at evaluation in weighted CRPS, weighted Safety_mBrier, and the categorical sampler. Quantile-fan regularisers and the Beta prior are detailed in Appendix B.4. 
+
+## 5 Experiments 
+
+5.1 Setup Baselines and Protocol. We compare PowerForge against eight probabilistic forecasting baselines spanning three families. Sample-based density models : DeepAR [ 40 ], TempFlow and Transformer-TempFlow [ 34 ], TimeGrad [ 35 ], and TACTiS-2 [ 4]. Scenario-based models : TimeMCL [ 9] and TimePrism [ 10 ]. Statistical baseline : ETS (exponential smoothing), fitted independently per channel. Every model is trained on each of the five main PowerPhase networks (ACTIVSg 500 through Polish 3120) with three random seeds, and we report the mean across seeds. At the upper end of the benchmark, PEGASE 9241 ( 36 ,964 channels) is evaluated against four baselines spanning scenario-based, conditioned-flow, and statistical families (Appendix E). Each forecasting window uses 
+
+Th = 672 context steps and predicts Tp = 96 steps ahead, evaluated through rolling-origin testing with ten windows per network. Density baselines draw K = 100 forecast samples at test time, and scenario-based models produce weighted hypothesis trajectories per their respective configurations (PowerForge: M = 16 ). Train, validation, and test splits are fixed across all models and seeds (Appendix C.2.2). All deep models are trained on a single NVIDIA RTX PRO 6000 Blackwell GPU with Adam, and the checkpoint with the lowest validation loss is used for evaluation. Deep baselines follow their GluonTS [ 1] reference configurations. ETS is fitted per channel by maximum likelihood on CPU. Full PowerForge and baseline hyperparameters are in Appendix C.2. 
+
+5.2 Main Result 
+
+Table 2 reports the four-metric scoreboard on three representative grids. The results on all five main grids are in Appendix D, and the result of PEGASE 9241 evaluation is in Appendix E. PowerForge attains the best average rank on every grid ( 1.2, 1.2, 1.0) and is the only model that stays in the top tier across both fidelity and Safety axes. At 500-bus, it achieves the best score on all four metrics, with Safety_mBrier and CVaR 0.1 tied at 0 alongside TACTiS-2. At 2383-bus, PowerForge matches TACTiS-2 on CRPS within one standard deviation, while attaining the best Distortion and the lowest Safety_mBrier ( 0.0010 , vs. 0.0032 for TempFlow and Transformer-TempFlow) and CVaR 0.1. At 3120-bus, it is strict best on every metric, with a Distortion more than 2× lower than the next baseline. The table makes the safety–fidelity trade-off concrete. TimePrism is the clearest instance, with a competitive CRPS at 2383-bus ( 0.0096 ) but the largest CVaR 0.1 (3.50 ) of any deep baseline, indicating that the winner-takes-all training criterion produces low-probability hypotheses that drift far outside the operational band. TimeMCL shows a milder version of the same pattern at 500-bus, where strong CRPS ( 0.0054 ) coexists with mediocre CVaR 0.1 (0.19 ). DeepAR fails on both axes, with the worst CRPS on every grid and Safety_mBrier never below 0.54 . Density-based models behave inconsistently across scales. TACTiS-2 wins or ties on 500-bus security but its Safety_mBrier rises from 0 to 0.04 at 3120-bus. TempFlow and Transformer-TempFlow show the inverse trend, weak on 500-bus security but reaching the second-best tier on 3120-bus. ETS, despite its simplicity, is surprisingly strong at small scale and degrades steadily with channel count. No baseline holds a stable 7Table 2: Probabilistic forecasting results on P OWER PHASE (three representative grids; full results in Appendix D). CRPS and Distortion measure fidelity ; Safety_mBrier and CVaR 0.1 measure safety .All values are mean ±std over three seeds. Bold : best; underline : second best. Rank is the model’s average rank within the grid across the four metrics. 
+
+Fidelity ↓ Safety ↓
+
+Grid Model CRPS Distortion Safety_mBrier CVaR 0.1 Rank 500-bus DeepAR 0.1156 ±.0240 0.5537 ±.1310 0.9519 ±.0233 2.1753 ± .6901 8.8 ETS 0.0064 ±.0000 0.0481 ±.0000 0.0561 ±.0002 0.0116 ± .0000 4.2 TimeMCL 0.0054 ±.0003 0.0118 ±.0001 0.0200 ±.0200 0.1906 ± .1907 3.2 TimePrism 0.0077 ±.0003 0.0195 ±.0023 0.0221 ±.0062 2.9950 ±1.1445 5.5 TACTiS-2 0.0057 ±.0002 0.0139 ±.0006 0.0000 ±.0000 0.0000 ± .0000 2.2 TempFlow 0.0144 ±.0008 0.0679 ±.0005 0.2740 ±.0519 0.0332 ± .0043 5.5 Trans-TempFlow 0.0146 ±.0006 0.0702 ±.0011 0.2896 ±.0581 0.0380 ± .0100 6.5 TimeGrad 0.0160 ±.0011 0.0954 ±.0092 0.7630 ±.0192 0.3316 ± .0358 7.8 
+
+PowerForge (Ours) 0.0030 ±.0008 0.0072 ±.0019 0.0000 ±.0000 0.0000 ± .0000 1.2 
+
+2383-bus DeepAR 0.0583 ±.0261 0.4124 ±.1674 0.5440 ±.1632 0.1831 ± .1303 8.2 ETS 0.0111 ±.0000 0.1513 ±.0000 0.0352 ±.0001 0.0099 ± .0000 6.5 TimeMCL 0.0070 ±.0008 0.0147 ±.0016 0.0109 ±.0068 0.0322 ± .0547 4.5 TimePrism 0.0096 ±.0085 0.0250 ±.0164 0.0294 ±.0255 3.5007 ±1.1821 6.8 TACTiS-2 0.0039 ±.0000 0.0188 ±.0000 0.0036 ±.0000 0.0007 ± .0000 3.5 TempFlow 0.0057 ±.0001 0.0153 ±.0026 0.0032 ±.0001 0.0005 ± .0000 2.8 Trans-TempFlow 0.0060 ±.0002 0.0174 ±.0002 0.0032 ±.0000 0.0005 ± .0000 3.2 TimeGrad 0.0169 ±.0016 0.1753 ±.0826 0.5454 ±.0505 0.8028 ± .4729 8.2 
+
+PowerForge (Ours) 0.0042 ±.0019 0.0084 ±.0025 0.0010 ±.0002 0.0004 ± .0000 1.2 
+
+3120-bus DeepAR 0.1408 ±.0148 0.7666 ±.0842 0.7883 ±.0160 1.6903 ± .5156 8.8 ETS 0.0180 ±.0001 0.1954 ±.0000 0.0987 ±.0001 0.0225 ± .0000 6.8 TimeMCL 0.0092 ±.0052 0.0162 ±.0044 0.1100 ±.1071 0.2240 ± .2385 5.2 TimePrism 0.0083 ±.0018 0.0213 ±.0119 0.0579 ±.0383 5.4230 ±3.2742 6.0 TACTiS-2 0.0043 ±.0000 0.0297 ±.0001 0.0428 ±.0006 0.0071 ± .0000 4.0 TempFlow 0.0055 ±.0001 0.0178 ±.0001 0.0187 ±.0000 0.0035 ± .0000 3.5 Trans-TempFlow 0.0054 ±.0002 0.0175 ±.0006 0.0184 ±.0004 0.0034 ± .0000 2.5 TimeGrad 0.0123 ±.0069 0.1295 ±.0503 0.4234 ±.1359 0.5695 ± .2468 7.2 
+
+PowerForge (Ours) 0.0038 ±.0011 0.0076 ±.0010 0.0068 ±.0000 0.0025 ± .0000 1.0 
+
+position across both scales and axes, whereas PowerForge maintains a top-tier position throughout. At PEGASE 9241 ( 36 ,964 channels), PowerForge is still best on every metric (Appendix E). 
+
+5.3 Qualitative Analysis 
+
+Figure 3 compares scenario forecasts from PowerForge, TimePrism, and TACTiS-2 on a voltage channel of Polish 2383 across three test windows. PowerForge produces a compact set of hypotheses that track the diurnal shape across all windows, with probability mass aligned to the daily pattern. TimePrism recovers the overall shape but with a wider spread, and several low-probability hypotheses visibly undershoot the evening trough. Its winner-takes-all objective rewards hypothesis diversity, so the spread is partly by design. On this channel, the diversity translates into systematic underestimation rather than informative uncertainty. TACTiS-2 shows a different failure. Its median tracks the contextual mean reasonably well but flattens through the diurnal trough, while individual samples exhibit pronounced high-frequency jitter without coherent low-frequency motion, consistent with an autoregressive copula sampler that captures per-step marginals but attenuates temporal dependence over the 96-step horizon at this channel count. These behaviours align with the metric ordering in Table 2. Producing a structured set of trajectories that respects the low-frequency physics of the system remains the harder requirement for high-dimensional grid forecasting. Additional cross-grid trajectories and aggregate bus-level distributions are reported in Appendix F. 
+
+5.4 Ablation Study 
+
+We isolate the contribution of each PowerForge component by training six ablated variants on PEGASE 1354 with all remaining hyperparameters fixed. Each variant disables a single architectural 80.85 0.90 0.95             
+
+> PowerForge (ours)  2016-07-25 2016-10-22 2016-11-19
+> 0.85 0.90 0.95
+> TimePrism
+> Jul-24 12:00 Jul-25 12:00 2016-Jul-25 0.85 0.90 0.95
+> TACTIS-2
+> Oct-21 12:00 Oct-22 12:00 2016-Oct-22 Nov-18 12:00 Nov-19 12:00 2016-Nov-19
+> Ground truth PowerForge (ours) hyp. (high prob) PowerForge (ours) hyp. (low prob) TimePrism hyp. (high prob) TimePrism hyp. (low prob) TACTIS-2 median TACTIS-2 samples Context Forecast
+
+Figure 3: Voltage forecasts on Polish 2383 ( 9,532 channels) across three test windows. PowerForge (top) produces a compact hypothesis fan tracking the diurnal pattern. TimePrism (middle) recovers the shape with wider spread. TACTiS-2 (bottom) flattens the daily cycle under per-step sample jitter. Table 3: Ablation on PEGASE 1354 (single seed). ∆ is the relative CRPS change against the full configuration, ordered by descending impact. CRPS and Distortion measure fidelity. Lower is better for both metrics. Full safety metrics are in Appendix G. 
+
+Variant CRPS ↓ ∆ Distortion ↓
+
+Full PowerForge 0.0043 – 0.0110 
+
+− anchor–delta parameterisation 0.0080 +84% 0.0229 
+
+− quantile regularisation 0.0059 +37% 0.0128 
+
+− ordered-quantile loss (use WTA) 0.0055 +27% 0.0155 
+
+− physics regularisation 0.0055 +27% 0.0120 
+
+− cross-type causal bridge 0.0053 +22% 0.0120 
+
+− low-rank global token mixer 0.0045 +4% 0.0154 
+
+element or training signal. Table 3 reports CRPS and Distortion together with the relative CRPS change against the full configuration, ordered by descending impact. The anchor–delta voltage parameterisation is the single most important component. Removing it raises CRPS by 84% and Distortion by more than 2×, confirming that operating in residual voltage space is essential when channels span the narrow physical band around 1.0 p.u. The next tier is calibration and training signal. The quantile-fan regularisation contributes +37% CRPS, replacing the ordered-quantile criterion with winner-takes-all training contributes +27% , and removing physics regularisation contributes +27% . The cross-type causal bridge has smaller direct impact at this scale ( +22% ). The low-rank global mixer has the smallest CRPS impact ( +4% ), but its effect on Distortion is substantial (+40% , 0.0110 → 0.0154 ), indicating its role in single-best-hypothesis quality rather than overall distributional fit. 
+
+## 6 Conclusion and Limitations 
+
+Conclusion. We introduced PowerPhase, a probabilistic forecasting benchmark that brings transmission-scale multivariate systems into reach of evaluation, and PowerForge, an ordered-quantile scenario forecaster designed for this regime. PowerPhase ships with physically typed channels, AC-power-flow-simulated trajectories, and a voltage-risk-aware metric suite that complements scoring rules. PowerForge combines a reference-anchored residual parameterisation, type-specific decoding heads coupled through a causal cross-attention bridge, and a low-rank global mixer that exchanges information across channels through K ≪ C shared tokens at O(CK ) cost. Across the five main 9grids and three seeds, it attains the best score on 19 of 20 grid–metric cells, ties with the strongest baseline on the remaining one within seed variance, and ranks first on average on every grid. The benchmark also surfaces a safety–fidelity trade-off: distributional accuracy and constraint satisfaction rank models differently, so no single average-case score is sufficient for constraint-bound decisions. 
+
+Limitations. PowerPhase evaluates voltage-band risk rather than full AC feasibility. While target trajectories are produced by AC power-flow solves, the proposed safety metrics only measure violations of the [0 .95 , 1.05] p.u. voltage-magnitude band; they do not certify line limits, generator reactive limits, power-balance residuals, angle consistency, or feasibility of each predicted (P, Q, V, θ )
+
+scenario. The benchmark is also synthetic, driven by national load and renewable traces, archetypal bus profiles, Gaussian perturbations, and fixed power factors, so some safety–fidelity trends may reflect this simulator family. PowerForge encodes variable type and a P, Q → V, θ dependency, but not explicit topology or admittance structure. Real-data validation, richer physical metrics, topology-aware models, and broader large-scale baseline sweeps are left for future work. 
+
+## References 
+
+[1] Alexander Alexandrov, Konstantinos Benidis, Michael Bohlke-Schneider, Valentin Flunkert, Jan Gasthaus, Tim Januschowski, Danielle C Maddix, Syama Rangapuram, David Salinas, Jasper Schulz, et al. Gluonts: Probabilistic and neural time series modeling in python. Journal of Machine Learning Research , 21(116):1–6, 2020. [2] Anastasios N. Angelopoulos and Stephen Bates. A gentle introduction to conformal prediction and distribution-free uncertainty quantification. CoRR , abs/2107.07511, 2021. URL https: //arxiv.org/abs/2107.07511 .[3] Abdul Fatir Ansari, Oleksandr Shchur, Jaris Küken, Andreas Auer, Boran Han, Pedro Mercado, Syama Sundar Rangapuram, Huibin Shen, Lorenzo Stella, Xiyuan Zhang, Mononito Goswami, Shubham Kapoor, Danielle C. Maddix, Pablo Guerron, Tony Hu, Junming Yin, Nick Erickson, Prateek Mutalik Desai, Hao Wang, Huzefa Rangwala, George Karypis, Yuyang Wang, and Michael Bohlke-Schneider. Chronos-2: From univariate to universal forecasting, 2025. URL 
+
+https://arxiv.org/abs/2510.15821 .[4] Arjun Ashok, Étienne Marcotte, Valentina Zantedeschi, Nicolas Chapados, and Alexandre Drouin. Tactis-2: Better, faster, simpler attentional copulas for multivariate time series. arXiv preprint arXiv:2310.01327 , 2023. [5] Sogol Babaeinejadsarookolaee, Adam Birchfield, Richard D Christie, Carleton Coffrin, Christo-pher DeMarco, Ruisheng Diao, Michael Ferris, Stephane Fliscounakis, Scott Greene, Renke Huang, et al. The power grid library for benchmarking ac optimal power flow algorithms. arXiv preprint arXiv:1908.02788 , 2019. [6] Konstantinos Benidis, Syama Sundar Rangapuram, Valentin Flunkert, Yuyang Wang, Danielle Maddix, Caner Turkmen, Jan Gasthaus, Michael Bohlke-Schneider, David Salinas, Lorenzo Stella, et al. Deep learning for time series forecasting: Tutorial and literature survey. ACM Computing Surveys , 55(6):1–36, 2022. [7] Adam B Birchfield, Ti Xu, Kathleen M Gegner, Komal S Shetye, and Thomas J Overbye. Grid structural characteristics as validation criteria for synthetic networks. IEEE Transactions on power systems , 32(4):3258–3265, 2016. [8] David P Chassin, Jason C Fuller, and Ned Djilali. Gridlab-d: an agent-based simulation framework for smart grids. Journal of Applied Mathematics , 2014(1):492320, 2014. [9] Adrien Cortes, Remi Rehm, and Victor Letzelter. Winner-takes-all for multivariate probabilistic time series forecasting. In Forty-second International Conference on Machine Learning , 2025. URL https://openreview.net/forum?id=4QcFfTu6UT .[10] Xilin Dai, Zhijian Xu, Wanxu Cai, and Qiang Xu. From Samples to Scenarios: A New Paradigm for Probabilistic Forecasting. In The Fourteenth International Conference on Learning Representations , October 2025. 10 [11] Xilin Dai, Ruidi Zhou, Jinhao Zhang, Keyi He, Fanfan Lin, and Hao Ma. SocNet: A Physics-Guided Neural Network for Battery State-of-Charge Estimation Robust to Temperature Varia-tions and Sensor Noises. IEEE Transactions on Transportation Electrification , 11(5):11165– 11176, October 2025. [12] Xilin Dai, Wanxu Cai, Zhijian Xu, and Qiang Xu. Position: Universal time series foundation models rest on a category error, 2026. URL https://arxiv.org/abs/2602.05287 .[13] Xilin Dai, Ruidi Zhou, Jinhao Zhang, Fanfan Lin, Weifeng Zhang, and Hao Ma. Socgate: Physics-gated neural network for stable multicycle estimation of battery state-of-charge. IEEE Transactions on Industrial Electronics , 73(4):5518–5529, 2026. doi: 10.1109/TIE.2025. 3626581. [14] Alexandre Drouin, Étienne Marcotte, and Nicolas Chapados. Tactis: Transformer-attentional copulas for time series. In International Conference on Machine Learning , pages 5447–5493. PMLR, 2022. [15] J Duncan Glover, Mulukutla S Sarma, Thomas Jeffrey Overbye, and NP Padhy. Power system analysis and design , volume 2008. Cengage Learning Stamford, CT, USA, 2012. [16] Tilmann Gneiting and Matthias Katzfuss. Probabilistic forecasting. Annual Review of Statistics and Its Application , 1(1):125–151, 2014. [17] Tilmann Gneiting and Adrian E Raftery. Strictly proper scoring rules, prediction, and estimation. 
+
+Journal of the American statistical Association , 102(477):359–378, 2007. [18] Rakshitha Godahewa, Christoph Bergmeir, Geoffrey I Webb, Rob J Hyndman, and Pablo Montero-Manso. Monash time series forecasting archive. arXiv preprint arXiv:2105.06643 ,2021. [19] Hans Hersbach. Decomposition of the continuous ranked probability score for ensemble prediction systems. Weather and Forecasting , 15(5):559–570, 2000. [20] Tao Hong and Shu Fan. Probabilistic electric load forecasting: A tutorial review. International Journal of Forecasting , 32(3):914–938, 2016. [21] Tao Hong, Pierre Pinson, Yi Wang, Rafał Weron, Dazhi Yang, and Hamidreza Zareipour. Energy forecasting: A review and outlook. IEEE Open Access Journal of Power and Energy , 7:376–388, 2020. [22] Cédric Josz, Stéphane Fliscounakis, Jean Maeght, and Patrick Panciatici. Ac power flow data in matpower and qcqp format: itesla, rte snapshots, and pegase. arXiv preprint arXiv:1603.01533 ,2016. [23] Roger Koenker and Gilbert Bassett Jr. Regression quantiles. Econometrica: journal of the Econometric Society , pages 33–50, 1978. [24] Guokun Lai, Wei-Cheng Chang, Yiming Yang, and Hanxiao Liu. Modeling long-and short-term temporal patterns with deep neural networks. In The 41st international ACM SIGIR conference on research & development in information retrieval , pages 95–104, 2018. [25] Stefan Lee, Senthil Purushwalkam Shiva Prakash, Michael Cogswell, Viresh Ranjan, David Crandall, and Dhruv Batra. Stochastic multiple choice learning for training diverse deep ensembles. Advances in Neural Information Processing Systems , 29, 2016. [26] Yiding Liu, Yifan Hu, Hongjie Xia, Peiyuan Liu, Hongzhou Chen, Xilin Dai, Zewei Dong, and Jiang-Ming Yang. Falcon-x: A time series foundation model for heterogeneous multivariate modeling, 2026. URL https://arxiv.org/abs/2605.27286 .[27] Sean Lovett, Miha Zgubic, Sofia Liguori, Sephora Madjiheurem, Hamish Tomlinson, Sophie Elster, Chris Apps, Sims Witherspoon, and Luis Piloto. Opfdata: Large-scale datasets for ac optimal power flow with topological perturbations. arXiv preprint arXiv:2406.07234 , 2024. 11 [28] Steffen Meinecke, Džanan Sarajli´ c, Simon Ruben Drauz, Annika Klettke, Lars-Peter Lauven, Christian Rehtanz, Albert Moser, and Martin Braun. Simbench—a benchmark dataset of electric power systems to compare innovative solutions based on power flow analysis. Energies , 13(12): 3290, 2020. [29] Juan M Morales, Antonio J Conejo, Henrik Madsen, Pierre Pinson, and Marco Zugno. Inte-grating renewables in electricity markets: operational problems . Springer Science & Business Media, 2013. [30] Allan H Murphy. A new vector partition of the probability score. Journal of Applied Meteorology and Climatology , 12(4):595–600, 1973. [31] Hamed Rahimian and Sanjay Mehrotra. Distributionally robust optimization: A review. arXiv preprint arXiv:1908.05659 , 2019. [32] Maziar Raissi, Paris Perdikaris, and George E Karniadakis. Physics-informed neural networks: A deep learning framework for solving forward and inverse problems involving nonlinear partial differential equations. Journal of Computational physics , 378:686–707, 2019. [33] Syama Sundar Rangapuram, Matthias W Seeger, Jan Gasthaus, Lorenzo Stella, Yuyang Wang, and Tim Januschowski. Deep state space models for time series forecasting. Advances in neural information processing systems , 31, 2018. [34] Kashif Rasul, Abdul-Saboor Sheikh, Ingmar Schuster, Urs Bergmann, and Roland Vollgraf. Multivariate probabilistic time series forecasting via conditioned normalizing flows. arXiv preprint arXiv:2002.06103 , 2020. [35] Kashif Rasul, Calvin Seward, Ingmar Schuster, and Roland Vollgraf. Autoregressive denois-ing diffusion models for multivariate probabilistic time series forecasting. In International conference on machine learning , pages 8857–8868. PMLR, 2021. [36] Ana K. Rivera, Anvita Bhagavathula, Alvaro Carbonero, and Priya Donti. Pf δ: A benchmark dataset for power flow under load, generation, and topology variations, 2026. URL https: //arxiv.org/abs/2510.22048 .[37] Line A Roald, David Pozo, Anthony Papavasiliou, Daniel K Molzahn, Jalal Kazempour, and Antonio Conejo. Power systems optimization under uncertainty: A review of methods and applications. Electric Power Systems Research , 214:108725, 2023. [38] R Tyrrell Rockafellar, Stanislav Uryasev, et al. Optimization of conditional value-at-risk. 
+
+Journal of risk , 2:21–42, 2000. [39] David Salinas, Michael Bohlke-Schneider, Laurent Callot, Roberto Medico, and Jan Gasthaus. High-dimensional multivariate forecasting with low-rank gaussian copula processes. Advances in neural information processing systems , 32, 2019. [40] David Salinas, Valentin Flunkert, Jan Gasthaus, and Tim Januschowski. Deepar: Probabilistic forecasting with autoregressive recurrent networks. International journal of forecasting , 36(3): 1181–1191, 2020. [41] Rajat Sen, Hsiang-Fu Yu, and Inderjit S Dhillon. Think globally, act locally: A deep neural network approach to high-dimensional time series forecasting. Advances in neural information processing systems , 32, 2019. [42] Leon Thurner, Alexander Scheidler, Florian Schäfer, Jan-Hendrik Menke, Julian Dollichon, Friederike Meier, Steffen Meinecke, and Martin Braun. pandapower—an open-source python tool for convenient modeling, analysis, and optimization of electric power systems. IEEE Transactions on Power Systems , 33(6):6510–6521, 2018. [43] Anna Varbella, Kenza Amara, Blazhe Gjorgiev, Mennatallah El-Assady, and Giovanni Sansavini. Powergraph: A power grid benchmark dataset for graph neural networks. In The Thirty-eight Conference on Neural Information Processing Systems Datasets and Benchmarks Track , 2024. URL https://openreview.net/forum?id=qWTfCO4HvT .12 [44] Sinong Wang, Belinda Z Li, Madian Khabsa, Han Fang, and Hao Ma. Linformer: Self-attention with linear complexity. arXiv preprint arXiv:2006.04768 , 2020. [45] Frauke Wiese, Ingmar Schlecht, Wolf-Dieter Bunke, Clemens Gerbaulet, Lion Hirth, Martin Jahn, Friedrich Kunz, Casimir Lorenz, Jonathan Mühlenpfordt, Juliane Reimann, et al. Open power system data–frictionless data for electricity system modelling. Applied Energy , 236: 401–409, 2019. [46] Gerald Woo, Chenghao Liu, Akshat Kumar, Caiming Xiong, Silvio Savarese, and Doyen Sahoo. Unified training of universal time series forecasting transformers. In Forty-first International Conference on Machine Learning , 2024. [47] Allen J Wood, Bruce F Wollenberg, and Gerald B Sheblé. Power generation, operation, and control . John wiley & sons, 2013. [48] Haixu Wu, Jiehui Xu, Jianmin Wang, and Mingsheng Long. Autoformer: Decomposition trans-formers with auto-correlation for long-term series forecasting. Advances in neural information processing systems , 34:22419–22430, 2021. [49] Chen Xu and Yao Xie. Sequential predictive conformal inference for time series. In International Conference on Machine Learning , pages 38707–38727. PMLR, 2023. [50] Kaijie Xu, Xilin Dai, and Lin Qiu. Opformer: Real-time optimal power flow with cnn-based transformer. In ICASSP 2025 - 2025 IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP) , pages 1–5, 2025. doi: 10.1109/ICASSP49660.2025.10888727. [51] Kaijie Xu, Lin Qiu, Xilin Dai, Yi Ding, Chengjin Ye, and Youtong Fang. Optimal power flow under varying topologies via physics-guided neural network with stack-learning. International Journal of Electrical Power & Energy Systems , 173:111391, 2025. [52] Zhijian Xu, Wanxu Cai, Xilin Dai, Zhaorong Deng, and Qiang Xu. Fidel-ts: A high-fidelity multimodal benchmark for time series forecasting, 2026. URL https://arxiv.org/abs/ 2509.24789 .[53] Tijin Yan, Hongwei Zhang, Tong Zhou, Yufeng Zhan, and Yuanqing Xia. Scoregrad: Multivari-ate probabilistic time series forecasting with continuous energy-based generative models. arXiv preprint arXiv:2106.10121 , 2021. [54] Xiaochen Zhang, Kaijie Xu, Shengchen Liao, Lin Qiu, Chengjin Ye, and Youtong Fang. Disturbed security-constrained and time-variant optimal power flow for dynamic power system based on chaotic-genetic-centroid puffin optimization. Applied Energy , 397:126287, 2025. [55] Xiangtian Zheng, Nan Xu, Loc Trinh, Dongqi Wu, Tong Huang, S Sivaranjani, Yan Liu, and Le Xie. A multi-scale time-series dataset with benchmark for machine learning in decarbonized energy grids. Scientific Data , 9(1):359, 2022. [56] Haoyi Zhou, Shanghang Zhang, Jieqi Peng, Shuai Zhang, Jianxin Li, Hui Xiong, and Wancai Zhang. Informer: Beyond efficient transformer for long sequence time-series forecasting. In 
+
+Proceedings of the AAAI conference on artificial intelligence , volume 35, pages 11106–11115, 2021. [57] Ray Daniel Zimmerman, Carlos Edmundo Murillo-Sánchez, and Robert John Thomas. Mat-power: Steady-state operations, planning, and analysis tools for power systems research and education. IEEE Transactions on power systems , 26(1):12–19, 2010. 13 Appendix 
+
+A Benchmark Details . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 15 
+
+A.1 Data Generation Pipeline Details . . . . . . . . . . . . . . . . . . . . . . . 15                                                                            
+
+> A.1.1 Source Signals and Load Archetypes .....................15 A.1.2 Noise Model .............................15 A.1.3 Reactive Power and AC Power-Flow Solve ...................15
+
+A.2 Normalisation Conventions . . . . . . . . . . . . . . . . . . . . . . . . . 15 A.3 Metric Definitions . . . . . . . . . . . . . . . . . . . . . . . . . . . . 16                                                                                              
+
+> A.3.1 CRPS. ...............................16 A.3.2 Distortion ..............................16 A.3.3 Voltage Safety Metrics ..........................16
+
+A.4 Bus Type Convention . . . . . . . . . . . . . . . . . . . . . . . . . . . 17 A.5 Train / Validation / Test Splits . . . . . . . . . . . . . . . . . . . . . . . . 17 
+
+B PowerForge Architecture . . . . . . . . . . . . . . . . . . . . . . . . . . 17 
+
+B.1 Anchor-Delta Details . . . . . . . . . . . . . . . . . . . . . . . . . . . 17 B.2 Type-Specific Heads . . . . . . . . . . . . . . . . . . . . . . . . . . . . 18 B.3 Channel Encoder . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 18 B.4 Training Objective Details. . . . . . . . . . . . . . . . . . . . . . . . . . 19                                                                                                          
+
+> B.4.1 Full Loss Formulation ..........................19 B.4.2 Ordered-Quantile Loss ( LOQ ).......................19 B.4.3 Physics Regularisation ( Lphys ) . ......................19 B.4.4 Auxiliary Regularisers ..........................19
+
+C Training and Implementation . . . . . . . . . . . . . . . . . . . . . . . . 19 
+
+C.1 Hyperparameters . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 19 C.2 Implementation Details . . . . . . . . . . . . . . . . . . . . . . . . . . . 20                                                                                                       
+
+> C.2.1 Per-Network Batch Size . .........................20 C.2.2 Train, Validation, and Test Splits . ......................20 C.2.3 Optimisation and Checkpointing . ......................21 C.2.4 Baseline Configurations .........................21
+
+D Full Results on the Five Main Grids. . . . . . . . . . . . . . . . . . . . . . 22 E Evaluation at 36,964 Channels: PEGASE 9241 . . . . . . . . . . . . . . . . . 22 F Additional Safety Analyses. . . . . . . . . . . . . . . . . . . . . . . . . . 22 
+
+F.1 Additional Qualitative Comparison: PEGASE 1354 . . . . . . . . . . . . . . . . 22 F.2 Bus-level aggregate distribution on Polish 2383 . . . . . . . . . . . . . . . . . . 23 
+
+G Full Ablation Results on PEGASE 1354 . . . . . . . . . . . . . . . . . . . . 24 
+
+14 A Benchmark Details 
+
+A.1 Data Generation Pipeline Details A.1.1 Source Signals and Load Archetypes 
+
+All PowerPhase networks are driven by three national-level seed signals from the Open Power System Data archive [ 45 ]: aggregate German load ( DE_load_actual_entsoe_transparency ), solar gen-eration ( DE_solar_generation_actual ), and wind generation ( DE_wind_generation_actual ). We retain 2015–2016 at 15 -minute resolution and fill missing entries by linear interpolation followed by forward and backward fill, yielding 70 ,176 time steps per signal. Each load bus is classified as high-voltage (HV) if its nominal voltage exceeds 110 kV or its nominal active power exceeds 10 MW , and as low-voltage (LV) otherwise. Five normalised daily-shape profiles are constructed from the seed signals: 1. Baseline : the national load curve, normalised to unit mean. 2. Industrial : a flattened version of the national load, μ+αind (Lt −μ) with αind = 0 .3, normalised to unit mean. 3. PV-correlated : national load minus kpv · solar with kpv = 3 .0, normalised to unit mean. 4. Wind-correlated : national load minus kwind · wind with kwind = 2 .0, normalised to unit mean. 5. EV-correlated : the baseline profile boosted by +40% during 18 :00 –22 :00 , normalised to unit mean. Each HV bus is assigned the Industrial profile with probability 0.8 and the Baseline profile with prob-ability 0.2. Each LV bus draws from {Baseline, PV, EV, Wind } with base weights (0 .4, 0.3, 0.2, 0.1) ,modulated by a deterministic region index r = bus_id mod 3 : region 0 doubles the PV weight and region 1 doubles the Wind weight, with weights renormalised before sampling. 
+
+A.1.2 Noise Model 
+
+The per-bus active power injection at time step t is 
+
+Pn,t = P nom  
+
+> n
+
+· sn,t · (1 + εreg  
+
+> r(n),t
+
++ εnode  
+
+> n,t
+
+), (7) where sn,t is the normalised archetype shape, εreg  
+
+> r,t
+
+∼ N (0 , σ reg ) is a spatially correlated regional noise term shared across all buses with region index r(n), and εnode  
+
+> n,t
+
+∼ N (0 , σ n) is independent per-node noise. Negative injections are clipped to zero. Standard deviations are σreg = 0 .03 , σn = 0 .02 
+
+for HV nodes, and σn = 0 .08 for LV nodes. 
+
+A.1.3 Reactive Power and AC Power-Flow Solve 
+
+Reactive power is derived from active power via a per-bus power factor cos ϕn sampled uniformly at initialisation and held fixed across all time steps, 
+
+Qn,t = Pn,t · tan(arccos(cos ϕn)) , (8) with cos ϕn ∈ [0 .96 , 0.99] for HV buses and [0 .90 , 0.99] for LV buses. For every time step we run AC power flow through pandapower [ 42 ] using Newton–Raphson. A magnitude back-off and an Iwamoto multiplier fallback are applied when Newton–Raphson fails to converge, and any remaining failed steps are forward-filled with the last converged state. Convergence rates exceed 99% on every PowerPhase network. Several PEGASE test cases contain generators with numerically zero Qmax − Qmin ranges, which we widen to 5000 MVAr before running the pipeline to avoid division-by-zero in the solver. 
+
+A.2 Normalisation Conventions 
+
+The four variable types are normalised independently before computing all evaluation metrics: 15 Variable Unit Normalisation 
+
+P (active power) MW divided by training-set max |P |
+
+Q (reactive power) MVAr divided by training-set max |Q|
+
+V (voltage magnitude) p.u. kept as-is 
+
+θ (voltage angle) rad kept as-is (converted from degrees) 
+
+The max-abs constants for P and Q are computed on the training split only and reused on validation and test, so no information from the evaluation period leaks into normalisation. 
+
+A.3 Metric Definitions 
+
+Throughout this section, let Z ∈ RB×T ×D be the ground-truth tensor over B prediction windows, T
+
+forecast steps, and D channels. A forecaster produces K scenarios ˆZ(k) with weights w(k) satisfying 
+
+P 
+
+> k
+
+w(k) 
+
+> b,d
+
+= 1 . For sample-based methods, w(k) = 1 /K uniformly. 
+
+A.3.1 CRPS 
+
+We compute CRPS via the energy-score representation, 
+
+CRPS b,t,d = X
+
+> k
+
+w(k) 
+
+> b,d
+
+ˆZ(k) 
+
+> b,t,d
+
+− Zb,t,d − 12 Ew
+
+| ˆZ − ˆZ′|, (9) and exploit the sorted-CDF identity for efficient computation of the second term. With scenarios sorted in ascending order ˆZ(π1) ≤ ˆZ(π2) ≤ · · · and cumulative weights Fi = Pij=1 w(πj ) 
+
+> b,d
+
+,
+
+Ew
+
+| ˆZ − ˆZ′| = 2 
+
+> K−1
+
+X
+
+> i=1
+
+Fi(1 − Fi)  ˆZ(πi+1 ) 
+
+> b,t,d
+
+− ˆZ(πi)
+
+> b,t,d
+
+, (10) which avoids the K × K pairwise difference matrix. The reported CRPS averages CRPS b,t,d over all windows, steps, and channels. 
+
+A.3.2 Distortion 
+
+Distortion measures the quality of the single best hypothesis in each prediction window: 
+
+Distortion = 1
+
+B
+
+> B
+
+X
+
+> b=1
+
+min 
+
+> k
+
+s 1
+
+T D 
+
+X
+
+> t,d
+
+  ˆZ(k) 
+
+> b,t,d
+
+− Zb,t,d 
+
+2. (11) This is the standard winner-takes-all measure used in multiple-choice learning [9; 25]. 
+
+A.3.3 Voltage Safety Metrics 
+
+All safety metrics are computed over voltage channels, indexed as the third coordinate of the interleaved [P, Q, V, θ ] layout. Let V index (b, t, d ) triples on voltage channels, and [Vmin , V max ] = [0 .95 , 1.05] p .u.. The ground-truth violation event is Yb,t,d = 1{Vb,t,d /∈ [Vmin , V max ]} and the per-scenario indicator is ˆY (k) 
+
+> b,t,d
+
+= 1{ ˆV (k) 
+
+> b,t,d
+
+/∈ [Vmin , V max ]}. The per-scenario violation magnitude is 
+
+δ(k) 
+
+> b,t,d
+
+= max(0 , V min − ˆV (k)
+
+> b,t,d
+
+) + max(0 , ˆV (k) 
+
+> b,t,d
+
+− Vmax ). (12) The three voltage safety metrics are then 
+
+Safety _mBrier = 1
+
+|V| 
+
+X
+
+> (b,t,d )∈V
+
+X
+
+> k
+
+w(k)
+
+> b,d
+
+  ˆY (k) 
+
+> b,t,d
+
+− Yb,t,d 
+
+2, (13) 
+
+NECV = 1
+
+|V| 
+
+X
+
+> (b,t,d )∈V
+
+X
+
+> k
+
+w(k) 
+
+> b,d
+
+δ(k)
+
+> b,t,d
+
+, (14) 
+
+CVaR 0.1 = 1
+
+|V| 
+
+X
+
+> (b,t,d )∈V
+
+1
+
+⌈0.1K⌉
+
+X
+
+> k∈T 0.1(b,t,d )
+
+δ(k)
+
+> b,t,d
+
+, (15) where T0.1(b, t, d ) selects the ⌈0.1K⌉ scenarios with the largest δ(k) at (b, t, d ). The tail average for 
+
+CVaR 0.1 uses uniform weights, matching the discrete CVaR estimator of [ 38 ]; weighting the tail by 
+
+w(k) would suppress low-probability extreme scenarios and contradict the risk-averse intent. 16 Estimator choice for Safety_mBrier. The per-scenario form in Eq. (13) differs from the standard Brier on the weighted violation probability ¯Yb,t,d = P 
+
+> k
+
+w(k) 
+
+> b,d
+
+ˆY (k) 
+
+> b,t,d
+
+by a non-negative scenario-disagreement term, and reduces to the standard Brier in the deterministic limit. We retain the per-scenario form because grid contingency screening consumes scenarios individually rather than as a single aggregate violation probability. Each scenario is matched to a concrete remedial-action plan, so the operationally relevant quantity is the average forecast quality across scenarios as they are screened, not the calibration of the aggregate. A forecasting model whose mean violation probability is calibrated but whose scenarios disagree is operationally worse than one whose scenarios agree at the same mean, because the disagreement leaves the operator without a clear contingency to act on. The estimator is also unbiased on K weighted scenarios. 
+
+Interpretation. Safety_mBrier assesses detection (does the forecaster know when violations occur), 
+
+NECV assesses average severity , and CVaR 0.1 assesses tail severity . A forecaster can score well on CRPS while scoring poorly on these metrics if it concentrates probability mass near the conditional mean and underestimates the tails of the voltage distribution. 
+
+A.4 Bus Type Convention 
+
+Each bus is classified into one of three structural types:                        
+
+> Type Name Known (input) Solved (output) 1Slack (reference) V,θP,Q
+> 2PV (generator) P,VQ,θ
+> 3PQ (load) P,QV,θ
+
+For PQ buses (the majority in all PowerPhase networks), P and Q are the exogenous inputs to the power-flow solver and V , θ are the physical responses. This structural asymmetry motivates the causal P, Q → V, θ bridge in PowerForge (§4). 
+
+A.5 Train / Validation / Test Splits 
+
+All six PowerPhase networks share the same temporal split applied to the 70 ,176 -step record (2015-01-01 to 2016-12-31 at 15-minute resolution):         
+
+> Split Period Purpose Train 2015-01-01 to 2016-06-30 Model training Validation Last 10 windows of train Checkpoint selection Test 2016-07-01 to 2016-12-31 Final evaluation
+
+Test evaluation uses rolling-origin testing with 10 prediction windows of length Tp = 96 (one day). Each window uses a context of Th = 672 steps (seven days) immediately preceding the prediction horizon. All reported metrics are averaged over these 10 windows and three random seeds. 
+
+## B PowerForge Architecture 
+
+B.1 Anchor-Delta Details 
+
+The reference Zref in Eq. (4) is computed from the last S × L input steps reshaped into S non-overlapping daily segments of length L = 96 , with S = 7 covering one week. The query Xquery  
+
+> c
+
+is the last Q = 8 steps of the input, and the key for segment s is the last Q steps of that segment. The Pearson correlation ρ between query and key is computed per channel with an ϵ = 10 −8 stabiliser on the variance, and the temperature in the softmax is τ = 0 .5.The reference day is tiled to match the input and prediction lengths, giving Zref input and Zref future .The model consumes x − Zref input as input and emits residuals ˆδ, recovered as ˆy = ˆδ + Zref future .For θ channels, both bias-correction differences and recovered values are wrapped to [−π, π ] via 
+
+atan2(sin , cos) to handle angular discontinuity. 17 A bias-correction term, the mean residual x − Zref input over the last W = 8 input steps, is added to both Zref input and Zref future before forming the residual. This absorbs slow drift between the periodic reference and the most recent observations. For θ channels, all reference and residual differences in this subsection are wrapped via atan2(sin , cos) , with full details in Appendix B.2. 
+
+B.2 Type-Specific Heads 
+
+Each per-type head consumes the fused state h(m) 
+
+> c
+
+= hc + em and emits a residual prediction δ(m)
+
+> c
+
+over the Tp-step horizon. 
+
+P and Q heads. The P and Q heads are unbounded and parameterised as 
+
+δ(m) 
+
+> c
+
+= μ(m) 
+
+> c
+
++ σ(m) 
+
+> c
+
+ϵ(m), (16) where μ(m) 
+
+> c
+
+is a linear projection of the fused state, σ(m) 
+
+> c
+
+is a softplus-activated projection, and 
+
+ϵ(m) is a per-scenario noise vector. The default distribution is ϵ(m) ∼ N (0 , 1) resampled per batch, with a Student-t alternative ( ν = 3 ) also supported. The noise term acts as a stochastic regulariser rather than the source of scenario diversity. Diversity across the m axis is driven by the M learnable scenario embeddings {em}, which differentiate the branches at the input of the head, and is preserved by the pointwise sorting step in Section 4.5 that assigns each branch to a quantile level. 
+
+V and θ heads. The V head passes a learned projection v(m) 
+
+> c
+
+through a tanh gate scaled by a learnable per-type magnitude ∆V ,
+
+δ(m) 
+
+> V,c
+
+= ∆ V · tanh  v(m)
+
+> c
+
+, (17) with ∆V initialised at 0.05 and floored at 10 −4. The initialisation reflects the operationally narrow voltage band around 1.0 p.u., and the floor prevents the gate from collapsing to zero during training. The θ head uses the same tanh-gate form with a fixed ∆θ = π. Both gates structurally bound the residual without an explicit penalty. 
+
+Angular wrapping. For θ channels, both the bias-correction differences in Appendix B.1 and the recovered absolute predictions ˆyθ = ˆδθ + Zref future ,θ are wrapped to [−π, π ] via atan2(sin , cos) to handle the discontinuity at ±π.
+
+B.3 Channel Encoder 
+
+The channel encoder maps the input history x ∈ RB×T ×C into a per-channel representation h ∈
+
+RB×C×H through three additive sources of information. 
+
+Multi-scale temporal backbone. Each channel is processed independently by a shared temporal encoder. The raw signal and three 1-D convolutional filters with kernel sizes k ∈ { 5, 25 , 97 } extract features at 1.25 -hour, 6.25 -hour, and 1-day receptive fields at 15 -minute resolution. Their outputs are concatenated along the feature axis and projected to dimension H through a two-layer GELU MLP. A per-channel scale token, obtained by passing the mean absolute value of each channel through a small MLP, is added to provide scale awareness across heterogeneous variable types. The result is layer-normalised with dropout 0.1.
+
+Node, variable, and calendar features. Each channel additionally carries a learned node embed-ding ( dnode = 8 ) and a variable-type embedding ( dvar = 2 ). These two embeddings are concatenated and projected to dimension H, then added to the backbone output. They provide positional identity (which bus) and type identity (which of P, Q, V, θ ). Calendar features (time of day, day of week) are averaged over the input window, projected to dimension H, and added as a shared offset across channels. 18 B.4 Training Objective Details B.4.1 Full Loss Formulation 
+
+The total training loss is 
+
+L = LOQ +λV Lphys ,V +λθ Lphys ,θ +wwidth Lwidth +wjitter Ljitter +Ladapt +LBeta +wgate Lgate .
+
+(18) The Beta-prior term LBeta keeps the learnable Beta (α, β ) that parameterises τm close to its initial mean and scale, with weights 5 × 10 −3 and 10 −3 respectively. The gate term Lgate is an ℓ2 penalty on the V/ θ pre-backbone context gates toward their initialisation, with wgate = 2 × 10 −4.
+
+B.4.2 Ordered-Quantile Loss ( LOQ )
+
+Given M hypotheses and quantile levels τ1 < · · · < τ M adapted during training through a learnable Beta-base law, the hypotheses are sorted along the scenario axis per channel and a pinball loss is applied: 
+
+LOQ = 1
+
+BM T pC
+
+X
+
+> b,m,t,c
+
+ρτm
+
+ Zb,t,c − ˆZ(m)
+
+> b,t,c
+
+, (19) where ρτ (u) = u(τ − 1{u < 0}) and ˆZ(m) is the m-th sorted hypothesis. 
+
+B.4.3 Physics Regularisation ( Lphys )
+
+Lphys ,V applies a smooth-L1 penalty toward zero on the voltage residual δ(m) 
+
+> c,t
+
+normalised by the learn-able scale ∆V (detached during this computation). This encourages voltage residuals to stay small rela-tive to the gate width. Lphys ,θ penalises the wrapped temporal difference |wrap [−π,π ](ˆθ(m) 
+
+> c,t +1
+
+− ˆθ(m) 
+
+> c,t
+
+)|,which prevents ±π jumps from being scored as oscillation. Both are averaged over scenarios, time, and channels of the relevant variable type. Default weights are λV = 0 .05 and λθ = 0 .01 .
+
+B.4.4 Auxiliary Regularisers Quantile width. Lwidth caps the inter-quantile spread between two reference quantile levels (default τlow = 0 .1 and τhigh = 0 .9, taken as the closest hypotheses on the learned grid) at γ times a per-window per-channel target standard deviation σb,c :
+
+Lwidth = 1
+
+BT pC
+
+X
+
+> b,t,c
+
+ReLU 
+
+ | ˆZ(high)  
+
+> b,t,c
+
+− ˆZ(low)  
+
+> b,t,c
+
+|
+
+γ σ b,c 
+
+− 1
+
+
+
+, (20) with γ = 1 .0 and wwidth = 0 .002 . The relative form prevents per-channel scale heterogeneity from biasing the penalty. 
+
+Temporal jitter. Ljitter discourages step-to-step oscillation of the median-centred quantile fan. After subtracting the median quantile, the temporal differences of the remaining quantiles are normalised by a per-window per-channel target standard deviation and averaged. The median itself is masked from the average. Default weight is wjitter = 0 .001 .
+
+Adaptive variable weights. A learnable vector ω ∈ R4 scales the loss contribution of each variable type. It is initialised from the inverse per-type volatility on the first 40 training batches and clamped to [0 .3, 3.0] . An ℓ2 penalty with weight wadapt = 2 × 10 −4 regularises ω toward unity. 
+
+## C Training and Implementation 
+
+C.1 Hyperparameters 
+
+Table 4 lists the main hyperparameters used across all PowerPhase networks. 19 Table 4: PowerForge hyperparameters (shared across all six PowerPhase networks unless noted otherwise). 
+
+Group Parameter Value Architecture Hidden dimension H 128 
+
+Backbone kernel sizes {5, 25 , 97 }
+
+Segment length 96 
+
+Global tokens K 64 
+
+Embeddings Node embedding dim 8
+
+Variable embedding dim 2
+
+Backbone dropout 0.1
+
+Decoder Number of hypotheses M 16 
+
+Causal bridge scale init 1.0
+
+Scenario scoring linear head Anchor Number of segments S 7
+
+Attention query length 8
+
+Attention temperature τ 0.5
+
+Training Objective mode ordered-quantile Quantile levels linspace( 0.05 , 0.95 , 16 )Learning rate 10 −3
+
+Weight decay 10 −6
+
+Loss weights Physics voltage λV 0.05 
+
+Physics angle λθ 0.01 
+
+Width regulariser 0.002 
+
+Jitter regulariser 0.001 
+
+Adaptive weight reg 2 × 10 −4
+
+V/ θ gate Voltage ∆V init 0.05 
+
+Angle scale π (fixed) Input Context length 672 steps Use full history True 
+
+Table 5: Per-network training batch size for PowerForge. 
+
+Network Batch size ACTIVSg 500 32 
+
+PEGASE 1354 32 
+
+Polish 2383 16 
+
+PEGASE 2869 32 
+
+Polish 3120 32 
+
+PEGASE 9241 8
+
+C.2 Implementation Details C.2.1 Per-Network Batch Size 
+
+Batch sizes are chosen empirically per network to fit within the 96 GB GPU memory of the NVIDIA RTX PRO 6000 Blackwell GPU. Larger networks use smaller batches due to the linear scaling of activation memory with channel count. Table 5 reports the per-network values. 
+
+C.2.2 Train, Validation, and Test Splits 
+
+All six PowerPhase networks share the same temporal split applied to the 70 ,176 -step record (2015-01-01 to 2016-12-31 at 15-minute resolution). The first 18 months form the training set, the last 6
+
+months form the test set, and the final 10 windows of the training period are reserved for validation. Test evaluation uses rolling-origin testing with 10 equally spaced prediction windows of length 
+
+Tp = 96 (one day). Each window uses a context of Th = 672 steps (seven days) immediately 20 preceding the prediction horizon. All reported metrics are averaged over these 10 windows and three random seeds. Table 6: Probabilistic forecasting results on P OWER PHASE across five grids. CRPS, Distortion, and MSE measure fidelity ; Safety_mBrier, NECV, and CVaR 0.1 measure safety . All values are mean ±std 
+
+over three seeds. Bold : best; underline: second best. 
+
+Fidelity ↓ Safety ↓
+
+Grid Model CRPS Distortion MSE Safety_mBrier NECV CVaR 0.1
+
+500-bus DeepAR 0.1156 ±0.0240 0.5537 ±0.1310 0.0049 ±0.0013 0.9519 ±0.0233 0.8220 ±0.2702 2.1753 ±0.6901 ETS 0.0064 ±0.0000 0.0481 ±0.0000 0.0006 ±0.0000 0.0561 ±0.0002 0.0026 ±0.0000 0.0116 ±0.0000 TimeMCL 0.0054 ±0.0003 0.0118 ±0.0001 0.0003 ±0.0002 0.0200 ±0.0200 0.0191 ±0.0191 0.1906 ±0.1907 TimePrism 0.0077 ±0.0003 0.0195 ±0.0023 0.0004 ±0.0002 0.0221 ±0.0062 0.0014 ±0.0008 2.9950 ±1.1445 TACTiS-2 0.0057 ±0.0002 0.0139 ±0.0006 0.0002 ±0.0000 0.0000 ±0.0000 0.0000 ±0.0000 0.0000 ±0.0000 TempFlow 0.0144 ±0.0008 0.0679 ±0.0005 0.0004 ±0.0001 0.2740 ±0.0519 0.0075 ±0.0018 0.0332 ±0.0043 Trans-TempFlow 0.0146 ±0.0006 0.0702 ±0.0011 0.0004 ±0.0001 0.2896 ±0.0581 0.0081 ±0.0024 0.0380 ±0.0100 TimeGrad 0.0160 ±0.0011 0.0954 ±0.0092 0.0010 ±0.0002 0.7630 ±0.0192 0.0977 ±0.0122 0.3316 ±0.0358 
+
+PowerForge (Ours) 0.0030 ±0.0008 0.0072 ±0.0019 0.0001 ±0.0000 0.0000 ±0.0000 0.0000 ±0.0000 0.0000 ±0.0000 1354-bus DeepAR 0.1214 ±0.0342 0.6547 ±0.1231 0.0071 ±0.0013 0.8139 ±0.0766 0.3411 ±0.2354 0.9371 ±0.5997 ETS 0.0088 ±0.0000 0.0500 ±0.0000 0.0007 ±0.0000 0.1506 ±0.0007 0.0069 ±0.0000 0.0292 ±0.0000 TimeMCL 0.0097 ±0.0010 0.0209 ±0.0002 0.0005 ±0.0000 0.0237 ±0.0123 0.0073 ±0.0055 0.0642 ±0.0548 TimePrism 0.0103 ±0.0017 0.0216 ±0.0009 0.0026 ±0.0023 0.0403 ±0.0254 0.0270 ±0.0316 5.0594 ±2.9581 TACTiS-2 0.0059 ±0.0001 0.0251 ±0.0010 0.0004 ±0.0000 0.0118 ±0.0006 0.0008 ±0.0000 0.0011 ±0.0000 TempFlow 0.0148 ±0.0073 0.0571 ±0.0274 0.0009 ±0.0004 0.2822 ±0.2348 0.0108 ±0.0086 0.0290 ±0.0242 Trans-TempFlow 0.0206 ±0.0007 0.0743 ±0.0003 0.0013 ±0.0001 0.4693 ±0.0352 0.0197 ±0.0027 0.0464 ±0.0042 TimeGrad 0.0109 ±0.0048 0.0945 ±0.0575 0.0023 ±0.0024 0.2496 ±0.1912 0.0493 ±0.0471 0.3581 ±0.2910 
+
+PowerForge (Ours) 0.0040 ±0.0003 0.0106 ±0.0003 0.0001 ±0.0000 0.0030 ±0.0000 0.0007 ±0.0000 0.0008 ±0.0000 2383-bus DeepAR 0.0583 ±0.0261 0.4124 ±0.1674 0.0037 ±0.0038 0.5440 ±0.1632 0.0535 ±0.0465 0.1831 ±0.1303 ETS 0.0111 ±0.0000 0.1513 ±0.0000 0.0058 ±0.0000 0.0352 ±0.0001 0.0029 ±0.0000 0.0099 ±0.0000 TimeMCL 0.0070 ±0.0008 0.0147 ±0.0016 0.0002 ±0.0000 0.0109 ±0.0068 0.0037 ±0.0054 0.0322 ±0.0547 TimePrism 0.0096 ±0.0085 0.0250 ±0.0164 0.0015 ±0.0020 0.0294 ±0.0255 0.0061 ±0.0032 3.5007 ±1.1821 TACTiS-2 0.0039 ±0.0000 0.0188 ±0.0000 0.0002 ±0.0000 0.0036 ±0.0000 0.0005 ±0.0000 0.0007 ±0.0000 TempFlow 0.0057 ±0.0001 0.0153 ±0.0026 0.0003 ±0.0000 0.0032 ±0.0001 0.0005 ±0.0000 0.0005 ±0.0000 Trans-TempFlow 0.0060 ±0.0002 0.0174 ±0.0002 0.0003 ±0.0000 0.0032 ±0.0000 0.0005 ±0.0000 0.0005 ±0.0000 TimeGrad 0.0169 ±0.0016 0.1753 ±0.0826 0.0073 ±0.0038 0.5454 ±0.0505 0.1301 ±0.0638 0.8028 ±0.4729 
+
+PowerForge (Ours) 0.0042 ±0.0019 0.0084 ±0.0025 0.0001 ±0.0001 0.0010 ±0.0002 0.0004 ±0.0000 0.0004 ±0.0000 2869-bus DeepAR 0.1589 ±0.0028 0.7711 ±0.0301 0.0132 ±0.0019 0.9145 ±0.0083 0.8922 ±0.0319 2.3529 ±0.0919 ETS 0.0170 ±0.0000 0.1041 ±0.0000 0.0038 ±0.0000 0.0640 ±0.0005 0.0023 ±0.0000 0.0106 ±0.0000 TimeMCL 0.0235 ±0.0016 0.0608 ±0.0005 0.0039 ±0.0002 0.0228 ±0.0066 0.0130 ±0.0055 0.1271 ±0.0551 TimePrism 0.0222 ±0.0018 0.0593 ±0.0026 0.0036 ±0.0003 0.0862 ±0.0457 0.0018 ±0.0011 2.5224 ±1.3747 TACTiS-2 0.0154 ±0.0001 0.0844 ±0.0038 0.0036 ±0.0000 0.0069 ±0.0004 0.0002 ±0.0000 0.0004 ±0.0000 TempFlow 0.0175 ±0.0019 0.0679 ±0.0040 0.0037 ±0.0001 0.0062 ±0.0003 0.0003 ±0.0000 0.0003 ±0.0000 Trans-TempFlow 0.0249 ±0.0069 0.0940 ±0.0238 0.0046 ±0.0007 0.3051 ±0.2633 0.0105 ±0.0095 0.0263 ±0.0228 TimeGrad 0.0269 ±0.0012 0.1707 ±0.0255 0.0123 ±0.0013 0.1201 ±0.0115 0.0162 ±0.0139 0.1361 ±0.1135 
+
+PowerForge (Ours) 0.0112 ±0.0004 0.0344 ±0.0011 0.0012 ±0.0001 0.0025 ±0.0000 0.0002 ±0.0000 0.0002 ±0.0000 3120-bus DeepAR 0.1408 ±0.0148 0.7666 ±0.0842 0.0093 ±0.0017 0.7883 ±0.0160 0.6322 ±0.2054 1.6903 ±0.5156 ETS 0.0180 ±0.0001 0.1954 ±0.0000 0.0075 ±0.0000 0.0987 ±0.0001 0.0069 ±0.0000 0.0225 ±0.0000 TimeMCL 0.0092 ±0.0052 0.0162 ±0.0044 0.0004 ±0.0004 0.1100 ±0.1071 0.0252 ±0.0242 0.2240 ±0.2385 TimePrism 0.0083 ±0.0018 0.0213 ±0.0119 0.0013 ±0.0006 0.0579 ±0.0383 0.0043 ±0.0017 5.4230 ±3.2742 TACTiS-2 0.0043 ±0.0000 0.0297 ±0.0001 0.0002 ±0.0000 0.0428 ±0.0006 0.0033 ±0.0001 0.0070 ±0.0000 TempFlow 0.0056 ±0.0001 0.0178 ±0.0001 0.0003 ±0.0000 0.0188 ±0.0003 0.0033 ±0.0000 0.0035 ±0.0000 Trans-TempFlow 0.0054 ±0.0002 0.0175 ±0.0006 0.0003 ±0.0000 0.0184 ±0.0004 0.0032 ±0.0000 0.0034 ±0.0000 TimeGrad 0.0123 ±0.0069 0.1295 ±0.0503 0.0035 ±0.0039 0.4234 ±0.1359 0.0887 ±0.0508 0.5695 ±0.2468 
+
+PowerForge (Ours) 0.0038 ±0.0011 0.0076 ±0.0010 0.0001 ±0.0000 0.0068 ±0.0000 0.0025 ±0.0000 0.0025 ±0.0000 
+
+C.2.3 Optimisation and Checkpointing 
+
+PowerForge is trained with Adam at learning rate 10 −3 and weight decay 10 −6, for up to 200 epochs per network. Validation loss is computed on the held-out validation windows after each epoch, and the checkpoint with the lowest validation loss is used for evaluation. The learning rate is halved by 
+
+ReduceLROnPlateau when validation loss plateaus. 
+
+C.2.4 Baseline Configurations 
+
+Deep baselines (DeepAR, TempFlow, Transformer-TempFlow, TimeGrad, TACTiS-2, TimeMCL, TimePrism) follow their GluonTS [ 1 ] or original-release reference implementations. We use each baseline’s default optimiser, learning rate schedule, and training epoch budget as specified in its 21 reference codebase, with TACTiS-2 trained on its first stage only due to compute constraints at our scale. We apply the same train, validation, and test splits as PowerForge (Appendix C.2.2). ETS is fitted per channel by maximum likelihood on CPU. 
+
+## D Full Results on the Five Main Grids 
+
+Table 6 reports six metrics on every model across the five main PowerPhase grids, extending the three-grid scoreboard in Table 2. The pattern from the representative grids holds across the full set. PowerForge attains the best score on every metric on PEGASE 1354, PEGASE 2869, and Polish 3120, the best Distortion, Safety_mBrier, and CVaR 0.1 on Polish 2383 with CRPS within seed variance of the strongest baseline, and ties with TACTiS-2 on Safety_mBrier and CVaR 0.1 at ACTIVSg 500 where both achieve zero violations. The two intermediate grids not shown in the main text (PEGASE 1354, PEGASE 2869) follow the same ordering. 
+
+## E Evaluation at 36,964 Channels: PEGASE 9241 
+
+This appendix evaluates PowerForge at the upper end of the PowerPhase scale, on PEGASE 9241 (36,964 channels). The five-grid evaluation in Section 5.2 characterises PowerForge against the full eight-baseline panel. Here we extend the comparison at maximum scale to four baselines spanning three families: TimeMCL and TimePrism (scenario-based), Transformer-TempFlow (conditioned normalising flow), and ETS (statistical reference). DeepAR, TimeGrad, TACTiS-2, and TempFlow are not included in this comparison. TempFlow’s behavior closely tracks Trans-TempFlow on the five main grids. PowerForge, TimePrism, TimeMCL, ETS and Transformer-TempFlow are evaluated with three random seeds {22 , 42 , 3142 }.Table 7: Probabilistic forecasting results on PEGASE 9241 (36,964 channels). CRPS and Distortion measure fidelity ; Safety_mBrier and CVaR 0.1 measure safety . Values are mean ±std over three seeds. 
+
+Bold : best; underline: second best.                                                                    
+
+> Fidelity ↓Safety ↓
+> Model CRPS Distortion Safety_mBrier CVaR 0.1
+> ETS 0.0413 ±0.0001 0.4515 ±0.0009 0.1361 ±0.0001 0.0395 ±0.0001 TimeMCL 0.0349 ±0.0129 0.0629 ±0.0030 0.2326 ±0.3072 0.4726 ±0.4843 TimePrism 0.0112 ±0.0029 0.0427 ±0.0046 0.0506 ±0.0393 1.5350 ±0.3220 Trans-TempFlow 0.0224 ±0.0019 0.0748 ±0.0039 0.0087 ±0.0013 0.0029 ±0.0001
+> PowerForge (Ours) 0.0077 ±0.0008 0.0185 ±0.0024 0.0021 ±0.0000 0.0023 ±0.0000
+
+PowerForge attains the best score on every metric. Two observations transfer the pattern of Section 5.2 to the maximum-scale setting. First, the safety–fidelity trade-off remains visible: TimePrism is competitive on CRPS (0.0112) but its CVaR 0.1 degrades to 1.535, indicating that its hypothesis spread covers infeasible voltage states with substantial probability. Trans-TempFlow follows the inverse pattern observed at 3120-bus, with strong safety scores but weaker fidelity than PowerForge. Second, ETS scales to 36 ,964 channels through per-channel CPU fitting and provides a non-trivial statistical reference, but its CRPS and Distortion sit an order of magnitude above the deep baselines, consistent with the pattern observed on the five main grids. 
+
+## F Additional Safety Analyses 
+
+F.1 Additional Qualitative Comparison: PEGASE 1354 
+
+Figure 4 reports the same three-row qualitative comparison on PEGASE 1354 ( 5,416 channels). PowerForge produces a compact hypothesis set that tracks the diurnal trajectory, TimePrism recovers the shape with a wider spread, and TACTiS-2’s median tracks the morning trough on this nominal-band bus while individual samples retain high-frequency jitter. The qualitative ordering across 22 0.950 0.975 1.000 1.025 
+
+> PowerForge (ours)
+
+2016-07-15 2016-10-31 2016-12-29           
+
+> 0.950 0.975 1.000 1.025
+> TimePrism
+> Jul-14 12:00 Jul-15 12:00 2016-Jul-15 0.950 0.975 1.000 1.025
+> TACTIS-2
+> Oct-30 12:00 Oct-31 12:00 2016-Oct-31 Dec-28 12:00 Dec-29 12:00 2016-Dec-29
+> Ground truth PowerForge (ours) hyp. (high prob) PowerForge (ours) hyp. (low prob) TimePrism hyp. (high prob) TimePrism hyp. (low prob) TACTIS-2 median TACTIS-2 samples Context Forecast
+
+Figure 4: Voltage forecasts on PEGASE 1354 ( 5,416 channels) for a single bus across three test windows. The three-row structure mirrors Figure 3. This bus operates in the nominal voltage band with a morning diurnal trough, in contrast to the boundary-crossing evening-trough bus in Figure 3. TACTiS-2’s median tracks the morning dip across all three windows while samples retain high-frequency jitter, and the qualitative ordering across forecasters is preserved relative to the Polish 2383 case. 10 −4 10 −3 10 −2 10 −1 10 0 
+
+> Per-bus Safety _mBrier threshold x
+> 10 −3
+> 10 −2
+> 10 −1
+> 10 0
+> P(Safety_mBrier >  x)
+
+(a) Distribution of problem buses         
+
+> PowerForge (Ours) Trans-TempFlow TACTiS-2 TimeMCL TimePrism
+> 025 50 75 100 125 150 175 200
+> Bus rank (top 200 worst voltage buses, sorted)
+> 0.0 0.1 0.2 0.3 0.4 0.5
+> Per-bus Safety _mBrier
+
+(b) Head zoom: worst-case bus severity   
+
+> PowerForge (Ours) Trans-TempFlow TACTiS-2 TimeMCL TimePrism
+> 0.17
+> 0.52
+> ∼3×lower worst-case
+
+Figure 5: Bus-level aggregate voltage safety on Polish 2383 ( 9,532 channels), computed as per-bus Safety _ mBrier averaged across all forecast scenarios, time steps, and ten test windows. (a) Survival function of per-bus Safety _mBrier. PowerForge, Trans-TempFlow, and TACTiS-2 (solid) keep ∼97% of 2,383 buses below any non-trivial threshold, while TimeMCL and TimePrism (dashed) place violation probability on nearly all buses. (b) Top-200 worst buses, sorted by severity. PowerForge top-1 bus 0.17 vs 0.52 (TACTiS-2), an ∼3× improvement on the hardest bus. ETS, DeepAR, and TimeGrad are omitted (full results in Table 6). forecasters is preserved relative to the Polish 2383 case in the main text, although the per-step sample jitter of TACTiS-2 is more salient than its low-frequency flattening on this particular bus. 
+
+F.2 Bus-level aggregate distribution on Polish 2383 
+
+Section F.1 extends the channel-level analysis of Section 5.3 to PEGASE 1354. Here we complement the channel-level view with a network-level distributional analysis on Polish 2383, the grid used for the main qualitative figure. The per-bus Safety _mBrier (Figure 5) measures how often and how confidently each model places probability mass outside the [0 .95 , 1.05] p.u. voltage band at each of the 2,383 voltage buses. 23 Panel (a): distribution of problem buses. The horizontal axis is a per-bus Safety _mBrier threshold 
+
+x on log scale, and the vertical axis is the fraction of buses whose per-bus value exceeds x. Two regimes emerge. PowerForge, Trans-TempFlow, and TACTiS-2 (solid) sit near y ≈ 0.025 even at very small x, meaning roughly 97% of buses are forecast cleanly and violations concentrate on a small problem set. TimeMCL and TimePrism (dashed) instead remain near y = 1 .0 until x ≈ 10 −2,indicating pervasive low-magnitude violations across almost all buses. This separation matches the safety-fidelity trade-off in Table 6. 
+
+Panel (b): worst-case bus severity. The horizontal axis is the rank of the worst 200 buses per model, sorted by descending per-bus Safety _mBrier. Among the three sparse-violation methods, PowerForge has top-1 bus severity 0.17 versus 0.49 (Trans-TempFlow) and 0.52 (TACTiS-2). PowerForge’s curve also stays consistently below the other four models across the full top-200 head. 
+
+Network-determined hard buses. The hard-bus set is largely shared across the three sparse-violation models. The top-50 problem buses overlap 100% between PowerForge and Trans-TempFlow, and 96% between PowerForge and TACTiS-2. Per-bus Safety _mBrier rankings across all 2,383 buses are also strongly correlated, with Spearman ρ > 0.999 between PowerForge and Trans-TempFlow and ρ = 0 .928 between PowerForge and TACTiS-2. The hard-bus set is therefore largely determined by the forecasting task on this network rather than by individual model choices. PowerForge does not eliminate the hard-bus phenomenon, but reduces worst-case severity on the same network-determined set. 
+
+## G Full Ablation Results on PEGASE 1354 
+
+Table 8: Ablation on PEGASE 1354 (5,416 channels), single seed. ∆ is the relative CRPS change against the full configuration. Variants are ordered by descending CRPS impact. Lower is better for all metrics.                                                      
+
+> Variant CRPS ↓∆Distortion ↓Safety_mBrier ↓NECV ↓CVaR 0.1↓
+> Full PowerForge 0.00433 –0.0110 0.00301 7.41e-4 7.52e-4 w/o anchor-delta 0.00797 +84% 0.0229 0.03042 8.09e-4 1.90e-3 w/o quantile regularisation 0.00594 +37% 0.0128 0.00310 7.41e-4 7.54e-4 w/o ordered-quantile (WTA) 0.00551 +27% 0.0155 0.00448 7.46e-4 8.71e-4 w/o physics regularisation 0.00550 +27% 0.0120 0.00308 7.39e-4 7.52e-4 w/o cross-type causal bridge 0.00530 +22% 0.0120 0.00307 7.40e-4 7.53e-4 w/o low-rank global mixer 0.00450 +4% 0.0154 0.00303 7.36e-4 7.42e-4
+
+Table 8 extends the PEGASE 1354 ablation in Section 5.4 to the full PowerPhase metric suite (CRPS, Distortion, Safety_mBrier, NECV, CVaR 0.1) under a single random seed. The safety metrics identify anchor-delta as the dominant component for voltage-band feasibility, while the remaining variants leave Safety_mBrier, NECV, and CVaR 0.1 close to the full-model baseline. 24

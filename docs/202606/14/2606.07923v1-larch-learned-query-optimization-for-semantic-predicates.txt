@@ -1,0 +1,474 @@
+Title: Larch: Learned Query Optimization for Semantic Predicates
+
+URL Source: https://arxiv.org/pdf/2606.07923v1
+
+Published Time: Tue, 09 Jun 2026 00:24:29 GMT
+
+Number of Pages: 14
+
+Markdown Content:
+# Larch: Learned Query Optimization for Semantic Predicates 
+
+# Fuheng Zhao ∗
+
+Snowflake Inc. USA fuheng.zhao@snowflake.com 
+
+# Paweł Liskowski ∗
+
+Snowflake Inc. Poland pawel.liskowski@snowflake.com 
+
+# Zihan Li 
+
+Snowflake Inc. USA zihan.li@snowflake.com 
+
+# Benjamin Han 
+
+Snowflake Inc. USA benjamin.han@snowflake.com 
+
+# Puxuan Yu 
+
+Snowflake Inc. USA puxuan.yu@snowflake.com 
+
+# Varich Boonsanong 
+
+Snowflake Inc. USA varich.boonsanong@snowflake.com 
+
+# Dimitris Tsirogiannis 
+
+Snowflake Inc. USA d.tsirogiannis@snowflake.com 
+
+# Anupam Datta 
+
+Snowflake Inc. USA anupam.datta@snowflake.com 
+
+## Abstract 
+
+With the advent of Large Language Models (LLMs), many data-base systems introduced semantic operators that enabled analytical queries over unstructured data (e.g. text, images, videos). Semantic operators typically incur high inference costs and latencies mak-ing semantic (AI) SQL queries challenging to apply on large scale datasets. At the same time, their semantic nature leads database engines to treat them as black boxes, making AISQL queries difficult to optimize. In this paper, we introduce Larch, a framework for op-timizing the execution of semantic filters in AI SQL queries. Larch was inspired by two key observations: i) the high latency of seman-tic operators leaves significant room for computationally-heavy runtime optimization techniques, ii) unstructured data are typically accompanied by semantic information in the form of embeddings allowing for efficient semantic comparisons between AI_FILTER 
+
+prompts and data values. Based on these two key observations, we present two Larch variants: Larch-A2C and Larch-Sel . Larch-A2C encodes arbitrary semantic filters expression tree using an embedding-augmented Gated Graph Neural Network and formu-lates the filter evaluation order as a Markov decision process. In contrast, Larch-Sel leverages a supervised learning model to predict filter selectivities, subsequently applying dynamic programming to find a near-optimal evaluation order for each input row. Evaluated across diverse real-world datasets and comprehensive synthetic workloads, both Larch variants always outperform existing seman-tic filter optimization techniques in terms of token usage. Our results demonstrate that Larch is robust across diverse workloads,  
+
+> ∗Equal contribution. Permission to make digital or hard copies of all or part of this work for personal or classroom use is granted without fee provided that copies are not made or distributed for profit or commercial advantage and that copies bear this notice and the full citation on the first page. Copyrights for components of this work owned by others than the author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or republish, to post on servers or to redistribute to lists, requires prior specific permission and/or a fee. Request permissions from permissions@acm.org.
+> Conference acronym ’XX, Woodstock, NY
+> ©2018 Copyright held by the owner/author(s). Publication rights licensed to ACM. ACM ISBN 978-x-xxxx-xxxx-x/YYYY/MM https://doi.org/XXXXXXX.XXXXXXX
+
+reducing total token cost overhead by 3×–19 × compared to Palimpzest and Quest .
+
+## CCS Concepts 
+
+• Information systems → Data management systems .
+
+## Keywords 
+
+Semantic Operators, Semantic Filters, AI Filters, AI SQL, Query Optimization 
+
+ACM Reference Format: 
+
+Fuheng Zhao, Paweł Liskowski, Zihan Li, Benjamin Han, Puxuan Yu, Varich Boonsanong, Dimitris Tsirogiannis, and Anupam Datta. 2018. Larch: Learned Query Optimization for Semantic Predicates. In Proceedings of Make sure to enter the correct conference title from your rights confirmation email (Conference acronym ’XX). ACM, New York, NY, USA, 14 pages. https: //doi.org/XXXXXXX.XXXXXXX 
+
+## 1 Introduction 
+
+AI SQL and semantic operators have gained significant attention from both academia and industry (e.g., Snowflake, BigQuery, Mi-crosoft) due to the promise of unlocking analytical value from vast amounts of unstructured data. An estimated 80% of contemporary data consists of unstructured formats such as text, images, and audio [ 20 , 47 ]. While traditional SQL relational operators excel at structured data processing, analyzing unstructured content requires operators that understand natural language semantics. AI SQL queries interleave such semantic operators with standard relational operators [ 33 , 42 , 51 , 71 ]. Semantic operators (e.g., AI_FILTER ,
+
+AI_RANK , AI_AGG ) take a natural language prompt as input, which is evaluated by a Large Language Model (LLM) over one or more columns [ 7, 56 , 61 , 72 ]. These operators bridge the gap between unstructured and structured data analytics, enabling users to query unstructured content, such as filtering documents by topic, through a declarative interface. AI SQL queries introduce new optimiza-tion challenges: the database engine must navigate the complex overhead introduced from LLM usages. Unlike structured data processing, where storage and CPU are the primary cost drivers, in AI SQL, the dominant bottleneck shifts 
+
+> arXiv:2606.07923v1 [cs.DB] 6 Jun 2026 Conference acronym ’XX, June 03–05, 2018, Woodstock, NY Fuheng Zhao, Paweł Liskowski, Zihan Li, Benjamin Han, Puxuan Yu, Varich Boonsanong, Dimitris Tsirogiannis, and Anupam Datta
+
+to model inference costs. LLM inference credits constitute approx-imately 80–90% of total query costs [ 31 ]. Because LLMs involve billions to trillions of parameters [ 18 ], each invocation also incurs seconds-level latency [ 15 ]. As a result, the primary objective of op-timizing these queries is to minimize LLM usage. A typical strategy is to defer the execution of semantic operators in the execution plan. The intuition is that cheaper cardinality-reducing relational operators (e.g., non-semantic predicates) should be executed first to reduce the amount of data participating in the expensive infer-ence calls. For example, when the WHERE clause consists of both 
+
+AI_FILTER s and relational predicates, the AI_FILTER operations are evaluated after the relational predicates [ 17 , 31 ]. However, in real production AI SQL workloads, this simple heuristic becomes insufficient when a query contains multiple semantic filters. Let us consider the following example of an AI SQL query that applies multiple AI_FILTER s on the text column of a table: 
+
+Example 1.1. A semantic SQL query retrieves documents from a collection that are both research papers and discuss optimization techniques in database systems. 
+
+ 
+
+> SELECT * FROM docs WHERE AI_FILTER({0} is a research paper ', docs.text) AND AI_FILTER( '{0} discusses optimization techniques in database systems ', docs.text);
+
+ 
+
+In this example, the query contains a conjunction of two seman-tic filters. A naive approach would simply evaluate the filters in the order they are written. However, to minimize expensive LLM invocations, the optimizer should execute the more selective filter first (i.e., the one more likely to return False for a conjunction, or True for a disjunction), short-circuiting evaluation of the remain-ing filter. The primary difficulty in optimizing an AI SQL query containing multiple AI_FILTER s in the WHERE clause is that the selectivity and correlation of these filters are highly data-dependent and unknown a priori. For relational predicates, optimizers rely on pre-computed metadata such as histograms or sketches to estimate selectivity [ 14 , 38 ]. These techniques are effective because struc-tured data exhibits well-defined value distributions. The selectivity of an AI_FILTER , however, depends entirely on latent semantic in-formation that is only revealed at runtime. The semantic predicates consist of arbitrary natural language prompts and hence we cannot pre-compute statistics or sketches. In Larch, we cast the problem of finding the optimal semantic filter evaluation order as an adaptive optimization problem that op-erates at runtime, interleaved with the actual execution of semantic operations. Our approach builds on two key observations. First, the high latency of LLM invocations creates an unusually large window, orders of magnitude wider than in relational query pro-cessing [ 23 , 37 , 60 , 73 ], for online runtime optimizations. Adaptive strategies, that would be impractical for relational SQL predicate, become viable now when each semantic filter evaluation takes hun-dreds of microseconds rather than nanoseconds. For instance, the system can train a lightweight model to learn correlations among filters during query execution and dynamically reorder the filters to reduce LLM inference cost. Because AND and OR are commutative, the evaluation order does not affect the query results; only the cost changes. Second, unstructured data is frequently accompanied by pre-computed embeddings [ 43 , 67 ], which are orders of magnitude cheaper (100 ×–500 ×) than LLM invocations [ 40 ]. For example, Ope-nAI’s in-house data agent [ 67 ] generates document embeddings during ingestion and persists them for query-time use. Prior work treats these representations primarily as static indices for similarity search [ 28 , 39 , 46 ]. We find that raw embedding similarity alone is too noisy to serve as a reliable selectivity signal. Instead, we re-purpose these embeddings as low-cost semantic summaries that provide the filter optimizer with a compressed representation of the input data. When used as input features for a lightweight learned model, embeddings enable accurate per-filter pass-probability pre-dictions that drive cost-aware ordering decisions. Together, these observations open the door to online optimiza-tion during query execution. A natural formulation treats filter ordering as a sequential decision-making task, where an end-to-end reinforcement learning agent learns a cost-aware policy from execution feedback, embedding features, and the expression tree structure. While this holistic approach is general and avoids as-sumptions regarding predicate independence, it faces the significant challenge of jointly recovering selectivity estimates, cost trade-offs, and short-circuit dynamics from a single, sparse reward signal. Our evaluation of this formulation validated that online learning inside the LLM latency window is effective (Section 4), but also revealed that selectivity estimation dominates the remaining optimization er-ror. As a result, we explore a more efficient decomposition approach that separates the learning and planning phases. A lightweight su-pervised model estimates individual filter selectivity directly from embeddings, while a dynamic programming layer computes the optimal evaluation sequence. The decomposition significantly im-proves sample efficiency, as we later demonstrate in the evaluations, replacing the trial-and-error nature of reinforcement learning with targeted selectivity modeling and dynamic planning. To this end, we propose Larch , an online learning framework for 
+
+AI_FILTER optimization, designed to minimize inference costs with-out affecting output quality. Larch realizes both strategies within a shared architecture, yielding two concrete instantiations, Larch-A2C and Larch-Sel, that we evaluate against state-of-the-art meth-ods. Our contributions are as follows: (1) Exploiting the high latency of LLM inference calls, we design a pipelined online learning architecture that overlaps local model training with LLM execution. Both Larch instantia-tions share this design, which reclaims idle CPU cycles for model updates and hides the training overhead. (2) We develop Larch-A2C , an end-to-end reinforcement learn-ing approach that models filter ordering as a Markov decision process. A Gated Graph Neural Network encodes tree struc-ture together with pre-computed data embeddings, and an Advantage Actor-Critic policy learns cost-aware evaluation orders directly from execution feedback. Because the policy conditions on the expression tree state, Larch-A2C can in principle capture complex semantic predicate correlations. (3) Motivated by the observation that accurate per-instance se-lectivity estimation is the primary bottleneck, Larch-Sel , de-composes the problem into online selectivity estimation and exact combinatorial ordering. A lightweight neural model Larch: Learned Query Optimization for Semantic Predicates Conference acronym ’XX, June 03–05, 2018, Woodstock, NY 
+
+predicts per-filter pass probabilities from document and pred-icate embeddings with direct binary supervision from each LLM evaluation. A dynamic-programming solver then de-rives the minimum-cost evaluation sequence. (4) Extensive evaluations across three real-world datasets and three semantic filter workloads demonstrate that both Larch variants always outperform existing optimizers, with Larch-Sel achieving the strongest results: reducing token cost overhead by 3×–19 × compared to state-of-the-art ap-proaches such as Palimpzest and Quest. 
+
+The remainder of this paper is organized as follows. Section 2 provides the necessary background on semantic query optimiza-tion and focuses on optimizations for AI_FILTER s. In Section 3, we present the technical design of the Larch framework: a shared problem formulation and latency-hiding architecture (Section 3.1), the end-to-end Larch-A2C agent (Section 3.2), and the decomposed Larch-Sel approach (Section 3.3). Section 4 describes our experi-mental setup, where we evaluate both Larch variants against state-of-the-art approaches across multiple real-world datasets. Finally, we discuss and conclude our work in Section 5. 
+
+## 2 Background 
+
+AI SQL query optimization operates at two levels, logical and phys-ical. Logical optimization refines the query plan by rewriting it with equivalent semantic operators or selecting the most suitable underlying LLM for a given task. Physical optimization targets exe-cution efficiency, for instance by pushing relational predicates be-low semantic filters or by determining the evaluation order among semantic filters to minimize total inference cost. 
+
+## 2.1 AI SQL Logical Optimizations 
+
+One common strategy at the logical level is operator rewriting. Cortex AI SQL [ 31 ] identifies opportunities to rewrite semantic primitives: when performing a semantic join ( AI_JOIN ) on two relations 𝑅 and 𝑆 , if one relation (e.g., 𝑆 ) represents a small, fixed domain of categories, the optimizer can rewrite the logical plan into an AI_CLASSIFY operation. DocETL [ 51 ] takes a different approach, introducing new operators to improve accuracy. An AI_FILTER 
+
+with complex logic, for instance, may be decomposed into multiple simpler AI_FILTER s. When inputs are long, some systems [ 30 ]fragment each document into sections and evaluate a chain of disjunctive AI_FILTER s over the fragments. A separate body of work uses model cascades to balance cost and accuracy [ 9 , 24 , 26 , 32 , 42 ]. In a cascade, a lightweight proxy model (e.g., a small language model or an embedding-based classi-fier) first evaluates each row. Rows for which the proxy produces a high-confidence prediction are resolved without invoking the oracle; only uncertain rows are forwarded to the full-cost LLM. Larch is orthogonal to these logical-level techniques. It optimizes the evaluation order of multiple AI_FILTER s to minimize total exe-cution cost, independent of how individual operators are rewritten or which models are invoked. 
+
+## 2.2 Semantic Filters Execution Optimizations 
+
+Execution optimization focuses on the physical ordering of se-mantic operators to minimize LLM inference cost. Several sys-tems [ 16 , 17 , 71 ] push semantic filters above relational predicates in the plan, so that each semantic operator processes only rows that already satisfy cheaper relational predicates. When multiple semantic operators are present, however, this strategy alone does not resolve the execution bottleneck. Recent work has therefore explored adaptive planning [ 48 ]. Cortex AI SQL [ 31 ] collects run-time statistics such as selectivity and cost for each semantic filter. Palimpzest (PZ) [ 33 ] follows a sample-based approach, using 5% of the total rows to estimate filter selectivity before execution be-gins. As illustrated in Figure 1 (bottom left), these methods use the estimated selectivity to produce a static evaluation order applied uniformly across all rows. Quest [ 56 ] also estimates filter selectivity from a sample but produces an instance-level ordering rather than a global one. For each input row 𝑟 and filter 𝑖 , Quest defines a priority score 𝑠𝑒𝑙 𝑖  
+
+> 𝑐𝑜𝑠𝑡 𝑟,𝑖
+
+and evaluates filters in descending order of this score. All three approaches rely on a single global selectivity esti-mate per filter, treating each filter’s pass rate as a fixed probability throughout query execution. Leaf-node selectivities are estimated from random samples, while internal-node selectivities are derived under an independence assumption: 𝑠𝑒𝑙 𝑙𝑒 𝑓 𝑡 × 𝑠𝑒𝑙 𝑟𝑖𝑔ℎ𝑡 for conjunc-tions and 1 − ( 1 − 𝑠𝑒𝑙 𝑙𝑒 𝑓 𝑡 )( 1 − 𝑠𝑒𝑙 𝑟𝑖𝑔ℎ𝑡 ) for disjunctions. Real-world workloads, however, frequently exhibit concept drift and local cor-relations (e.g., data clustered by topic or ordered by timestamp) [ 2]. Under such conditions, global estimates may fail to capture local data characteristics and produce suboptimal execution paths. Beyond estimation accuracy, these systems also constrain how the plan is executed. PZ and Quest model the filter node as a boolean expression tree whose internal nodes are AND/OR operators and whose leaves are AI_FILTER predicates (Figure 1). Both systems evaluate filters through a post-order (Left-Right-Node) traversal of this tree. Once the traversal order is fixed (across all rows in PZ, per row in Quest), execution cannot jump between branches or dynamically reorder evaluations. 
+
+## 2.3 Adaptive Query Processing with Learning 
+
+Adaptive processing and runtime plan reordering have a long his-tory in relational query optimization [ 2, 12 , 29 , 62 , 63 ]. To amortize optimization and plan-switching overheads against nanosecond-fast relational operators, these systems typically batch model up-dates over thousands of tuples or rely on simple learning algo-rithms [2]. Larch shares the goal of adjusting query execution on the fly but operates under a fundamentally different cost structure. LLM invocations are orders of magnitude more expensive than relational operators in both latency and monetary cost; The penalty of subop-timal plans are correspondingly larger. A computationally heavier and more accurate model therefore becomes justified at runtime. At the same time, the substantial wait for each LLM response leaves local compute resources idle. Larch exploits this window to update its model between individual evaluation steps, completely hiding the training cost within the LLM inference latency. Conference acronym ’XX, June 03–05, 2018, Woodstock, NY Fuheng Zhao, Paweł Liskowski, Zihan Li, Benjamin Han, Puxuan Yu, Varich Boonsanong, Dimitris Tsirogiannis, and Anupam Datta 
+
+Figure 1: Overview of Larch optimizing semantic filter execution. (Top) The user issues a SQL query containing AI_FILTER 
+
+clauses, which is parsed into a logical execution plan involving the filter expression tree. (Bottom Left) Previous heuristic approaches (e.g., PZ and Quest) rely on global selectivity estimates based on samples to order these filters. PZ determines a static execution order for all documents, while Quest determines an order per document based on a selectivity-to-cost ratio. (Bottom Right) Larch formulates the filter ordering as an online learning process. A learned agent observes (1) the current state at time 𝑡 , allowing it to (2) predict and (3) execute the next 𝑓 𝑖𝑙𝑡𝑒𝑟 𝑡 . At the same time, Larch (4) updates the agent using past observations to dynamically learn the optimal execution order, while (5) waiting for the next observation. 
+
+Figure 2: Fraction of True labels vs. cosine similarity between document and predicate prompt embeddings on GovReport (predicate: “Does the document report on military activities?” ). Higher similarity generally correlates with more True labels, but the relationship is non-monotonic and noisy. 
+
+## 2.4 Semantic Representation 
+
+Embedding-based representations have become widespread in AI-integrated databases [ 41 , 55 ], where high-dimensional vectors cap-ture the semantic essence of semi-structured or unstructured data [ 64 ,68 ]. For multimodal data analytics, embeddings are the new sec-ondary index . In this work, we leverage the growing industry trend of precomputing embeddings during ingestion. OpenAI [ 67 ], for example, generates embeddings for documents, images, and other modalities at ingestion time to support downstream query-ing. A natural question arises: can the vector similarity between a pre-computed data embedding and a filter’s predicate prompt serve as a low-cost proxy for estimating selectivity? We examine this relation-ship in Figure 2 using the GovReport dataset [ 21 ] and a predicate from ScaleDoc [ 69 ]: “Does the document report on military activi-ties?” . Embeddings are generated with the voyage model [ 64 ], and True/False labels are obtained via Snowflake’s AI_FILTER [31 ]. We compute the similarity between vectors using cosine similarity [ 65 ]. As Figure 2 shows, higher cosine similarity generally correlates with a higher fraction of True labels, yet the highest similarity scores correspond to a 100% False rate, and the overall trend ex-hibits substantial noise. These findings reflect a broader challenge in instruction-following for text embeddings [ 44 ]. Current embed-ding models tend to capture general topical overlap rather than strict predicate semantics, making raw vector similarity too noisy to drive filter ordering on its own. Larch repurposes the cost-effective embeddings as high-dimensional input features for an online learn-ing agent that learns the non-linear mapping between embedding representations and actual LLM predicate outcomes. 
+
+## 3 Larch 
+
+Larch is an online learning framework designed to optimize the ex-ecution of a filter node containing multiple AI_FILTER s. A physical AI SQL query plan can have multiple such filter nodes. Given a set of semantic predicates F = {𝑓 1, 𝑓 2, . . . , 𝑓 𝑛 } organized in a boolean expression tree, Larch determines the evaluation order of these predicates that minimizes total LLM inference cost. Consistent with prior work [33, 56], we measure cost in terms of token usage. As data flows through the filter node, the framework observes execution outcomes and refines its ordering decisions. We present two instantiations. Larch-A2C (Section 3.2) formulates filter order-ing as a Markov decision process and learns an end-to-end policy Larch: Learned Query Optimization for Semantic Predicates Conference acronym ’XX, June 03–05, 2018, Woodstock, NY 
+
+via reinforcement learning, using a Gated Graph Neural Network to encode expression tree structure and data embeddings. Accurate selectivity estimation, not multi-step planning, proves to be the pri-mary challenge in filter ordering (Section 4). Larch-Sel (Section 3.3) therefore takes a decomposed approach: a lightweight neural model estimates per-filter selectivities online, and exact dynamic program-ming derives the minimum-cost ordering over the expression tree. Both instantiations share a latency-hiding architecture (Section 3.4) that overlaps local model training with remote LLM inference. 
+
+## 3.1 Problem Formulation 
+
+Consider a filter node whose boolean expression tree 𝑇 contains the 𝑛 predicates of F as leaves, connected by ∧ (AND) and ∨ (OR) operators. For each data row 𝑟 entering the node, the engine must evaluate a subset of predicates sufficient to resolve 𝑇 (𝑟 ) to a boolean value. Evaluating predicate 𝑓 𝑖 on row 𝑟 requires an LLM inference call with token cost 𝑐 (𝑓 𝑖 , 𝑟 ) and yields a boolean outcome. After each evaluation, the result is substituted into 𝑇 and the tree is reduced: an AND node with a False child resolves to False , and an OR node with a True child resolves to True , short-circuiting any remaining siblings. The evaluation order directly determines which predicates are short-circuited and, consequently, the total cost incurred per row. Let 𝜎 denote an adaptive ordering policy that, given the current partially evaluated tree, selects the next predicate to evaluate. The optimization objective is to find 𝜎 ∗ that minimizes the expected total token cost over all rows: 
+
+𝜎 ∗ = arg min  
+
+> 𝜎
+
+E𝑟 
+
+"|𝜎 (𝑟 ) | ∑︁ 
+
+> 𝑡 =1
+
+𝑐  𝑓 𝜎 𝑡 (𝑟 ) , 𝑟 #
+
+where |𝜎 (𝑟 )| is the number of evaluations before the tree resolves for row 𝑟 .The key challenge is that predicate selectivities and correlations are unknown a priori and may vary across the data. The objective 𝜎 ∗
+
+therefore cannot be computed ahead of time. Instead, Larch approx-imates it through online learning, refining its ordering decisions from execution feedback as rows are processed. The two instanti-ations differ in how they use this feedback. Larch-A2C learns an end-to-end policy over the full decision sequence, while Larch-Sel estimates per-predicate statistics and delegates ordering to dynamic programming. 
+
+## 3.2 Larch-A2C 
+
+Larch-A2C formulates filter ordering as a Markov Decision Process (MDP) [ 6] and learns an evaluation policy via Advantage Actor-Critic (A2C) [58]. The MDP is defined as follows: 
+
+• Episode ( 𝑒𝑝 ): Each data row 𝑟 𝑒𝑝 entering the filter node constitutes an episode. The episode begins when 𝑟 𝑒𝑝 arrives and ends when the expression tree 𝑇 resolves to a boolean value. 
+
+• State ( 𝑠 𝑒𝑝,𝑡 ): At step 𝑡 , the state encodes the current topology of the partially evaluated expression tree together with the semantic embeddings of remaining predicates and the input row. 
+
+• Action ( 𝑎 𝑒𝑝,𝑡 ): The agent selects one unevaluated leaf predi-cate from the current tree for LLM evaluation. 
+
+• Transition: The selected predicate is evaluated, its boolean result is substituted into the tree, and the tree is reduced via short-circuit logic to produce the next state 𝑠 𝑒𝑝,𝑡 +1.Filter ordering poses a challenge for standard optimization meth-ods because the action space changes at every step: as predicates are resolved and branches collapse, the set of remaining candidates shrinks and the cost implications of each choice shift with the evolving tree topology. A2C addresses this through two cooper-ating networks [ 19 ]. Its Actor produces a probability distribution over the current set of candidate predicates and adapts as leaves are resolved. A companion Critic estimates the total remaining cost from the current state, so the Actor can assess the quality of each decision relative to a learned cost baseline. 
+
+3.2.1 State Encoding via Gated Graph Neural Network. The expres-sion tree changes shape after every evaluation: resolved predicates are removed, satisfied branches are pruned, and the remaining topology shrinks. The state representation must therefore handle a variable-size, evolving graph. Larch-A2C encodes the state as a directed graph G𝑒𝑝,𝑡 = (V 𝑒𝑝,𝑡 , E𝑒𝑝,𝑡 ) that mirrors the current ex-pression tree with bidirectional edges between each parent and its children [ 5, 66 ], building upon graph representation learning in query optimization [ 8 , 36 ]. Each leaf node representing a predicate 
+
+𝑓 𝑖 carries the concatenation of document and predicate embeddings, 
+
+E𝑑𝑜𝑐 ∥E𝑓 𝑖𝑙𝑡𝑒𝑟 . Internal nodes for ∧ and ∨ operators carry learnable embeddings e∧ and e∨. A shared projection W𝑝𝑟𝑜 𝑗 maps all node features into a common hidden space. To propagate structural information, we apply 𝐾 rounds of 
+
+operator-aware message passing. The distinction between AND and OR edges matters because short-circuit semantics differ: under AND, a single False child resolves the entire conjunction, while under OR, a single True child resolves the disjunction. Separate weight matrices for AND and OR edges allow the network to learn these distinct cost dynamics: 
+
+m(𝑘 ) 
+
+> 𝑢 →𝑣
+
+= W𝑟 (𝑢,𝑣 ) 
+
+> 𝑚𝑠𝑔
+
+h(𝑘 −1) 
+
+> 𝑢
+
+, h(𝑘 ) 
+
+> 𝑣
+
+= GRU 
+
+Í𝑢 ∈ N ( 𝑣 ) m(𝑘 )
+
+> 𝑢 →𝑣
+
+, h(𝑘 −1)
+
+> 𝑣
+
+
+
+,
+
+where 𝑟 (𝑢, 𝑣 ) ∈ {∧ , ∨} labels each edge with its operator type. GRU denotes a Gated Recurrent Unit [ 10 ]. After 𝐾 rounds, mean pooling yields a global tree summary: 
+
+hG = 1
+
+|V | ∑︁ 𝑣 ∈ V 
+
+h(𝐾 ) 
+
+> 𝑣
+
+.
+
+3.2.2 Policy and Value Networks. For each candidate leaf 𝑓 𝑖 , the Actor receives the concatenation of the leaf’s own embedding h(𝐾 )
+
+> 𝑓 𝑖
+
+(enriched by 𝐾 rounds of message passing with its structural neigh-bors) and the global tree context hG . A two-layer MLP scores each candidate, and a softmax restricted to the current set of unevaluated leaves produces the policy: 
+
+𝜋 𝜃 (𝑓 𝑖 | 𝑠 𝑒𝑝,𝑡 ) =
+
+exp  MLP 𝑎𝑐𝑡𝑜𝑟 ([ h(𝐾 ) 
+
+> 𝑓 𝑖
+
+∥hG ]) Í𝑓 𝑗 ∈ A 𝑒𝑝,𝑡 exp  MLP 𝑎𝑐𝑡𝑜𝑟 ([ h(𝐾 ) 
+
+> 𝑓 𝑗
+
+∥hG ]) 
+
+where A𝑒𝑝,𝑡 is the set of unevaluated leaves. Actions are sampled from 𝜋 𝜃 for on-policy exploration. The policy’s stochasticity dimin-ishes as it converges. The Critic estimates the expected remaining cost from the cur-rent state, 𝑉 𝜙 (𝑠 𝑒𝑝,𝑡 ), by passing the LayerNorm-normalized [ 3]Conference acronym ’XX, June 03–05, 2018, Woodstock, NY Fuheng Zhao, Paweł Liskowski, Zihan Li, Benjamin Han, Puxuan Yu, Varich Boonsanong, Dimitris Tsirogiannis, and Anupam Datta 
+
+global tree summary through a three-layer MLP. The difference between the Critic’s predictions before and after each step yields the advantage, which tells the Actor whether the chosen action performed better or worse than expected: 
+
+ˆ𝐴 𝑒𝑝,𝑡 = 𝑟 𝑒𝑝,𝑡 + 𝑉 𝜙 (𝑠 𝑒𝑝,𝑡 +1) − 𝑉 𝜙 (𝑠 𝑒𝑝,𝑡 ).
+
+3.2.3 Reward and Training. Each evaluation step receives reward 
+
+𝑟 𝑒𝑝,𝑡 = −𝑐 (𝑓 𝑖 )/ 𝐶 ep,total , where 𝑐 (𝑓 𝑖 ) denotes the token cost of eval-uating predicate 𝑓 𝑖 (we drop the row argument from 𝑐 (𝑓 𝑖 , 𝑟 ) since each step processes a fixed row) and 𝐶 ep,total sums the costs of all predicates in the initial tree. Because AI filter outputs are single-token booleans, the cost of each predicate is fully determined by the prompt (e.g., document and semantic predicate) and, similarly to PZ and Quest, 𝐶 ep,total can be pre-computed before any evalua-tion begins. Normalizing by 𝐶 ep,total makes the cumulative reward comparable across episodes with different numbers of predicates and stabilizes learning. Since every step incurs a strictly negative reward, the episode return improves whenever a short-circuit resolves the tree early and terminates the episode before further costs accumulate. The agent therefore learns to prioritize predicates whose outcomes are most likely to trigger short-circuit resolutions. The model is trained online via single-step temporal difference [ 57 ], minimizing: 
+
+L = − log 𝜋 𝜃 (𝑎 𝑡 | 𝑠 𝑡 ) ˆ𝐴 𝑡 
+
+| {z }
+
+> policy
+
++ 𝛼 𝑣 𝑉 𝜙 (𝑠 𝑡 ) − 𝑦 𝑡 2
+
+| {z }
+
+> value
+
+− 𝛽 H 𝜋 𝜃 (· | 𝑠 𝑡 )| {z }
+
+> entropy
+
+where 𝑦 𝑡 = 𝑟 𝑡 +𝑉 𝜙 (𝑠 𝑡 +1) is the TD target, 𝛼 𝑣 scales the value loss, and the entropy coefficient 𝛽 decays via cosine annealing to transition from exploration to exploitation [34]. We choose A2C with single-step TD(0) updates for architectural and empirical reasons. The latency-hiding pipeline processes one transition at a time: the background thread computes a gradient from a single (𝑠 𝑡 −1, 𝑎 𝑡 −1, 𝑟 𝑡 −1, 𝑠 𝑡 ) tuple during each LLM call. A2C is a natural fit for this single-sample, on-policy regime. PPO [ 50 ], by contrast, is designed for multiple optimization epochs over batches of thousands of transitions. With only 2–10 transitions per episode, multi-epoch PPO overfits to the sampled trajectory and degrades performance. Even a single-pass variant yields incon-sistent gains across dataset sizes and does not justify the added complexity of importance-weighted updates under asynchronous training. Similarly, single-step TD(0) is preferred over multi-step returns because each update bootstraps from only one value esti-mate and tolerates the one-round staleness inherent in the pipeline. GAE( 𝜆 =0.95 ) [ 49 ] chains multiple stale value estimates under the latency-hiding pipeline and amplifies error in our experiments. With episodes of 2–10 steps and 𝛾 =1, multi-step returns provide negligible additional benefit over TD(0). Larch-A2C provides a general end-to-end solution that makes no assumptions about predicate independence. However, the critical challenge in filter ordering is predicting per-instance selectivities accurately. If per-predicate pass probabilities are estimated accu-rately, the ordering step can be solved exactly rather than learned. Larch-Sel exploits this decomposition, trading the generality of the end-to-end policy for greater sample efficiency. 
+
+## 3.3 Larch-Sel 
+
+Larch-Sel decomposes filter ordering into two subproblems solved independently: (1) estimating the pass probability of each predicate for the current document, and (2) computing the minimum-cost evaluation sequence given those estimates. The decomposition rests on a key observation: if per-predicate selectivities are known, the optimal ordering over AND/OR trees can be computed exactly under an independence assumption. The learning task therefore reduces to a binary classification problem. 
+
+3.3.1 Online Selectivity Estimation. For each predicate 𝑓 𝑖 and doc-ument 𝑟 , Larch-Sel maintains an online estimate of the pass proba-bility ˆ𝑠 𝑖 (𝑟 ) = Pr [𝑓 𝑖 (𝑟 ) = True ] using a lightweight MLP. Document and predicate embeddings E𝑑𝑜𝑐 , E𝑓 𝑖𝑙𝑡𝑒𝑟 ∈ R𝑑 are first projected to a lower-dimensional space R𝑝 via learned linear maps W𝑑𝑜𝑐 , W𝑓 𝑖𝑙𝑡𝑒𝑟 .Let d = W𝑑𝑜𝑐 E𝑑𝑜𝑐 and f = W𝑓 𝑖𝑙𝑡𝑒𝑟 E𝑓 𝑖𝑙𝑡𝑒𝑟 denote the projected embeddings. The network input concatenates four components: d
+
+and f retain the individual document and predicate signals, d ⊙ f
+
+captures their multiplicative interaction, and cos (d, f) measures di-rectional alignment independent of magnitude. In total, the feature vector has dimension 3𝑝 +1:
+
+x = [ d ∥ f ∥ d ⊙ f ∥ cos (d, f) ] 
+
+A two-layer network maps x to a pass probability ˆ𝑠 𝑖 (𝑟 ) = 𝜎 (MLP (x)) .The model is trained online with binary cross-entropy loss after each observed LLM evaluation via a single gradient step per sam-ple. All predicates share the same network weights, so knowledge transfers across predicates from the first evaluation onward. 
+
+3.3.2 Minimum-Cost Ordering via Dynamic Programming. Given the selectivity estimates ˆ𝑠 𝑖 and token costs 𝑐 𝑖 , we compute the evaluation order that minimizes expected total cost under an inde-pendence assumption: each Pr [𝑓 𝑖 =True ] is treated as independent of outcomes already observed for other predicates on the same doc-ument. For flat conjunctions and disjunctions with uniform costs, the optimal ordering reduces to sorting by selectivity [ 22 ]; Krish-namurthy et al. [ 27 ] extend this to heterogeneous costs. Our DP formulation generalizes these classical results to arbitrary AND/OR trees with per-predicate costs and selectivities. Let 𝑇 ′ denote a partially evaluated expression tree with remain-ing predicates R, and let OPT (𝑇 ′) be the minimum expected cost to resolve 𝑇 ′. The optimal value satisfies the recurrence: 
+
+OPT (𝑇 ′) = min  
+
+> 𝑓 𝑖 ∈ R
+
+h
+
+𝑐 𝑖 + ˆ𝑠 𝑖 ·OPT (𝑇 ′ |𝑓 𝑖 =True )+( 1− ˆ𝑠 𝑖 ) · OPT (𝑇 ′ |𝑓 𝑖 =False )
+
+i
+
+where 𝑇 ′ |𝑓 𝑖 =𝑣 is the tree obtained by substituting the result 𝑣 for 𝑓 𝑖 
+
+and applying short-circuit reduction. The base case is OPT (𝑇 ′) = 0
+
+when 𝑇 ′ has resolved to a boolean. Memorization over tree struc-tures makes the computation tractable: the number of distinct sub-problems is bounded by 𝑂 (3𝑛 ), yielding an overall complexity of 
+
+𝑂 (𝑛 · 3𝑛 ), where 𝑛 is the number of semantic predicates. For rea-sonably large amount of semantic predicates 𝑛 =10 , this amounts to roughly 590K states, and the solver runs around 20 milliseconds on a single CPU core. At each decision point, Larch-Sel selects the predicate that achieves the minimum in the top-level recurrence. Because selectivity predic-tions depend on the document embedding and the model is updated after every LLM evaluation, the optimal ordering may change from Larch: Learned Query Optimization for Semantic Predicates Conference acronym ’XX, June 03–05, 2018, Woodstock, NY 
+
+one document to the next. The DP solver is therefore re-invoked per document with fresh estimates. 
+
+## 3.4 Latency-Hiding Implementation 
+
+Both Larch instantiations train their models online during query execution. In a production query execution engine, evaluating an 
+
+AI_FILTER requires an LLM inference call, which accounts for the vast majority of both total execution cost and wall-clock time [ 31 ]. A naive synchronous implementation would stall the query en-gine and leave the remote LLM idle while the system waits for local model updates. To avoid this, we introduce an asynchronous pipelined architecture that overlaps local model updates with re-mote LLM inference. We illustrate the pipeline using Larch-A2C, where the delayed-update structure is most complex. Larch-Sel follows the same three-phase pattern with its MLP gradient step replacing the actor-critic update. Consider the execution at round 𝑡 . For brevity, we omit the episode index 𝑒𝑝 . The system progresses through three phases: 
+
+• Phase 1: Predict then Update. Given the current state 𝑠 𝑡 ,the local policy model samples the next action 𝑎 𝑡 (the selected filter). Immediately after sampling, the system dispatches a background thread to train the actor-critic networks. The thread computes gradients using the completed transition 
+
+(𝑠 𝑡 −1, 𝑎 𝑡 −1, 𝑟 𝑡 −1, 𝑠 𝑡 ). The first three components are buffered from the previous round. The new state 𝑠 𝑡 is strictly required here: the Critic’s TD target 𝑦 𝑡 −1 = 𝑟 𝑡 −1 + 𝑉 𝜙 (𝑠 𝑡 ) must boot-strap the value of the next state, which only becomes avail-able after the tree is pruned in the Record phase. Phase 1 corresponds to Steps 1 and 2 in Figure 1. 
+
+• Phase 2: LLM Inference. The selected predicate is sent to the remote LLM for evaluation. A single inference call typically takes hundreds of milliseconds to seconds [ 15 ], orders of magnitude longer than a local gradient step. Dur-ing this waiting period, the background thread launched in Phase 1 finishes updating the model weights, so the train-ing overhead is hidden behind the LLM round-trip. Phase 2 corresponds to Steps 3 and 4 in Figure 1. 
+
+• Phase 3: Record . Upon receiving the boolean evaluation results from the LLM, the agent prunes the resolved branches from the expression tree to establish the next state 𝑠 𝑡 +1. The system caches the partial transition (𝑠 𝑡 , 𝑎 𝑡 , 𝑟 𝑡 ) in a memory buffer. The main thread then immediately advances to round 
+
+𝑡 + 1, where 𝑠 𝑡 +1 serves as the new input state. Phase 3 corresponds to Step 5 in Figure 1. The pipelined design ensures that model updates are hidden behind LLM execution latency. Consequently, the training is shifted by exactly one round: the model optimization performed during the execution phase of round 𝑡 + 1 uses the observations from round 
+
+𝑡 . For Larch-A2C, the one-step staleness maintains policy stability since updates are incremental and gradient-clipped. For Larch-Sel, the same pipeline applies with a lighter computational footprint: the background thread performs a single binary cross-entropy gradient step on the selectivity MLP rather than a full actor-critic update. Delayed-update has minimal impact on the quality of the learned policy (Section 4). 
+
+## 4 Experimental Evaluation 4.1 Experimental Setup 
+
+We implemented Larch and the baseline methods in Python, us-ing an evaluation framework built from two components: a query simulator and an optimization engine. The simulator processes a collection of documents against a specified expression tree. For each 
+
+AI_FILTER encountered during execution, the simulator queries a local cached Llama 3.1-70B outcomes. The oracle outcomes in this cache are obtained by running each (document, semantic predicate) pair through Snowflake’s AI_FILTER operator [ 54 ] with Llama 3.1-70B at temperature 0 1. The simulator accounts for short-circuiting in AND and OR operations, tracking token costs only for evaluated predicates. The resulting metrics thus highlight the computational savings in an optimized semantic predicate order. In additional to Larch, the optimization engine also implements the semantic predicate evaluation logic of the algorithms listed below. We re-implemented the selectivity algorithms from PZ [ 33 ]and Quest [ 56 ]. The primary comparison is between PZ, Quest, and the two proposed variants Larch-A2C and Larch-Sel. We also include the baseline of Simple algorithm which involves no filter reordering. For the ablation study we additionally implement Ora-clePZ and OracleQuest, which bypass the sampling phase and use the dataset’s ground-truth global selectivities. The oracles eliminate global-selectivity estimation error entirely and serve as a strong upper bound on what the PZ and Quest formulations can achieve. In summary, the algorithms are as follows: 
+
+• Simple : No filter reordering. Evaluates the AI_FILTER s in a fixed order that is independent of any selectivity or cost estimate. 
+
+• PZ [33]: Reorders the tree based on estimated selectivity. 
+
+• Quest [56 ]: Reorders the tree with priority (𝑓 𝑖 ) = 𝑠 𝑖 /𝑐 𝑖 , where 
+
+𝑠 𝑖 is the estimated selectivity and 𝑐 𝑖 is the token cost, pro-ducing per-row orderings. 
+
+• OraclePZ : Runs PZ with the true selectivities computed over all rows (unavailable in practice). 
+
+• OracleQuest : Runs Quest with the true selectivities in place of the estimates. 
+
+• Optimal : Exhaustive enumeration of all valid orderings per row, selecting the minimum-cost ordering for each row. Serves as the lower bound. 
+
+• Larch-A2C : Adjusts the evaluation order online using an A2C agent that continuously refines its policy. 
+
+• Larch-Sel : Separates instance-wise selectivity estimation from planning. A supervised model predicts per-row selec-tivities and dynamic programming derives the order for each row. 
+
+Implementation Details. Following the original papers [ 33 , 56 ], we use a 5% sample ratio for both PZ and Quest, trading estimation accuracy against sampling cost. At compile time, both methods ran-domly sample 5% of the documents and estimate each AI_FILTER ’s global selectivity. Because each sampled row requires an actual 
+
+AI_FILTER evaluation, the sample phase is an upfront LLM-token cost paid before query execution begins. PZ then constructs a fixed 
+
+> 1A temperature of 0 employs greedy sampling to improve the stability and determinism of the LLM’s responses. Conference acronym ’XX, June 03–05, 2018, Woodstock, NY Fuheng Zhao, Paweł Liskowski, Zihan Li, Benjamin Han, Puxuan Yu, Varich Boonsanong, Dimitris Tsirogiannis, and Anupam Datta
+
+evaluation plan from these estimates, while Quest reorders the filters per row using a priority score derived from the global selec-tivity estimates and the token cost. Both baselines assume predicate independence. For an AND subtree with children 𝑖 , the subtree selec-tivity is 𝑠 and = Î𝑖 𝑠 𝑖 , and for an OR subtree it is 𝑠 or = 1 − Î𝑖 (1 − 𝑠 𝑖 ).Accordingly, AND subtrees prioritize predicates with low selectivi-ty/priority, while OR subtrees prioritize those with high selectivi-ty/priority. Larch-A2C uses a 3-layer operator-aware GGNN with hidden di-mension 256. Leaf nodes are initialized from document and semantic-filter embeddings, and the actor and critic MLPs each have hidden dimension 128. Larch-Sel’s selectivity predictor is a two-layer MLP with approximately 144K trainable parameters, trained with a sig-moid output and binary cross-entropy loss. Document and filter embeddings are first projected to a 64-dimensional space. The pro-jections are then concatenated with their element-wise product and their cosine similarity to form a 193-dimensional feature vector, which is passed through a hidden layer of size 64 with ReLU activa-tion. We use widely adopted defaults: a learning rate of 3×10 −4 [25 ]and, for Larch-A2C, an entropy coefficient 𝛽 = 0.01 [ 4 ]. All experi-ments are seeded for reproducibility. 
+
+Datasets. We evaluate on three long-document benchmark col-lections spanning three domains and roughly two orders of magni-tude in corpus size: 
+
+• GovReport [21]: 973 government report summaries; 
+
+• PubMed [11]: 2,500 biomedical research documents; 
+
+• BigPatent [52]: 67,072 patent documents. 
+
+Query Workloads. We take human-written natural-language semantic predicates from ScaleDoc [ 69 ]: each dataset is paired with a pool of 20 predicates. From each pool we construct three workload patterns: Conjunction (100% ∧), Disjunction (100% ∨), and Mixed 
+
+(50% ∧ / 50% ∨). Relational workload studies report that 62% of Snowflake queries contain between 3 and 10 filters [ 59 ], so we vary the leaf count from 2 to 10 with 5 expressions per count. The resulting pool contains 45 expressions per workload pattern and hence 135 expressions per dataset. 
+
+Embeddings. The documents and queries semantic represen-tations are produced with Voyage AI’s embedding service [ 64 ], specifically the voyage-multilingual-2 model invoked through Snowflake’s AI_EMBED function [ 53 ]. Document embeddings ( Edoc ∈
+
+R1024 ) and filter-predicate embeddings ( Efilter ∈ R1024 ) are precom-puted and loaded at experiment time, a widely used industry set-ting [67]. Both serve as input features for Larch’s learning agents. 
+
+Cost Metric. The primary metric is total token cost : the sum of tokens consumed across all LLM calls during execution. We also report the number of LLM invocations as a secondary metric. 
+
+## 4.2 Main Experimental Results 
+
+Table 1 reports token consumption and API calls for Larch and the baselines across the three datasets, with Optimal providing the per-row lower bound. On every entry in the table, Larch-A2C uses fewer LLM calls and fewer tokens than Simple, PZ, and Quest, and Larch-Sel improves further on Larch-A2C. Larch closes most of the overhead gap to the Optimal lower bound. Across all configurations, Larch-Sel outperforms Larch-A2C. The performance gap reflects a structural property of the problem: the filter ordering task is estimation-dominated . Once per-instance selec-tivities are accurately estimated, the optimal ordering can be com-puted exactly under a predicate-independence assumption, leaving no residual for a learned policy to improve upon. Larch-A2C must recover selectivity estimates, cost trade-offs, and short-circuit dy-namics jointly from a single reward signal over short episodes (2 to 10 steps). Larch-Sel isolates the estimation step and solves it with super-vised learning (each LLM call yields a binary label), then delegates ordering to an exact DP solver. The decomposition is more sample-efficient on the workloads we evaluate, where predicate correlations are moderate and the independence assumption holds well. Both variants outperform every baseline, confirming that online learning for semantic filter evaluation is effective under either formulation. Larch-A2C establishes the online-learning architecture and exposes the estimation bottleneck, and Larch-Sel is the refinement that directly targets that bottleneck. 
+
+Performance on GovReport. GovReport is the smallest of the three collections at 973 documents. The short horizon (i.e., number of rows) is a stress test for online learning: with fewer rows to observe, both the actor-critic networks in Larch-A2C and the selectivity MLP in Larch-Sel have less signal to converge on. Even under these conditions, both variants use fewer LLM calls and fewer tokens than PZ and Quest on all three workloads. Larch-Sel reduces the token overhead (the excess tokens consumed above the Optimal lower bound) by 3–5x over PZ and Quest, and Larch-A2C by 1.4–3x. In the Conjunction workload, for example, PZ and Quest each consume 42.5M tokens over 60.4K calls. Larch-A2C brings this to 35.8M tokens over 50.9K calls, and Larch-Sel further to 34.5M tokens over 49.2K calls, saving 8M tokens over PZ and Quest and cutting the token overhead from 31.8% to 7.1% ( a 4.5x reduction ). The Conjunction case also exposes a failure mode of sampling-based baselines. Averaged over the 45 Conjunction queries, selectiv-ity sits at 1%, so short-circuiting on the first filter already eliminates most LLM calls in the Simple baseline. The 5% upfront sampling cost paid by PZ and Quest therefore exceeds what their reordering can recover, and both baselines end up consuming more tokens than Simple (Table 1). Larch avoids this by learning from the execution itself rather than paying a separate upfront sampling cost (see §4.7). In the Mix and Disjunction workloads, Larch-Sel lands at 5.1% and 5.8% token overhead, essentially having minimal overheads compared to the Optimal lower bound. Online learning therefore recovers a near-optimal policy even with under a thousand rows. 
+
+Performance on PubMed. PubMed contains 2.5K biomedical documents, roughly 2.5x the GovReport corpus. The longer horizon gives both Larch variants more rows to learn from, and the gap to PZ and Quest widens accordingly. Both Larch variants outperform Simple, PZ, and Quest on every workload. In the Mix workload, PZ and Quest incur token overheads of 26.1% and 29.5%. Larch-A2C brings this down to 20.4% and Larch-Sel to 6.5%. In absolute terms, Larch-Sel consumes 82.8M tokens against PZ’s 97.9M and Quest’s 100.6M, saving 15.1M and 17.8M tokens respectively. The gap is widest on the Conjunction workload: PZ and Quest both require 151.3K calls and 63.9M tokens at 30.4% overhead, while Larch-Sel reaches 121.9K calls and 51.5M tokens at Larch: Learned Query Optimization for Semantic Predicates Conference acronym ’XX, June 03–05, 2018, Woodstock, NY 
+
+Table 1: Performance comparison across datasets and workload types. Workloads include Mix, Conjunction, and Disjunction. Next to each workload is the average selectivity (passing the semantic filter expressions). For each method, we report the total number of Calls and all tokens usage (Tok) for AI_FILTER s, along with their percentage overhead relative to the Optimal lower-bound. Lower overhead is better. We highlight the best result among all algorithms, excluding Optimal, in bold. Dataset Workload 
+
+(avg sel.) 
+
+Simple PZ Quest Larch-A2C Larch-Sel Optimal 
+
+Calls Tok Calls Tok Calls Tok Calls Tok Calls Tok Calls Tok GovReport units K MMix (17%) (128.6 90.6) (110.1 77.7) (121.2 85.6) (107.1 75.4) (95.4 67.3 ) (90.8 64.0) (+41.7% +41.5%) (+21.2% +21.3%) (+33.5% +33.6%) (+17.9% +17.8%) (+5.1% +5.1%) - -Conjunction (1%) (52.6 36.7) (60.4 42.5) (60.4 42.5) (50.9 35.8) (49.2 34.5 ) (46.0 32.2) (+14.4% +14.0%) (+31.3% +31.8%) (+31.2% +31.8%) (+10.6% +11.2%) (+6.8% +7.1%) - -Disjunction (45%) (188.1 133.1) (178.9 126.9) (178.9 126.9) (170.2 120.7) (161.0 114.1 ) (152.1 107.9) (+23.7% +23.4%) (+17.7% +17.6%) (+17.7% +17.6%) (+11.9% +11.9%) (+5.9% +5.8%) - -PubMed units K MMix (28%) (316.5 133.4) (234.2 97.9) (240.6 100.6) (223.0 93.5) (197.9 82.8 ) (186.0 77.7) (+70.1% +71.7%) (+25.9% +26.1%) (+29.3% +29.5%) (+19.9% +20.4%) (+6.4% +6.5%) - -Conjunction (3%) (167.4 71.5) (151.3 63.9) (151.3 63.9) (127.4 54.0) (121.9 51.5 ) (116.4 49.0) (+43.8% +45.9%) (+30.0% +30.4%) (+30.0% +30.4%) (+9.5% +10.2%) (+4.7% +5.0%) - -Disjunction (83%) (283.4 117.2) (228.0 93.8) (228.0 93.8) (209.2 85.9) (196.2 80.6 ) (173.2 71.2) (+63.7% +64.7%) (+31.7% +31.8%) (+31.7% +31.8%) (+20.8% +20.6%) (+13.3% +13.2%) - -BigPatent units M MMix (36%) (8.5 1188.5) (6.1 852.1) (6.2 861.0) (5.5 776.8) (4.9 688.1 ) (4.8 663.9) (+78.5% +79.0%) (+28.2% +28.3%) (+29.6% +29.7%) (+15.8% +17.0%) (+3.5% +3.6%) - -Conjunction (4%) (4.2 585.2) (4.2 579.9) (4.2 580.1) (3.3 464.0) (3.2 446.7 ) (3.2 439.4) (+31.6% +33.2%) (+31.1% +32.0%) (+31.1% +32.0%) (+5.0% +5.6%) (+1.4% +1.7%) - -Disjunction (89%) (7.9 1105.8) (5.2 720.7) (5.2 720.6) (4.3 604.6) (4.1 567.4 ) (3.9 546.4) (+99.7% +102.4%) (+31.1% +31.9%) (+31.1% +31.9%) (+9.6% +10.7%) (+3.5% +3.8%) - -  
+
+> (a) GovReport (b) PubMed (c) BigPatent
+
+Figure 3: Normalized token cost relative to the Optimal lower bound, plotted against the selectivity of the full semantic-filter expression, for (a) GovReport, (b) PubMed, and (c) BigPatent. A value of 1.0 equals the Optimal lower bound; lower normalized token cost (y-axis) is better. 
+
+5.0% overhead ( a 6x reduction over PZ and Quest ). Larch-A2C sits between the two at 127.4K calls and 54.0M tokens. 
+
+Performance on BigPatent. BigPatent is the largest corpus at 67K documents, with metrics that run into millions of LLM calls and hundreds of millions of tokens per workload. Both Larch variants have room to fully converge over this horizon, and Larch-Sel lands within 1.7–3.8% of the Optimal lower bound on all three workloads. In the Mix workload, PZ and Quest consume over 850M tokens (28–29% overhead). Larch-Sel reduces consumption to 688.1M to-kens (3.6% overhead), saving 164M tokens and 1.2M LLM calls relative to PZ. The Conjunction workload exposes the limits of sampling-based planning at scale. With 4% average selectivity, the cost of a plan depends strongly on which filter a given row will fail first, infor-mation that a single global selectivity estimate cannot capture. PZ and Quest settle on plans at 32.0% overhead (4.2M calls, ∼580M tokens), barely below the Simple baseline’s 33.2%. Larch-A2C pulls the overhead down to 5.6%, and Larch-Sel to 1.7% (446.7M tokens against the Optimal 439.4M), a 19x reduction over PZ and Quest .The Disjunction workload tells a similar story. PZ and Quest sit at 31.9% overhead (720.6M tokens), while Larch-Sel reaches 3.8% (567.4M tokens). The gap between Larch and the baselines therefore Conference acronym ’XX, June 03–05, 2018, Woodstock, NY Fuheng Zhao, Paweł Liskowski, Zihan Li, Benjamin Han, Puxuan Yu, Varich Boonsanong, Dimitris Tsirogiannis, and Anupam Datta 
+
+widens as the corpus grows, and Larch-Sel tracks the Optimal line to within single-digit percent on every BigPatent workload. 
+
+## 4.3 Sensitivity to Selectivity 
+
+To characterize how each method behaves across the full selectiv-ity range, we pool the queries from all three workloads for each dataset and group them by the selectivity of the full semantic-filter expression. Figure 3 plots the resulting token cost, normalized by the Optimal lower bound: a value of 1.0 matches Optimal, and lower is better. Larch-Sel produces the lowest normalized token cost on every selectivity bucket of all three datasets, and its trajectory stays flat and close to 1.0 across the entire range. Larch-A2C is below Simple, PZ, and Quest almost everywhere, with occasional overlap with PZ or Quest near the middle of the range. Simple is the worst method by a wide margin and exceeds twice the Optimal cost in the worst buckets. PZ and Quest improve over Simple on most of the range but degrade at very low and very high selectivity. On GovReport (Fig-ure 3a), their normalized token cost spikes when the expression selectivity falls below 0.3 or rises above 0.6. These are the regimes in which a single global selectivity estimate is least informative: at low selectivity almost every row fails on some filter, and at high selectivity almost every row passes. The optimal ordering in each bucket depends on which filter a given row will short-circuit on, which global estimates cannot resolve. Larch-Sel sidesteps the prob-lem by predicting per-row selectivity, and Larch-A2C adapts its policy from online feedback. 
+
+## 4.4 Sensitivity to the Number of Semantic Filters 
+
+To see how each method scales with query complexity, we aggre-gate the results from all three workloads by the number of leaf filters in the expression (2 to 10 filters). Figure 4 shows the resulting trajectories. Simple’s curve is noisy and incurs the highest cost, exceeding 2.0× Optimal at several filter counts. PZ and Quest both scale poorly: their normalized token cost grows steadily with the fil-ter count and reaches over 1.5× Optimal on PubMed and BigPatent. Their global-selectivity heuristic does not hold up as trees grow, because per-row variation in which filter short-circuits first is not captured by a single global 𝑠 𝑖 , and this error accumulates over more ordering decisions in the tree. Both Larch variants scale more gracefully. Larch-A2C’s over-head sits below PZ’s and Quest’s and is flatter on all three datasets. Larch-Sel’s curve is essentially flat and stays within a narrow band around 1.0 regardless of filter count. The reason is specific to Larch-Sel’s decomposition: an accurate per-row selectivity predictor is sufficient to recover the optimal ordering under predicate inde-pendence (see §4.2), and adding more filters does not change the predictor’s per-call accuracy. PZ and Quest, by contrast, rely on a single global estimate per filter, and the estimation error compounds as the number of semantic filter grows. 
+
+## 4.5 Sensitivity to Horizon 
+
+To see how the horizon (the number of rows the online model observes) affects convergence, we varied the volume of BigPatent documents from 8K to 67K (Figure 5). Throughout this range, both Larch variants consistently outperform PZ and Quest, maintaining a lower cost overhead at every interval along the curve. The baselines exhibit relatively static performance: the Simple baseline remains flat, plateauing above 1.5×, while PZ and Quest show minor fluc-tuations around the 1.17 × mark. This suggests that these methods lack the adaptive mechanisms required to refine their strategies as more data becomes available. In contrast, Larch-A2C’s normalized cost decreases steadily as the horizon extends, and Larch-Sel con-verges to a near-optimal 1.02 × cost at 67K. This trend is consistent with online learning dynamics: a longer horizon provides a richer training signal, allowing both models to converge on more efficient policies over the number of observations. 
+
+## 4.6 Compare Larch to Oracle-based PZ and Quest 
+
+To isolate the effect of estimation accuracy from the cost of esti-mation, we compare Larch against OraclePZ and OracleQuest. The oracles receive the true global selectivity of every filter upfront, eliminating both the global-estimation error and the 5% sampling cost. The question is whether Larch’s advantage comes from its embedding-based model or from the structural choice to route per row. Table 2 answers this: Larch-Sel outperforms both oracles on eight of the nine configurations and essentially ties on the ninth (Gov-Report Conjunction, ∼34.5M tokens: 7.0% for the oracles, 7.1% for Larch-Sel). On the BigPatent Mix workload, for example, OraclePZ and OracleQuest incur 14.8% and 16.2% overhead, while Larch-Sel reaches 3.6%, saving 74–83M tokens over the oracles. Larch-A2C beats the oracles at BigPatent scale on the Conjunction and Disjunc-tion workloads (5.6% vs. 8.6% on Conjunction, 10.7% vs. 14.4% on Disjunction). On the other configurations, Larch-A2C stays slightly behind the oracles while still ahead of PZ and Quest. The result pins down the architectural gain. Even the true global selectivity 𝑠 𝑖 is an average over rows, and the best static plan still picks the wrong ordering for any row whose per-row selectivity deviates from that mean. By predicting per-row selectivity directly and feeding it to the DP planner, Larch-Sel recovers the row-level variation that the global average washes out. The oracle comparison therefore reinforces the estimation-dominated view in §4.2: once per-row estimation is good enough, exact planning is straightfor-ward. 
+
+## 4.7 Larch Update and Inference Latency 
+
+The latency-hiding design works only if Larch’s model update fits inside one LLM call’s latency. Table 3 reports the average time Larch spends on inference (choosing the next filter to evaluate) and on training (updating the model) across the three datasets. Larch-A2C’s inference completes in under 2 ms, and its backward pass plus parameter update take 9–11 ms. The higher training cost reflects the complexity of the Gated Graph Neural Network (GGNN). Larch-Sel’s training is consistent at under 7 ms, while its inference takes 8–10 ms because of the DP pass that plans the ordering from the predicted per-row selectivities. Larch: Learned Query Optimization for Semantic Predicates Conference acronym ’XX, June 03–05, 2018, Woodstock, NY 
+
+(a) GovReport (b) PubMed (c) BigPatent 
+
+Figure 4: Normalized token count compared to the number of semantic filters for (a) GovReport, (b) PubMed, and (c) BigPatent datasets. Table 2: Performance comparison across datasets and workload types for Oracle PZ, Oracle Quest, A2C-Larch, and A2C-Sel. We highlight the best result among these algorithms. Dataset Workload                                                                                                             
+
+> (avg sel.)
+> OraclePZ OracleQuest Larch-A2C Larch-Sel
+> Calls Tok Calls Tok Calls Tok Calls Tok GovReport units KMMix (17%)  99.2 (+9.3%) 70.0 (+9.4%)  113.3 (+24.7%) 80.0 (+25.0%)  107.1 (+17.9%) 75.4 (+17.8%)  95.4 (+5.1%) 67.3 (+5.1%) 
+> Conjunction (1%)  49.0 (+6.5%) 34.5 (+7.0%)  49.0 (+6.5%) 34.5 (+7.0%)  50.9 (+10.6%) 35.9 (+11.2%)  49.2 (+6.8%) 34.5 (+7.1%) 
+> Disjunction (45%)  172.6 (+13.5%) 122.5 (+13.5%)  172.6 (+13.5%) 122.5 (+13.5%)  170.8 (+11.9%) 120.7 (+11.9%)  161.0 (+5.9%) 114.1 (+5.8%) 
+> PubMed units KMMix (28%)  210.5 (+13.1%) 88.0 (+13.3%)  214.5 (+15.3%) 89.6 (+15.4%)  223.0 (+19.9%) 93.5 (+20.4%)  197.9 (+6.4%) 82.8 (+6.5%) 
+> Conjunction (3%)  123.6 (+6.2%) 52.4 (+6.8%)  123.6 (+6.2%) 52.4 (+6.8%)  127.4 (+9.5%) 54.0 (+10.2%)  121.9 (+4.7%) 51.5 (+5.0%) 
+> Disjunction (83%)  204.2 (+17.9%) 83.8 (+17.7%)  204.2 (+17.9%) 83.8 (+17.7%)  209.2 (+20.8%) 86.1 (+20.6%)  196.2 (+13.3%) 80.6 (+13.2%) 
+> BigPatent units MMMix (36%)  5.5 (+14.7%) 762.1 (+14.8%)  5.5 (+16.2%) 771.5 (+16.2%)  5.5 (+15.8%) 776.8 (+17.0%)  4.9 (+3.5%) 688.1 (+3.6%) 
+> Conjunction (4%)  3.4 (+7.9%) 477.0 (+8.6%)  3.4 (+8.0%) 477.0 (+8.6%)  3.3 (+5.0%) 464.0 (+5.6%)  3.2 (+1.4%) 446.7 (+1.7%) 
+> Disjunction (89%)  4.5 (+13.9%) 625.2 (+14.4%)  4.5 (+13.9%) 625.2 (+14.4%)  4.3 (+9.6%) 604.6 (+10.7%)  4.1 (+3.5%) 567.4 (+3.8%) 
+
+Figure 5: Normalized token cost vs. number of documents in BigPatent (summed across three workloads). 
+
+A single AI_FILTER evaluation issues an LLM call that typically takes hundreds of milliseconds [ 1, 15 ]. The delayed-update mech-anism (§3.4) runs the training step on a background thread while the next LLM call is in flight, so the ∼10 ms update is fully hidden behind one LLM invocation. Inference stays on the critical path but is an order of magnitude cheaper than one LLM call, and the to-ken savings from reordering dominate this small overhead. PZ and Quest, by contrast, pay an upfront 5% sampling cost in LLM calls 
+
+Table 3: Average latency (ms) for Larch’s inference and train-ing steps, averaged over the three workloads for each dataset. Larch-A2C Larch-Sel Dataset Inference Training Inference Training 
+
+GovReport 1.59 9.56 8.51 6.82 PubMed 1.69 10.25 7.96 6.89 BigPatent 1.76 10.43 9.75 6.89 before execution begins. Larch avoids that startup cost by learning from the AI_FILTER evaluations the query already performs. 
+
+## 4.8 Ablation Study on Delayed Update 
+
+The latency-hiding argument in §4.7 assumes that deferring the gradient update by one LLM call does not noticeably degrade plan quality. Table 4 tests that assumption: for each query we measure the percentage change in total token usage when the gradient update runs asynchronously on a background thread compared to a synchronous blocking update, and report the mean and standard deviation over 135 queries per dataset. Conference acronym ’XX, June 03–05, 2018, Woodstock, NY Fuheng Zhao, Paweł Liskowski, Zihan Li, Benjamin Han, Puxuan Yu, Varich Boonsanong, Dimitris Tsirogiannis, and Anupam Datta 
+
+Table 4: Per-query percentage difference in total token us-age with the delayed update enabled versus disabled. Values are the mean and standard deviation across 135 queries per dataset. Dataset Larch-A2C Larch-Sel 
+
+GovReport −0.22% ± 3.67% −0.06% ± 0.68% 
+
+PubMed −0.59% ± 4.66% −0.06% ± 0.52% 
+
+BigPatent +0.21% ± 3.96% −0.01% ± 0.11% 
+
+The mean change is within ±0.6% for every cell, so delaying the update does not cost tokens on average. The standard devia-tions separate the two variants: Larch-Sel stays under 0.7% on all datasets, while Larch-A2C sits at 3.7–4.7%. Larch-Sel is a supervised selectivity predictor whose target is row-local, so a one-step-stale gradient does not alter its predictions. Larch-A2C is an on-policy actor-critic whose gradient depends on the current rollout, so a one-step-delayed update is equivalent to training slightly off-policy. It adds per-query variance without shifting the mean, consistent with the near-zero, mixed-sign Larch-A2C means in Table 4. The delayed update is therefore safe to deploy for both variants, with the caveat that Larch-A2C shows run-to-run variation that Larch-Sel does not. 
+
+## 5 Discussion and Conclusion 
+
+In this work, we presented Larch, an online learning framework designed to optimize the execution of AI_FILTER s. We observe that LLM invocations inherently incur high token costs and ex-ecution latencies. In our design, Larch moves away from global selectivity heuristics. Instead, it leverages the pre-computed embed-dings of unstructured data to dynamically learn instance-specific semantic predicate evaluation orders. We introduced two Larch variants: Larch-A2C, which formulates the problem as a Markov Decision Process, and Larch-Sel, which relies on supervised learning for instance-wise selectivity estimation. Our extensive evaluations demonstrate that while both variants outperform state-of-the-art approaches like PZ and Quest, Larch-Sel consistently achieves the best results, providing up to a 19 × reduction in token cost over-head compared to existing baselines. Moreover, by learning the local semantic correlations on the fly, Larch-Sel surpasses even the Oracle approaches (OraclePZ and OracleQuest) equipped with the ground-truth selectivity as a prior. Finally, we strategically overlap model updates with the inherently long latencies of LLM inference. With this approach, Larch delivers substantial cost savings without compromising wall-clock time on local model updates. A key insight from our work is the difference in how these two learning paradigms handle semantic filter evaluation. The end-to-end MDP formulation (Larch-A2C) must learn selectivity estima-tion, cost trade-offs, and tree-aware planning jointly from a sparse reward signal. Decomposing the problem into supervised selectiv-ity prediction and exact combinatorial ordering (Larch-Sel) proves far more sample-efficient: Larch-Sel quickly achieves near-optimal performance across our evaluation datasets (1K to 67K documents), whereas Larch-A2C requires significantly more data to converge. Larch assumes that document embeddings are available at query time, consistent with current practice where production systems generate embeddings at ingestion [ 43 , 67 ]. When embeddings are unavailable, the same pipeline can compute them on the fly before evaluating AI_FILTER predicates. Current API pricing places em-bedding calls roughly 100 ×–500 × below LLM filter calls [ 40 ], so even moderate reductions in predicate evaluations usually amor-tize the extra embedding cost. We also note that the cost advan-tage narrows when AI_FILTER runs on very small models with per-call costs closer to embedding models. Occasionally, upstream text-rewriting operators can also invalidate stored embeddings; re-embedding the transformed rows is then required for accurate selectivity prediction. While Larch establishes a strong foundation for AI_FILTER s ex-ecution optimization, several promising avenues remain for future exploration. First, we intend to investigate the application of cross-query transfer learning [ 13 , 45 , 70 ] to further enhance the system’s overall efficiency and mitigate the cold start. Additionally, we plan to extend the Larch framework beyond AI_FILTER s to manage complex semantic pipelines involving aggregations and joins. By applying the embedding-augmented learning approach to these broader operations, the system could leverage cross-column and cross-table semantic correlations, enabling aggressive data pruning to reduce the expensive LLM inference costs. Motivated by the high execution latency of semantic operators and the untapped potential of pre-computed embeddings, we argue that adaptive query processing represents a vital paradigm shift for semantic query execution. Powered by online learning and semantic awareness, this approach enables data systems to remain performant and cost-effective as they process complex, multimodal data in the emerging era of unbounded databases [35]. 
+
+## References                               
+
+> [1] Artificial Analysis. 2026. LLM Leaderboard - Comparison of over 100 AI models from OpenAI, Google, DeepSeek & others. https://artificialanalysis. ai/leaderboards/models/prompt-options/multiple/medium. [2] Ron Avnur and Joseph M. Hellerstein. 2000. Eddies: Continuously Adaptive Query Processing. In Proceedings of the 2000 ACM SIGMOD International Conference on Management of Data . ACM, 261–272. doi:10.1145/342009.335420 [3] Jimmy Lei Ba, Jamie Ryan Kiros, and Geoffrey E. Hinton. 2016. Layer Normaliza-tion. arXiv:1607.06450 [stat.ML] https://arxiv.org/abs/1607.06450 [4] Stable Baselines. [n. d.]. A2C — Stable Baselines documentation. https://stable-baselines.readthedocs.io/en/master/modules/a2c.html. [5] Peter W. Battaglia, Jessica B. Hamrick, Victor Bapst, Alvaro Sanchez-Gonzalez, Vinicius Zambaldi, Mateusz Malinowski, Andrea Tacchetti, David Raposo, Adam Santoro, Ryan Faulkner, Caglar Gulcehre, Francis Song, Andrew Ballard, Justin Gilmer, George Dahl, Ashish Vaswani, Kelsey Allen, Charles Nash, Victoria Langston, Chris Dyer, Nicolas Heess, Daan Wierstra, Pushmeet Kohli, Matt Botvinick, Oriol Vinyals, Yujia Li, and Razvan Pascanu. 2018. Relational inductive biases, deep learning, and graph networks. arXiv:1806.01261 [cs.LG] https: //arxiv.org/abs/1806.01261 [6] Richard Bellman. 1957. A Markovian decision process. Journal of mathematics and mechanics 6, 5 (1957), 679–684. [7] Ugur Cetintemel, Shu Chen, Alexander W. Lee, and Deepti Raghavan. 2025. Making Prompts First-Class Citizens for Adaptive LLM Pipelines. arXiv:2508.05012 [cs.DB] https://arxiv.org/abs/2508.05012 [8] Jin Chen, Guanyu Ye, Yan Zhao, Shuncheng Liu, Liwei Deng, Xu Chen, Rui Zhou, and Kai Zheng. 2022. Efficient Join Order Selection Learning with Graph-based Representation. In Proceedings of the 28th ACM SIGKDD Conference on Knowledge Discovery and Data Mining (Washington DC, USA) (KDD ’22) . Association for Computing Machinery, New York, NY, USA, 97–107. doi:10.1145/3534678.3539303 [9] Lingjiao Chen, Matei Zaharia, and James Zou. 2023. FrugalGPT: How to Use Large Language Models While Reducing Cost and Improving Performance. arXiv:2305.05176 [cs.LG] https://arxiv.org/abs/2305.05176 [10] Junyoung Chung, Caglar Gulcehre, KyungHyun Cho, and Yoshua Bengio. 2014. Empirical Evaluation of Gated Recurrent Neural Networks on Sequence Modeling. arXiv:1412.3555 [cs.NE] https://arxiv.org/abs/1412.3555
+
+Larch: Learned Query Optimization for Semantic Predicates Conference acronym ’XX, June 03–05, 2018, Woodstock, NY 
+
+[11] Franck Dernoncourt and Ji Young Lee. 2017. PubMed 200k RCT: a Dataset for Sequential Sentence Classification in Medical Abstracts. In Proceedings of the Eighth International Joint Conference on Natural Language Processing (Volume 2: Short Papers) , Greg Kondrak and Taro Watanabe (Eds.). Asian Federation of Natural Language Processing, Taipei, Taiwan, 308–313. https://aclanthology. org/I17-2052/ [12] Amol Deshpande and Joseph M. Hellerstein. 2004. An Initial Study of Overheads of Eddies. ACM SIGMOD Record 33, 1 (2004), 44–49. doi:10.1145/974121.974129 [13] Benedikt Didrich, Haralampos Gavriilidis, Vasilis Gkolemis, Matthias Boehm, and Volker Markl. 2025. Learning to Accelerate: Tuning Data Transfer Parameters. 
+
+Proceedings of the VLDB Endowment. ISSN 2150 (2025), 8097. [14] Philippe Flajolet, Éric Fusy, Olivier Gandouet, and Frédéric Meunier. 2007. Hy-perLogLog: The Analysis of a Near-Optimal Cardinality Estimation Algorithm. 
+
+Proceedings of the International Conference on Analysis of Algorithms (AofA) (2007), 127–146. https://algo.inria.fr/flajolet/Publications/FlFuGaMe07.pdf [15] Yao Fu, Leyang Xue, Yeqi Huang, Andrei-Octavian Brabete, Dmitrii Ustiugov, Yuvraj Patel, and Luo Mai. 2024. {ServerlessLLM }:{Low-Latency } serverless inference for large language models. In 18th USENIX Symposium on Operating Systems Design and Implementation (OSDI 24) . 135–153. [16] Vasilis Giannakouris, Murat Koc, Konstantinos Gkoutzis, and Jan Rellermeyer. 2025. SwellDB: Dynamic Query-Driven Table Generation with Large Language Models. In Proceedings of the ACM SIGMOD International Conference on Man-agement of Data . Association for Computing Machinery, New York, NY, USA. doi:10.1145/3722212.3725136 [17] Parker Glenn, Parag Pravin Dakle, Liang Wang, and Preethi Raghavan. 2024. BlendSQL: A Scalable Dialect for Unifying Hybrid Question Answering in Rela-tional Algebra. arXiv:2402.17882 [cs.CL] https://arxiv.org/abs/2402.17882 [18] Aaron Grattafiori, Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, and et al. 2024. The Llama 3 Herd of Models. arXiv:2407.21783 [cs.AI] https://arxiv.org/ abs/2407.21783 [19] Ivo Grondman, Lucian Busoniu, Gabriel A. D. Lopes, and Robert Babuska. 2012. A Survey of Actor-Critic Reinforcement Learning: Standard and Natural Policy Gra-dients. IEEE Transactions on Systems, Man, and Cybernetics, Part C (Applications and Reviews) 42, 6 (2012), 1291–1307. doi:10.1109/TSMCC.2012.2218595 [20] Tam Harbert. 2021. Tapping the power of unstructured data . MIT Sloan School of Management. https://mitsloan.mit.edu/ideas-made-to-matter/tapping-power-unstructured-data [21] Luyang Huang, Shuyang Cao, Nikolaus Parulian, Heng Ji, and Lu Wang. 2021. Efficient Attentions for Long Document Summarization. arXiv:2104.02112 [cs.CL] https://arxiv.org/abs/2104.02112 [22] Toshihide Ibaraki and Tiko Kameda. 1984. Optimal Weighted Ancestor Systems and Their Application to Testing Membership in Context-Free Languages and Their Subsets. J. Comput. System Sci. 28, 2 (1984), 232–249. [23] David Justen, Daniel Ritter, Campbell Fraser, Andrew Lamb, Allison Lee, Thomas Bodner, Mhd Yamen Haddad, Steffen Zeuch, Volker Markl, and Matthias Boehm. 2024. Polar: Adaptive and non-invasive join order selection via plans of least resistance. Proceedings of the VLDB Endowment 17, 6 (2024), 1350–1363. [24] Daniel Kang, Edward Gan, Peter Bailis, Tatsunori Hashimoto, and Matei Zaharia. 2022. Approximate Selection with Guarantees using Proxies. arXiv:2004.00827 [cs.DB] https://arxiv.org/abs/2004.00827 [25] Andrej Karpathy. 2019. A recipe for training neural networks. https://karpathy. github.io/2019/04/25/recipe/ [26] Ferdi Kossmann, Ziniu Wu, Alex Turk, Nesime Tatbul, Lei Cao, and Samuel Madden. 2024. CascadeServe: Unlocking Model Cascades for Inference Serving. arXiv:2406.14424 [cs.DC] https://arxiv.org/abs/2406.14424 [27] Ravi Krishnamurthy, Haran Boral, and Carlo Zaniolo. 1986. Optimization of Nonrecursive Queries. In Proceedings of the 12th International Conference on Very Large Data Bases (VLDB) . 128–137. [28] Quoc V. Le and Tomas Mikolov. 2014. Distributed Representations of Sentences and Documents. arXiv:1405.4053 [cs.CL] https://arxiv.org/abs/1405.4053 [29] Quanzhong Li, Minglong Shao, Volker Markl, Kevin S. Beyer, Latha Colby, and Guy M. Lohman. 2007. Adaptively Reordering Joins during Query Execution. In 
+
+Proceedings of the 23rd International Conference on Data Engineering (ICDE) . IEEE, 26–35. doi:10.1109/ICDE.2007.367848 [30] Yiming Lin, Madelon Hulsebos, Ruiying Ma, Shreya Shankar, Sepanta Zeigham, Aditya G. Parameswaran, and Eugene Wu. 2024. Towards Accurate and Efficient Document Analytics with Large Language Models. arXiv:2405.04674 [cs.DB] https://arxiv.org/abs/2405.04674 [31] Paweł Liskowski, Benjamin Han, Paritosh Aggarwal, Bowei Chen, Boxin Jiang, Nitish Jindal, Zihan Li, Aaron Lin, Kyle Schmaus, Jay Tayade, Weicheng Zhao, Anupam Datta, Nathan Wiegand, and Dimitris Tsirogiannis. 2025. Cortex AISQL: A Production SQL Engine for Unstructured Data. arXiv:2511.07663 [cs.DB] https://arxiv.org/abs/2511.07663 [32] Paweł Liskowski and Kyle Schmaus. 2026. Streaming Model Cascades for Seman-tic SQL. arXiv:2604.00660 [cs.DB] https://arxiv.org/abs/2604.00660 [33] Chunwei Liu, Matthew Russo, Michael Cafarella, Lei Cao, Peter Baile Chen, Zui Chen, Michael Franklin, Tim Kraska, Samuel Madden, Rana Shahout, et al . 2025. Palimpzest: Optimizing ai-powered analytics with declarative query processing. In Proceedings of the Conference on Innovative Database Research (CIDR) . 2. [34] Ilya Loshchilov and Frank Hutter. 2017. SGDR: Stochastic Gradient Descent with Warm Restarts. arXiv:1608.03983 [cs.LG] https://arxiv.org/abs/1608.03983 [35] Samuel Madden, Michael Cafarella, Michael Franklin, and Tim Kraska. 2024. Databases unbound: Querying all of the world’s bytes with AI. Proceedings of the VLDB Endowment 17, 12 (2024), 4546–4554. [36] Hongzi Mao, Malte Schwarzkopf, Shaileshh Bojja Venkatakrishnan, Zili Meng, and Mohammad Alizadeh. 2019. Learning Scheduling Algorithms for Data Pro-cessing Clusters. arXiv:1810.01963 [cs.LG] https://arxiv.org/abs/1810.01963 [37] Volker Markl, Peter J Haas, Marcel Kutsch, Nimrod Megiddo, Utkarsh Srivastava, and Tam Minh Tran. 2007. Consistent selectivity estimation via maximum entropy. The VLDB journal 16, 1 (2007), 55–76. [38] V. Markl, N. Megiddo, M. Kutsch, T. M. Tran, P. Haas, and U. Srivastava. 2005. Consistently estimating the selectivity of conjuncts of predicates. In Proceedings of the 31st International Conference on Very Large Data Bases (Trondheim, Norway) 
+
+(VLDB ’05) . VLDB Endowment, 373–384. [39] Tomas Mikolov, Kai Chen, Greg Corrado, and Jeffrey Dean. 2013. Efficient Estimation of Word Representations in Vector Space. arXiv:1301.3781 [cs.CL] https://arxiv.org/abs/1301.3781 [40] OpenAI. 2026. API Pricing . https://platform.openai.com/docs/pricing Accessed: 2026-02. [41] James Jie Pan, Jianguo Wang, and Guoliang Li. 2023. Survey of Vector Database Management Systems. arXiv:2310.14021 [cs.DB] https://arxiv.org/abs/2310.14021 [42] Liana Patel, Siddharth Jha, Melissa Pan, Harshit Gupta, Parth Asawa, Carlos Guestrin, and Matei Zaharia. 2025. Semantic Operators: A Declarative Model for Rich, AI-based Data Processing. arXiv:2407.11418 [cs.DB] https://arxiv.org/abs/ 2407.11418 [43] Daniela Pavlenco. 2026. How to Load Embedding Models into Oracle AI Database in 2026. https://blogs.oracle.com/developers/how-to-load-embedding-models-into-oracle-ai-database-in-2026. [44] Letian Peng, Yuwei Zhang, Zilong Wang, Jayanth Srinivasa, Gaowen Liu, Zihan Wang, and Jingbo Shang. 2024. Answer is All You Need: Instruction-following Text Embedding via Answering the Question. arXiv:2402.09642 [cs.CL] https: //arxiv.org/abs/2402.09642 [45] Lorien Y Pratt. 1992. Discriminability-based transfer between neural networks. 
+
+Advances in neural information processing systems 5 (1992). [46] Stephen Robertson, Hugo Zaragoza, et al . 2009. The probabilistic relevance framework: BM25 and beyond. Foundations and Trends ® in Information Retrieval 
+
+3, 4 (2009), 333–389. [47] Mushtari Sadia, Amrita Roy Chowdhury, and Ang Chen. 2025. A Case for Computing on Unstructured Data. arXiv:2509.14601 [cs.DB] https://arxiv.org/ abs/2509.14601 [48] Dario Satriani, Enzo Veltri, Donatello Santoro, Sara Rosato, Simone Varriale, and Paolo Papotti. 2025. Logical and Physical Optimizations for SQL Query Execution over Large Language Models. Proc. ACM Manag. Data 3, 3, Article 181 (June 2025), 28 pages. doi:10.1145/3725411 [49] John Schulman, Philipp Moritz, Sergey Levine, Michael Jordan, and Pieter Abbeel. 2016. High-Dimensional Continuous Control Using Generalized Advantage Estimation. arXiv:1506.02438 [cs.LG] https://arxiv.org/abs/1506.02438 [50] John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg Klimov. 2017. Proximal Policy Optimization Algorithms. arXiv:1707.06347 [cs.LG] https: //arxiv.org/abs/1707.06347 [51] Shreya Shankar, Tristan Chambers, Tarak Shah, Aditya G. Parameswaran, and Eugene Wu. 2025. DocETL: Agentic Query Rewriting and Evaluation for Complex Document Processing. arXiv:2410.12189 [cs.DB] https://arxiv.org/abs/2410.12189 [52] Eva Sharma, Chen Li, and Lu Wang. 2019. BIGPATENT: A Large-Scale Dataset for Abstractive and Coherent Summarization. arXiv:1906.03741 [cs.CL] https: //arxiv.org/abs/1906.03741 [53] Snowflake Inc. 2025. AI_EMBED | Snowflake Documentation . Snowflake Inc. https://docs.snowflake.com/en/sql-reference/functions/ai_embed Accessed: 2025-03-30. [54] Snowflake Inc. 2025. AI_FILTER | Snowflake Documentation . Snowflake Inc. https://docs.snowflake.com/en/sql-reference/functions/ai_filter Accessed: 2025-03-30. [55] Ji Sun, Guoliang Li, James Pan, Jiang Wang, Yongqing Xie, Ruicheng Liu, and Wen Nie. 2025. GaussDB-Vector: A Large-Scale Persistent Real-Time Vector Database for LLM Applications. Proceedings of the VLDB Endowment 18, 12 (2025), 4951–4963. [56] Zhaoze Sun, Qiyan Deng, Chengliang Chai, Kaisen Jin, Xinyu Guo, Han Han, Ye Yuan, Guoren Wang, and Lei Cao. 2025. Quest: Query optimization in unstruc-tured document analysis. arXiv preprint arXiv:2507.06515 (2025). [57] Richard S. Sutton. 1988. Learning to Predict by the Methods of Temporal Differ-ences. Mach. Learn. 3, 1 (Aug. 1988), 9–44. doi:10.1023/A:1022633531479 [58] Richard S. Sutton and Andrew G. Barto. 1998. Reinforcement Learning: An Intro-duction . Vol. 135. MIT Press, Cambridge, MA. [59] Jan Vincent Szlang, Sebastian Bress, Sebastian Cattes, Jonathan Dees, Florian Funke, Max Heimel, Michel Oleynik, Ismail Oukid, and Tobias Maltenberger. 2025. Conference acronym ’XX, June 03–05, 2018, Woodstock, NY Fuheng Zhao, Paweł Liskowski, Zihan Li, Benjamin Han, Puxuan Yu, Varich Boonsanong, Dimitris Tsirogiannis, and Anupam Datta 
+
+Workload Insights from the Snowflake Data Cloud: What Do Production Analytic Queries Really Look Like? Proc. VLDB Endow. 18, 12 (Aug. 2025), 5126–5138. doi:10.14778/3750601.3750632 [60] Dixin Tang, Zechao Shang, Aaron J Elmore, Sanjay Krishnan, and Michael J Franklin. 2020. CrocodileDB in action: resource-efficient query execution by exploiting time slackness. Proceedings of the VLDB Endowment 13, 12 (2020), 2937–2940. [61] Immanuel Trummer. 2025. Implementing Semantic Join Operators Efficiently. arXiv:2510.08489 [cs.DB] https://arxiv.org/abs/2510.08489 [62] Immanuel Trummer, Junxiong Wang, Deepak Maram, Samuel Moseley, Saehan Jo, and Joseph Antonakakis. 2019. SkinnerDB: Regret-Bounded Query Evaluation via Reinforcement Learning. In Proceedings of the 2019 International Conference on Management of Data (SIGMOD/PODS ’19) . ACM, 1153–1170. doi:10.1145/3299869. 3300088 [63] Kostas Tzoumas, Timos Sellis, and Christian S Jensen. 2008. A reinforcement learning approach for adaptive query processing. History (2008), 1–25. [64] Voyage AI. 2025. Voyage-3-Large: A State-of-the-Art General-Purpose Embedding Model. https://blog.voyageai.com/2025/01/07/voyage-3-large/. Accessed: 2026-02-09. [65] Xubo Wang, Lu Qin, Xuemin Lin, Ying Zhang, and Lijun Chang. 2017. Leveraging set relations in exact set similarity join. Proc. VLDB Endow. 10, 9 (May 2017), 925–936. doi:10.14778/3099622.3099624 [66] Lingfei Wu, Peng Cui, Jian Pei, and Liang Zhao (Eds.). 2022. Graph Neural Networks: Foundations, Frontiers, and Applications . Springer Nature Singapore. doi:10.1007/978-981-16-6054-2 [67] Bonnie Xu, Aravind Suresh, and Emma Tang. 2026. Inside OpenAI’s in-house data agent . OpenAI. https://openai.com/index/inside-our-in-house-data-agent/ [68] Puxuan Yu, Luke Merrick, Gaurav Nuti, and Daniel Campos. 2024. Arctic-Embed 2.0: Multilingual Retrieval Without Compromise. arXiv:2412.04506 [cs.CL] https: //arxiv.org/abs/2412.04506 [69] Hengrui Zhang, Yulong Hui, Yihao Liu, and Huanchen Zhang. 2025. ScaleDoc: Scaling LLM-based Predicates over Large Document Collections. arXiv:2509.12610 [cs.DB] https://arxiv.org/abs/2509.12610 [70] Xinyi Zhang, Hong Wu, Yang Li, Zhengju Tang, Jian Tan, Feifei Li, and Bin Cui. 2023. An efficient transfer learning based configuration adviser for database tuning. Proceedings of the VLDB Endowment 17, 3 (2023), 539–552. [71] Fuheng Zhao, Divyakant Agrawal, and Amr El Abbadi. 2024. Hybrid Querying Over Relational Databases and Large Language Models. arXiv:2408.00884 [cs.DB] https://arxiv.org/abs/2408.00884 [72] Fuheng Zhao, Jiayue Chen, Yiming Pan, Tahseen Rabbani, Sohaib, Divyakant Agrawal, Amr El Abbadi, Paritosh Aggarwal, Anupam Datta, and Dimitris Tsirogiannis. 2025. Access Paths for Efficient Ordering with Large Language Models. arXiv:2509.00303 [cs.DB] https://arxiv.org/abs/2509.00303 [73] Jianqiao Zhu, Navneet Potti, Saket Saurabh, and Jignesh M Patel. 2017. Looking ahead makes query plans robust: Making the initial case with in-memory star schema data warehouse workloads. Proceedings of the VLDB Endowment 10, 8 (2017), 889–900.
