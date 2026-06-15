@@ -1,0 +1,764 @@
+Title: SPA: A SQL-Plan-Aware Reinforcement Learning Framework for Query Rewriting with LLMs
+
+URL Source: https://arxiv.org/pdf/2606.08620v1
+
+Published Time: Tue, 09 Jun 2026 01:14:05 GMT
+
+Number of Pages: 14
+
+Markdown Content:
+# SPA: A SQL-Plan-Aware Reinforcement Learning Framework for Query Rewriting with LLMs 
+
+# Xinyi Huang 
+
+Simon Fraser University BC, Canada xinyi_huang@sfu.ca 
+
+# Zhengjie Miao 
+
+Simon Fraser University BC, Canada zhengjie@sfu.ca 
+
+## ABSTRACT 
+
+SQL query rewriting is a well-established technique for improving database performance without schema or index changes, yet finding effective rewrites for modern analytical workloads remains diffi-cult: rule-based methods are limited to predefined transformations, while LLM-based approaches often produce rewrites that are se-mantically valid but compile to equivalent physical plans or degrade runtime performance. We present SPA, a SQL-Plan-Aware reinforce-ment learning framework that trains LLMs to rewrite queries using physical execution feedback. SPA formulates rewriting as a policy optimization problem and extends GRPO with rewards spanning semantic equivalence, textual rewrite distance, physical-plan diver-gence, and runtime speedup. To handle reward sparsity across query difficulty, SPA introduces Probability-Gated Adaptive Reward Shap-ing, a query-level curriculum that unlocks higher-level rewards only once a rollout group achieves sufficient mastery of lower-level objectives, and further improves sample efficiency through on-policy self-improvement by recycling slowdown rewrites from the current policy as targeted training signals. On both IID and OOD workloads, SPA outperforms rule-based and strong LLM baselines in end-to-end runtime, substantially reduces harmful slowdown rewrites, and yields strong tail-latency gains. 
+
+PVLDB Reference Format: 
+
+Xinyi Huang and Zhengjie Miao. SPA: A SQL-Plan-Aware Reinforcement Learning Framework for Query Rewriting with LLMs. PVLDB, 14(1): XXX-XXX, 2020. doi:XX.XX/XXX.XX 
+
+## 1 INTRODUCTION 
+
+Despite decades of progress in query optimization [ 2 , 7, 11 ], modern DBMS optimizers remain imperfect: two semantically equivalent SQL queries can lead to substantially different execution plans and runtimes on the same system [ 13 , 14 ]. This gap creates significant opportunities for SQL query rewriting, which transforms an input query into a semantically equivalent query that is more likely to trigger an efficient execution plan. However, discovering effective rewrites remains challenging. Tra-ditional rule-based rewriting techniques apply predefined transfor-mations such as predicate pushdown, subquery decorrelation, join reordering, and common subexpression extraction [ 8 , 18 ]. These 
+
+> This work is licensed under the Creative Commons BY-NC-ND 4.0 International License. Visit https://creativecommons.org/licenses/by-nc-nd/4.0/ to view a copy of this license. For any use beyond those covered by this license, obtain permission by emailing info@vldb.org. Copyright is held by the owner/author(s). Publication rights licensed to the VLDB Endowment. Proceedings of the VLDB Endowment, Vol. 14, No. 1 ISSN 2150-8097. doi:XX.XX/XXX.XX
+
+techniques are reliable and interpretable, but their effectiveness is fundamentally limited by the coverage of the rewrite rules and templates. When an optimization opportunity requires a combina-tion of transformations that is not explicitly encoded, rule-based systems may fail to produce a beneficial rewrite. Recent advances in large language models (LLMs) suggest a complementary direction: using LLMs to directly generate SQL rewrites [ 4, 5, 20 , 31 ]. Unlike rule-based systems, LLMs are not re-stricted to a fixed transformation space and can synthesize rewrites that combine multiple structural changes. This flexibility is par-ticularly valuable for complex analytical queries, where effective rewrites often require coordinated changes across joins, subqueries, aggregation, and filtering predicates. 
+
+Example 1. Consider query 𝑄 1 in Figure 1, a variant of a TPC-DS workload [ 24 ]. The query computes aggregate shipping and profit sta-tistics for selected web-sales orders, while requiring each counted order to satisfy two additional order-level conditions: it must be associated with multiple warehouses and it must also appear in web returns. In 
+
+𝑄 1, these conditions are expressed through a self-join-derived CTE that is reused inside nested IN subqueries. On PostgreSQL 16 running on an EC2 m5d.2xlarge instance with 8 CPU cores and 32GB RAM, 
+
+𝑄 1 takes over 15 minutes to finish. Existing rule-based rewriting systems, including LearnedRewrite [ 45 ]and R-Bot [ 32 ], fail to apply any Calcite [ 1] rewrite rule to this query. The missed opportunity is substantial: a modern LLM can generate the rewritten query 𝑄 2, which takes only 0.53 seconds by converting the self-join-based multi-warehouse condition into an explicit order-level aggregation, deduplicating returned orders, and reconnecting both predicates to the outer query through existence checks. 
+
+This example illustrates both the promise and the risk of LLM-based SQL rewriting. On the one hand, LLMs can produce rewrites that go beyond predefined rule templates and expose optimization opportunities missed by existing systems. On the other hand, a rewrite that appears reasonable at the SQL level may still preserve the same physical plan, yield little benefit, or even lead the optimizer toward a slower execution strategy. This motivates treating database execution feedback as the learn-ing signal. Rather than relying only on static rewrite examples or prompting, the model should learn from the execution outcomes of its own rewrites. SQL rewriting naturally supports this feedback loop: execution results can check semantic equivalence, query plans can reveal whether the optimizer behavior changes, and runtime measurements can quantify performance impact. We therefore formulate SQL rewriting as a reinforcement learn-ing problem, where the model explores candidate rewrites and re-ceives database-grounded rewards that encourage valid, equivalent, 
+
+> arXiv:2606.08620v1 [cs.DB] 7 Jun 2026
+
+Original Query 𝑄 1                
+
+> WITH multi_warehouse AS (
+> SELECT ws1.order_no
+> FROM web_sales ws1, web_sales ws2
+> WHERE ws1.order_no = ws2.order_no
+> AND ws1.wh <> ws2.wh )
+> SELECT ...
+> FROM web_sales ws, ...
+> WHERE
+> ... -- skipped common filters
+> AND ws.order_no IN (
+> SELECT order_no
+> FROM multi_warehouse )
+> AND ws.order_no IN (
+> SELECT r.order_no
+> FROM web_returns r, multi_warehouse m
+> WHERE r.order_no = m.order_no );
+
+Rewritten Query 𝑄 2 (generated by GPT-5.4)                         
+
+> WITH multi_warehouse AS (
+> SELECT order_no
+> FROM web_sales
+> GROUP BY order_no HAVING COUNT(DISTINCT wh) > 1 ), returned AS (
+> SELECT DISTINCT order_no
+> FROM web_returns )
+> SELECT ...
+> FROM web_sales ws
+> JOIN ...
+> WHERE
+> ... --skipped the same common filters as in Q1
+> AND EXISTS (
+> SELECT 1FROM multi_warehouse m
+> WHERE m.order_no = ws.order_no )
+> AND EXISTS (
+> SELECT 1FROM returned r
+> WHERE r.order_no = ws.order_no );
+
+Figure 1: A motivating SQL rewrite example. Common pro-jections, joins, and filters are omitted for clarity. 
+
+plan-changing, and execution-effective rewrites while penalizing invalid, trivial, and harmful ones. In this paper, we present SPA , a SQL-Plan-Aware reinforce-ment learning framework for LLM-based SQL query rewriting. SPA formulates SQL rewriting as an execution-grounded policy opti-mization problem and extends Group Relative Policy Optimization (GRPO) [ 30 ] with database-aware reward signals. For each gen-erated rewrite, SPA computes rewards from four complementary aspects: semantic equivalence, textual rewrite distance, physical-plan divergence, and runtime speedup. A key challenge is that SQL rewriting difficulty cannot be reliably inferred from static query structure alone: simple queries may have few valid rewrites, while complex ones may offer many profitable transformations. SPA addresses this with Probability-Gated Adaptive Reward Shaping (PGARS) , a query-level curriculum that adapts the active reward target based on the policy’s observed success within each rollout group. This prevents the model from chasing execution gains through invalid or inequivalent rewrites while supporting stable learning across diverse query difficulties. SPA further introduces an on-policy self-improvement procedure for learning from execution failures. Instead of treating slowdown-inducing rewrites merely as negative samples, SPA revisits them as targeted rewrite tasks for the current policy. This allows the model to learn not only which rewrites are invalid or harmful, but also how to repair them. We evaluate SPA on both IID and OOD SQL rewriting bench-marks covering diverse analytical workloads. The results show that SPA achieves higher end-to-end query speedups than rule-based optimizers and strong LLM-based rewriting baselines. SPA also re-duces both trivial rewrites and slowdown rewrites, demonstrating the benefit of plan-aware, execution-grounded policy optimization. In summary, we make the following contributions: 
+
+• We formulate LLM-based SQL query rewriting as an execution-grounded reinforcement learning problem, where rewrite policies are optimized using feedback from semantic vali-dation, physical plans, and execution latency. 
+
+• We propose SPA , a SQL-Plan-Aware reinforcement learning framework that trains LLMs to produce semantically valid and performance-improving SQL rewrites. 
+
+• We introduce Probability-Gated Adaptive Reward Shap-ing, a query-level curriculum that progressively activates different optimization reward targets. 
+
+• We develop an on-policy self-improvement strategy that re-visits slowdown-inducing rewrites and converts execution failures into targeted training signals. 
+
+• We demonstrate across IID and OOD benchmarks that SPA improves runtime performance, reduces harmful slow-downs, and achieves strong tail-latency gains over existing baselines. 
+
+## 2 RELATED WORK 2.1 Rule-Based SQL Rewriting 
+
+SQL query rewriting has long been supported by rule-based op-timizers, which apply predefined equivalence-preserving trans-formations such as predicate pushdown, projection pruning, join simplification, and subquery flattening [10, 15, 23]. Beyond manu-ally designed rules, WeTune [ 37 ] automatically discovers rewrite rules by enumerating logical query plans and verifying equivalent plan pairs with an SMT-based verifier. However, such methods primarily verify semantic correctness rather than execution effec-tiveness: a valid rule may still produce no speedup or even slow down execution depending on the target DBMS, statistics, data distribution, indexes, and physical plan selection. Recent learning-based approaches further improve rule application by selecting better rewrite sequences. For example, LearnedRewrite [ 45 ] formu-lates rule selection as a search problem and combines Monte Carlo Tree Search with a learned cost estimator to identify promising sequences over Calcite rules. LLM-enhanced systems further use LLMs to guide rule-based rewriting: LLM-R2 [ 18 ] prompts LLMs to recommend rewrite rules with contrastive demonstrations, while R-Bot [ 32 ] uses evidence retrieval and self-reflection to select and order rewrite rules. Although these methods improve rule discov-ery, selection, and ordering, their search space remains largely 
+
+> 2
+
+constrained by predefined rules, retrieved evidence, or previously observed rewrite patterns. 
+
+## 2.2 LLM-Based SQL Rewriting 
+
+Recent studies have explored large language models (LLMs) for SQL query rewriting by leveraging their ability to reason over SQL se-mantics [ 3, 9, 17 , 38 , 40 ]. Some methods use LLMs in a rule-guided manner. For example, LITHE [ 5] prompts an LLM with one se-lected natural-language rule from six handcrafted rewrite rules, each paired with an example, to guide the rewrite for a given query. GenRewrite [ 20 ] further uses LLMs to generate natural-language rewrite rules and apply them to SQL optimization, allowing rewrite knowledge to be expressed beyond traditional implementation-level rules. More recent agentic systems, such as QUITE [ 31 ], formulate rewriting as an iterative refinement process in which an LLM-based agent improves queries through multi-turn reasoning and tool inter-action. These methods show that LLMs can expand SQL rewriting beyond rigid optimizer rules, but they are still largely guided by handcrafted rules, generated rule descriptions, or curated refine-ment actions. In contrast, our work directly trains an LLM rewrite policy with database-grounded reinforcement learning feedback, enabling the model to optimize candidate rewrites according to ac-tual execution behavior rather than relying only on rule guidance or LLM reasoning. 
+
+## 2.3 Reinforcement Learning for Databases 
+
+Reinforcement learning (RL) has been increasingly explored for database optimization across query-level [ 22 , 35 , 41 , 42 ] and system-level tasks [ 27 , 36 ]. SEFRQO [ 19 ] studies self-evolving LLM-based query optimization to continuously refine query-hint generation. For SQL generation, Reward-SQL [ 44 ] applies GRPO to align LLMs with execution-based rewards, encouraging generated SQL to be syntactically valid and executable against the target database. Be-yond query-level optimization, RL has been widely used for system-level database tuning. Frameworks such as QTune [ 16 ] and CDB-Tune [ 43 ] use RL agents to automate configuration tuning and index-related decisions, demonstrating the ability of learned poli-cies to handle complex, non-linear performance trade-offs in data-base systems. E3-Rewrite [ 39 ] proposes a GRPO framework for SQL rewriting, which builds prompts from execution plans and retrieved demonstrations. Unlike E3-Rewrite, our method does not require a demonstration pool at inference time, uses real execu-tion feedback rather than optimizer cost estimates, and relies on database-grounded verification instead of formal-method and LLM-based equivalence judgments during training. 
+
+## 3 METHOD 3.1 SPA Overview 
+
+Figure 3 presents the training pipeline of SPA. SPA trains an LLM rewrite policy 𝜋 𝜃 to transform an original SQL query 𝑥 into a seman-tically equivalent rewrite 𝑦 with improved execution performance. Instead of only imitating existing rewrite examples, SPA directly op-timizes the policy using database-grounded feedback from semantic validation, physical-plan behavior, and execution latency. rewrite 1              
+
+> policy θπ
+> policy θ+1 π
+> rewrite 2 rewrite 3 rewrite 4
+> non
+> equivalent slowdown evaluation no plan
+> divergence speedup
+> group-relative
+> advantage
+> policy update probability ↓probability ↓probability ↓probability ↑
+> rewritten
+> SQL group
+> original SQL
+
+Figure 2: Intuition of group-relative policy optimization for SQL rewriting. For the same original SQL query, the pol-icy samples a group of candidate rewrites, and each rewrite is evaluated using database-grounded feedback. Rewrites with positive group-relative advantage are reinforced, while rewrites with negative relative advantage are discouraged. 
+
+Initial Policy Optimization. SPA builds on Group Relative Policy Optimization (GRPO), which compares multiple sampled outputs for the same input. For each original query 𝑥 , the current policy 𝜋 𝜃 samples a group of candidate rewrites G = {𝑦 1, . . . , 𝑦 𝐺 }.Each candidate rewrite 𝑦 𝑖 is evaluated by the database-grounded reward pipeline and assigned a scalar reward 𝑟 𝑖 . SPA then computes a group-relative advantage by normalizing rewards within the same rollout group: 
+
+𝐴 𝑖 = 𝑟 𝑖 − 𝜇 G
+
+𝜎 G + 𝜖 , (1) where 𝜇 G and 𝜎 G are the mean and standard deviation of rewards in G, and 𝜖 is a small constant for numerical stability. The policy is updated to increase the likelihood of candidates with positive advantages and decrease the likelihood of candidates with negative advantages. In practice, this update is performed with a clipped policy-gradient objective, which constrains the change from the old policy 𝜋 𝜃 old to the updated policy 𝜋 𝜃 for stable training. This group-relative update is well suited to SQL rewriting because all candidates in a rollout group share the same original query and database context, making their execution outcomes directly comparable. Figure 2 gives an intuitive view of this process. 
+
+Parallel reward calculation. The reward calculation module evaluates each candidate rewrite against the target DBMS. This step is expensive because it may require query execution, semantic validation, physical-plan extraction, plan comparison, and latency measurement. SPA therefore parallelizes reward calculation across candidates in a rollout group. In addition to measuring speedup, the reward module checks whether the rewrite induces a physical-plan change after the DBMS optimizer processes the query. This is impor-tant because two SQL queries may look syntactically different but still compile to the same physical plan, resulting in a trivial rewrite with little optimization value. SPA also uses a textual difference con-straint based on Levenshtein distance to discourage reward hacking, where the model returns a syntactically near-identical query or per-forms only superficial edits while still satisfying validity checks. Together, physical-plan comparison and textual-distance filtering 
+
+> 3query plan change
+> original SQL
+> plan
+> parser
+> DBMS
+> optimizer
+> raw SQL plan
+> extracted plan info
+> rewrite
+> policy
+> Q1
+> Q2
+> Q15
+> Q16
+
+... 
+
+> rewritten SQL
+
+Parallel Reward Calculation 
+
+> equivalence
+> speedup
+> parallel
+> execution
+
+Initial Policy Optimization 
+
+> reward
+> r1
+> r2
+> r15
+> r16
+
+... 
+
+> • join cardinality
+> • filter selectivity
+> • nested loop cardinality
+> • aggregation cardinality
+> group relative optimization
+> Ai = (ri - mean(r)) / std(r)
+> update policy
+
+Probability-Gated Adaptive Reward Shaping   
+
+> reward
+> plan change
+> reward
+> equivalence
+> reward
+> speedup
+> non-trivial
+> plan change?
+> equivalent?
+> non-trivial
+> speedup?
+> 𝑃 ≥𝜏
+> ?
+
+=
+
+π θ
+
+π θ+1 
+
+On-Policy Self-Improving         
+
+> non-trivial
+> slowdown?
+> no
+> skip
+> rollout →input
+> yes
+> 𝑃 ≥𝜏
+> 𝑃 <𝜏
+> 𝑃 <𝜏
+> equiv
+> equiv
+> change
+> change
+> rewrite similarity
+
+Figure 3: Overview of SPA. SPA trains an SQL rewrite policy using database-grounded feedback from semantic equivalence, physical-plan divergence, and execution latency. The framework combines a GRPO training loop, probability-gated adaptive reward shaping, parallel reward calculation, and on-policy self-improvement. 
+
+help reduce noisy rewards from trivial rewrites and encourage the policy to search for rewrites that meaningfully affect execution. 
+
+Probability-gated adaptive reward shaping. To stabilize train-ing, SPA introduces Probability-Gated Adaptive Reward Shaping (PGARS), a group-wise curriculum mechanism for composing the reward. SQL rewrite learning involves multiple objectives with dif-ferent difficulty levels: the model must first produce syntactically valid SQL, then preserve semantic equivalence, then induce a non-trivial physical-plan change, and finally improve runtime. Reward-ing all objectives equally from the beginning can introduce noisy gradients, because early in training many rollouts may be invalid or non-equivalent. PGARS addresses this by activating higher-level reward components only when the rollout group demonstrates suf-ficient proficiency on prerequisite milestones. For example, speedup reward is activated only after the group shows adequate success in semantic equivalence and plan divergence. This encourages the policy to progress from correctness to execution improvement in a query-adaptive manner. 
+
+On-policy self-improvement. After the base GRPO training stage, SPA further improves the policy using its own rollout his-tory. The key observation is that slowdown rewrites are not merely failed samples; they can reveal where the current policy misjudges execution behavior. SPA mines slowdown-inducing rewrites that are semantically equivalent but slower than the original query. To avoid revisiting queries that may not be optimizable, SPA further checks the rollout group: a slowdown case is selected only if another candidate rewrite in the same group achieves a nontrivial speedup. Such a group indicates that the query can be optimized, but the current policy has not reliably learned which transformation is ben-eficial. SPA then blends these selected self-improvement samples with the original training data and continues GRPO training. This on-policy stage focuses learning on high-regret but optimizable cases, helping the model distinguish harmful plan changes from beneficial ones. Overall, SPA trains a SQL rewrite policy through database-grounded reinforcement learning. The training loop uses GRPO to compare multiple rewrites for the same query, the parallel reward module makes execution-based feedback practical, PGARS stabilizes re-ward learning through a group-wise curriculum, and on-policy self-improvement reuses the policy’s own slowdown cases to im-prove robustness. 
+
+## 3.2 Plan Parser 
+
+To provide the LLM with sufficient information for identifying query bottlenecks before rewriting, we implement a Plan Parser 
+
+that processes PostgreSQL plans generated by EXPLAIN (FORMAT JSON) . The parser extracts key execution signals from the JSON plan and organizes them into concise, readable hints, ensuring that the prompt exposes the relevant physical-plan context needed to guide rewrite decisions. 
+
+Cardinality Flow Analysis. At each plan node, the parser derives a cardinality delta from three quantities: 
+
+• Rows In ( 𝑅 𝑖𝑛 ): For leaf scans, the total physical rows read, including those removed by predicates. For internal nodes, the sum of rows emitted by all children. 
+
+• Rows Out ( 𝑅 𝑜𝑢𝑡 ): Rows emitted after the operator’s logic is applied. 
+
+• Change Ratio: A label classifying the node as a reducer 
+
+(e.g., “reduce by 90%”), an expander (e.g., “expand by 2x”), or a pass-through .     
+
+> 411.1 1.2 1.3 1.4 > 1.5
+> Speedup
+> 0
+> 200
+> 400
+> 600
+> 800
+> 1000
+> 1200
+> 1400
+> Count
+> 1.10
+> speedup distribution (speedup > 1)
+> plan changed
+> same plan
+
+Figure 4: Speedup distribution of semantically equivalent query pairs collected during SFT data generation, grouped by whether the physical plan changes. 
+
+Pass-through nodes—such as Sort or Gather —that leave cardinal-ity unchanged are pruned to keep the context window compact. Exceptions are made for roots of correlated subplans and high-cost scans, which are always retained. 
+
+Semantic Categorization and Grouping. The parsed nodes are then assigned to five functional categories. Each category pairs cardinality metrics ( 𝑅 𝑖𝑛 , 𝑅 𝑜𝑢𝑡 , Change Ratio) with the operation type, so the LLM can interpret data-flow behavior in terms of concrete relational patterns: 
+
+• Nested Loop: Captures outer/inner table relationships and per-outer-row counts alongside the resulting cardinality. 
+
+• Join: Groups Hash and Merge joins by predicate, using 𝑅 𝑜𝑢𝑡 
+
+to reflect join-algorithm efficiency. 
+
+• Join with Filter: Handles nodes that combine an index-based join with a secondary filter, attributing row reduction to both. 
+
+• Filter: Covers simple relation scans, mapping predicate selectivity directly to the cardinality delta. 
+
+• Aggregation: Isolates grouping operations; 𝑅 𝑜𝑢𝑡 here re-flects the cardinality of the result set after grouping. Within each category, nodes are ranked by absolute reduction ( 𝑅 𝑖𝑛 −
+
+𝑅 𝑜𝑢𝑡 ), surfacing the operators responsible for the largest cardinality changes and giving the LLM focused signals about operators that may contribute to execution bottlenecks. 
+
+## 3.3 Training Data Preparation 
+
+To improve the robustness and generalizability of SPA, we curate a comprehensive training corpus derived from industry-standard schemas. 
+
+Workload Generation. We select TPC-DS [ 24 ] and TPC-H [ 28 ], as they provide complex relational patterns and are widely used industry-standard benchmarks. In addition to using official bench-mark toolkits to generate standard analytical workloads, we also employ SQLStorm [ 29 ] to synthesize workloads with diverse SQL structures beyond benchmark templates. These generated queries are used for both Supervised Fine-Tuning (SFT) and Reinforcement Learning (RL). 
+
+Rewrite Generation for SFT. To construct a high-quality dataset for the initial SFT phase, we utilize o3-mini and GPT-5.4 to gen-erate a pool of candidate rewrites. To improve data quality and avoid training on suboptimal or trivial examples, a rewrite is only promoted to the SFT training set if it satisfies two strict criteria: (1) Semantic Equivalence: The rewrite must produce a result set identical to the original query. (2) Non-Trivial Performance Gain: The rewrite must achieve a nontrivial speedup 𝑆 > 1.1.We choose the threshold 1.1 based on the empirical speedup dis-tribution shown in Figure 4: rewrites with 𝑆 > 1.1 are strongly associated with plan changes, suggesting that they reflect meaning-ful optimization behavior rather than trivial execution fluctuations. 
+
+## 3.4 Parallel Reward Calculation 
+
+Execution-based reward evaluation provides high-fidelity feedback for SQL rewriting, but evaluating candidate rewrites sequentially would make GRPO training prohibitively slow. To address this bottleneck, SPA implements a Parallel Reward Calculation layer. During each GRPO rollout, the policy generates a group of candi-date rewrites, which are dispatched to a pool of isolated database workers. Each worker evaluates one candidate rewrite against the target DBMS and returns the reward signals required for policy optimization. To improve execution throughput during training, we configure the database with shared_buffers set to 32GB and 
+
+work_mem set to 256MB. As illustrated in Figure 3, each worker computes four reward-related signals: semantic equivalence, textual rewrite distance, physical-plan divergence, and runtime speedup. 
+
+Equivalence Verification. The worker first verifies whether the rewritten query is semantically equivalent to the original query through result-set comparison. This step prevents the reward from favoring rewrites that reduce latency by changing query semantics. In practice, equivalence verification may be inconclusive when ei-ther the original query or the rewritten query reaches the execution timeout. We handle such cases as follows. During training, if the original query times out, the corresponding rollout group is skipped because equivalence cannot be reliably checked. If the rewritten query times out while the original query finishes, the rewrite is treated as unsuccessful and assigned a negative signal. 
+
+Levenshtein Distance of Rewrite. In addition to semantic vali-dation, SPA measures the textual difference between the original query and the rewritten query using normalized Levenshtein dis-tance. This signal is used to discourage degenerate or lazy rewrites that pass syntactic and semantic checks but make only superficial changes, such as adding redundant parentheses, renaming aliases, or reformatting the SQL text. Let 𝑑 lev (𝑥, 𝑦 ) denote the Levenshtein edit distance between the original query 𝑥 and the rewrite 𝑦 . We normalize it by the maximum query length: 
+
+𝐷 lev (𝑥, 𝑦 ) = 𝑑 lev (𝑥, 𝑦 )
+
+max (| 𝑥 |, |𝑦 |) .
+
+A rewrite is considered textually nontrivial only when 𝐷 lev (𝑥, 𝑦 )
+
+exceeds a threshold 𝜆 . In our experiments, we set 𝜆 = 0.01 . This distance constraint helps prevent reward hacking where the model 
+
+> 5
+
+repeatedly returns near-identical SQL strings to obtain correctness rewards without exploring useful rewrite transformations. 
+
+Query Plan Divergence Analysis. SPA further checks whether the rewrite induces a different physical execution plan after DBMS optimization. This step is important because two SQL queries may look different at the text level but still be normalized by the opti-mizer into the same physical plan. Such rewrites are unlikely to yield nontrivial performance improvement and can introduce noisy reward signals if treated as meaningful optimizations. To detect plan divergence, each worker obtains the physical plans of both the original and rewritten queries using EXPLAIN . We then compare the two plans structurally. Each plan is treated as an operator tree whose nodes correspond to physical operators such as 
+
+SeqScan , IndexScan , HashJoin , and NestedLoop . SPA recursively compares the two trees by checking operator types, critical operator properties, and child structure. Critical properties include join keys, filter predicates, scan relations, and aggregation keys. A rewrite is considered plan-divergent if any corresponding node differs in operator type, relevant properties, or child structure. At the same time, SPA only proceeds to runtime speedup mea-surement when a nontrivial plan divergence is detected. This avoids spending expensive execution budget on rewrites that are likely to compile to the same physical plan and therefore provide negligible optimization benefit. 
+
+Speedup Measurement. For rewrites that pass semantic verifi-cation and induce a nontrivial plan change, the worker measures execution latency and computes the speedup ratio: 
+
+𝑆 = Latency original 
+
+Latency rewrite 
+
+.
+
+A value of 𝑆 > 1 indicates that the rewrite is faster than the original query, while 𝑆 < 1 indicates a slowdown. To reduce sensitivity to small runtime fluctuations, SPA uses a nontrivial speedup threshold 
+
+𝛿 and maps the raw speedup rate into a bounded reward: 
+
+𝑅 𝑠 (𝑆 ) =
+
+
+
+tanh  ln 𝑆 
+
+> 1−𝛿
+
+ , 𝑆 < 1 − 𝛿, 
+
+0, 1 − 𝛿 ≤ 𝑆 ≤ 1 + 𝛿, 
+
+tanh  ln 𝑆 
+
+> 1+𝛿
+
+ , 𝑆 > 1 + 𝛿. 
+
+We set 𝛿 = 0.1 in our experiments. Thus, small latency changes within ±10% are treated as neutral, while clear speedups and slow-downs receive positive and negative rewards, respectively. 
+
+## 3.5 Probability-Gated Adaptive Reward Shaping 
+
+Assessing the optimization difficulty of a SQL query through static inspection alone is unreliable. A syntactically simple query may ad-mit only a narrow space of valid rewrites, while a structurally com-plex query might offer numerous opportunities for profitable trans-formation. To navigate this variability, we propose Probability-Gated Adaptive Reward Shaping (PGARS) , a mechanism that functions as a query-level curriculum. It dynamically shifts the op-timization target according to the policy’s observed mastery within each rollout group, ensuring stable convergence across diverse query complexities. Rather than rewarding all optimization objectives simultane-ously, which often leads to unstable gradients and sub-optimal 
+
+Table 1: Example of PGARS with group size 𝐺 = 8 and thresh-old 𝜏 = 25% . A gate becomes active when at least 2 rollouts satisfy the corresponding milestone. Rollout Syntax Valid Semantic Equiv. Plan Divergence Speedup                                             
+
+> 𝑦 1✓✓––
+> 𝑦 2✓×––
+> 𝑦 3✓×––
+> 𝑦 4✓×––
+> 𝑦 5✓×––
+> 𝑦 6✓×––
+> 𝑦 7××––
+> 𝑦 8××––
+> Threshold Check 6/8>𝜏 1/8<𝜏 ––
+> Next Gate Status active inactive ––
+
+local minima in early training, PGARS decomposes the task into four hierarchical milestones: Syntax Validity , Semantic Equivalence ,
+
+Plan Divergence , and Runtime Speedup . Under this gated scheme, a reward for a higher-level objective is unlocked only when the rollout group exhibits consistent success in all preceding milestones. This ensures the model does not chase performance gains through invalid or non-equivalent rewrites. Formally, given an input query 𝑥 , the Group Relative Policy Optimization (GRPO) framework generates a rollout group G =
+
+{𝑦 1, 𝑦 2, . . . , 𝑦 𝐺 }, where 𝐺 is the number of candidate rewrites and 
+
+𝑦 𝑖 denotes the 𝑖 -th candidate. For each intermediate milestone 𝑘 ∈{syn, eq, plan }, we define a binary indicator 1𝑘,𝑖 to signify whether rollout 𝑖 satisfies that criterion. The group-level proficiency for milestone 𝑘 is then determined by the success count 𝑐 𝑘 = Í𝐺 𝑖 =1 1𝑘,𝑖 .A stage is considered mastered once the group’s empirical success rate crosses a predefined gating threshold 𝜏 ∈ ( 0, 1], expressed by the gate function: 
+
+Γ𝑘 = 1
+
+ 𝑐 𝑘 
+
+𝐺 ≥ 𝜏 
+
+
+
+(2) The cumulative reward 𝑟 𝑖 for an individual rollout 𝑦 𝑖 is formu-lated as a conditional sum of milestone rewards 𝑅 syn , 𝑅 eq , 𝑅 plan and the measured speedup rate 𝑅 𝑠 (𝑆 ). By applying the gates Γ as coef-ficients, we ensure that latency improvements only contribute to the gradient once the model demonstrates stable correctness and plan-level competence: 
+
+𝑟 𝑖 = 1syn ,𝑖 𝑅 syn +Γsyn (1eq ,𝑖 𝑅 eq )+ Γsyn Γeq (1plan ,𝑖 𝑅 plan )+ Γsyn Γeq Γplan 𝑅 𝑠 (𝑆 )
+
+(3) The gating threshold 𝜏 controls how conservatively PGARS ad-vances through the reward hierarchy: 
+
+• High thresholds ( 𝜏 → 1): A gate opens only when most rollouts satisfy the corresponding milestone, making re-ward progression more conservative. 
+
+• Low thresholds ( 𝜏 → 0): A gate opens with fewer success-ful rollouts, making reward progression more aggressive. Table 1 illustrates PGARS with rollout group size 𝐺 = 8 and gating threshold 𝜏 = 25% . Under this setting, the next gate opens only if at least two rollouts satisfy the current milestone. Since only one rollout produces a semantically equivalent rewrite, the plan-divergence and runtime-speedup rewards are not activated. This prevents the policy from prematurely optimizing for speedup before it can reliably generate equivalent rewrites.             
+
+> 6020 40 60 80 100
+> Training Step
+> 0.8
+> 0.6
+> 0.4
+> 0.2
+> 0.0
+> 0.2
+> 0.4
+> Mean Reward
+> Initial Policy Training On-Policy Self-Improving
+> Mean Reward
+> Qwen-32B
+> Qwen-8B
+> 020 40 60 80 100
+> Training Step
+> 0.01
+> 0.02
+> 0.04
+> 0.06
+> 0.08
+> Policy Entropy
+> Initial Policy Training On-Policy Self-Improving
+> Mean Policy Entropy
+> Qwen-32B
+> Qwen-8B
+
+Figure 5: Mean reward and policy entropy in initial policy optimization and on-policy self-improvement stage. 
+
+## 3.6 On-Policy Self-Improvement 
+
+Unlike general reasoning tasks where the model output is an answer in a different space from the input, SQL rewriting is closed over the query space: the output of a rewrite is itself an executable SQL query and can therefore be used as the input to another rewrite. This property enables SPA to construct recovery workloads from the policy’s own execution regressions. Specifically, a slowdown rewrite that remains semantically equivalent to the original query is not discarded as a failed output; instead, it becomes a valid rewriting input whose physical plan has been pushed toward an unfavorable region. Training on such queries encourages the policy to recover from harmful plan changes that it previously introduced. 
+
+Slowdown candidate mining. To address this issue, SPA intro-duces an on-policy self-improvement phase after the initial base training stage. The goal of this phase is to reuse the policy’s own failed rollouts as targeted training signals. During base training, SPA stores rollout records containing the original query, the generated rewrite, semantic validation result, physical plan, and measured execution latency. For each original query 𝑞 , GRPO samples a group of candidate rewrites { ˆ𝑞 1, . . . , ˆ𝑞 𝐺 }, which allows SPA to compare different execution outcomes for the same query. We first identify slowdown candidates from the rollout history. A generated rewrite ˆ𝑞 𝑖 is considered a slowdown candidate if it is semantically equivalent to the original query 𝑞 but has higher measured execution latency: 
+
+𝐶 slow (𝑞, ˆ𝑞 𝑖 ) = 1 [Equiv (𝑞, ˆ𝑞 𝑖 ) = 1 ∧ 𝑇 ( ˆ𝑞 𝑖 ) > 𝑇 (𝑞 )] ,
+
+where 𝑇 (·) denotes measured execution latency and Equiv (·) de-notes semantic-equivalence validation. 
+
+Group-level optimizability check. Not every slowdown can-didate provides useful signal for further training. If all rollouts for a query fail to improve execution, then the query may be diffi-cult to optimize under the current rewrite space, and repeatedly revisiting it may provide limited benefit. Therefore, SPA further checks whether the original query is optimizable according to the group-level rollout history. Specifically, a query 𝑞 is considered optimizable if at least one other rewrite in the same rollout group achieves a nontrivial speedup: 
+
+𝐶 opt (𝑞 ) = 1 ∃𝑗 ∈ { 1, . . . , 𝐺 } : Equiv (𝑞, ˆ𝑞 𝑗 ) = 1 ∧ Δ(𝑞, ˆ𝑞 𝑗 ) > 𝜖  ,
+
+where Δ(𝑞, ˆ𝑞 𝑗 ) denotes the speedup of rewrite ˆ𝑞 𝑗 over the original query and 𝜖 is the threshold for nontrivial improvement. The final self-improvement set is defined as: 
+
+Dself = {( 𝑞, ˆ𝑞 𝑖 ) | 𝐶 slow (𝑞, ˆ𝑞 𝑖 ) ∧ 𝐶 opt (𝑞 )} .
+
+This filtering focuses self-improvement on cases where the policy has observed both harmful and beneficial execution outcomes for the same original query. Such cases are especially valuable because they expose fine-grained distinctions between rewrites that induce unfavorable plans and rewrites that produce meaningful speedups. 
+
+Data blending. To avoid overfitting to failure cases and to pre-serve the rewrite ability learned during base training, we blend the selected self-improvement samples with the original base training data using a 1:1 ratio. 
+
+self-improvement training. The self-improvement phase is on-policy because the additional training instances are derived from rollouts generated by the current policy itself. Instead of relying on an external static corpus, SPA uses the policy’s own execution outcomes to identify where it remains unreliable. As the policy evolves, the collected slowdown cases reflect the current model’s mistakes, allowing the training distribution to adapt toward high-regret but optimizable regions of the rewrite space. For each selected pair (𝑞, ˆ𝑞 𝑖 ) ∈ D self , SPA revisits the original query 𝑞 during the self-improvement phase. The slowdown rewrite 
+
+ˆ𝑞 𝑖 serves as execution-grounded evidence that the current policy can produce harmful plan changes for this query. The model is then optimized on the blended training distribution using the same database-grounded reward function as in base training, including se-mantic correctness, physical-plan behavior, and execution-latency improvement. Overall, the on-policy self-improvement phase turns slowdown rewrites from failed outputs into actionable training signals. By re-visiting slowdown cases only when the rollout group demonstrates that improvement is possible, SPA focuses training on queries where better execution behavior is attainable and where the policy can learn to distinguish beneficial plan changes from harmful ones. As shown in Figure 5, after training shifts to the slowdown-rollout workload, the mean reward drops sharply and requires a similar number of steps as the base training stage to recover. The policy entropy also increases, indicating that the model has not yet mastered the slowdown workload. 
+
+> 7
+
+Table 2: Training data size used in different stages of SPA. Slowdown rewritten queries are collected from rewritten queries generated during initial policy optimization stage.     
+
+> Stage Data Size
+> SFT initialization 5k rewrite pairs Initial Policy Optimization 1.6k original queries On-policy self-improvement 0.8k original queries + 0.8k slowdown rewritten queries
+
+## 4 EXPERIMENT 4.1 Experimental Setup 
+
+4.1.1 Training Setup. We train SPA with LoRA [ 12 ], using rank 
+
+𝑟 = 32 , learning rate 4 × 10 −5, SQL execution timeout of 120 s, and rollout group size 𝐺 = 16 . Training is conducted through an API-based training infrastructure. Database-side parallel reward evaluation is performed on a single Ubuntu machine with 128 GiB of memory. We configure PostgreSQL with shared_buffers =32GB and 
+
+work_mem =256MB to support concurrent query execution. Table 2 summarizes the training data size used in each stage. 
+
+4.1.2 Evaluation Setup. Evaluations are conducted on a PostgreSQL 16.14 server running Ubuntu 24.04, equipped with 8 virtual CPUs and 30 GiB of RAM. The CPU is an Intel(R) Xeon(R) Platinum 8175M CPU @ 2.50GHz, with 1 socket, 4 cores per socket, and 2 threads per core. Semantic equivalence is verified through execution-based re-sult comparison. For each query, we first perform one warm-up execution and then report the average runtime over three sub-sequent executions. For all evaluated models, we use the same retry-with-reflection mechanism during SQL generation. Each gen-erated rewrite is first checked for executability using EXPLAIN . If the rewritten SQL fails this check, the corresponding error message is fed back to the model for another generation attempt. We allow at most three retry attempts per query. To ensure a fair comparison, all LLM baselines are given the same prompt with parsed query plan information, generated by the plan parser described in Section 3.2. 
+
+4.1.3 Datasets. To evaluate the performance and robustness of SPA, we partition our benchmarks into In-Distribution (IID) work-loads used during training and Out-of-Distribution (OOD) work-loads used strictly for zero-shot evaluation. Depending on the benchmark, we either use its official query set directly or gen-erate one concrete SQL query from each provided query template. For toolkit-generated workloads, we use different stream_id s for training and evaluation queries to avoid overlap. 
+
+In-Distribution (IID) Workloads. The training corpus comprises two widely recognized benchmarks representing standard analyti-cal and relational workloads: 
+
+• TPC-H [ 28 ]. TPC-H is a decision support benchmark, which illustrates decision support systems that examine large vol-umes of data, execute queries with a high degree of com-plexity, and give answers to critical business questions. 
+
+• TPC-DS [ 24 ]. We generate queries using the official toolkits for these industry-standard decision-support benchmarks. They provide a range of complexities, from simple aggrega-tions to multi-way joins across large-scale star and snowflake schemas. 
+
+Out-of-Distribution (OOD) Workloads. To test whether the model has learned general relational optimization principles rather than simply memorizing training schemas, we evaluate on two distinct OOD workloads: 
+
+• StackOverflow [ 21 ]. This dataset represents a significant domain shift, featuring real-world queries from the Stack Overflow data dump. 
+
+• DSB [ 6]. Based on a modified TPC-DS schema, DSB intro-duces highly skewed data distributions and more complex query templates. 
+
+4.1.4 Baselines. To comprehensively evaluate the effectiveness of SPA, we compare our framework against both general-purpose LLMs, base model after supervised fine-tuning (SFT), and strong database-oriented optimization baselines. 
+
+LLMs . We compare SPA with three models: GPT-5.4 [26 ], GPT-4o [25 ]and Gemini-2.5-Pro [33 ]. We also compare against Qwen3-8B and 
+
+Qwen3-32B [34], which serve as the SPA’s backbone models. 
+
+LearnedRewrite . This system [ 45 ] treats query rewriting as a search problem within a policy tree. It employs Monte Carlo Tree Search (MCTS) to navigate the exponential space of rewrite rule sequences. By utilizing a learning-based estimator to predict performance gains, it attempts to find the optimal rule ordering that traditional heuristic optimizers often miss. 
+
+R-Bot . R-Bot [ 32 ] is an evidence-guided LLM-based SQL query rewrite system designed to improve query execution efficiency while preserving query semantics. It prepares rewrite evidence from multiple sources, retrieves relevant evidence through a hybrid structure-semantics retrieval method, and uses an LLM to perform step-by-step rule selection and arrangement with self-reflection. Unlike purely heuristic rewrite systems, R-Bot combines retrieved rewrite evidence with LLM reasoning to produce optimized SQL queries. We use Gemini-2.5-Pro as its backbone model. We exclude E3-Rewrite because it is not publicly available, de-pends on proprietary LLM-based equivalence judgments, and op-timizes estimator-based costs rather than execution-grounded re-wards. 
+
+## 4.2 Main Results 
+
+Table 3 reports the performance of different SQL rewrite methods across four benchmarks. The first two benchmarks, TPC-H and TPC-DS, are IID settings, while DSB and SO are OOD settings. Overall, SPA achieves strong and consistent performance across both IID and OOD workloads, especially on tail-latency metrics. On the IID benchmarks, SPA-32B obtains the best or near-best runtime performance. On TPC-H, it achieves the lowest mean runtime of 32.73s, reducing the original mean runtime from 57.00s, and also obtains the best P50, P75, P90, and P95 runtimes among all methods. On TPC-DS, SPA-32B achieves the best P50 and P75 runtimes, while GPT-5.4 obtains the lowest mean runtime and best P90/P95 latency. 
+
+> 8
+
+Table 3: Performance comparison of SQL rewrite methods on IID and OOD workloads. TPC-H and TPC-DS are IID datasets, while DSB and StackOverflow are OOD datasets. Succ. denotes the fraction of generated rewrites that pass syntax checking; Equiv. denotes the fraction of successful rewrites that are semantically equivalent to the original query; Mean and P50/P75/P90/P95 report the mean and percentile query runtimes. For unsuccessful or inequivalent rewrites, we apply padding by setting their runtime to the original runtime. All runtimes are in seconds; ≥300.00 denotes queries censored at the 300 s per-query execution timeout. Arrows ( ↑/↓) indicate whether higher or lower is better; for each runtime metric, the best (bold, dark green) and second-best (light green) result is highlighted. IID datasets TPC-H (10G) TPC-DS (10G) Validity Runtime (s) Validity Runtime (s) Method Succ. ↑ Equiv. ↑ Mean ↓ P50 ↓ P75 ↓ P90 ↓ P95 ↓ Succ. ↑ Equiv. ↑ Mean ↓ P50 ↓ P75 ↓ P90 ↓ P95 ↓
+
+Original – – 57.00 0.64 80.83 282.29 ≥300.00 – – 30.92 3.26 12.73 47.71 ≥300.00 LearnedRewrite 100.00% 63.64% 47.65 0.63 2.60 282.29 ≥300.00 100.00% 35.56% 32.55 4.33 20.48 87.23 ≥300.00 R-Bot (Gemini-2.5-Pro) 95.45% 90.48% 33.19 0.61 2.64 95.61 290.27 82.22% 67.57% 33.06 3.90 15.84 91.81 ≥300.00 Qwen3-8B 100.00% 86.36% 70.00 0.63 106.43 ≥300.00 ≥300.00 86.67% 78.21% 29.97 3.26 10.77 47.25 ≥300.00 Qwen3-32B 90.91% 90.00% 70.34 0.70 108.05 ≥300.00 ≥300.00 78.89% 74.65% 34.70 3.28 11.04 74.64 ≥300.00 GPT-4o 100.00% 77.27% 70.18 0.65 106.76 ≥300.00 ≥300.00 92.22% 59.04% 25.19 2.91 10.53 43.46 225.40 Gemini-2.5-Pro 100.00% 90.91% 32.94 0.64 3.77 89.51 289.94 100.00% 48.89% 28.88 2.64 9.80 32.13 ≥300.00 GPT-5.4 100.00% 86.36% 38.36 0.75 3.79 121.35 291.19 100.00% 55.56% 16.88 2.91 8.50 24.61 50.12 SPA-8B 100.00% 90.91% 38.28 0.76 3.73 120.63 291.15 93.33% 63.10% 24.09 2.79 9.56 31.58 205.32 
+
+SPA-32B 100.00% 86.36% 32.73 0.61 2.36 89.23 289.93 97.78% 68.18% 19.92 2.63 7.53 28.46 72.92 
+
+OOD datasets DSB (10G) StackOverflow Validity Runtime (s) Validity Runtime (s) Method Succ. ↑ Equiv. ↑ Mean ↓ P50 ↓ P75 ↓ P90 ↓ P95 ↓ Succ. ↑ Equiv. ↑ Mean ↓ P50 ↓ P75 ↓ P90 ↓ P95 ↓
+
+Original – – 21.23 2.58 8.67 17.18 94.43 – – 28.12 0.33 1.87 71.13 130.31 LearnedRewrite 100.00% 51.28% 29.17 3.08 20.78 74.62 144.12 100.00% 43.75% 41.05 0.59 74.88 130.56 163.74 R-Bot (Gemini-2.5-Pro) 69.23% 85.19% 24.53 2.58 12.80 41.88 96.78 75.00% 58.33% 34.59 0.64 20.32 86.50 149.43 Qwen3-8B 84.62% 87.88% 21.25 2.57 8.74 18.14 94.75 62.50% 40.00% 28.38 0.33 4.41 71.13 130.31 Qwen3-32B 79.49% 70.97% 21.70 3.17 9.75 22.46 94.43 81.25% 69.23% 42.57 0.30 1.88 186.88 ≥300.00 GPT-4o 89.74% 71.43% 13.75 1.73 6.80 16.34 34.60 93.75% 53.33% 25.60 0.30 1.89 51.18 126.38 Gemini-2.5-Pro 100.00% 87.18% 19.55 1.74 5.15 17.18 56.21 100.00% 68.75% 5.08 0.22 0.46 2.68 21.07 
+
+GPT-5.4 100.00% 82.05% 20.98 2.82 8.38 17.78 83.35 100.00% 75.00% 5.21 0.22 0.46 4.65 22.15 
+
+SPA-8B 94.87% 67.57% 13.20 1.84 5.71 13.32 32.56 81.25% 100.00% 5.80 0.21 1.46 6.61 24.93 
+
+SPA-32B 97.44% 84.21% 6.96 1.74 6.67 13.32 27.85 100.00% 100.00% 5.41 0.22 1.30 3.71 21.63 
+
+Compared with the original queries, SPA-32B reduces the mean runtime from 30.92s to 19.92s and improves P95 runtime from 300.00s to 72.92s. On the OOD workloads, SPA generalizes well and often outper-forms strong proprietary models. On DSB, SPA-32B achieves the best mean runtime of 6.96s, substantially lower than the original runtime of 21.23s, and also obtains the best P90 and P95 runtimes. On StackOverflow, SPA-32B maintains a 100% success rate and 100% equivalence rate, while achieving competitive runtime performance compared with GPT-5.4 and Gemini-2.5-Pro. These results show that SPA learns rewrite strategies that trans-fer to OOD workloads, improving both mean runtime and tail la-tency while maintaining high success and equivalence rates. In par-ticular, SPA-32B provides the most consistent gains across datasets, suggesting that scaling the policy model further improves rewrite quality and robustness. We also report aggregated results across all datasets in Table 6. It shows that SPA-32B consistently achieves the highest equivalence rate, the highest nontrivial speedup rate, and the highest fractions of rewrites with speedup greater than 2× and 10 ×, while obtaining the lowest fractions of rewrites with slowdown greater than 4× and 
+
+10 ×, as well as the lowest mean, P50, P75, P90, and P95 runtimes. 
+
+## 4.3 Ablation Study 
+
+Table 4 reports an ablation study of SPA-8B on TPC-H and DSB, where TPC-H represents an IID workload and DSB represents an OOD workload. Each ablated variant is compared against the full SPA-8B model with 𝜏 = 50% . Overall, the full model provides the strongest latency-oriented performance across both workloads. On TPC-H, it reduces the mean runtime from 57 .00 s to 38 .28 s, while maintaining a 100 .00% success rate and a 90 .91% equivalence rate. On DSB, it reduces the mean runtime from 21 .23 s to 13 .20 s and 
+
+> 9
+
+Table 4: Ablation study of SPA-8B on TPC-H and DSB. TPC-H is an IID workload and DSB is an OOD workload. Succ. denotes syntax-success rate, and Equiv. denotes semantic-equivalence rate among successful rewrites. Mean/P90/P95 report padded runtime in seconds. Spd. ≥ 2× and Sld. ≥ 2× report large speedup and slowdown rates. Arrows indicate whether each ablated variant improves or degrades relative to Full SPA-8B under the corresponding metric direction; higher is better for success, equivalence, and speedup, while lower is better for runtime and slowdown. Variant TPC-H (IID) DSB (OOD) Succ.(%) Equiv.(%) Mean(s) P90(s) P95(s) Spd. ≥ 2× Sld. ≥ 2× Succ.(%) Equiv.(%) Mean(s) P90(s) P95(s) Spd. ≥ 2× Sld. ≥ 2×                                                                                                                                                                                                                                                                
+
+> Original ––57.00 282.29 300.00 ––––21.23 17.18 94.43 ––
+> Full SPA-8B 100.00 90.91 38.28 120.63 291.15 9.09 9.09 94.87 67.57 13.20 13.32 32.56 7.69 2.56
+> Only SFT 100.00 –86.36 ↓41.89 ↑107.95 ↓290.45 ↓9.09 –9.09 –61.54 ↓75.00 ↑21.28 ↑25.52 ↑94.43 ↑10.26 ↑5.13 ↑
+> w/o plan-divergence reward 95.45 ↓90.48 ↓42.90 ↑121.82 ↑291.16 ↑4.55 ↓4.55 ↓94.87 –83.78 ↑21.49 ↑19.49 ↑94.49 ↑5.13 ↓2.56 –
+> 𝜏 =25% 100.00 –86.36 ↓43.19 ↑121.48 ↑291.14 ↓4.55 ↓9.09 –92.31 ↓55.56 ↓28.26 ↑36.82 ↑300.00 ↑5.13 ↓5.13 ↑
+> 𝜏 =75% 100.00 –90.91 –52.97 ↑282.32 ↑300.00 ↑4.55 ↓9.09 –84.62 ↓63.64 ↓21.18 ↑17.18 ↑94.43 ↑5.13 ↓2.56 –
+> w/o self-improvement 100.00 –86.36 ↓38.65 ↑123.59 ↑291.28 ↑9.09 –4.55 ↓94.87 –78.38 ↑21.55 ↑18.37 ↑95.11 ↑7.69 –5.13 ↑
+> w/o self-improvement, same steps 95.45 ↓95.24 ↑38.49 ↑121.15 ↑291.15 –9.09 –4.55 ↓89.74 ↓77.14 ↑21.41 ↑17.18 ↑94.48 ↑2.56 ↓5.13 ↑
+> slowdown-only self-improvement 100.00 –90.91 –52.84 ↑282.28 ↑300.00 ↑4.55 ↓9.09 –89.74 ↓68.57 ↑20.84 ↑15.01 ↑94.70 ↑7.69 –5.13 ↑
+> w/o plan information 100.00 –90.91 –38.17 ↓122.61 ↑291.26 ↑9.09 –0.00 ↓97.44 ↑65.79 ↓20.96 ↑19.40 ↑94.43 ↑7.69 –0.00 ↓
+
+lowers P95 latency from 94 .43 s to 32 .56 s, while maintaining a high success rate of 94 .87% .
+
+Effect of reinforcement learning. The only SFT variant performs worse than the full model, especially on the OOD workload. On TPC-H, it maintains a 100 .00% success rate but decreases the equiv-alence rate from 90 .91% to 86 .36% and increases the mean runtime from 38 .28 s to 41 .89 s. On DSB, the degradation is more significant: the success rate drops from 94 .87% to 61 .54% , and the mean run-time increases from 13 .20 s to 21 .28 s. Although SFT alone can still produce some large speedups, it also introduces more slowdown risk. This suggests that supervised rewrite examples are insufficient for stable optimization, and execution-grounded RL is necessary to improve reliability and latency. 
+
+Effect of plan-divergence reward. Removing the plan-divergence reward weakens latency improvement even when correctness re-mains competitive. On TPC-H, the mean runtime increases from 
+
+38 .28 s to 42 .90 s, and the ≥ 2× speedup rate decreases from 9.09% 
+
+to 4.55% . On DSB, equivalence improves from 67 .57% to 83 .78% , but mean runtime increases from 13 .20 s to 21 .49 s, and the ≥ 2× speedup rate decreases from 7.69% to 5.13% . This indicates that without an explicit incentive to change the physical execution plan, the model tends to generate safer but less execution-effective rewrites. Plan-divergence reward is therefore important for encouraging rewrites that lead to meaningful runtime improvements. 
+
+Effect of gated reward threshold. The threshold 𝜏 controls how conservatively SPA advances to later reward components. A smaller threshold, 𝜏 = 25% , is more aggressive, but it degrades both correct-ness and latency, especially on DSB, where equivalence drops to 
+
+55 .56% and mean runtime increases to 28 .26 s. A larger threshold, 
+
+𝜏 = 75% , is more conservative, but also underperforms the balanced setting: on TPC-H, mean runtime increases to 52 .97 s, and on DSB, success drops to 84 .62% . These results suggest that 𝜏 = 50% provides a better balance between exploration and stable optimization. 
+
+Effect of self-improvement. Removing self-improvement hurts robustness, particularly on the OOD workload. On DSB, the mean runtime increases from 13 .20 s to 21 .55 s, and the ≥ 2× slowdown rate increases from 2.56% to 5.13% . The variant without self-improvement but with the same number of training steps remains worse than the full model, indicating that the benefit is not merely due to additional training. Instead, self-improvement provides useful corrective sig-nals by training the policy to recover from its own harmful rewrites. 
+
+Effect of slowdown-only self-improvement. Using only slow-down cases for self-improvement is also less effective than the full mixed self-improvement strategy. On TPC-H, the mean runtime increases to 52 .84 s and P95 reaches 300 .00 s. On DSB, the mean run-time is 20 .84 s and the ≥ 2× slowdown rate increases to 5.13% . This suggests that focusing only on negative cases can over-constrain the training signal. Mixing slowdown cases with regular training examples provides a more balanced and effective self-improvement stage. 
+
+Effect of plan information. Removing plan information from the prompt also degrades performance. On DSB, the success rate slightly increases to 97 .44% , but equivalence decreases to 65 .79% ,mean runtime increases to 20 .96 s, and the ≥ 2× slowdown rate drops to 0.00% at the cost of weaker latency improvement. On TPC-H, the effect is smaller, but the variant still does not consistently outperform the full model. These results show that plan information is useful beyond syntactic guidance: it helps the model identify execution bottlenecks and generate rewrites that are more likely to improve runtime. 
+
+Summary. The ablation results show that SPA-8B benefits from all major design choices: execution-grounded RL, plan-divergence reward, balanced gated reward progression, plan-aware prompting, and mixed self-improvement. The full model achieves the best overall latency reduction across IID and OOD workloads while maintaining high success and equivalence rates, confirming the importance of combining correctness-aware RL with execution-plan grounding.                                                                  
+
+> 10 -- original query
+> SELECT SUM (ws.discount)
+> FROM
+> web_sales ws, item i, date_dim d
+> WHERE
+> i.manufact_id = 718
+> AND i.item_id = ws.item_id
+> AND d.date_id = ws.sold_date_id
+> AND d.date BETWEEN ...
+> AND ws.discount > (
+> SELECT
+> 1.3 * AVG (ws2.discount)
+> FROM
+> web_sales ws2, date_dim d2
+> WHERE
+> ws2.item_id = i.item_id
+> AND d2.date_id = ws2.sold_date_id
+> AND d2.date BETWEEN ... );
+> -- rewritten query by GPT-5.4 (speedup=0.85)
+> WITH dates AS (
+> SELECT date_id
+> FROM date_dim
+> WHERE date BETWEEN ... ), items AS (
+> SELECT item_id
+> FROM item
+> WHERE manufact_id = 718 ), item_avg_discount AS (
+> SELECT
+> ws.item_id, 1.3 * AVG (ws.discount) AS threshold
+> FROM
+> web_sales ws
+> JOIN dates d
+> ON d.date_id = ws.sold_date_id
+> GROUP BY
+> ws.item_id )
+> SELECT SUM (ws.discount)
+> FROM
+> web_sales ws
+> JOIN dates d
+> ON d.date_id = ws.sold_date_id
+> JOIN items i
+> ON i.item_id = ws.item_id
+> JOIN item_avg_discount a
+> ON a.item_id = ws.item_id
+> WHERE
+> ws.discount > a.threshold;
+> -- rewritten query by SPA (speedup=28.1)
+> WITH items AS (
+> SELECT item_id
+> FROM item
+> WHERE manufact_id = 718 ), item_avg_discount AS (
+> SELECT
+> ws.item_id, 1.3 * AVG (ws.discount) AS threshold
+> FROM
+> web_sales ws
+> JOIN date_dim d ON ...
+> JOIN items i
+> ON i.item_id = ws.item_id
+> WHERE
+> d.date BETWEEN ...
+> GROUP BY
+> ws.item_id )
+> SELECT SUM (ws.discount)
+> FROM
+> web_sales ws
+> JOIN items i
+> ON i.item_id = ws.item_id
+> JOIN date_dim d ON ...
+> JOIN item_avg_discount a
+> ON a.item_id = ws.item_id
+> WHERE
+> d.date BETWEEN ...
+> AND ws.discount > a.threshold;
+
+Figure 6: Simplified comparison of the original query and two rewrites generated by GPT-5.4 and SPA. The original query is a variation of Query-10 from TPC-DS benchmark. Table 5: Speedup and slowdown ratio under different thresh-olds. Top-1 values are highlighted in green. 
+
+Method Spd. 
+
+≥ 2×
+
+Spd. 
+
+≥ 4×
+
+Spd. 
+
+≥ 10 ×
+
+Sld. 
+
+≥ 2×
+
+Sld. 
+
+≥ 4×
+
+Sld. 
+
+≥ 10 ×
+
+TPC-H 
+
+LearnedRewrite 9.09% 9.09% 9.09% 0.00% 0.00% 0.00% R-Bot (Gemini-2.5-Pro) 13.64% 13.64% 13.64% 9.09% 4.55% 0.00% Qwen3-8B 0.00% 0.00% 0.00% 4.55% 4.55% 4.55% Qwen3-32B 0.00% 0.00% 0.00% 9.09% 4.55% 4.55% GPT-4o 0.00% 0.00% 0.00% 9.09% 9.09% 4.55% Gemini-2.5-Pro 13.64% 13.64% 13.64% 13.64% 9.09% 4.55% GPT-5.4 9.09% 9.09% 9.09% 9.09% 4.55% 0.00% SPA-8B 9.09% 9.09% 9.09% 9.09% 4.55% 0.00% 
+
+SPA-32B 13.64% 13.64% 13.64% 9.09% 4.55% 0.00% DSB 
+
+LearnedRewrite 10.26% 5.13% 5.13% 12.82% 12.82% 12.82% R-Bot (Gemini-2.5-Pro) 0.00% 0.00% 0.00% 10.26% 5.13% 2.56% Qwen3-8B 0.00% 0.00% 0.00% 0.00% 0.00% 0.00% Qwen3-32B 0.00% 0.00% 0.00% 5.13% 0.00% 0.00% GPT-4o 7.69% 7.69% 2.56% 2.56% 0.00% 0.00% Gemini-2.5-Pro 10.26% 5.13% 2.56% 10.26% 5.13% 0.00% GPT-5.4 7.69% 7.69% 2.56% 17.95% 12.82% 0.00% SPA-8B 7.69% 5.13% 2.56% 2.56% 0.00% 0.00% 
+
+SPA-32B 10.26% 10.26% 7.69% 7.69% 2.56% 0.00% 
+
+## 4.4 Threshold-Based Speedup and Slowdown Analysis 
+
+Table 5 further analyzes speedup and slowdown rates under differ-ent thresholds on TPC-H and DSB. SPA-32B achieves the highest speedup rates on both datasets, and its advantage remains stable as the threshold increases from 2× to 10 ×. For slowdown, SPA-32B shows low risk across both datasets. It produces no ≥ 10 ×
+
+slowdowns on either benchmark, while keeping ≥ 2× and ≥ 4×
+
+slowdown rates comparable to or lower than most baselines. These results indicate that SPA improves the chance of finding substantial speedups without introducing severe slowdown cases. 
+
+## 4.5 Case Study 
+
+Figure 6 presents a representative case where SPA finds an execution-effective rewrite, while both rule-based systems and a strong LLM baseline fail to obtain the same improvement. The original query computes the total discount from web_sales for items produced by manufacturer 718 within a 90-day date range. It contains a cor-related subquery that computes, for each outer item, an item-level average discount threshold over the same date range. Although this query admits an effective decorrelation-based rewrite, both LearnedRewrite and R-Bot fail to apply any rewrite rule and leave the query unchanged. GPT-5.4 generates an intu-itive rewrite. It correctly recognizes that the correlated average can be decorrelated into an item-level pre-aggregation, material-ized as item_avg_discount , and then joined back to the outer query. This transformation appears reasonable and is semantically valid since it returns the correct result. However, the resulting plan exposes an execution-critical inefficiency: the planner materi-alizes item_avg_discount via a HashAggregate over all 207,521 date-filtered rows from web_sales , producing 50,238 distinct item groups, before the manufacturer predicate is applied. The manu-facturer filter only enters the plan as a late Hash Join on top of this already-computed aggregate, discarding all but 16 of the 50,238 groups. This leads to a slowdown of 0.85 ×.
+
+> 11
+
+Table 6: Data efficiency analysis of SPA-32B, with results aggregated across all datasets. Top-1 and Top-2 values are highlighted in green, excluding the 5k setting. The last row reports the 5k SFT data setting with changes relative to the 2k setting.                                                                                                                                       
+
+> Method Succ. Rate Equiv. Rate Mean P50 P75 P90 P95 Nontriv. Spd. Spd.
+> ≥2×
+> Spd.
+> ≥4×
+> Spd.
+> ≥10 ×
+> Nontriv. Sld. Sld.
+> ≥2×
+> Sld.
+> ≥4×
+> Sld.
+> ≥10 ×
+> Original ––31.82 2.35 10.87 89.61 300.00 ––––––––LearnedRewrite 100.0% 43.71% 34.56 2.71 21.80 101.52 300.00 8.38% 6.59% 5.39% 5.39% 20.96% 15.57% 11.98% 9.58% R-Bot (Gemini-2.5-Pro) 80.24% 73.88% 31.23 2.75 13.41 80.36 300.00 6.59% 2.99% 2.99% 2.40% 16.17% 10.18% 5.99% 4.19% Qwen3-32B 80.84% 75.56% 37.11 2.61 10.99 114.49 300.00 9.58% 2.40% 0.00% 0.00% 10.18% 5.99% 2.99% 2.40% GPT-4o 92.81% 63.87% 28.49 1.74 9.97 69.90 300.00 10.18% 6.59% 3.59% 2.40% 7.19% 2.99% 1.80% 1.20% Gemini-2.5-Pro 100.0% 65.27% 24.95 1.74 5.74 28.52 300.00 23.95% 13.17% 10.18% 6.59% 12.57% 6.59% 3.59% 1.20% GPT-5.4 100.0% 67.66% 19.55 1.98 7.36 25.31 95.80 21.56% 13.17% 10.18% 8.38% 21.56% 13.77% 6.59% 1.80%
+> SPA-32B (2k) 97.60% 77.30% 20.92 1.79 6.13 30.83 112.78 23.95% 14.37% 11.38% 6.59% 7.78% 2.99% 1.80% 0.60% SPA-32B (5k) 98.20%
+> +0.60%
+> 77.44%
+> +0.14%
+> 17.19
+> -3.73
+> 1.69
+> -0.10
+> 5.93
+> -0.21
+> 26.14
+> -4.70
+> 73.10
+> -39.68
+> 23.95%
+> +0.00%
+> 14.97%
+> +0.60%
+> 10.78%
+> -0.60%
+> 8.98%
+> +2.39%
+> 13.17%
+> +5.39%
+> 5.99%
+> +3.00%
+> 1.80%
+> +0.00%
+> 0.00%
+> -0.60%
+
+SPA produces a structurally different plan. By joining filtered_ items (32 manufacturer-718 items) into the aggregation CTE before grouping, the planner is able to replace the broad HashAggregate 
+
+with a GroupAggregate over a Nested Loop that first ranges over the 32 known items and retrieves their web_sales rows via index scan. Only 67 rows enter the aggregation, producing 16 groups—exactly the items that matter. The final join operates on this compact intermediate result, achieving a 28 .1× speedup. The case highlights that even a strong LLM can produce a seman-tically valid rewrite that appears reasonable at the SQL level, but still miss the execution-critical transformation needed for speedup. 
+
+## 4.6 Data Efficiency Analysis 
+
+Preparing high-quality rewritten SQL targets for SFT is the ma-jor cost in data synthesis, whereas original SQL queries can be generated cheaply from benchmark toolkits. We therefore evalu-ate a lower-cost setting that reduces the SFT rewrite data from 5k to 2k examples. The 5k setting uses both benchmark-toolkit and SQLStorm-generated queries, with rewrites generated by GPT-5.4 and o3-mini. In contrast, the 2k setting uses only benchmark-toolkit queries and generates all rewrite targets with o3-mini. Table 6 reports the data efficiency results of SPA-32B. Even with only 2k training examples, SPA-32B remains highly competitive with strong closed-source baselines. It achieves a higher equiva-lence rate than both GPT-5.4 and Gemini-2.5-Pro, with a mean runtime of 20.92s that is close to GPT-5.4’s 19.55s and lower than Gemini-2.5-Pro’s 24.95s. SPA-32B (2k) also preserves strong high-impact speedup behavior, achieving the best nontrivial speedup rate, matching Gemini-2.5-Pro at 23.95%, while obtaining the high-est ratios of queries with at least 2× and 4× speedup. Compared with GPT-5.4, SPA-32B (2k) also reduces nontrivial slowdown from 21.56% to 7.78%, and achieves lower slowdown rates across all slow-down thresholds. These results indicate that SPA can learn effective rewrite policies even with substantially reduced SFT data. The last row further compares the full 5k setting against the 2k setting. Increasing SFT data size from 2k to 5k improves most met-rics, with particularly clear gains in mean runtime and all runtime percentiles. However, the 2k model already remains competitive with strong proprietary LLMs, suggesting that SPA is relatively data-efficient while still benefiting from additional high-quality rewrite data. 
+
+Table 7: Training cost and time by stage.             
+
+> Base Model SFT Initial Optimization Self-Improvement Total Qwen3-8B $2.54 / 0.13h $5.38 / 9.43h $5.03 / 10.88h $12.95 / 20.44h Qwen3-32B $9.32 / 0.29h $21.34 / 11.93h $21.42 / 12.77h $52.08 / 24.99h
+
+## 4.7 Cost Analysis 
+
+Table 7 reports the cost and training time of each training stage. We train all stages with LoRA adapters. Because training is conducted through an API-based training platform, we compute cost using the platform’s token-level billing scheme, which separately accounts for prefill, sampling, and training tokens. For Qwen3-8B, the complete training pipeline costs $12.95 and takes 20.44 hours. For Qwen3-32B, the total cost is $52.08 and the total time is 24.99 hours. The RL stages dominate both cost and time because they require sampling candidate rewrites and updating the policy using execution-based rewards. Nevertheless, the overall training cost remains modest: even for Qwen3-32B, the full training pipeline costs around $52. 
+
+## 5 CONCLUSION 
+
+We presented SPA, a SQL-Plan-Aware reinforcement learning frame-work for LLM-based SQL query rewriting. SPA grounds rewrite optimization via database execution by jointly considering seman-tic equivalence, textual rewrite distance, physical-plan divergence, and measured runtime speedup. To make execution-grounded RL effective for SQL rewriting, SPA introduces parallel reward calcu-lation, probability-gated adaptive reward shaping, and on-policy self-improvement from slowdown-inducing rollouts. Experiments on both IID and OOD workloads show that SPA improves end-to-end runtime performance over rule-based and strong LLM baselines, while reducing trivial rewrites and harmful slowdowns. Ablation studies further demonstrate that plan-aware reward modeling, exe-cution feedback, and self-improvement each contribute to the final performance gains. Overall, SPA shows that explicitly aligning LLM rewrite policies with physical execution behavior is a promising direction for robust and effective SQL query optimization. 
+
+> 12
+
+## REFERENCES 
+
+[1] Edmon Begoli, Jesús Camacho-Rodríguez, Julian Hyde, Michael J. Mior, and Daniel Lemire. 2018. Apache Calcite: A Foundational Framework for Optimized Query Processing Over Heterogeneous Data Sources. In Proceedings of the 2018 In-ternational Conference on Management of Data, SIGMOD Conference 2018, Houston, TX, USA, June 10-15, 2018 , Gautam Das, Christopher M. Jermaine, and Philip A. Bernstein (Eds.). ACM, 221–230. https://doi.org/10.1145/3183713.3190662 [2] Surajit Chaudhuri. 1998. An overview of query optimization in relational systems. In Proceedings of the Seventeenth ACM SIGACT-SIGMOD-SIGART Symposium on Principles of Database Systems (Seattle, Washington, USA) (PODS ’98) . Association for Computing Machinery, New York, NY, USA, 34–43. https://doi.org/10.1145/ 275487.275492 [3] Kaiwen Chen, Yueting Chen, Nick Koudas, and Xiaohui Yu. 2025. Reliable Text-to-SQL with Adaptive Abstention. Proc. ACM Manag. Data 3, 1 (2025), 69:1–69:30. https://doi.org/10.1145/3709719 [4] Sriram Dharwada, Himanshu Devrani, Jayant R. Haritsa, and Harish Doraiswamy. 2025. Query Rewriting via LLMs. CoRR abs/2502.12918 (2025). https://doi.org/ 10.48550/ARXIV.2502.12918 arXiv:2502.12918 [5] Sriram Dharwada, Himanshu Devrani, Jayant R. Haritsa, and Harish Doraiswamy. 2026. LITHE: A Query Rewrite Advisor using LLMs. In Proceedings 29th Inter-national Conference on Extending Database Technology, EDBT 2026, Tampere, Finland, March 24-27, 2026 , Wolfgang Lehner, Vanessa Braganholo, Kostas Ste-fanidis, Zheying Zhang, Alexander Krause, and João Felipe Nicolaci Pimentel (Eds.). OpenProceedings.org, 233–246. https://doi.org/10.48786/EDBT.2026.20 [6] Bailu Ding, Surajit Chaudhuri, Johannes Gehrke, and Vivek R. Narasayya. 2021. DSB: A Decision Support Benchmark for Workload-Driven and Traditional Database Systems. Proc. VLDB Endow. 14, 13 (2021), 3376–3388. https://doi.org/ 10.14778/3484224.3484234 [7] Bailu Ding, Vivek R. Narasayya, and Surajit Chaudhuri. 2024. Extensible Query Optimizers in Practice. Found. Trends Databases 14, 3-4 (2024), 186–402. https: //doi.org/10.1561/1900000077 [8] Rui Dong, Jie Liu, Yuxuan Zhu, Cong Yan, Barzan Mozafari, and Xinyu Wang. 2023. SlabCity: Whole-Query Optimization using Program Synthesis. Proc. VLDB Endow. 16, 11 (2023), 3151–3164. https://doi.org/10.14778/3611479.3611515 [9] Dawei Gao, Haibin Wang, Yaliang Li, Xiuyu Sun, Yichen Qian, Bolin Ding, and Jingren Zhou. 2024. Text-to-SQL Empowered by Large Language Models: A Benchmark Evaluation. Proc. VLDB Endow. 17, 5 (2024), 1132–1145. https: //doi.org/10.14778/3641204.3641221 [10] Goetz Graefe. 1987. Rule-Based Query Optimization in Extensible Database Systems .Ph.D. Dissertation. Univ. of Wisconsin-Madison. [11] Laura M. Haas. 1999. Review - Access Path Selection in a Relational Database Management System. ACM SIGMOD Digit. Rev. 1 (1999). https://dblp.org/db/ journals/dr/Haas99a.html [12] Edward J. Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean Wang, Lu Wang, and Weizhu Chen. 2022. LoRA: Low-Rank Adaptation of Large Language Models. In The Tenth International Conference on Learning Representations, ICLR 2022, Virtual Event, April 25-29, 2022 . OpenReview.net. https://openreview.net/forum?id=nZeVKeeFYf9 [13] Viktor Leis, Andrey Gubichev, Atanas Mirchev, Peter Boncz, Alfons Kemper, and Thomas Neumann. 2015. How Good Are Query Optimizers, Really? Proc. VLDB Endow. 9, 3 (2015), 204–215. https://doi.org/10.14778/2850583.2850594 [14] Viktor Leis, Andrey Gubichev, Atanas Mirchev, Peter Boncz, Alfons Kemper, and Thomas Neumann. 2025. Still Asking: How Good Are Query Optimizers, Really? 
+
+Proc. VLDB Endow. 18, 12 (2025), 5531–5536. https://doi.org/10.14778/3750601. 3760521 [15] Alon Y. Levy, Inderpal Singh Mumick, and Yehoshua Sagiv. 1994. Query Optimiza-tion by Predicate Move-Around. In VLDB’94, Proceedings of 20th International Conference on Very Large Data Bases, September 12-15, 1994, Santiago de Chile, Chile , Jorge B. Bocca, Matthias Jarke, and Carlo Zaniolo (Eds.). Morgan Kaufmann, 96–107. http://www.vldb.org/conf/1994/P096.PDF [16] Guoliang Li, Xuanhe Zhou, Shifu Li, and Bo Gao. 2019. QTune: a query-aware database tuning system with deep reinforcement learning. Proc. VLDB Endow. 
+
+12, 12 (Aug. 2019), 2118–2130. https://doi.org/10.14778/3352063.3352129 [17] Jiahui Li, Tongwang Wu, Yuren Mao, Yunjun Gao, Yajie Feng, and Huaizhong Liu. 2025. SQL-Factory: A Multi-Agent Framework for High-Quality and Large-Scale SQL Generation. Proc. VLDB Endow. 19, 3 (2025), 292–305. https://www.vldb. org/pvldb/vol19/p292-gao.pdf [18] Zhaodonghui Li, Haitao Yuan, Huiming Wang, Gao Cong, and Lidong Bing. 2024. LLM-R2: A Large Language Model Enhanced Rule-Based Rewrite System for Boosting Query Efficiency. Proc. VLDB Endow. 18, 1 (Sept. 2024), 53–65. https://doi.org/10.14778/3696435.3696440 [19] Hanwen Liu, Qihan Zhang, Ryan Marcus, and Ibrahim Sabek. 2025. SEFRQO: A Self-Evolving Fine-Tuned RAG-Based Query Optimizer. Proc. ACM Manag. Data 
+
+3, 6 (2025), 1–27. https://doi.org/10.1145/3769826 [20] Jie Liu and Barzan Mozafari. 2026. GenRewrite: Query Rewriting via Large Language Models. Proceedings of the ACM on Management of Data 4, 1 (SIGMOD (2026), 1–26. [21] Ryan Marcus, Parimarjan Negi, Hongzi Mao, Nesime Tatbul, Mohammad Al-izadeh, and Tim Kraska. 2021. Bao: Making Learned Query Optimization Practical. In SIGMOD ’21: International Conference on Management of Data, Virtual Event, China, June 20-25, 2021 , Guoliang Li, Zhanhuai Li, Stratos Idreos, and Divesh Srivastava (Eds.). ACM, 1275–1288. https://doi.org/10.1145/3448016.3452838 [22] Ryan Marcus, Parimarjan Negi, Hongzi Mao, Chi Zhang, Mohammad Alizadeh, Tim Kraska, Olga Papaemmanouil, and Nesime Tatbul. 2019. Neo: A Learned Query Optimizer. Proc. VLDB Endow. 12, 11 (2019), 1705–1718. https://doi.org/ 10.14778/3342263.3342644 [23] M. Muralikrishna. 1992. Improved Unnesting Algorithms for Join Aggregate SQL Queries. In 18th International Conference on Very Large Data Bases, August 23-27, 1992, Vancouver, Canada, Proceedings , Li-Yan Yuan (Ed.). Morgan Kaufmann, 91–102. http://www.vldb.org/conf/1992/P091.PDF [24] Raghunath Othayoth Nambiar and Meikel Poess. 2006. The Making of TPC-DS. In Proceedings of the 32nd International Conference on Very Large Data Bases, Seoul, Korea, September 12-15, 2006 , Umeshwar Dayal, Kyu-Young Whang, David B. Lomet, Gustavo Alonso, Guy M. Lohman, Martin L. Kersten, Sang Kyun Cha, and Young-Kuk Kim (Eds.). ACM, 1049–1058. http://dl.acm.org/citation.cfm?id= 1164217 [25] OpenAI. 2024. GPT-4o System Card. CoRR abs/2410.21276 (2024). https://doi. org/10.48550/ARXIV.2410.21276 arXiv:2410.21276 [26] OpenAI. 2026. GPT-5.4 Thinking System Card. https://deploymentsafety.openai. com/gpt-5-4-thinking/gpt-5-4-thinking.pdf. [27] R. Malinga Perera, Bastian Oetomo, Benjamin I. P. Rubinstein, and Renata Borovica-Gajic. 2021. DBA bandits: Self-driving index tuning under ad-hoc, analytical workloads with safety guarantees. In 37th IEEE International Confer-ence on Data Engineering, ICDE 2021, Chania, Greece, April 19-22, 2021 . IEEE, 600–611. https://doi.org/10.1109/ICDE51399.2021.00058 [28] Meikel Poess and Chris Floyd. 2000. New TPC benchmarks for decision support and web commerce. SIGMOD Rec. 29, 4 (Dec. 2000), 64–71. https://doi.org/10. 1145/369275.369291 [29] Tobias Schmidt, Viktor Leis, Peter Boncz, and Thomas Neumann. 2025. SQLStorm: Taking Database Benchmarking into the LLM Era. Proc. VLDB Endow. 18, 11 (2025), 4144–4157. https://doi.org/10.14778/3749646.3749683 [30] Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Mingchuan Zhang, Y. K. Li, Y. Wu, and Daya Guo. 2024. DeepSeekMath: Pushing the Limits of Mathematical Reasoning in Open Language Models. CoRR abs/2402.03300 (2024). https://doi.org/10.48550/ARXIV.2402.03300 arXiv:2402.03300 [31] Yuyang Song, Hanxu Yan, Jiale Lao, Yibo Wang, Yufei Li, Yuanchun Zhou, Jianguo Wang, and Mingjie Tang. 2025. QUITE: A Query Rewrite System Beyond Rules with LLM Agents. CoRR abs/2506.07675 (2025). https://doi.org/10.48550/ARXIV. 2506.07675 arXiv:2506.07675 [32] Zhaoyan Sun, Xuanhe Zhou, Guoliang Li, Xiang Yu, Jianhua Feng, and Yong Zhang. 2025. R-Bot: An LLM-based Query Rewrite System. Proc. VLDB Endow. 
+
+18, 12 (2025), 5031–5044. https://doi.org/10.14778/3750601.3750625 [33] Gemini Team. 2025. Gemini 2.5: Pushing the Frontier with Advanced Rea-soning, Multimodality, Long Context, and Next Generation Agentic Capabili-ties. CoRR abs/2507.06261 (2025). https://doi.org/10.48550/ARXIV.2507.06261 arXiv:2507.06261 [34] Qwen Team. 2025. Qwen3 Technical Report. CoRR abs/2505.09388 (2025). https: //doi.org/10.48550/ARXIV.2505.09388 arXiv:2505.09388 [35] Immanuel Trummer, Junxiong Wang, Ziyun Wei, Deepak Maram, Samuel Mose-ley, Saehan Jo, Joseph Antonakakis, and Ankush Rayabhari. 2021. SkinnerDB: Regret-bounded Query Evaluation via Reinforcement Learning. ACM Trans. Database Syst. 46, 3 (2021), 9:1–9:45. https://doi.org/10.1145/3464389 [36] Junxiong Wang, Immanuel Trummer, and Debabrota Basu. 2021. UDO: Universal Database Optimization using Reinforcement Learning. Proc. VLDB Endow. 14, 13 (2021), 3402–3414. https://doi.org/10.14778/3484224.3484236 [37] Zhaoguo Wang, Zhou Zhou, Yicun Yang, Haoran Ding, Gansen Hu, Ding Ding, Chuzhe Tang, Haibo Chen, and Jinyang Li. 2022. WeTune: Automatic Discovery and Verification of Query Rewrite Rules. In SIGMOD ’22: International Conference on Management of Data, Philadelphia, PA, USA, June 12 - 17, 2022 , Zachary G. Ives, Angela Bonifati, and Amr El Abbadi (Eds.). ACM, 94–107. https://doi.org/ 10.1145/3514221.3526125 [38] Xiangjin Xie, Guangwei Xu, Lingyan Zhao, and Ruijie Guo. 2025. OpenSearch-SQL: Enhancing Text-to-SQL with Dynamic Few-shot and Consistency Align-ment. Proc. ACM Manag. Data 3, 3 (2025), 194:1–194:24. https://doi.org/10.1145/ 3725331 [39] Dongjie Xu, Yue Cui, Weijie Shi, Qingzhi Ma, Hanghui Guo, Jiaming Li, Yao Zhao, Ruiyuan Zhang, Shimin Di, Jia Zhu, Kai Zheng, and Jiajie Xu. 2025. E3-Rewrite: Learning to Rewrite SQL for Executability, Equivalence,and Effi-ciency. CoRR abs/2508.09023 (2025). https://doi.org/10.48550/ARXIV.2508.09023 arXiv:2508.09023 [40] Yicun Yang, Zhaoguo Wang, Yu Xia, Zhuoran Wei, Haoran Ding, Ruzica Piskac, Haibo Chen, and Jinyang Li. 2025. Automated Validating and Fixing of Text-to-SQL Translation with Execution Consistency. Proc. ACM Manag. Data 3, 3 (2025), 134:1–134:28. https://doi.org/10.1145/3725271 
+
+> 13
+
+[41] Zongheng Yang, Wei-Lin Chiang, Sifei Luan, Gautam Mittal, Michael Luo, and Ion Stoica. 2022. Balsa: Learning a Query Optimizer Without Expert Demonstrations. In SIGMOD ’22: International Conference on Management of Data, Philadelphia, PA, USA, June 12 - 17, 2022 , Zachary G. Ives, Angela Bonifati, and Amr El Abbadi (Eds.). ACM, 931–944. https://doi.org/10.1145/3514221.3517885 [42] Xiang Yu, Guoliang Li, Chengliang Chai, and Nan Tang. 2020. Reinforcement Learning with Tree-LSTM for Join Order Selection. In 36th IEEE International Conference on Data Engineering, ICDE 2020, Dallas, TX, USA, April 20-24, 2020 .IEEE, 1297–1308. https://doi.org/10.1109/ICDE48307.2020.00116 [43] Ji Zhang, Yu Liu, Ke Zhou, Guoliang Li, Zhili Xiao, Bin Cheng, Jiashu Xing, Yangtao Wang, Tianheng Cheng, Li Liu, Minwei Ran, and Zekang Li. 2019. An End-to-End Automatic Cloud Database Tuning System Using Deep Reinforce-ment Learning. In Proceedings of the 2019 International Conference on Management of Data (Amsterdam, Netherlands) (SIGMOD ’19) . Association for Computing Ma-chinery, New York, NY, USA, 415–432. https://doi.org/10.1145/3299869.3300085 [44] Yuxin Zhang, Meihao Fan, Ju Fan, Mingyang Yi, Yuyu Luo, Jian Tan, and Guoliang Li. 2025. Reward-SQL: Boosting Text-to-SQL via Stepwise Reasoning and Process-Supervised Rewards. CoRR abs/2505.04671 (2025). https://doi.org/10.48550/ ARXIV.2505.04671 arXiv:2505.04671 [45] Xuanhe Zhou, Guoliang Li, Chengliang Chai, and Jianhua Feng. 2021. A Learned Query Rewrite System using Monte Carlo Tree Search. Proc. VLDB Endow. 15, 1 (2021), 46–58. https://doi.org/10.14778/3485450.3485456

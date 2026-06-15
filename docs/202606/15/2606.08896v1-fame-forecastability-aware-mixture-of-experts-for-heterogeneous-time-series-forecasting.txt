@@ -1,0 +1,604 @@
+Title: FAME: Forecastability-Aware Mixture of Experts for Heterogeneous Time Series Forecasting
+
+URL Source: https://arxiv.org/pdf/2606.08896v1
+
+Published Time: Tue, 09 Jun 2026 01:59:27 GMT
+
+Number of Pages: 10
+
+Markdown Content:
+# FAME: Forecastability-Aware Mixture of Experts for Heterogeneous Time Series Forecasting 
+
+Qianyang Li ∗† , Xingjun Zhang ∗, Shaoxun Wang ∗, Tao Peng † and Jia Wei ‡∗School of Computer Science and Technology, Xi’an Jiaotong University, Xi’an, China 
+
+†Department of Research and Development, Shandong New Beiyang Information Technology Co., Ltd., WeiHai 264200, China 
+
+‡Department of Computer Science and Technology, Tsinghua University, Beijing 100084 
+
+Email: {liqianyang, shaoxunwang }@stu.xjtu.edu.cn, xjzhang@xjtu.edu.cn 
+
+Abstract —Large-scale retail and industrial forecasting systems contain many heterogeneous time series whose lifecycle, sparsity, volatility, seasonality, spectral patterns, and contextual sensitivity differ substantially. A single forecasting model rarely performs well across all regimes, while dense ensembles increase infer-ence cost and provide limited insight into expert suitability. This paper studies forecastability-aware expert routing: learning how data characteristics determine the suitability of forecast-ing experts. We propose FAME, a sparse mixture-of-experts framework that represents each series with a multidimensional forecastability fingerprint, mines expert-suitability targets from validation performance, and trains a cost-aware sparse router to activate a small budgeted set of experts for each series. Using a production-scale vending-machine sales dataset from Shan-dong New Beiyang (SNBC), where the forecasting component has been integrated into the replenishment-planning pipeline, together with public retail benchmarks, we show that expert suitability varies systematically across data regimes. On the industrial dataset with 5,000+ machines and 60M+ transactions, FAME Top-2 reduces MSE by 12.4% over the strongest single expert, LightGBM, while executing 1.92 experts per series on average. The deployed component produces demand forecasts, while inventory-oriented gains are estimated by an offline replay simulator under a fixed replenishment policy rather than by online intervention. The framework turns heterogeneous sales forecasting from heuristic model selection into data mining of forecastability patterns and expert specialization. Code is available at https://github.com/hit636/FAME. 
+
+Index Terms —Heterogeneous time series, sales forecasting, mixture of experts, expert routing, forecastability mining, indus-trial data mining. 
+
+I. I NTRODUCTION 
+
+Time series forecasting is a core task in data mining and decision support, with applications in retail replenishment, traffic operation, energy management, industrial monitoring, and financial planning [1]. In many real-world systems, the forecasting target is not a single clean benchmark series but a massive collection of fine-grained sequences. For example, a retail network may require daily forecasts for product–store or product–terminal pairs. Such sequences can be short-lived, intermittent, promotional, stable, seasonal, non-stationary, or strongly affected by context such as location, weather, holiday, and price. This heterogeneity makes universal forecasting difficult. Existing model families exhibit complementary inductive biases, consistent with the no-free-lunch view [2]. Statistical models, such as exponential smoothing [21], Prophet [5], Croston [6], and TSB [5], [6], [21], [22], can be robust for simple seasonal or intermittent patterns. Gradient-boosted decision trees, such as XGBoost [4], LightGBM [3], and CatBoost [20], are strong when lag features, calendar fea-tures, product metadata, and contextual covariates are infor-mative. Deep forecasting models, including PatchTST [8], TimeMixer [9], TimesNet [10], DLinear [11], and Mamba-style networks [27]–[29], can model complex temporal struc-tures when enough historical observations are available. How-ever, no family uniformly dominates. A method that is best for sparse cold-start products may be suboptimal for long-history seasonal products; a model that captures abrupt nonlinearity may overfit stable low-volume series. Most forecasting studies focus on improving the backbone model itself. In large-scale industrial settings, however, the central difficulty is often the heterogeneity of the series rather than the lack of a universally stronger architecture. Stable and seasonal products may be well handled by statistical models, sparse or volatile products often benefit from tree-based methods, and long-history series can be better suited to deep forecasters. This suggests that forecasting performance depends not only on model capacity, but also on the match between data characteristics and model competence. We there-fore study forecastability-aware expert routing: learning which forecasting expert is suitable for a series from its observable characteristics. Industrial sales forecasting provides a natural setting for this problem. Forecastability changes continuously with life-cycle stage, sparsity, intermittency, volatility, trend, season-ality, spectral structure, metadata, and contextual sensitivity. Existing rule-based systems, including our prior USFF frame-work [7], have shown that assigning different model types to different sales regimes can be useful in production, but they rely on manually defined thresholds and hand-crafted scores. Such rules are difficult to transfer across products, regions, and lifecycle stages, and hard category assignments cannot express that multiple experts may be suitable for the same series. This motivates a learnable, continuous, and cost-aware expert routing framework. We propose FAME (Forecastability-Aware Mixture of Ex-perts), a sparse expert-routing framework for heterogeneous time series forecasting. FAME consists of four key compo-nents. First, it extracts a forecastability fingerprint from each 
+
+> arXiv:2606.08896v1 [cs.AI] 8 Jun 2026
+
+series, including lifecycle, sparsity, intermittency, volatility, trend, seasonality, spectral, metadata, and context-sensitivity features. Second, it trains a heterogeneous expert pool and evaluates each expert on validation windows to form an expert-loss matrix. Third, it mines hard or soft oracle expert suitability from the loss matrix. Fourth, it trains a sparse router that maps fingerprints to expert probabilities and calls at most r experts under a Top-r budget during inference. Our contributions are summarized as follows:  
+
+> •
+
+We formulate heterogeneous time series forecasting as 
+
+forecastability-aware expert routing , a data mining prob-lem that learns how series characteristics determine expert suitability across regimes, rather than treating model choice as a global benchmark-level decision.  
+
+> •
+
+We propose FAME, an oracle-guided sparse mixture-of-experts framework that integrates forecastability finger-printing, validation-based suitability mining, Top-r bud-geted routing, cost-aware regularization, and interpretable expert selection. Unlike dense feature-based averaging, FAME learns instance-level suitability and executes only active experts, with a lightweight justification of router learning and sparse inference cost.  
+
+> •
+
+We conduct production-scale evaluation on the FAME forecasting component deployed in SNBC’s replenishment-planning workflow, covering 5,000+ vending machines and 60M+ transactions, together with M5 and Favorita benchmarks [12], [32]. Results show consistent gains over single experts, rule-based routing, stacking, and dense MoE on the industrial dataset, and AutoML-style selection on public benchmarks while using only a small expert subset per series. II. R ELATED WORK 
+
+A. Retail and Industrial Sales Forecasting 
+
+Retail forecasting combines statistical models for seasonal or intermittent series, tree learners for covariate-rich demand, and deep models for long-history nonlinear patterns [1], [12]. Industrial product–terminal demand is long-tailed: cold-start products, sparse purchases, promotions, weather-sensitive items, and stable staples coexist, motivating adaptive model assignment. 
+
+B. Forecastability, FFORMA, and Meta-learning 
+
+Forecastability studies how data properties relate to fore-casting difficulty and model performance. FFORMA [17] learns feature-based model-averaging weights, while time-series meta-learning links descriptors to forecasting accu-racy [16], [18]. FAME differs from these feature-based meta-learners in three aspects. First, it performs budgeted sparse Top-r activation and executes only the final active experts, whereas FFORMA-style weighting is a dense model-combination scheme. Second, expert suitability is mined from validation-window loss matrices as hard or soft oracle supervi-sion, so the target is series-level expert competence rather than a hand-crafted regime label. Third, routing is driven by explicit forecastability fingerprints, which preserve interpretability and allow expert specialization to be inspected at the series and regime levels. 
+
+C. Mixture of Experts, AutoML, and Stacking 
+
+MoE models use gating networks to combine specialized predictors [23]. Dense MoE and stacking often execute all experts and offer limited per-series explanation. AutoML systems automate model selection [13], [19], but usually optimize global validation performance or return a single se-lected pipeline. FAME is different from such global selection: it learns a reusable router from forecastability fingerprints, allows multiple near-optimal experts to share probability mass, and selects at most r active experts under an explicit inference-cost constraint. 
+
+D. Foundation Forecasters 
+
+Foundation forecasters such as TimesFM, Chronos, and Moirai [24]–[26] and recent sparse time-series MoE mod-els [30], [31] provide strong or efficient candidate forecasters. They are complementary to FAME: a high-cost expert can be added, and the router decides when its cost is justified. III. P ROBLEM FORMULATION 
+
+Let D = {(Xi, Y i, M i)}Ni=1 denote a collection of N
+
+forecasting instances. Xi ∈ RLi is the historical target sequence, Yi ∈ RH is the future horizon, and Mi contains metadata and contextual variables, such as product category, brand, price, terminal scenario, city, weather, holiday, and promotion indicators. Unlike homogeneous benchmarks, Li
+
+and the statistical patterns of Xi vary substantially. Let E = {E1, . . . , E M } be a pool of M candidate experts. Each expert outputs 
+
+ˆYi,m = Em(Xi, M i), m = 1 , . . . , M. (1) The objective is to learn a router gϕ that maps a fingerprint zi
+
+to an expert suitability vector 
+
+pi = gϕ(zi), pi ∈ [0 , 1] M ,
+
+> M
+
+X
+
+> m=1
+
+pi,m = 1 . (2) During inference, Top-r is a maximum active-expert budget, not a fixed-cardinality constraint. Let C(r) 
+
+> i
+
+= TopK( pi, r ) and 
+
+˜pi,m = pi,m / P
+
+> j∈C (r)
+> i
+
+pi,j . The realized active set is 
+
+Ki = {m ∈ C (r) 
+
+> i
+
+|ai,m = 1 ,
+
+˜pi,m ≥ δ}, 1 ≤ |K i| ≤ r ≪ M. (3) Here ai,m = 0 if an expert lacks required history/covariates or the item is masked by stockout, outage, or unavailability flags, and 1 otherwise; public benchmarks set it to 1 for compatible experts. The threshold δ is tuned on a calibration window from 
+
+{0, 0.02 , 0.05 , 0.10 } and frozen; standard and cost-aware Top-2 use 0.05 and 0.10 . If pruning empties the set, the highest-probability available candidate is kept. The sparse forecast is 
+
+ˆYi = X
+
+> m∈K i
+
+αi,m ˆYi,m , αi,m = pi,m 
+
+P 
+
+> j∈K i
+
+pi,j 
+
+(4) The learning problem jointly optimizes accuracy, router fi-delity, diversity, and inference cost. Fig. 1. Schematic overview of FAME. Heterogeneous sales series are represented by forecastability fingerprints, expert validation produces suitability signals, and a sparse router selects at most r active experts for forecast fusion. All reported industrial comparisons use the fixed expert pool specified in the baselines and expert-pool subsection. 
+
+IV. T HE PROPOSED FAME F RAMEWORK 
+
+A. Overview 
+
+Fig. 1 shows the architecture: data alignment, fingerprint extraction, expert validation, oracle mining, and sparse routing. The output is both a forecast and an explanation of expert selection. Fig. 2 shows the training and inference workflow of FAME. The complete offline training and online inference procedure is summarized in Algorithm 1, which links the fin-gerprint extraction, expert validation, oracle suitability mining, router training, and Top-r budgeted sparse forecasting steps. 
+
+B. Forecastability Fingerprint 
+
+The fingerprint extractor maps each series to 
+
+zi = [ zlife  
+
+> i
+
+; zsparse  
+
+> i
+
+; zvol  
+
+> i
+
+; ztrend  
+
+> i
+
+; zseason  
+
+> i
+
+; zfreq  
+
+> i
+
+; zmeta  
+
+> i
+
+; zctx  
+
+> i
+
+] (5) 
+
+Lifecycle features. We use duration, active days, days since first sale, and days since last sale. These features reflect the available history and product lifecycle. 
+
+Sparsity and intermittency. Fine-grained sales series often contain many zero-demand days. We compute 
+
+ZeroRatio i = 1
+
+LiLiX
+
+> t=1
+
+I(xi,t = 0) (6) 
+
+ADI i = Li
+
+PLi 
+
+> t=1
+
+I(xi,t > 0) + ϵ , CV 2 
+
+> i
+
+=
+
+ σi
+
+μi + ϵ
+
+2
+
+(7) These descriptors distinguish intermittent demand from con-tinuous demand. 
+
+Volatility and burstiness. We include coefficient of varia-tion, rolling variance, outlier ratio, and burstiness: 
+
+Burstiness i = σ∆x,i − μ∆x,i 
+
+σ∆x,i + μ∆x,i + ϵ (8) 
+
+Trend and seasonality. Let Xi = Ti + Si + Ri be an STL-like decomposition [15]. Seasonal and trend strengths are 
+
+SS i = max 
+
+
+
+0, 1 − Var( Ri)Var( Xi − Ti) + ϵ
+
+
+
+(9) 
+
+TS i = max 
+
+
+
+0, 1 − Var( Ri)Var( Xi − Si) + ϵ
+
+
+
+(10) We also include autocorrelation peaks over business-relevant lags. 
+
+Spectral features. Let Fi(f ) = |FFT( Xi)( f )|2 and 
+
+˜Fi(f ) = Fi(f )/(P 
+
+> f
+
+Fi(f ) + ϵ). Spectral entropy and band-energy ratios are 
+
+SE i = − X
+
+> f
+
+˜Fi(f ) log( ˜Fi(f ) + ϵ) (11) 
+
+BE i,b = X 
+
+> f∈Ωb
+
+˜Fi(f ), b ∈ { low , mid , high } (12) 
+
+Metadata and context. Product category, brand, price band, terminal scenario, city, and other categorical attributes are encoded using embeddings or target statistics. Contextual sensitivity, such as holiday lift and weather sensitivity, is estimated from historical conditional means or correlations. Table I summarizes the forecastability fingerprint groups used by FAME and their representative features. 
+
+C. Heterogeneous Expert Pool 
+
+The expert pool contains complementary forecasters: sta-tistical experts target short, stable, or intermittent regimes; machine-learning experts exploit contextual covariates; and deep experts capture complex temporal patterns. FAME is architecture-agnostic, but all industrial comparisons use the same fixed pool so gains come from routing rather than changing candidates. Additional experts such as CatBoost, Fig. 2. Training and inference workflow. Offline training builds the fixed expert pool, validation loss matrix, oracle suitability targets, and sparse router. Online inference follows Eqs. (1)–(4): extract the current fingerprint, output expert probabilities, execute only active experts under the Top-r budget, and fuse selected forecasts. Expert names in the schematic are illustrative; reported experiments use the fixed pool in Sec. V-B. 
+
+Algorithm 1 Training and inference of FAME 
+
+Require: Series collection {(Xi, Y i, M i)}Ni=1 , expert pool E, routing budget r.
+
+Ensure: Forecasts ˆYi and routing explanations. 
+
+1: Preprocess and align target series, metadata, calendar, weather, price, and promotion variables. 
+
+2: for each series i do 
+
+3: Extract forecastability fingerprint zi.
+
+4: end for 
+
+5: for each expert Em ∈ E do 
+
+6: Train Em on training windows. 
+
+7: Evaluate Em on oracle-mining windows and store ℓi,m .
+
+8: end for 
+
+9: Mine hard labels e∗ 
+
+> i
+
+or soft suitability targets qi from ℓi,m .
+
+10: Train router gϕ using Ltotal .
+
+11: for each inference series i do 
+
+12: Compute pi = gϕ(zi) and form C(r) 
+
+> i
+
+= TopK( pi, r ).
+
+13: Prune unavailable or low-weight candidates to obtain Ki with 1 ≤ |K i| ≤ r.
+
+14: Run only active experts Em, m ∈ K i and fuse them with normalized weights. 
+
+15: end for 
+
+16: return final forecasts and selected-expert explanations. 
+
+PatchTST, N-HiTS, Mamba, or foundation forecasters can be added without redesigning the router. Table II summarizes the expert families, representative models, and suitable regimes. 
+
+D. Oracle Expert Mining 
+
+After training each expert on the training split, we evaluate it on the oracle-mining validation window. Let 
+
+ℓi,m = L(Em(Xi, M i), Y i) (13) be the oracle-mining loss of expert Em on series i. The hard oracle is 
+
+e∗
+
+i = arg min 
+
+m
+
+ℓi,m (14) 
+
+TABLE I FORECASTABILITY FINGERPRINT GROUPS USED BY FAME. 
+
+Group Representative features Lifecycle duration, active days, days since first/last sale Sparsity zero ratio, ADI, nonzero mean, CV 2
+
+Volatility CV, burstiness, rolling variance, outlier ratio Trend slope, trend strength, drift, moving-average change Seasonality seasonal strength, ACF peak, weekly/monthly indica-tors Spectral entropy, dominant frequency, low/mid/high band en-ergy Metadata category, brand, price band, city, terminal scenario Context weather sensitivity, holiday lift, promotion lift 
+
+TABLE II EXPERT POOL USED IN THE REPORTED INDUSTRIAL EVALUATION .OPTIONAL EXPERTS CAN BE ADDED BY DATASET AND COMPUTATION BUDGET .
+
+Family Examples Suitable regimes Statistical SARIMA, Holt-Winters/ETS, Prophet, Croston/TSB short history, stable season-ality, intermittent demand Machine learn-ing Linear Regression, XG-Boost, LightGBM rich exogenous features, nonlinear covariate effects Deep forecasting DLinear, TimeMixer, TimesNet long history, multi-scale pat-terns, complex dynamics Optional exten-sion CatBoost, PatchTST, N-HiTS, Mamba/foundation expert dataset-specific or high-cost regimes 
+
+A hard label is simple but ignores cases where multiple experts are similarly good. Therefore, we also define a soft suitability target: 
+
+qi,m = exp( −ℓi,m /τ )
+
+PMj=1 exp( −ℓi,j /τ ) (15) where τ controls softness. To incorporate inference cost, we can use ˜ℓi,m = ℓi,m + ηc m (16) where cm is normalized inference cost. The coefficient η
+
+constructs cost-aware oracle targets, whereas γ in Eq. (18) regularizes router probabilities during training. We report three operating points: FAME-Acc prioritizes accuracy, FAME Top-2 is the calibrated balanced setting, and FAME-CostAware further reduces batch cost. 
+
+E. Forecastability-Aware Sparse Router 
+
+The router predicts expert probabilities from fingerprints: 
+
+pi = gϕ(zi) = softmax(MLP ϕ(zi)) (17) Top-r routing forms C(r) 
+
+> i
+
+= TopK( pi, r ) and prunes un-available or low-weight candidates to obtain Ki with 1 ≤|K i| ≤ r. Sparse routing mitigates the computational bottle-neck, as evaluating the full dense ensemble incurs prohibitive latency. During router training, experts are pretrained and frozen. We compute Lpred using the differentiable soft mixture 
+
+˜Yi = PMm=1 pi,m ˆYi,m ; inference applies the Top-r budget and renormalizes active weights. Numerical features use robust train-split standardization, categorical metadata use embed-dings or smoothed target statistics from training windows only, and the router is a two-layer MLP with ReLU, dropout, and temperature-calibrated softmax. 
+
+Train–inference consistency. The router is supervised by the full soft suitability distribution because oracle-mining losses provide graded near-optimal expert signals. Budgeted Top-r projection and pruning introduce a truncation gap, controlled when most oracle mass lies in the active set. We therefore monitor Top-r oracle recall and compare sparse-aware variants in Sec. VII. Straight-through Top-r, Gumbel-Top-r, and SparseMAX did not outperform the calibrated soft-KL router because they produced less stable expert usage under noisy validation losses. 
+
+F. Training Objective 
+
+The overall objective combines forecasting, router supervi-sion, load balancing, and cost regularization: 
+
+Ltotal = Lpred + λLrouter + βLbalance + γLcost . (18) The prediction loss during router training uses the differen-tiable soft mixture ˜Yi:
+
+Lpred = 1
+
+N
+
+> N
+
+X
+
+> i=1
+
+L( ˜Yi, Y i). (19) The router supervision loss is either cross-entropy with hard labels or KL divergence with soft oracle targets: 
+
+Lrouter = 1
+
+N
+
+> N
+
+X
+
+> i=1
+
+KL( qi∥pi). (20) Load balancing prevents expert collapse: 
+
+¯pm = 1
+
+N
+
+X
+
+> i
+
+pi,m , Lbalance = M
+
+> M
+
+X
+
+> m=1
+
+¯p2 
+
+> m
+
+(21) The cost term is 
+
+Lcost = 1
+
+N
+
+X
+
+> iM
+
+X
+
+> m=1
+
+pi,m cm (22) 
+
+G. Design Justification 
+
+The following analysis provides a theoretical intuition for the router objective and sparse execution design. It explains why oracle imitation, KL supervision, and cost-aware sparse routing are reasonable design choices. 
+
+1) Routing Regret: Let ℓi,m be bounded in [0 , B ]. Let the oracle distribution be qi and the learned router distribution be 
+
+pi. Define the expected routing loss under distribution pi as 
+
+Ri(pi) = PMm=1 pi,m ℓi,m . Then 
+
+|Ri(pi) − Ri(qi)| ≤ B∥pi − qi∥1 (23) This follows directly from Holder’s inequality. Thus, if the router approximates the oracle suitability distribution, its ex-pected loss approaches the oracle-guided routing loss. By Pinsker’s inequality, 
+
+∥pi − qi∥1 ≤ p2KL( qi∥pi) (24) which justifies the KL supervision loss. Minimizing Lrouter 
+
+reduces a bound on routing regret. 
+
+2) Cost Reduction by Sparse Routing: Let cm be the inference cost of expert Em. A full ensemble costs Cf ull =
+
+PMm=1 cm, while budgeted sparse routing costs 
+
+Ci = X
+
+> m∈K i
+
+cm, |K i| ≤ r. (25) For comparable experts, Ci/C f ull ≤ r/M and is smaller when pruning activates fewer than r experts; for costly deep experts, the cost term further discourages unnecessary calls. 
+
+3) Fingerprint-Based Routing Rationale: We route experts with explicit forecastability fingerprints instead of relying only on latent sequence embeddings. In industrial sales data, many series are short, sparse, or intermittent, making purely learned routing features unstable. Descriptors such as zero ratio, ADI, seasonal strength, and spectral entropy provide robust signals about expert suitability and make the routing process inspectable. Learned representations can be concatenated when enough history is available, but the fingerprint remains the primary interface for both routing and explanation. V. E XPERIMENTAL EVALUATION 
+
+A. Industrial Production Dataset 
+
+The primary dataset is an anonymized production-scale vending-machine sales log from Shandong New Beiyang (SNBC), whose forecasting service is integrated into the replenishment-planning pipeline. It records daily demand from 5,000+ vending machines, about 5,000 products, and over TABLE III PRODUCTION FORECASTING DEPLOYMENT AND OFFLINE REPLAY PROTOCOL .             
+
+> Item Description Company Shandong New Beiyang (SNBC) vending-machine operation Scale 5,000+ vending machines, about 5,000 products, 60M+ transactions Forecast unit product–terminal–day demand series Forecast horizon 14 days for replenishment planning Context city, terminal scenario, product attributes, price, weather, holidays, availability flags Deployment mode scheduled batch forecasting with periodic expert and router refresh Business usage deployed demand forecasts; inventory effects esti-mated by fixed-policy offline replay, not online A/B testing
+
+60 million transactions across multiple replenishment cycles. The forecasting unit is a product–terminal–day series with historical demand, terminal scenario, city, product ID, cate-gory, brand, price, holidays, weather, and availability flags. Zero-demand days are retained when the product is active and available. The logs follow chronological 70%/10%/20% training, val-idation, and test splits. The 10% validation window is further split into equal oracle-mining and router-calibration parts: the former builds the expert-loss matrix and labels, while the latter tunes δ, τ , γ, early stopping, and model selection. The final 20% window is held out. Series with fewer than 15 active days are removed; missing dates are filled with zero sales and active-status flags; discontinued products are masked after their last sale; and fingerprints use only the look-back segment. Days with outage, replenishment suspension, or stockout/unavailable flags are excluded from expert-loss construction and replay. Table III summarizes the production deployment profile of the industrial dataset and forecasting system. The 14-day horizon matches the replenishment cycle. Each expert uses the same history and supported covariates. Sta-tistical experts are trained per series or compatible group; tree models are global learners with lag, rolling, calendar, price, metadata, and context features; deep models use fixed look-back windows. In production, the daily job runs after transaction aggregation and before planning; forecasts feed downstream services, while inventory results are reported from offline replay. Router features are historical only to prevent leakage. 
+
+B. Baselines and Expert Pool 
+
+We compare single experts, dense ensembles, and routing baselines. The industrial expert pool is fixed to the same 
+
+M = 10 candidates used by all routing and ensemble methods: SARIMA, Holt-Winters/ETS, Prophet [5], Croston/TSB, Lin-ear Regression, XGBoost [4], LightGBM [3], DLinear [11], TimeMixer [9], and TimesNet [10]. Routing baselines include USFF [7], cluster-then-forecast, stacking, AutoML-style selec-tion, FFORMA-style dense weighting, dense soft MoE, FAME variants, and a validation-selected oracle reference. Stacking uses ridge regression over validation forecasts; AutoML-style selection trains a LightGBM classifier on fingerprints. Table V reports representative single experts for readability; all ensemble and routing methods use the fixed pool above, so improvements are attributed to routing rather than changing candidates. 
+
+C. Implementation Setup 
+
+Hyperparameters are selected on the router-calibration split, with final settings in Table IV. Neural experts and the router are trained with three seeds; we report mean test performance. Deterministic experts use fixed chronological splits and seeds. Industrial comparisons use paired Wilcoxon signed-rank tests over product–terminal test windows, with grouped bootstrap checks used as auxiliary evidence. Runtime is normalized wall-clock batch inference time against LightGBM. Experiments run on dual Intel(R) Xeon(R) Gold 5218 CPUs, 256 GB RAM, and two NVIDIA RTX 4090 GPUs, using Python 3.10, PyTorch 2.1, LightGBM 4.1, XGBoost 2.0, and CUDA 12.1. Public benchmark code covers preprocessing, rolling splits, fingerprint extraction, expert training, validation-loss mining, and router training. Industrial data cannot be released for confidentiality; we provide the schema, configu-rations, and protocol, with fixed splits before model selection. 
+
+D. Metrics 
+
+We report MSE, MAE, WAPE, stock-aware cost, normal-ized inference cost, and realized active experts. Runtime is measured end-to-end after common aggregation: shared fea-tures are counted once, while expert-specific preprocessing, inference, and fusion are counted only for active experts. For forecast ˆy and target y, the stock-aware cost is 
+
+Lstock = ωu max( y − ˆy, 0) + ωo max(ˆ y − y, 0) (26) where ωu > ω o gives higher penalty to stockout risk than to redundant inventory or expiration loss. Router quality is evaluated by Top-1 accuracy, Top-2/Top-3 oracle recall, usage entropy, and oracle gap. 
+
+TABLE IV REPRESENTATIVE HYPERPARAMETERS USED IN PRODUCTION EVALUATION .           
+
+> Model Main settings SARIMA seasonal period 7; order selected on train/validation grid Prophet weekly seasonality; holiday regressors; changepoint prior tuned Holt-Winters additive trend; multiplicative or additive seasonality se-lected by validation LightGBM Tweedie objective; learning rate 0.015; num leaves 256; subsample 0.65 XGBoost squared-error regression; max depth 10; learning rate 0.015; subsample 0.65 TimeMixer look-back 49; horizon 14; batch size 128; early stopping on validation DLinear look-back 49; horizon 14; batch size 128; RevIN-style normalization TimesNet dmodel = 256 ; 4 layers; 8 heads; look-back 49; horizon 14 Router two-layer MLP; hidden size 128; dropout 0.1; Top-r
+> budgeted selection
+
+TABLE V INDUSTRIAL PRODUCTION RESULTS . S INGLE -EXPERT ROWS ARE REPRESENTATIVE ; ROUTING /ENSEMBLE ROWS USE THE FIXED TEN -EXPERT POOL .“E XEC .” IS REALIZED ACTIVE EXPERTS AFTER PRUNING . C OST IS NORMALIZED BY LIGHT GBM; THE ORACLE REFERENCE IS DIAGNOSTIC . N EGATIVE REDUCTIONS INDICATE WORSE MSE THAN LIGHT GBM.                                                                                                             
+
+> Method MSE MAE WAPE Exec. Norm. Cost MSE Reduction vs. LightGBM SARIMA 4.798 4.044 0.418 1.0 0.8 -203.8% Holt-Winters 4.307 3.624 0.384 1.0 0.8 -172.7% Linear Regression 1.798 1.486 0.173 1.0 0.6 -13.9% XGBoost 1.714 1.438 0.168 1.0 1.1 -8.5% LightGBM 1.579 1.348 0.157 1.0 1.0 0.0% TimeMixer 1.845 1.635 0.181 1.0 3.6 -16.8% TimesNet 1.833 1.610 0.179 1.0 4.1 -16.1% Uniform Ensemble 1.566 1.302 0.151 10.0 16.4 0.8% FFORMA-style Weighting 1.514 1.255 0.146 10.0 16.4 4.1% Stacking Ensemble 1.472 1.218 0.142 10.0 17.0 6.8% Rule-based USFF 1.489 1.239 0.144 1.0 1.2 5.7% Cluster-then-Forecast 1.523 1.274 0.148 1.0 1.2 3.6% Dense Soft MoE 1.438 1.191 0.139 10.0 16.5 8.9%
+> FAME Top-1 1.421 1.174 0.137 1.0 1.3 10.0% FAME Top-2 1.384 1.143 0.133 1.92 2.4 12.4%
+> FAME-CostAware 1.397 1.155 0.135 1.54 1.8 11.5% Validation-selected Oracle Reference 1.326 1.097 0.128 1.0 N/A 16.0%
+
+TABLE VI COARSE REGIME THRESHOLDS USED FOR DIAGNOSTIC REPORTING .                                          
+
+> Dimension Regime Definition Duration short / medium / long [15 ,60) /[60 ,270) /≥270 active days Volatility low / high CV <0.5/ CV ≥0.5
+> Seasonality weak / strong seasonal strength <0.5/≥0.5
+> Sparsity low / high zero ratio <0.4/≥0.4
+> Intermittency low / high ADI <1.32 /≥1.32
+> Spectral concentrated / diffuse spectral entropy below / above median
+
+E. Feature Thresholds and Expert Hyperparameters 
+
+Although FAME uses continuous fingerprints, Table VI reports coarse diagnostic regimes for interpretation and USFF-style comparison; they are not routing rules. VI. M AIN RESULTS 
+
+A. Overall Industrial Results 
+
+Table V reports the main results on the production-scale industrial dataset. LightGBM is the strongest single expert among the individual models. This confirms the strength of global tree models for retail demand because they exploit lag, rolling, calendar, product, terminal, and context features. However, rule-based USFF already improves over the best single expert by assigning different regimes to different ex-perts. The learned FAME router further improves accuracy while preserving sparse inference. Dense soft MoE is accurate but expensive because all experts are executed. The default FAME Top-2 gives the best balanced accuracy–cost point, while FAME-CostAware trades a small amount of accuracy for fewer active experts and lower batch cost. 
+
+B. Router Quality and Expert Specialization 
+
+Table VII summarizes representative regime-level results. Statistical experts are strong for short stable sequences. Light-GBM frequently achieves the best performance in many medium-history nonlinear regimes. XGBoost is competitive when volatility is high but seasonality is weak. TimeMixer is preferred for long-history sequences with strong periodicity. These patterns justify routing: model suitability is associated with forecastability fingerprints. Table VIII directly evaluates whether the router learns ex-pert suitability. Top-s recall measures whether the validation-selected expert appears in the first s router-ranked experts; oracle gap is the relative MSE gap to the validation-selected oracle reference. FAME improves oracle recall over AutoML-style selection, explaining why Top-2 budget routing gives a better accuracy–cost trade-off than hard Top-1 routing. FAME Top-1 and Top-2 share the same learned router ranking; they differ only in the maximum routing budget and the resulting active set after pruning, which explains the same ranking metrics but different oracle gaps. 
+
+C. Public Retail Benchmarks 
+
+We also evaluate on M5 and Favorita. M5 uses item– store sales with calendar events, SNAP, prices, and hierar-chy [12]. Favorita uses active store–item sales with holidays, oil price, and metadata [32]; histories shorter than 60 days are filtered. Both use chronological 28-day validation and test horizons. Fingerprints use only look-back windows. The public pool matches the industrial pool when compatible; metadata-specific inputs are replaced by dataset-compatible variants, 
+
+ai,m = 1 for compatible experts, and the same δ grid is used. Table IX shows that FAME outperforms routing and ensemble baselines under sparse inference. 
+
+Foundation expert check. Adding Chronos as an optional expensive expert improves Top-2 WAPE from 0.234 to 0.230 on M5 and from 0.168 to 0.165 on Favorita, while invoking it for only 8.6% and 10.9% of series. This supports using foundation models as specialized high-cost experts rather than always-on replacements. VII. A BLATION AND COST ANALYSIS 
+
+A. Ablation Study 
+
+Table X evaluates the contribution of major components. Removing sparsity and intermittency features hurts perfor-TABLE VII REGIME -LEVEL SPECIALIZATION ON THE INDUSTRIAL TEST SET . C OUNTS ARE ANONYMIZED AND ROUNDED FOR CONFIDENTIALITY .Cat. Duration Vol. Seas. #Series Txn. (M) Best Expert MSE MAE 1 Short Low Weak 18.2K 2.1 SARIMA 1.134 0.714 2 Short Low Strong 13.6K 1.6 Holt-Winters/SARIMA 1.254 0.929 3 Short High Weak 24.2K 4.2 TimesNet 1.781 1.623 4 Short High Strong 21.1K 3.8 LightGBM 1.553 1.220 5 Medium Low Weak 28.7K 5.0 LightGBM 1.203 1.092 6 Medium Low Strong 25.0K 4.7 XGBoost 1.816 1.534 7 Medium High Weak 31.4K 6.3 LightGBM 1.535 1.377 8 Medium High Strong 29.6K 5.9 LightGBM 1.570 1.440 9 Long Low Weak 35.9K 8.7 LightGBM 1.445 1.126 10 Long Low Strong 30.9K 7.5 TimeMixer 1.490 1.242 11 Long High Weak 41.1K 5.4 LightGBM 1.235 1.063 12 Long High Strong 38.9K 5.0 TimeMixer 1.502 1.131 TABLE VIII ROUTER QUALITY ON INDUSTRIAL TEST WINDOWS . E NT . DENOTES EXPERT -USAGE ENTROPY .
+
+Router Top-1 Acc. Top-2 Rec. Top-3 Rec. Gap Ent. AutoML selector 0.42 0.57 0.70 0.147 1.21 FAME Top-1 0.51 0.68 0.81 0.079 1.86 FAME Top-2 0.51 0.68 0.81 0.062 1.86 FAME-CostAware 0.48 0.63 0.77 0.071 1.61 
+
+TABLE IX PUBLIC RETAIL BENCHMARK RESULTS . L OWER WAPE AND S MAPE ARE BETTER .
+
+Method M5 Favorita WAPE sMAPE WAPE sMAPE Best single expert 0.259 0.184 0.187 0.135 Rule-based USFF 0.251 0.178 0.181 0.131 AutoML selector 0.245 0.174 0.176 0.127 Stacking ensemble 0.242 0.172 0.175 0.126 Dense soft MoE 0.237 0.168 0.170 0.123 FAME Top-1 0.239 0.170 0.171 0.124 
+
+FAME Top-2 0.234 0.166 0.168 0.121 
+
+Validation-selected reference 0.226 0.160 0.162 0.117 
+
+mance on low-volume and intermittent products. Removing metadata/context features leads to the most pronounced per-formance drop because product category, price band, ter-minal scenario, weather, and holiday sensitivity are highly informative for vending-machine demand. Removing oracle supervision reduces the router to a weak black-box classifier and increases the oracle gap. The FAME-Acc row removes the router cost regularizer: it slightly improves error but increases cost because the router selects expensive experts more often and prunes fewer candidates. The active count is at most two because Top-2 is a maximum budget, not a fixed-cardinality constraint. 
+
+Router and hyperparameter sensitivity. Straight-through Top-r, Gumbel-Top-r, and SparseMAX obtain MSE values of 1.392, 1.397, and 1.401, compared with 1.384 for the cali-brated soft-KL router. Sweeping τ ∈ { 0.1, 0.3, 1.0} gives MSE 
+
+{1.397 , 1.384 , 1.398 }. Sweeping the cost coefficient shows the expected accuracy–cost trade-off: removing cost regular-ization gives MSE/cost (1 .372 , 4.3) , the default calibrated 
+
+TABLE X ABLATION ON THE INDUSTRIAL DATASET . E XEC . IS THE REALIZED AVERAGE NUMBER OF ACTIVE EXPERTS UNDER THE TOP -2 BUDGET ; COST IS NORMALIZED BY LIGHT GBM. T HE DEFAULT ROW IS THE CALIBRATION -SELECTED OPERATING POINT , WHILE FAME-A CC PRIORITIZES ERROR AT HIGHER COST .
+
+Variant MSE MAE Exec. Cost Default FAME Top-2 1.384 1.143 1.92 2.4 w/o sparsity features 1.427 1.180 1.93 2.4 w/o seasonality features 1.419 1.171 1.92 2.4 w/o spectral features 1.410 1.164 1.91 2.4 w/o metadata/context 1.446 1.199 1.94 2.4 w/o oracle loss 1.468 1.219 1.98 2.5 w/o balance loss 1.406 1.162 1.66 2.1 FAME-Acc Top-2 1.372 1.135 2.00 4.3 
+
+TABLE XI COST –ACCURACY COMPARISON . E XEC . IS REALIZED AVERAGE ACTIVE EXPERTS . B ATCH TIME IS NORMALIZED BY LIGHT GBM ON THE SAME SERVER .
+
+Method MSE MAE Exec. Batch Cost LightGBM 1.579 1.348 1.0 1.0 Rule-USFF 1.489 1.239 1.0 1.2 Uniform ensemble 1.566 1.302 10.0 16.4 Dense soft MoE 1.438 1.191 10.0 16.5 FAME Top-1 1.421 1.174 1.0 1.3 FAME Top-2 1.384 1.143 1.92 2.4 FAME-CostAware 1.397 1.155 1.54 1.8 
+
+setting gives (1 .384 , 2.4) , and stronger cost regularization gives (1 .397 , 1.8) and (1 .424 , 1.4) .
+
+B. Cost–Accuracy Trade-off 
+
+Figure-style trade-off is summarized in Table XI. Full ensembles slightly improve over single experts but require executing all experts. The default FAME Top-2 captures most of the oracle margin with fewer than two active experts on average because low-weight or unavailable candidates can be skipped. FAME-CostAware further lowers cost while retaining most accuracy gains. 
+
+C. Business-Oriented Offline Simulation 
+
+The deployed SNBC pipeline uses FAME forecasts as inputs to replenishment planning, but the inventory outcomes reported here are not online A/B results. They are obtained from an offline replay in which only the demand forecast is replaced, while the order-up-to policy, availability masks, capacity constraints, and replenishment logic are kept identical across methods. For product–terminal i at day t, the target level is 
+
+Si,t = bDi,t :t+H + z0.95 bσi,t 
+
+√L + H, (27) 
+
+Qi,t = max(0 , S i,t − Ipos  
+
+> i,t
+
+), (28) where L = 1 is the lead time, H = 14 is the planning horizon, Ipos  
+
+> i,t
+
+is inventory position, and z0.95 sets the 95% service target. The replay advances inventory chronologically using the same availability masks, capacity constraints, and replenishment policy for all forecasting methods. A stockout event is counted when post-demand inventory is zero while realized demand is positive, and overstock exposure is the remaining inventory above the target level. The asymmetric loss uses ωu = 3 ωo. Compared with the best single expert, FAME Top-2 reduces stock-aware loss by 13.8%. Compared with the production rule-based USFF selector, it reduces simulated stockout events by 6.4 % and simulated overstock exposure by 3.7 %. FAME-CostAware retains most of this benefit while reducing daily batch cost by 25.0% relative to the default Top-2 setting. VIII. I NTERPRETABILITY AND DEPLOYMENT 
+
+A. Feature Importance and Expert Usage 
+
+We use permutation importance and binned expert usage to inspect the trained router. Table XII shows that sparsity, seasonality, volatility, duration, and context features dominate routing. Intermittent series favor statistical experts; seasonal or long-history series favor SARIMA, ETS, or TimeMixer; context-sensitive products favor tree models. 
+
+B. Representative Routing Cases 
+
+Table XIII gives representative production cases. The se-lected experts match interpretable forecastability patterns, in-cluding intermittent cold-start demand, reliable seasonality, context-driven nonlinear effects, and noisy local fluctuations. 
+
+C. Leakage Control and Reproducibility 
+
+The system separates expert training, oracle mining, router calibration, and test evaluation. At each forecast origin, fin-gerprints use only look-back observations and covariates. Categorical statistics are fitted on training data and frozen 
+
+TABLE XII ROUTER FEATURE IMPORTANCE ON THE PRODUCTION DATASET .                  
+
+> Feature group Importance Typical routing effect Zero ratio / ADI 0.21 intermittent/statistical experts Seasonal strength / ACF peak 0.18 SARIMA, ETS, TimeMixer CV / burstiness 0.16 LightGBM, XGBoost, robust experts Duration / active days 0.15 deep experts for long histories Holiday sensitivity 0.11 tree models with context Spectral entropy 0.10 robust or tree experts Price band / category 0.05 metadata-aware tree models City / terminal scenario 0.04 context-aware experts
+
+TABLE XIII REPRESENTATIVE ROUTING CASES FROM PRODUCTION LOGS .               
+
+> Case Fingerprint pattern Top experts Explanation Ahigh zero ratio, short duration Croston/LightGBM intermittent cold-start demand Blong history, strong weekly seasonality TimeMixer/SARIMA reliable peri-odic structure Chigh CV, high holiday lift LightGBM/XGBoost context-driven nonlinear effects Dhigh spectral entropy, weak seasonality XGBoost/robust expert noisy local fluctuations
+
+TABLE XIV REPRODUCIBILITY AND LEAKAGE -CONTROL SETTINGS .                      
+
+> Item Setting Prediction unit product–terminal–day series Split chronological 70%/10%/20% by calendar time Look-back rolling windows ending before forecast origin Horizon 14 days for industrial replenishment Fingerprint computed only from look-back history Oracle labels mined from first validation subwindow only Router calibration δ,τ,γtuned on later validation subwindow Expert cost measured end-to-end wall-clock time normalized by LightGBM Router model two-layer MLP over standardized fingerprint features Feature scaling robust z-score or quantile scaling by train split Censored days historical stockout/outage/unavailable days excluded from loss; simulated replay stockouts counted Public code public benchmark scripts and industrial proto-col/schema released
+
+for validation/test; holiday, weather, and promotion sensitivity use historical deviations only. Suitability labels come from the oracle-mining subwindow, while δ, τ , γ, early stopping, and model selection use the later calibration subwindow. No test oracle is used. Logged availability, outage, suspension, and stockout masks are used only when known before or at replay time. Censored days are excluded from expert-loss construction and demand-error metrics, while simulated stockouts in replay are counted. Table XIV summarizes the reproducibility and leakage-control protocol. Public scripts reproduce the M5 and Favorita experiments; the confidential industrial data are replaced by schema, configurations, and routing protocol. Potential failure cases, such as unseen regimes, noisy oracle labels, or over-penalized costly experts, are monitored through oracle error, routing stability, loss matrices, usage entropy, and the Top-
+
+r/cost-coefficient trade-off. 
+
+D. Statistical Significance and Oracle Gap 
+
+We compare FAME Top-2 with the strongest non-oracle baselines using paired Wilcoxon signed-rank tests over product–terminal windows, supported by grouped bootstrap checks. Table XV reports relative gains and improved-window fractions. The validation reference is diagnostic and not an inference-time baseline. TABLE XV PAIRED COMPARISON ON INDUSTRIAL TEST WINDOWS .                                   
+
+> Comparison MSE ∆MAE ∆Improved Test p-value FAME Top-2 vs. LightGBM 12.4% 15.2% 64.8% Wilcoxon <10 −4
+> FAME Top-2 vs. Rule-USFF 7.1% 7.7% 59.3% Wilcoxon <10 −4
+> FAME Top-2 vs. Stacking 6.0% 6.2% 57.1% Wilcoxon <10 −3
+> FAME Top-2 vs. Dense MoE 3.8% 4.0% 54.6% Wilcoxon 0.006
+> Validation reference vs. FAME Top-2 4.2% 4.0% –diagnostic –
+
+E. Production Forecasting Deployment and Monitoring 
+
+FAME has been deployed at SNBC as the demand-forecasting component of the replenishment-planning work-flow. Daily transaction logs are aggregated into product– terminal demand series and aligned with price, calendar, weather, and location context. During scheduled batch in-ference, the router extracts the current fingerprint, selects a Top-r candidate set, prunes unavailable or low-weight experts, renormalizes active weights, and writes daily demand forecasts to downstream planning services. The deployment claim refers to this operational forecasting component. Reported stockout and overstock results are not online A/B outcomes; they are fixed-policy offline replay estimates in which only the demand forecast is replaced. Moni-toring tracks fingerprint drift, expert-usage entropy, oracle gap, routing stability, and expert-pool coverage for router refresh and emerging-regime detection. IX. C ONCLUSION 
+
+This paper presented FAME, a forecastability-aware sparse mixture-of-experts framework for heterogeneous time series forecasting. Instead of designing another universal forecast-ing backbone, FAME mines the relationship between data characteristics and expert suitability. It extracts interpretable forecastability fingerprints, derives oracle suitability from val-idation behavior, and trains a sparse cost-aware router for Top-
+
+r budgeted expert selection. Experiments on production-scale vending-machine data with more than 5,000 machines and over 60 million transactions show that expert suitability varies systematically across regimes, that learned sparse routing outperforms single experts, rule-based USFF, stacking, and dense ensembles under a favorable cost–accuracy trade-off, and that routing decisions provide actionable forecastability insights for replenishment planning; the inventory gains should be interpreted as replay-based estimates under a fixed policy. The proposed framework turns heterogeneous sales forecasting from a heuristic model-selection problem into a data mining problem of discovering forecastability patterns and expert specialization. REFERENCES [1] R. Fildes, S. Ma, and S. Kolassa, “Retail forecasting: Research and practice,” International Journal of Forecasting , vol. 38, no. 4, pp. 1283– 1318, 2022. [2] D. Wolpert and W. Macready, “No free lunch theorems for optimization,” 
+
+IEEE Transactions on Evolutionary Computation , vol. 1, no. 1, pp. 67– 82, 1997. [3] G. Ke et al., “LightGBM: A highly efficient gradient boosting decision tree,” in NeurIPS , 2017. [4] T. Chen and C. Guestrin, “XGBoost: A scalable tree boosting system,” in KDD , 2016. [5] S. J. Taylor and B. Letham, “Forecasting at scale,” The American Statistician , vol. 72, no. 1, pp. 37–45, 2018. [6] J. D. Croston, “Forecasting and stock control for intermittent demands,” 
+
+Operational Research Quarterly , vol. 23, no. 3, pp. 289–303, 1972. [7] Q. Li, X. Zhang, S. Wang, T. Peng, and J. Wei, “USFF: A unified sales forecasting framework for vending machines,” in IEEE International Conference on Big Data , 2025. [8] Y. Nie et al., “A time series is worth 64 words: Long-term forecasting with transformers,” in ICLR , 2023. [9] S. Wang et al., “TimeMixer: Decomposable multiscale mixing for time series forecasting,” in ICLR , 2024. [10] H. Wu et al., “TimesNet: Temporal 2D-variation modeling for general time series analysis,” in ICLR , 2023. [11] A. Zeng et al., “Are transformers effective for time series forecasting?” in AAAI , 2023. [12] S. Makridakis et al., “The M5 accuracy competition: Results, findings, and conclusions,” International Journal of Forecasting , vol. 38, no. 4, pp. 1346–1364, 2022. [13] N. Erickson et al., “AutoGluon-Tabular: Robust and accurate AutoML for structured data,” arXiv:2003.06505, 2020. [14] X. Qiu et al., “TFB: Towards comprehensive and fair benchmarking of time series forecasting methods,” PVLDB , vol. 17, no. 9, pp. 2363–2377, 2024. [15] R. B. Cleveland et al., “STL: A seasonal-trend decomposition procedure based on Loess,” Journal of Official Statistics , vol. 6, no. 1, pp. 3–73, 1990. [16] J. Vanschoren, “Meta-learning: A survey,” arXiv:1810.03548 , 2018. [17] P. Montero-Manso, G. Athanasopoulos, R. J. Hyndman, and T. S. Tala-gala, “FFORMA: Feature-based forecast model averaging,” International Journal of Forecasting , vol. 36, no. 1, pp. 86–92, 2020. [18] T. S. Talagala, R. J. Hyndman, and G. Athanasopoulos, “Meta-learning how to forecast time series,” Journal of Forecasting , vol. 42, no. 6, pp. 1476–1496, 2023. [19] O. Shchur, C. Turkmen, N. Erickson, H. Shen, A. Shirkov, T. Hu, and Y. Wang, “AutoGluon-TimeSeries: AutoML for probabilistic time series forecasting,” arXiv:2308.05566, 2023. [20] L. Prokhorenkova et al., “CatBoost: unbiased boosting with categorical features,” in NeurIPS , 2018. [21] R. J. Hyndman, A. B. Koehler, J. K. Ord, and R. D. Snyder, Forecasting with Exponential Smoothing: The State Space Approach . Springer, 2008. [22] A. A. Syntetos and J. E. Boylan, “The accuracy of intermittent demand estimates,” International Journal of Forecasting , vol. 21, no. 2, pp. 303– 314, 2005. [23] R. A. Jacobs, M. I. Jordan, S. J. Nowlan, and G. E. Hinton, “Adaptive mixtures of local experts,” Neural Computation , vol. 3, no. 1, pp. 79–87, 1991. [24] A. Das, W. Kong, R. Sen, and Y. Zhou, “A decoder-only foundation model for time-series forecasting,” in ICML , 2024, pp. 10148–10167. [25] A. F. Ansari et al., “Chronos: Learning the language of time series,” 
+
+Transactions on Machine Learning Research , 2024. [26] G. Woo, C. Liu, A. Kumar, C. Xiong, S. Savarese, and D. Sahoo, “Unified training of universal time series forecasting transformers,” in 
+
+ICML , 2024. [27] Z. Wang et al., “Is Mamba effective for time series forecasting?” 
+
+Neurocomputing , vol. 619, p. 129178, 2025. [28] M. A. Ahamed and Q. Cheng, “TimeMachine: A time series is worth 4 Mambas for long-term forecasting,” arXiv:2403.09898, 2024. [29] S. K. Bhethanabhotla et al., “Mamba4Cast: Efficient zero-shot time series forecasting with state space models,” arXiv:2410.09385, 2024. [30] X. Shi et al., “Time-MoE: Billion-scale time series foundation models with mixture of experts,” in ICLR , 2025. [31] K. Yemets et al., “GateTS: Versatile and efficient forecasting via attention-inspired routed mixture-of-experts,” arXiv:2508.17515, 2025. [32] Corporacion Favorita, “Corporaci´ on Favorita grocery sales forecasting,” Kaggle competition dataset, 2017.

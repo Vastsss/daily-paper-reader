@@ -1,0 +1,685 @@
+Title: Dynamic Linear Attention
+
+URL Source: https://arxiv.org/pdf/2606.10650v1
+
+Published Time: Wed, 10 Jun 2026 00:50:28 GMT
+
+Number of Pages: 12
+
+Markdown Content:
+# Dynamic Linear Attention 
+
+Xin Wang 1,∗, Hui Shen 2,∗, Boyuan Zheng 2, Xueshen Liu 2, Minkyoung Cho 2,
+
+Zhongwei Wan 1, Zesen Zhao 2, Zhuoqing Mao 2, Shen Yan 3, Mi Zhang 1
+
+> 1
+
+The Ohio State University , 2University of Michigan , 3ByteDance Seed 
+
+> *
+
+Equal contribution. 
+
+Abstract 
+
+The scalability of Large Language Models (LLMs) to long contexts is fundamentally constrained by the quadratic complexity of standard attention, motivating the adoption of linear attention mechanisms with sub-quadratic cost. To improve representation capacity under long contexts, recent approaches organize memory in a multi-state manner. However, existing multi-state linear attention methods rely on fixed state merging policies that cannot adapt to dynamically varying token importance, irreversibly obscuring critical tokens and causing severe error accumulation over long sequences. To address this limitation, we propose DLA , a dynamic memory modeling framework for multi-state linear attention. DLA introduces (i) Information-Aware Dynamic State Merging ,which adaptively determines state boundaries based on token-level information variation, preserving high-resolution representations around semantic transitions while aggressively summarizing stable regions, and (ii) Capacity-Bounded Memory Modeling , which maintains a fixed-size, chronologically ordered state cache by selectively merging adjacent low-information states to control memory growth with minimal information loss. We pre-train DLA on two different linear attention models and evaluate on 16 datasets across three categories. Experimental results demonstrate the superiority of DLA over state-of-the-art.  
+
+> Correspondence:
+
+Xin Wang at wang.15980@osu.edu , Mi Zhang at mizhang.1@osu.edu 
+
+1 Introduction 
+
+Large Language Models (LLMs) have demonstrated remarkable capabilities across a wide range of natural language understanding and generation tasks. However, scaling LLMs to long-context settings remains a fundamental challenge due to the quadratic computational and memory complexity of standard self-attention [ 1– 3]. This limitation has motivated extensive research on efficient attention mechanisms that enable long-sequence modeling without retraining from scratch. Among these approaches, linear attention [ 4 , 5] has emerged as a promising direction, as it approximates full attention with sub-quadratic complexity and offers favorable scalability to long contexts. To further improve the representation capacity of linear attention under long sequences, recent works organize historical context in a multi-state manner, where long token histories are partitioned into chunks and summarized into compact memory states. Representative methods such as Log-Linear Attention [ 6]demonstrate improved efficiency and practicality for long-context inference. By operating on summarized states rather than individual tokens, these approaches significantly reduce memory footprint and computation cost. 
+
+> arXiv:2606.10650v1 [cs.CL] 9 Jun 2026
+
+Despite their success, existing multi-state linear attention methods still suffer from notable performance degradation as context length increases. This limitation stems from a fundamental mismatch between fixed memory construction policies and the non-uniform, dynamically evolving information structure of long sequences. In particular, current methods typically rely on fixed block sizes or rule-based merging schedules, implicitly assuming uniform information density across the sequence. Such designs fail to adapt to dynamically emerging semantic transitions, forcing critical tokens to be prematurely absorbed into coarse summaries. Moreover, merge decisions made under fixed policies are irreversible: once heterogeneous tokens are compressed into a single state, their individual contributions cannot be recovered, leading to error accumulation. These observations suggest that effective long-context linear attention requires memory modeling mechanisms that are both information-aware and capacity-controlled. On one hand, state construction should adapt to local representation variation, allocating higher resolution to semantically volatile regions while aggressively summarizing stable spans. On the other hand, the total number of memory states must be explicitly bounded to ensure predictable computation and memory cost during inference. In this work, we propose Dynamic Linear Attention ( DLA ), a new framework for multi-state linear attention that addresses these challenges. DLA differs from prior approaches in two key aspects. First, DLA introduces Information-Aware Dynamic State Merging, which determines state boundaries on the fly based on token-level information variation. Instead of relying on fixed merging policies, DLA evaluates the representation change of each incoming token relative to the current memory state, merging low-variation tokens while initiating new states at semantic transition points. Second, DLA incorporates Capacity-Bounded Memory Modeling, which maintains a fixed-size, chronologically ordered state cache. When the cache reaches its capacity, DLA 
+
+selectively merges adjacent low-information states, preserving temporal order while minimizing information loss. We pre-train DLA on two linear-attention backbones, Mamba-2-780M and Gated DeltaNet-1.3B, following the design in [ 6]. We evaluate DLA on 16 datasets spanning three aspects: eight commonsense reasoning benchmarks, six in-context retrieval datasets, and two long-context modeling datasets. We highlight three main findings. (1) DLA consistently outperforms the state-of-the-art multi-state method, Log-Linear Attention, across all tasks. (2) When applied to Mamba-2, the DLA variant even achieves performance comparable to full-attention Transformers with similar parameter budgets. (3) DLA achieves superior efficiency, delivering higher throughput and lower runtime memory consumption than Log-Linear Attention. 
+
+2 Preliminary 
+
+We consider a sequence modeling task with input length T and hidden dimension d. Let Q, K, V ∈ RT ×d
+
+denote the query, key, and value matrices. Standard self-attention computes the output O ∈ RT ×d as 
+
+O = softmax( QK ⊤ ⊙ M)V,
+
+where M is the causal mask. While effective, this operation incurs quadratic time and memory complexity in T , motivating the development of sub-quadratic attention mechanisms. In this section, we review linear attention and its multi-state variants that form the foundation of our approach. 
+
+2.1 Linear Attention 
+
+Linear attention mitigates the quadratic cost of Transformers by removing the softmax normalization, enabling the reordering of computation via associativity. A causal linear attention layer can be written in a parallel form as 
+
+O = ( QK ⊤ ⊙ M)V, Mij = I(i ≥ j). (1) This formulation admits an equivalent recurrent implementation. Let qt, kt, vt ∈ Rd denote the query, key, and value vectors at time step t. Linear attention maintains a single state matrix St ∈ Rd×d that summarizes all past tokens: 
+
+St = St−1 + vtk⊤ 
+
+> t
+
+, (2) 
+
+ot = Stqt. (3) 2Figure 1 Overview of DLA .
+
+This recurrent form enables linear-time inference with constant memory, but compresses the entire history into a single state, which can limit representation capacity under long contexts. We use ϕ(·) to denote the feature map used in linear attention. Unless otherwise specified, ϕ : Rd → Rd is implemented as an identity mapping or a learnable linear projection, following prior work. 
+
+2.2 Linear Attention with the Delta Rule 
+
+To improve state tracking and introduce controlled forgetting, DeltaNet [ 4] extends linear attention with a delta-style update rule: 
+
+St = St−1(I − βtktk⊤ 
+
+> t
+
+) + vtk⊤ 
+
+> t
+
+, (4) where βt is a data-dependent step size. While this formulation improves adaptivity over a pure accumulator, it still relies on a single global state and therefore cannot selectively preserve fine-grained information over long sequences. 
+
+2.3 Multi-State Linear Attention 
+
+To increase modeling capacity while retaining sub-quadratic complexity, recent work organizes linear attention in a multi-state manner by partitioning the historical context into segments and summarizing each segment into a separate state [ 6, 7]. Among them, log-linear attention [ 6] replaces the single recurrent state with a logarithmic number of multi-scale states constructed via a Fenwick-tree decomposition of the causal prefix. Concretely, at time step t, the prefix [0 , t ] is decomposed into at most L = ⌈log 2(t + 1) ⌉ + 1 disjoint buckets 
+
+{B(ℓ) 
+
+> t
+
+}L−1 
+
+> ℓ=0
+
+, with finer resolution near the current position and coarser resolution for distant history. The corresponding linear attention states and the final aggregated output are computed as: 
+
+S(ℓ) 
+
+> t
+
+= X
+
+> s∈B(ℓ)
+> t
+
+vsk⊤ 
+
+> s
+
+∈ Rd×d, ot =
+
+> L−1
+
+X
+
+> ℓ=0
+
+λ(ℓ) 
+
+> t
+
+S(ℓ) 
+
+> t
+
+qt (5) This design achieves O(T log T ) training complexity and O( log T ) time and memory per decoding step. However, the granularity of its memory states is determined by a fixed hierarchical schedule, independent of token-level representation variation. As a result, semantically salient tokens may be prematurely absorbed into coarse summaries, and disturbances introduced at critical positions can propagate through the fixed multi-scale states. This limitation motivates the need for information-aware and adaptive memory construction, which we address in the next section. 
+
+3 Dynamic Linear Attention (DLA) 
+
+figure 1 provides an overview of DLA . DLA is an information-aware linear attention framework that dynamically constructs a compact set of memory states for efficient long-context modeling. Unlike prior approaches that rely on fixed temporal schedules or predefined block boundaries, DLA adaptively determines state granularity based on token-level information variation. Specifically, tokens are processed sequentially. For each new token, 
+
+DLA computes a lightweight State Information Score measuring its representation change relative to the most recent memory state. Tokens with low information variation are merged into the current state, while tokens exhibiting significant drift initiate a new state. This enables fine-grained modeling around semantic transitions while aggressively summarizing stable token spans. To bound memory and computation, DLA maintains a 3Algorithm 1 Information-Aware Dynamic State Merging   
+
+> 1: Input:
+
+Token States {st}Tt=1   
+
+> 2: Output:
+
+memory states M = {Si} 
+
+> 3:
+
+M ← [ ]   
+
+> 4: for
+
+t = 1 to T do   
+
+> 5: if
+
+M is empty then  
+
+> 6:
+
+M ← { st}; continue   
+
+> 7: end if
+> 8:
+
+S ← last state in M 
+
+> 9:
+
+It ← ∥st−S∥F  
+
+> ∥S∥F+ϵ
+> 10:
+
+replace last state in M with Merge( S, s t)  
+
+> 11: if
+
+It ≥ τ then  
+
+> 12:
+
+append st to M;    
+
+> 13: end if
+> 14: end for
+> 15: return
+
+M
+
+capacity-limited state cache. When the cache reaches its maximum size, two adjacent states with the lowest information density are merged, preserving temporal order while minimizing information loss. The resulting memory consists of a fixed-size, chronologically ordered set of summary states. At each decoding step, DLA 
+
+produces the output by attending over the maintained memory states using a linear attention formulation, where each state contributes with a query-dependent weight. Together, information-aware state construction and capacity-bounded memory modeling enable DLA to achieve adaptive resolution, stable inference cost, and efficient long-context representation. 
+
+3.1 Information-Aware Dynamic State Merging  
+
+> Motivation:
+
+Existing multi-block linear attention methods typically rely on fixed schedules (e.g., block and merge every K tokens) [ 6] or hard, rule-based boundaries [ 7] to determine the block of historical tokens that should be merged into summary states. While such designs improve memory and compute efficiency, they are largely agnostic to the semantic evolution of the sequence. In practice, information density is highly non-uniform: critical semantic transitions may occur abruptly, whereas long stretches of tokens can be locally redundant. As a result, fixed or hard block policies often suffer from two key limitations . First, they cannot adapt to dynamically emerging semantic changes, forcing important transitions to be prematurely absorbed into coarse summaries simply because a pre-defined boundary is reached. Second, merge decisions made without regard to local semantic continuity are inherently irreversible: once tokens are merged under a fixed policy, their individual contributions cannot be recovered, even if subsequent context reveals their importance. These misalignments between merge decisions and the true semantic structure lead to sub-optimal generation and finally degrades the representation quality. In the following, we provide a theoretical proof on why the fixed merging policy is sub-optimal. 
+
+Theorem 3.1 (State deviation) . Let {ut}Tt=1 ⊂ Rd denote per-token additive contributions to a linear attention state. Consider a blocking policy π of token list {1, . . . , T } into m disjoint contiguous blocks {C i}mi=1 . For each block Ci, let ¯ui ∈ Rd be a representative summary vector. Therefore, for any query vector q ∈ Rd, the exact output y(q) and the summarized output ˜yπ (q) for a query vector are: 
+
+y(q) ≜
+
+> T
+
+X
+
+> t=1
+
+⟨q, u t⟩, ˜yπ (q) ≜
+
+> m
+
+X
+
+> i=1
+
+X
+
+> t∈C i
+
+⟨q, ¯ui⟩ (6) 
+
+The deviation induced by summarization Err( π; q) ≜ |y(q) − ˜yπ (q)| admits the bound: 
+
+y(q) − ˜yπ (q) ≤ ∥ q∥2 ·
+
+> m
+
+X
+
+> i=1
+
+p|C i|
+
+sX
+
+> t∈C i
+
+∥ut − ¯ui∥22 (7) 4Proof. The deviation between the exact and summarized outputs y(q) − ˜y(q) can be further rewritten as: 
+
+> m
+
+X
+
+> i=1
+
+X
+
+> t∈C i
+
+⟨q, u t − ¯ui⟩ =
+
+*
+
+q, 
+
+> m
+
+X
+
+> i=1
+
+X
+
+> t∈C i
+
+(ut − ¯ui)
+
++
+
+(8) By Applying Cauchy–Schwarz [8] Inequality, we have: 
+
+Err( π; q) = y(q) − ˜yπ (q) ≤ ∥ q∥2 ·
+
+> m
+
+X
+
+> i=1
+
+X
+
+> t∈C i
+
+(ut − ¯ui)
+
+> 2
+
+(9) We then use Triangle Inequality [9] over chunks to further get: 
+
+> m
+
+X
+
+> i=1
+
+X
+
+> t∈C i
+
+(ut − ¯ui)
+
+> 2
+
+≤
+
+> m
+
+X
+
+> i=1
+
+X
+
+> t∈C i
+
+(ut − ¯ui)
+
+> 2
+
+(10) Similarly, for each block Ci, we also have: 
+
+X
+
+> t∈C i
+
+(ut − ¯ui)
+
+> 2
+
+≤ X
+
+> t∈C i
+
+∥ut − ¯ui∥2
+
+≤ p|C i| · 
+
+sX
+
+> t∈C i
+
+∥ut − ¯ui∥22. (11) By combining (9), (10), and (11), we finally obtain the upper-bound B(π; q) of the deviation Err( π; q):
+
+B(π; q) ≜ ∥q∥2
+
+> m
+
+X
+
+> i=1
+
+p|C i|
+
+sX
+
+> t∈C i
+
+∥ut − ¯ui∥22 (12) This upper bound shows that the deviation induced by block-wise summarization is controlled by the within-block heterogeneity. As a result, content-agnostic fixed blocking policies, which do not adapt to representation variation, can incur a larger bound on non-stationary sequences, especially when tokens with large representation variance are mixed into the same block. 
+
+Corollary 3.2 (Fixed blocking is sub-optimal on non-stationary sequences) . There exists a class of non-stationary token sequences for which any fixed blocking policy πfix yields a strictly larger deviation bound 
+
+B(πfix ; q) than an adaptive blocking policy πdyn that aligns block boundaries with semantic change points. Proof sketch. Consider a non-stationary sequence consisting of two contiguous segments A and B with distinct means μA̸ = μB . For simplicity, assume ut = μA for t ∈ A and ut = μB for t ∈ B (a special case of 
+
+ut ∼ D A, DB ). Let πfix be any fixed blocking policy that yields at least one block C overlapping both segments, and denote 
+
+nA = |C ∩ A| , nB = |C ∩ B| . For this block, the choice ¯u that minimizes P 
+
+> t∈C
+
+∥ut − ¯u∥22 is the block mean 
+
+¯u = nAμA+nB μB 
+
+> nA+nB
+
+, and the minimum within-block heterogeneity satisfies 
+
+X
+
+> t∈C
+
+∥ut − ¯u∥22 = nAnB
+
+nA + nB
+
+∥μA − μB ∥22 > 0.
+
+In contrast, an adaptive policy πdyn that places a boundary at the change point produces blocks contained in 
+
+A or B only, for which the optimal heterogeneity term is 0 under the same construction. Since the deviation bound B(π; q) is a sum of nonnegative per-block terms ∥q∥2
+
+p|C i|
+
+qP 
+
+> t∈C i
+
+∥ut − ¯ui∥22, the overlapping block 
+
+C alone contributes a strictly positive amount to B(πfix ; q) for any q̸ = 0 , while B(πdyn ; q) does not incur this cross-segment term. Hence, there exists such a sequence for which B(πfix ; q) > B (πdyn ; q), proving the claim. 5Figure 2 Standard linear attention (left) vs. log-linear attention (mid) vs. dynamic linear attention (right). The input consists of query, key, and value vectors.  
+
+> Key Design:
+
+The pseudocode of Information-Aware Dynamic State Merging of DLA is provided in algorithm 1. We also plot the difference between Vanilla Linear Attention, Log-Linear Attention, and our Dynamic Linear Attention ( DLA ) in figure 2. Specifically, to dynamically determine whether a newly generated token t should be merged into an existing memory state or initiate a new one, we first introduce a new metric named State Information Score (It) to measure the amount of novel information carried by the current token relative to the most recent memory state. Concretely, let st ≜ ϕ (kt) v⊤ 
+
+> t
+
+denote the state of new token t, and let St−1
+
+denote the previous memory state, which summarizes multiple past tokens. We quantify the information variation between St and St−1 as follows: 
+
+It = ∥St − St−1∥F
+
+∥St−1∥F + ϵ (13) In practice, we apply RMSNorm to both St and St−1 prior to score computation to further stabilize the scale across layers and timesteps. During inference, we measure the following boundary indicator 
+
+bt ≜ 1 [It ≥ τ ] (14) Let Scur  
+
+> t−1
+
+denote the most recent memory state in the cache. The state update rule at inference is then defined as 
+
+Scur  
+
+> t
+
+=
+
+(
+
+Scur  
+
+> t−1
+
++ st, bt = 0 ,St, bt = 1 , (15) where bt = 1 indicates that the current token initiates a new memory state, while bt = 0 continues to accumulate information into the existing state. When bt = 1 , the newly created state St is appended to the memory cache, preserving the chronological order of states. We apply soft gating to decide the boundary in a differentiable manner during pre-training and then switch to a hard segmentation strategy during inference to ensure that inference produces a discrete set of memory states aligned with semantic boundaries, while retaining the same information-aware criterion learned during training. 
+
+Discussion. Theorem 3.1 shows the summarization deviation is dominated by the within-block heterogeneity term in equation (12). Fixed blocking policies are content-agnostic and therefore may mix tokens from distinct semantic regimes into the same block, which yields a strictly larger deviation bound on non-stationary sequences ( theorem 3.2). In contrast, DLA monitors token-level representation drift and only merges a new token when the induced increase of heterogeneity is small, using the State Information Score It in equation (13). Therefore, DLA can be viewed as a greedy online strategy that approximately minimizes the dominant term in the deviation bound, while fixed policies ignore it, making it less competitive than DLA .6Algorithm 2 Capacity-Bounded Memory Modeling   
+
+> 1: Input:
+
+Incoming states {St}, Information Scores { ¯It}, Token Counts {nt}, Capacity K, Queries {qt}  
+
+> 2: Output:
+
+attention outputs {ot} 
+
+> 3:
+
+M ← [ ] {state cache}   
+
+> 4: for
+
+each (Si, ¯Ii, n i) in time order do   
+
+> 5: if
+
+|M| = K then  
+
+> 6:
+
+(i⋆, i ⋆ +1) ← arg min i 
+
+> ¯Ii+ ¯Ii+1
+> ni+ni+1
+> 7:
+
+Si⋆ ← Si⋆ + Si⋆+1  
+
+> 8:
+
+ni⋆ ← ni⋆ + ni⋆+1  
+
+> 9:
+
+¯Ii⋆ ← ¯Ii⋆ + ¯Ii⋆+1  
+
+> 10:
+
+remove Si⋆+1 from M  
+
+> 11: end if
+> 12:
+
+append (Si, ¯Ii, n i) to M  
+
+> 13: end for
+> 14:
+
+ot = P 
+
+> i
+
+ϕ(qt) Si  
+
+> 15: return
+
+{ot}
+
+3.2 Capacity-Bounded Memory Modeling  
+
+> Motivation:
+
+While the previous design enables flexible and information-aware memory state construction, maintaining an unbounded number of states is impractical for efficient inference, especially in long-context or high-throughput serving scenarios, as dynamic memory growth leads to irregular memory layouts, variable attention costs, and reduced batching efficiency. To address these challenges, it is essential to explicitly limit the number of memory states while preserving the most informative summaries.  
+
+> Key Design:
+
+The pseudocode of Capacity-Bounded Memory Modeling of DLA is provided in algorithm 2. Specifically, DLA maintains a state cache M = {(Si, n i, ¯Ii)}mi=1 with m ≤ K, where Si ∈ Rd denotes the i-th memory state in chronological order, ni is the number of tokens summarized by Si, and ¯Ii is an aggregated information score of all tokens in this state. We maintain ¯Ii as the sum of per-token information scores within each state, such that ¯Ii/n i measures information density. Newly generated tokens are first converted to per-token representations St, and a tentative state is produced following section 3.1. The resulting state is appended to the cache, preserving temporal order. When the cache is not full ( m < K ), we simply insert the new state. When the cache reaches capacity ( m = K), we trigger a compression step that merges two adjacent states to free one slot. Restricting merges to adjacent states preserves the temporal order and avoids distorting positional semantics. Concretely, among all consecutive pairs (i, i +1) , we select the pair with the lowest information density: 
+
+(i⋆, i ⋆ +1) = arg min 
+
+> i∈{ 1,...,K −1}
+
+¯Ii + ¯Ii+1 
+
+ni + ni+1 
+
+(16) We then merge them using a summarization operator as in section 3.1, 
+
+Si⋆ ← Si⋆ + Si⋆+1 ,ni⋆ ← ni⋆ + ni⋆+1 , ¯Ii⋆ ← ¯Ii⋆ + ¯Ii⋆+1 (17) and shift the remaining states accordingly to keep m = K − 1 before inserting the incoming state. Given the capacity-bounded cache M, we compute the output at time step t by attending over the stored memory states. Let qt denote the query vector of the current token. The final output is then computed as 
+
+ot =
+
+> m
+
+X
+
+> i=1
+
+λt,i q⊤
+
+> t
+
+X
+
+> s∈C i
+
+vsk⊤
+
+> s
+
+!
+
+=
+
+> m
+
+X
+
+> i=1
+
+λt,i q⊤ 
+
+> t
+
+Si, (18) where λt,i is the weight learned during pre-training with the same shape as the memory capacity. Following [ 6 ], 
+
+λt,i is produced by a learned linear layer over the query representation and reused at inference. In this way, 7Table 1 Performance comparison of DLA and baseline methods on zero-shot commonsense reasoning tasks on Mamba-2 (780M) and Gated DeltaNet (1.3B). Commonsense reasoning datasets (LAMBADA, PIQA, HellaSwag, WinoGrande, ARC-e, ARC-c, OpenBookQA, and CommonsenseQA) are measured by accuracy ( ↑). The best performance is marked in bold. The relative performance gain compared to the best-performing baseline is marked in green inside bracket.                                                                                             
+
+> Model LMB. ↑PIQA ↑Hella. ↑Wino. ↑ARC-e ↑ARC-c ↑OBQA ↑CSQA ↑Average ↑
+> Transformer 21.8 63.1 30.3 50.9 44.2 17.7 16.8 18.0 32.9 Mamba-2 15.7 58.9 29.3 50.1 46.0 18.9 15.4 20.3 31.8 w/ Log-linear 13.2 59.7 27.8 49.5 42.3 20.1 16.0 19.1 31.0 w/ DLA 18.7 ( ↑19% )63.7 ( ↑7% )30.8 ( ↑5% )51.5 ( ↑3% )48.1 ( ↑5% )22.1 ( ↑10% )17.4 ( ↑9% )21.1 ( ↑4% )34.2 ( ↑8% )
+> Gated DeltaNet 20.3 58.8 29.6 51.3 44.7 20.2 16.0 21.3 32.8 w/ Log-linear 19.0 60.4 28.4 51.9 44.3 20.5 15.4 21.0 32.6 w/ DLA 20.8 ( ↑22% )62.7 ( ↑4% )30.3 ( ↑2% )52.4 ( ↑2% )45.0 ( ↑1% )23.0 ( ↑14% )17.4 ( ↑9% )22.9 ( ↑8% )34.8 ( ↑6% )
+
+DLA provides a unified way to read from a temporally ordered, capacity-bounded memory, enabling stable inference cost while retaining the ability to emphasize informative states during the inference. 
+
+4 Experiments 
+
+4.1 Experimental Setups 
+
+Baselines. We compare DLA against two groups of models: (1) Vanilla linear attention models, including Mamba-2-780M [ 10 ] and Gated DeltaNet-1.3B [ 5]. (2) Multi-state linear attention models, including Mamba-2 with Log-linear Attention, and Gated DeltaNet with Log-linear Attention [ 6]. Following the design in previous work [ 6], we also compare the DLA version of Mamba-2-780M with full attention Transformers with 24 layers and 778M parameters. 
+
+Datasets. To demonstrate the generalizability of DLA , we evaluate the performance of DLA on 16 datasets covering three categories, including eight commonsense reasoning datasets (LAMBADA [ 11 ], PIQA [ 12 ], HellaSwag [ 13 ], WinoGrande [ 14 ], OpenBookQA [ 15 ], CommonsenseQA [ 16 ], ARC-e, and ARC-c [ 17 ]), six in-context retrieval datasets (SWDE [ 18 ], SQuAD [ 19 ], FDA [ 20 ], TriviaQA [ 21 ], Drop [ 22 ], NQ [ 23 ]), and two long-context datasets (RULER [ 24 ] and LongBench [ 25 ]). All of the evaluations are conducted using the LM-Evaluation-Harness framework [26]. 
+
+Implementation Details. To ensure a fair comparison, we followed the same configuration used in Log-Linear Attention [ 6] to train the full attention Transformer-778M, Mamba-2-780M, Gated DeltaNet-1.3B, and their variants in Log-Linear and DLA forms. Specifically, we perform academic-scale language modeling pretraining from scratch using 50B tokens on the Long-Data-Collections dataset, using a sequence length of 16K. We set the capacity of the state cache in DLA to 30, which is the same as the maximum state number in Log-linear attention. All of our experiments are conducted on 4 NVIDIA A100 GPUs. 
+
+4.2 Overall Comparison 
+
+We evaluate the overall performance of DLA from three main aspects: (1) performance on commonsense reasoning tasks, (2) performance on in-context retrieval tasks, and (3) performance on long-context modeling tasks. 
+
+Performance on Commonsense Reasoning. Following prior work [ 10 ], we evaluate all models on eight commonsense reasoning benchmarks. Results are summarized in table 1. We make two key observations. First, DLA consistently outperforms both the vanilla and log-linear variants of linear-attention–based models across all tasks. In particular, compared to the log-linear variant, DLA achieves up to 52% and 22% relative accuracy improvement on Mamba-2-780M and Gated DeltaNet-1.3B, respectively. Second, when applied to Mamba-2-780M, DLA also consistently outperforms a full-attention Transformer with a comparable parameter size, demonstrating that DLA can close and even surpass the accuracy gap between linear attention and full attention. 8Table 2 Performance on in-context retrieval benchmarks measured by accuracy ( ↑). The best performance is marked in bold. The relative performance gain compared to the best-performing baseline is marked in green inside bracket. 
+
+Model SQuAD ↑ TriviaQA ↑ SWDE ↑ FDA ↑ NQ ↑ Drop ↑ Avg. ↑
+
+Mamba-2 22.4 13.6 17.4 0.0 0.2 3.4 9.5 w/ Log-linear 7.1 9.1 15.2 0.0 0.0 6.6 6.3 w/ DLA 28.1 ( ↑ 25% ) 20.2 ( ↑ 49% ) 26.3 ( ↑ 51% ) 0.0 ( ↑ 0% ) 1.0 ( ↑ 400% ) 6.6 ( ↑ 0% ) 13.7 ( ↑ 44% )
+
+Gated DeltaNet 15.8 29.4 20.3 16.9 10.7 13.5 17.8 w/ Log-linear 21.7 25.3 28.8 17.7 10.1 18.3 20.3 w/ DLA 27.3 ( ↑ 26% ) 33.8 ( ↑ 15% ) 51.7 ( ↑ 80% ) 22.2 ( ↑ 25% ) 12.1 ( ↑ 13% ) 25.8 ( ↑ 41% ) 28.8 ( ↑ 42% )
+
+Performance on In-Context Retrieval Tasks. Then, we evaluate the models on six in-context retrieval tasks following prior work [ 27 ]. As shown in table 2, DLA consistently outperforms the baseline methods with at most 49 % performance improvement. 
+
+Table 3 Evaluation results of single-needle tasks (S-NIAH-1–3) and multi-needle tasks (MK-1, MQ, MV) on RULER (4K context).                                                               
+
+> Model S-NIAH-1 S-NIAH-2 S-NIAH-3 MK-NIAH-1 MQ-NIAH MV-NIAH
+> Transformer 91.4 71.4 73.3 62.1 54.5 36.9 Mamba-2 80.5 31.0 4.7 14.8 19.3 19.4 w/ Log-Linear 88.7 39.4 10.6 41.6 25.2 28.3 w/ DLA 100.0 ( ↑13% )69.2 ( ↑76% )37.1 ( ↑250% )60.3 ( ↑45% )42.5 ( ↑67% )37.6 ( ↑33% )Gated DeltaNet 100.0 74.0 53.2 19.1 19.5 14.8 w/ Log-Linear 100.0 81.6 48.8 43.8 31.3 26.6 w/ DLA 100.0 ( ↑0% )98.6 ( ↑21% )65.9 ( ↑24% )49.3 ( ↑13% )34.2 ( ↑9% )30.5 ( ↑15% )
+
+Performance on Long-Context Modeling Tasks. We next evaluated the models on long-context tasks, including long-context retrieval on RULER with 4k, 8k, 16k length and long-context under-standing on LongBench. As shown in ta-ble 3 and table 4, we make two main observations. First, DLA substantially improves long-context retrieval performance on RULER across both single-needle and multi-needle settings. Compared to the log-linear variant, DLA achieves consistent and often large gains on Mamba-2 and Gated DeltaNet, with particularly pronounced improvements on harder multi-needle tasks (e.g., up to 350% relative improvement on S-NIAH-3 and 67% on MQ-NIAH). These results indicate that DLA more effectively preserves and aggregates long-range information under extended contexts. 
+
+Table 4 Performance on LongBench datasets [ 25 ] with different types of tasks.                                                                                                                              
+
+> Single-Doc QA Multi-Doc QA Summarization Few-shot Learning Model NQA QQA MFQ HQA 2WM Mus GvR QMS MNs TRC TQA SSM Transformer 8.4 9.6 19.6 11.0 20.9 6.4 12.8 9.7 9.5 21.0 43.2 14.4 Mamba-2 5.1 10.6 11.9 10.2 14.5 4.7 6.3 5.5 3.3 2.3 20.9 6.8 w/ Log-Linear 6.8 9.6 12.2 9.5 19.0 4.4 6.4 8.1 3.5 12.4 18.6 9.8 w/ DLA 9.4 ( ↑38% )11.1 ( ↑5% )16.1 ( ↑32% )12.5 ( ↑23% )23.9 ( ↑26% )8.7 ( ↑85% )8.3 ( ↑30% )12.2 ( ↑51% )9.3 ( ↑266% )18.7 ( ↑51% )31.4 ( ↑50% )16.5 ( ↑68% )
+> Gated DeltaNet 7.2 10.3 14.0 9.8 18.5 6.3 7.2 8.4 7.6 16.5 25.3 11.0 w/ Log-Linear 6.9 6.1 15.4 11.5 20.2 5.5 6.1 9.9 4.3 11.0 27.7 11.2 w/ DLA 11.3 ( ↑57% )15.1 ( ↑47% )17.4 ( ↑24% )17.2 ( ↑50% )25.4 ( ↑26% )7.0 ( ↑11% )8.7 ( ↑21% )11.8 ( ↑19% )9.9 ( ↑30% )31.2 ( ↑89% )41.5 ( ↑50% )19.7 ( ↑76% )
+
+Second, on LongBench, DLA consistently outperforms both vanilla and log-linear variants across diverse long-context un-derstanding tasks, including narrative QA, multi-field QA, summarization, and few-shot learning. Notably, DLA delivers strong and uniform gains across differ-ent task categories, suggesting that the benefits of DLA extend beyond retrieval and generalize to complex reasoning and generation under long contexts. 
+
+4.3 Inference Efficiency of DLA 
+
+We next evaluate the efficiency of DLA from two aspects: (1) efficiency under varying batch sizes and (2) efficiency under varying input context lengths. 
+
+Efficiency Under Various Batch Sizes. Figures figure 3(a) and (c) report the throughput and runtime memory footprint under varying batch sizes with a fixed context length of 128 and decode length of 1. As batch size increases, both the log-linear and DLA variants exhibit smaller throughput gains and higher memory usage than the vanilla Mamba-2, due to caching multiple summary states. Nevertheless, compared to log-linear attention, DLA consistently achieves higher throughput with lower memory consumption, indicating better compute and memory efficiency. 
+
+Efficiency Under Various Context Lengths. Figures figure 3(b) and (d) show the throughput and KV memory footprint under varying context lengths with a fixed batch size of 1 and decode length of 1. As context length increases, both log-linear and DLA variants incur higher memory usage and limited throughput improvement 91 2 4 8           
+
+> (a) Throughput Under Different Batch Size
+> 0
+> 5k
+> 10k
+> Tokens / sec
+> 1248
+> (b) Runtime Memory Under Different Batch Size
+> 0
+> 2
+> 4
+> Memory (GB)
+> 128 256 512 1024
+> (c) Throughput Under Different Context Length
+> 0
+> 5k
+> 10k
+> Tokens / sec
+> 128 256 512 1024
+> (d) Runtime Memory Under Different Context Length
+> 0.0
+> 0.2
+> 0.5
+> Memory (GB)
+> Mamba-2 Mamba-2 (Log-Linear) Mamba-2 (DLA)
+
+Figure 3 Throughput (tokens/sec) and runtime memory consumption (GB) of vanilla, Log-Linear, and DLA variants of Mamba-2 (780M) in prefill stage on a single A100 GPU under different bat ch sizes (a, b) and different sequence lengths (c, d). 
+
+relative to the vanilla model, again due to maintaining multiple summary states. In contrast, DLA consistently outperforms the log-linear variant in throughput while maintaining lower and more stable memory consumption, demonstrating superior efficiency under long-context settings. 
+
+4.4 Ablation Studies 
+
+Table 5 Ablation study of Mamba-2 and Gated DeltaNet with different variants. DLA(I) denotes the version of DLA 
+
+with information-aware dynamic state merging only.                                                                      
+
+> Model LMB. ↑PIQA ↑Hella. ↑Wino. ↑RULER ↑
+> Mamba-2 15.7 58.9 29.3 50.1 28.3 w/ Log-linear 13.2 59.7 27.8 49.5 39.0 w/ DLA(I) 20.1 ( ↑28% )61.5 ( ↑3% )30.3 ( ↑3% )50.9 ( ↑2% )44.0 ( ↑13% )w/ DLA 23.9 ( ↑52% )63.7 ( ↑7% )30.8 ( ↑5% )51.5 ( ↑3% )57.8 ( ↑48% )Gated DeltaNet 20.3 58.8 29.6 51.3 46.8 w/ Log-linear 19.0 60.4 28.4 51.9 55.4 w/ DLA(I) 22.2 ( ↑9% )61.3 ( ↑1% )29.7 ( ↑5% )52.0 ( ↑1% )58.4 ( ↑5% )w/ DLA 24.8 ( ↑22% )62.7 ( ↑4% )30.3 ( ↑6% )52.4 ( ↑1% )63.1 ( ↑14% )
+
+Module Sensitivity Study. We conduct ablation studies to evaluate the separate contribution of the two components of DLA . Let DLA(I) denote the version of DLA with information-aware dynamic state merging only. As shown in Table 5, we have two observations. (1) DLA(I) and DLA variants consistently outperform Log-Linear variants across all benchmarks. (2) DLA consistently outperforms 
+
+DLA(I) across all benchmarks. This result demon-strates the unique contributions of the two compo-nents in DLA .
+
+Table 6 Ablation study of Mamba-2 DLA variant with different memory budget k and merge boundary τ .
+
+Budget Size LMB. ↑ PIQA ↑ Hella. ↑ Wino. ↑ RULER ↑
+
+k = 20 22.7 64.9 29.3 50.1 56.3 
+
+k = 30 23.9 63.7 30.8 51.5 57.8 
+
+k = 40 24.2 63.3 29.8 50.9 57.7 
+
+τ = 0.5 20.1 63.6 29.7 51.3 57.3 
+
+τ = 0.6 23.9 63.7 30.8 51.5 57.8 
+
+τ = 0.7 22.5 61.7 30.1 52.3 55.9 
+
+Impact of capacity k and boundary τ . To study the impact of memory budget k and the merge boundary τ on performance, we adjust the default budget in DLA variant of Mamba-2 from 30 to 20 and 40 and adjust the default boundary from 0.6 to 0.5 and 0.7. We then compare the changes in performance. As shown in table 6, changes in the memory budget and merge boundary have only a marginal effect on the final performance of DLA ,indicating that the proposed memory modeling is robust to these two hyperparameters. 
+
+5 Related Work 
+
+To overcome the quadratic bottleneck of softmax attention on long sequences, linear attention and state space models (SSMs) reformulate attention computation to achieve O(T ) complexity. Representative methods such as DeltaNet [ 4] and Mamba [ 28 ] compress the entire history into a single recurrent state, continuously merging incoming tokens into a fixed-size summary for inference. To alleviate the resulting over-compression, gating mechanisms [ 5] introduce data-dependent modulation to selectively attenuate obsolete information. More recent approaches extend linear attention to multi-state memory. In particular, Log-Linear Attention [ 6]maintains a logarithmic number of hierarchical states, where tokens are deterministically merged according to a fixed temporal schedule. Despite their effectiveness, these methods rely on fixed merging policies that ignore 10 token-level information variation, leaving open the question of how to adaptively control state construction to preserve fine-grained information under long contexts. 
+
+6 Conclusion 
+
+In this paper, we presented DLA , a framework for multi-state linear attention. DLA replaces fixed merging with information-aware dynamic state construction and uses capacity-bounded memory modeling to keep inference cost predictable. By allocating memory resolution based on token-level information variation, DLA improves representation quality while preserving efficiency. We pre-train DLA on two linear-attention backbones and evaluate it on 16 datasets across three aspects, where it consistently outperforms state-of-the-art baselines. 
+
+Acknowledgement 
+
+This work is supported in part by NSF Award NeTS-2312675. 
+
+References 
+
+[1] Zhongwei Wan, Xin Wang, et al. Efficient large language models: A survey. arXiv preprint arXiv:2312.03863, 2023. [2] Xin Wang, Zhongwei Wan, Arvin Hekmati, Mingyu Zong, Samiul Alam, Mi Zhang, and Bhaskar Krishnamachari. Iot in the era of generative ai: Vision and challenges. arXiv preprint arXiv:2401.01923, 2024. [3] Zhongwei Wan, Xinjian Wu, Yu Zhang, Yi Xin, Chaofan Tao, Zhihong Zhu, Xin Wang, Siqi Luo, Jing Xiong, Longyue Wang, and Mi Zhang. D2O: dynamic discriminative operations for efficient long-context inference of large language models. In ICLR. OpenReview.net, 2025. [4] Songlin Yang, Bailin Wang, Yu Zhang, Yikang Shen, and Yoon Kim. Parallelizing linear transformers with the delta rule over sequence length. In NeurIPS, 2024. [5] Songlin Yang, Jan Kautz, and Ali Hatamizadeh. Gated delta networks: Improving mamba2 with delta rule. In ICLR. OpenReview.net, 2025. [6] Han Guo, Songlin Yang, Tarushii Goel, Eric P. Xing, Tri Dao, and Yoon Kim. Log-linear attention. CoRR ,abs/2506.04761, 2025. [7] Xiuying Wei, Anunay Yadav, Razvan Pascanu, and Caglar Gulcehre. RAT: bridging RNN efficiency and attention accuracy in language modeling. CoRR, abs/2507.04416, 2025. [8] Nathaniel Johnston, Sarah Plosker, Charles Torrance, and Luis Varona. Generalizing the cauchy-schwarz inequality: Hadamard powers and tensor products. arXiv preprint arXiv:2507.10327, 2025. [9] Cristian Lumezanu, Randy Baden, Neil Spring, and Bobby Bhattacharjee. Triangle inequality variations in the internet. In Proceedings of the 9th ACM SIGCOMM Conference on Internet Measurement, IMC ’09, page 177–183, New York, NY, USA, 2009. Association for Computing Machinery. ISBN 9781605587714. doi: 10.1145/ 1644893.1644914. URL https://doi.org/10.1145/1644893.1644914 .[10] Tri Dao and Albert Gu. Transformers are ssms: Generalized models and efficient algorithms through structured state space duality. In ICML. OpenReview.net, 2024. [11] Denis Paperno, Germán Kruszewski, Angeliki Lazaridou, Quan Ngoc Pham, Raffaella Bernardi, Sandro Pezzelle, Marco Baroni, Gemma Boleda, and Raquel Fernández. The LAMBADA dataset: Word prediction requiring a broad discourse context. In ACL (1). The Association for Computer Linguistics, 2016. [12] Yonatan Bisk, Rowan Zellers, Ronan Le Bras, Jianfeng Gao, and Yejin Choi. PIQA: reasoning about physical commonsense in natural language. In AAAI, pages 7432–7439. AAAI Press, 2020. [13] Rowan Zellers, Ari Holtzman, Yonatan Bisk, Ali Farhadi, and Yejin Choi. Hellaswag: Can a machine really finish your sentence? In ACL (1), pages 4791–4800. Association for Computational Linguistics, 2019. [14] Keisuke Sakaguchi, Ronan Le Bras, Chandra Bhagavatula, and Yejin Choi. Winogrande: an adversarial winograd schema challenge at scale. Commun. ACM, 64(9):99–106, 2021. 
+
+11 [15] Todor Mihaylov, Peter Clark, Tushar Khot, and Ashish Sabharwal. Can a suit of armor conduct electricity? A new dataset for open book question answering. In EMNLP, pages 2381–2391. Association for Computational Linguistics, 2018. [16] Alon Talmor, Jonathan Herzig, Nicholas Lourie, and Jonathan Berant. Commonsenseqa: A question answering challenge targeting commonsense knowledge. In NAACL-HLT (1), pages 4149–4158. Association for Computational Linguistics, 2019. [17] Sumithra Bhakthavatsalam, Daniel Khashabi, Tushar Khot, Bhavana Dalvi Mishra, Kyle Richardson, Ashish Sabharwal, Carissa Schoenick, Oyvind Tafjord, and Peter Clark. Think you have solved direct-answer question answering? try arc-da, the direct-answer AI2 reasoning challenge. CoRR, abs/2102.03315, 2021. [18] Colin Lockard, Prashant Shiralkar, and Xin Luna Dong. Openceres: When open information extraction meets the semi-structured web. In Proceedings of the 2019 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies, Volume 1 (Long and Short Papers) , pages 3047–3056, 2019. [19] Pranav Rajpurkar, Robin Jia, and Percy Liang. Know what you don’t know: Unanswerable questions for squad. In Proceedings of the 56th Annual Meeting of the Association for Computational Linguistics (Volume 2: Short Papers), pages 784–789, 2018. [20] Simran Arora, Brandon Yang, Sabri Eyuboglu, Avanika Narayan, Andrew Hojel, Immanuel Trummer, and Christopher Ré. Language models enable simple systems for generating structured views of heterogeneous data lakes. Proceedings of the VLDB Endowment, 17(2):92–105, 2023. [21] Mandar Joshi, Eunsol Choi, Daniel S Weld, and Luke Zettlemoyer. Triviaqa: A large scale distantly supervised challenge dataset for reading comprehension. In Proceedings of the 55th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages 1601–1611, 2017. [22] Dheeru Dua, Yizhong Wang, Pradeep Dasigi, Gabriel Stanovsky, Sameer Singh, and Matt Gardner. Drop: A reading comprehension benchmark requiring discrete reasoning over paragraphs. In Proceedings of the 2019 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies, Volume 1 (Long and Short Papers), pages 2368–2378, 2019. [23] Tom Kwiatkowski, Jennimaria Palomaki, Olivia Redfield, Michael Collins, Ankur Parikh, Chris Alberti, Danielle Epstein, Illia Polosukhin, Jacob Devlin, Kenton Lee, et al. Natural questions: a benchmark for question answering research. Transactions of the Association for Computational Linguistics, 7:453–466, 2019. [24] Cheng-Ping Hsieh, Simeng Sun, Samuel Kriman, Shantanu Acharya, Dima Rekesh, Fei Jia, Yang Zhang, and Boris Ginsburg. RULER: what’s the real context size of your long-context language models? CoRR, abs/2404.06654, 2024. [25] Yushi Bai, Xin Lv, Jiajie Zhang, Hongchang Lyu, Jiankai Tang, Zhidian Huang, Zhengxiao Du, Xiao Liu, Aohan Zeng, Lei Hou, Yuxiao Dong, Jie Tang, and Juanzi Li. Longbench: A bilingual, multitask benchmark for long context understanding. In ACL (1), pages 3119–3137. Association for Computational Linguistics, 2024. [26] Leo Gao, Jonathan Tow, Baber Abbasi, Stella Biderman, Sid Black, Anthony DiPofi, Charles Foster, Laurence Golding, Jeffrey Hsu, Alain Le Noac’h, Haonan Li, Kyle McDonell, Niklas Muennighoff, Chris Ociepa, Jason Phang, Laria Reynolds, Hailey Schoelkopf, Aviya Skowron, Lintang Sutawika, Eric Tang, Anish Thite, Ben Wang, Kevin Wang, and Andy Zou. The language model evaluation harness, 07 2024. URL https://zenodo.org/ records/12608602 .[27] Simran Arora, Sabri Eyuboglu, Michael Zhang, Aman Timalsina, Silas Alberti, James Zou, Atri Rudra, and Christopher Ré. Simple linear attention language models balance the recall-throughput tradeoff. In Proceedings of the 41st International Conference on Machine Learning, pages 1763–1840, 2024. [28] Albert Gu and Tri Dao. Mamba: Linear-time sequence modeling with selective state spaces. CoRR, abs/2312.00752, 2023. 
+
+12
