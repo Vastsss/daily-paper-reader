@@ -1,0 +1,993 @@
+Title: RAID: Semantic Graph Diffusion for True Cold-Start and Cross-Lingual Forecasting
+
+URL Source: https://arxiv.org/pdf/2606.16925v1
+
+Published Time: Tue, 16 Jun 2026 02:33:24 GMT
+
+Number of Pages: 26
+
+Markdown Content:
+# RAID: Semantic Graph Diffusion for True Cold-Start and Cross-Lingual Forecasting 
+
+Arunkumar V 1 Manoranjan Gandhudi 2 Gangadharan G. R. 3
+
+Arun Prakash 4 S. Senthilkumar 11University College of Engineering, Anna University Tiruchirappalli, Tamil Nadu, India 
+
+> 2
+
+Central University of Karnataka, India 
+
+> 3
+
+National Institute of Technology Tiruchirappalli, India 
+
+> 4
+
+Jawaharlal Nehru University, New Delhi, India 
+
+arunkumarv1530@gmail.com gmanoranjan@cuk.ac.in ganga@nitt.edu arunprakash@mail.jnu.ac.in ssk@aubit.edu.in 
+
+June 16, 2026 
+
+Abstract 
+
+Time-series foundation models show strong transfer performance when given a non-empty history window. However, true cold-start scenarios, where a new item has no prior observations, violate this assumption. We propose RAID (Retrieval-Augmented Iterative Diffusion) a framework, which replaces history-based correlation learning with metadata-driven semantic retrieval and graph-conditioned diffusion. RAID maps textual metadata into a shared semantic space using a frozen multilingual embedding model and constructs an inductive retrieval graph that extends naturally to unseen items. It first forms a base forecast by aggregating information from semantically related neighbors, then refines this forecast with a gated diffusion module to model residual uncertainty. Under a strict true cold-start protocol, RAID outperforms strong foundation models and competitive baselines on both forecasting accuracy and prediction interval coverage, while reducing inference latency by an order of magnitude through non-autoregressive decoding. The shared semantic space also enables zero-shot cross-lingual transfer, allowing a model trained on English descriptions to generalize to items described in other languages without direct supervision. 
+
+## 1 Introduction 
+
+Time series forecasting has recently shifted from specialized architectures to general-purpose foundation models. Large-scale transformers such as Chronos [ 1] and TimesFM [ 2] treat forecasting as a next-token prediction task and obtain strong zero-shot performance by scaling model size and training data. Every such architecture, however, depends on a historical context window xt−L:t to generate future predictions, and the quadratic O(L2) cost of attention in L forces a trade-off between accuracy and latency. This dependence on history creates a failure mode in the true cold-start regime. Foundation models like TimesFM [ 2] and Chronos [ 1 ] claim zero-shot capabilities, yet their published “zero-shot” setting still requires each test item to carry its own history window ( L > 0) [ 3 – 5]. The underlying mechanism is In-Context Forecasting (ICF) [ 6], not reasoning from item description. When a new item has no observations ( L = 0 ), these models collapse to a global mean or random noise [ 7, 8 ] and cannot exploit the rich metadata (e.g., product descriptions, server specs) that is available prior to the first observation [9–11]. We introduce RAID (Retrieval-Augmented Iterative Diffusion), a framework that unifies semantic retrieval with generative diffusion. The inductive bias is semantic homophily , the observation that items with similar metadata tend to exhibit similar demand dynamics, so a new “Nike Running Shoe” inherits seasonality from existing “Adidas Running Shoes” even when their sales histories never overlap. RAID realizes this by 1
+
+> arXiv:2606.16925v1 [cs.AI] 15 Jun 2026
+
+leveraging a frozen, multilingual Large Language Model (LLM) to inductively construct a retrieval graph from textual metadata, propagating demand signals from established “source” items to new “target” items. By decoupling the memory mechanism (retrieval) from the generation mechanism (diffusion), RAID also enables an efficient O(1) inference mode that bypasses the quadratic cost of transformers. 
+
+1.1 Key Contributions 
+
+Our primary contributions are as follows: 
+
+• Diffusion Transformer Architecture. We propose RAID, a novel framework that employs a Diffusion Transformer (DiT) backbone. Unlike standard convolutional approaches, RAID leverages Adaptive Layer Normalization (AdaLN) to condition the generative process on static semantic graphs, enabling robust residual modeling. 
+
+• Non-Autoregressive Efficiency. By decoupling memory (retrieval) from generation, RAID pairs a precomputed Shape-Scale base prediction with entropy-reduced diffusion that converges in S = 10 
+
+refinement steps, an order of magnitude below the 50 –100 typical of raw-data diffusion. The full generative variant (RAID-Full) achieves a 48 .7× inference speedup over Chronos-Small at matched generative capability, and a feed-forward retrieval-only variant (RAID-Base) reaches 124 × when probabilistic refinement is not required (details in Appendix D.4). 
+
+• Cross-Lingual Transfer. We demonstrate that RAID generalizes across languages and scripts (Latin / Cyrillic / Hanzi). A model trained on English data achieves performance competitive with native training on Spanish and 1C (RU) datasets, and we hypothesize a structural-regularization mechanism driven by source-graph density. 
+
+• Cold-Start Performance. In the strict true cold-start regime ( L = 0 ), RAID achieves the best average rank across nine datasets and wins per-dataset sMAPE on six of them. Foundation models that rely on a history window collapse toward a global prior in this regime, while RAID propagates demand signal through the semantic graph and refines it with the diffusion residual. 
+
+## 2 Related Work 
+
+2.1 Foundation Models and Cold-Start 
+
+The paradigm of forecasting has shifted towards large-scale pre-training. Foundation models such as Chronos [ 1 ], TimesFM [ 2], and Lag-Llama [ 12 ] treat time series as a language modeling task, tokenizing values and applying transformer architectures to learn universal temporal patterns. While these models demonstrate impressive zero-shot transfer capabilities across datasets, they define “zero-shot” as prediction on unseen domains given a historical context window. They remain fundamentally autoregressive, requiring a sequence of past observations x1: t to generate xt+1 . This dependency renders them ineffective for true cold-start scenarios where t = 0 . Prior work on cold-start forecasting typically relies on (i) meta-learning across tasks, (ii) factorization and embedding-based methods, or (iii) supervised regressors over static metadata [ 7– 9]. While effective in limited settings, these approaches often struggle to represent the rich, non-linear structure available in free-form text and do not provide calibrated predictive uncertainty. 
+
+Text-aligned forecasting and its limits. Approaches like LangTime [ 11 ] and Context-is-Key [ 10 ] pair LLMs with time series via RL or in-context prompting. Both assume L > 0: text augments history rather than replacing it, so their similarity and retention mechanisms collapse when the window is empty. RAID is, to our knowledge, the first method to use textual metadata as the sole conditioning signal under a strict 
+
+L = 0 protocol. Direct LLM prompting in this regime exhibits scale hallucination , often missing demand magnitude by orders of magnitude (e.g., predicting 1000 units for a niche item that sells 5), which motivates the shape-scale decoupling in Section 3.3. 22.2 The Limits of In-Context Forecasting 
+
+Recent advancements in ICF, such as TimesFM-ICF [ 6], have attempted to bridge the gap between fixed-horizon models and flexible zero-shot tasks. These models typically employ a retrieval mechanism to populate the context window with related time series, thereby allowing the transformer to attend to relevant historical patterns. However, this approach relies on a fundamental assumption: that there exists a sufficient historical window x1: t to measure similarity against potential context examples. In the true cold-start setting where 
+
+t = 0 , this similarity metric is undefined. Consequently, the context selection mechanism degrades to random sampling or reliance on global averages. As shown in our experiments, attending to randomly selected, semantically irrelevant trajectories introduces stochastic noise that often degrades performance below simple univariate baselines. RAID eliminates this dependency by grounding the retrieval process in static semantic metadata, ensuring that the context remains relevant even when temporal observations are entirely absent. 
+
+2.3 Graph Neural Networks and Diffusion 
+
+Graph Neural Networks (GNNs) [ 13 , 14 ] have been widely adopted to model spatial correlations in multivariate time series [ 15 ]. However, standard approaches typically learn the adjacency matrix via gradient descent or historical correlations. These methods are transductive, meaning they cannot easily accommodate new nodes without retraining or historical data to estimate correlations. Generative diffusion models, such as TimeGrad [ 16 ] and CSDI [ 17 ], have set new standards for probabilistic forecasting. Yet, these models typically condition the diffusion process on the time series history itself. RAID differs by conditioning the diffusion process on an inductively constructed semantic graph using a Diffusion Transformer (DiT) backbone. By leveraging pre-trained LLM embeddings to define the graph topology, RAID extends the generative power of diffusion to the zero-shot regime, using semantic neighbors to guide the denoising process even when temporal history is absent. 
+
+## 3 Method: RAID 
+
+3.1 Problem Setting and Semantic Embedding Space 
+
+We define the cold-start forecasting problem as learning a conditional density pθ (yt:t+H | mi, K), where mi
+
+is the static metadata for item i, K is the knowledge retrieval base, and historical observations y1: t are unavailable ( ∅) or negligible (Figure 1). The core of RAID is the projection of heterogeneous time series into a shared semantic manifold. Let mi be the raw textual description of agent i (e.g., “Nike Air Zoom Pegasus, Mens Running Shoe”). We employ a frozen, multilingual embedding model, BGE-M3 [ 18 ], to map this text to a dense vector ei ∈ Rd:
+
+ei = ΦLLM (mi)
+
+∥ΦLLM (mi)∥2
+
+(1) where ΦLLM denotes the frozen BGE-M3 encoder and ℓ2-normalization places ei on the unit hypersphere, ensuring scale-invariant cosine similarity in subsequent retrieval. Metadata is serialized with explicit field tokens, mi = [CAT] ci ⊕ [BRAND] bi ⊕ [TITLE] ti ⊕ [DESC] di, so the graph topology reflects functional similarity rather than free-text overlap (full schema in Appendix B.4). The encoder is multilingual, so ei lies in a language-agnostic space and enables the cross-lingual transfer in Section 4. The raw 1024 -dimensional embeddings are projected through a Tanh-activated bottleneck e′ 
+
+> i
+
+= Tanh ( Linear ( LayerNorm (ei))) 
+
+R16 for use as conditioning features. Graph similarities are computed on ei, and the learnable modules (Scale MLP, DiT) consume e′
+
+> i
+
+.
+
+3.2 Inductive Graph Topology 
+
+Instead of learning a transductive adjacency matrix A ∈ RN ×N via backpropagation, which fails for unseen nodes, we construct an inductive graph structure G = ( V, E) derived strictly from the semantic manifold. 3Figure 1: The RAID Architecture. (Top) Inductive Semantic Graph: Metadata is mapped to a shared semantic manifold via BGE-M3 to construct a sparse retrieval graph. (Bottom Left) Shape-Scale Decomposition: Neighbor trajectories are normalized into scale-invariant shapes and aggregated; a target-specific scale is predicted via MLP to reconstruct a deterministic base forecast μbase . (Bottom Right) Gated Diffusion: A Diffusion Transformer (DiT) models the residual uncertainty r, conditioned on the graph context 
+
+c via Adaptive Layer Norm. The final forecast ˆy = μbase + g · ˆr0 is emitted as a probabilistic Horizon-H
+
+distribution. To ensure the graph captures meaningful local neighborhoods while suppressing irrelevant long-tail connections, we employ a Top-k sparse softmax kernel. For any node i, we restrict connections to its k nearest neighbors Nk(i) in the embedding space. The adjacency weights are defined as: 
+
+Aij = exp( ⟨ei, e j ⟩/τ )
+
+∑  
+
+> l∈N k(i)
+
+exp( ⟨ei, e l⟩/τ ) (2) where τ is a learnable temperature initialized to 1.0.1 This construction guarantees that the graph topology is dynamic and inductive; extending to a new node u / ∈ V simply requires a forward pass of the embedding model to identify its support set Nk(u).
+
+Graph Encoding (GATv2). To propagate information across this topology, we utilize a GATv2 encoder [ 14 ]. Unlike standard GATs which rely on static attention, GATv2 computes dynamic attention scores dependent on both the source and target node features, allowing the model to strictly attend to more relevant semantic neighbors regardless of their absolute embedding position. 
+
+3.3 Retrieval-Augmented Base Prediction 
+
+For a cold-start agent i the autoregressive history yi, 1: t is unavailable. RAID retrieves a support set Nk(i) and forms a deterministic base prediction from neighbor dynamics. Averaging raw trajectories fails when neighbors share function but occupy different market tiers: on Amazon Electronics, the Echo Dot (3rd Gen) and Echo Dot Kids Edition have near-identical descriptions but differ by 112 × in weekly volume (Appendix E.1). A naive average would overestimate demand for the niche variant by more than 100 ×.We address this with a Shape-Scale Decomposition. Each retrieved trajectory yj is normalized into a scale-invariant shape zj , with hard clamping to bound outliers:        
+
+> 1In the implementation (Algorithm 1) we reparameterize τ←Softplus (τ)to enforce positivity during gradient updates; the value plotted in Aij is always strictly positive.
+
+4zj (t) = Clamp 
+
+( yj (t) − μj
+
+σj + ε , −C, C 
+
+)
+
+(3) where μj and σj are the global mean and standard deviation of neighbor j, ε is a numerical stabilizer, and C = 10 is a robustness constant derived from the data distribution. We then aggregate these shapes using the attention weights Aij derived in Eq. (2) to form a normalized prior zagg .The final base prediction μ(i) 
+
+> base
+
+is reconstructed by modulating this shape with the target’s specific scale ˆσi
+
+and mean ˆμi. These parameters are estimated via a Multi-Layer Perceptron (MLP) with GELU activations, conditioned on the bottleneck embedding e′
+
+> i
+
+:
+
+(ˆ σi, ˆμi) = MLP ϕ(e′
+
+> i
+
+) (4) 
+
+μ(i)
+
+> base
+
+(t) = Softplus (ˆ σi) · zagg (t) + ˆ μi (5) Softplus keeps scale estimates strictly positive. At inference, these values are precomputed into a hash table indexed by semantic cluster, giving O(1) retrieval. 
+
+3.4 Gated Diffusion Transformer (DiT) 
+
+To model the stochastic residual r = y − μbase , we employ a Denoising Diffusion Probabilistic Model (DDPM) [ 19 ]. While prior time-series diffusion models often rely on dilated convolutions, RAID adopts a Diffusion Transformer (DiT) backbone [ 20 ]. This architecture provides superior scalability and global context modeling through self-attention mechanisms. 
+
+Conditioning via Adaptive Layer Normalization (AdaLN). A critical challenge is injecting the static semantic graph embedding c (derived from the GNN) into the dynamic denoising process. Standard cross-attention is computationally expensive for this purpose. Instead, we use AdaLN [ 21 ]. For a hidden state h at layer l, the normalization parameters are regressed directly from the sum of the graph condition c
+
+and the diffusion step embedding ts:AdaLN (h, c, t s) = (1 + γl(c, t s)) ⊙ LN (h) + βl(c, t s) (6) where γl and βl are zero-initialized linear projections. This initialization ensures the conditioning starts inactive: AdaLN initially reduces to standard LayerNorm without context modulation, and the model learns to “turn on” the semantic guidance as training progresses. 
+
+Gated Residual Fusion. To ensure stability in the true cold-start regime ( L = 0 ), we introduce a learnable gating mechanism to blend the deterministic base forecast with the stochastic residual. Unlike static weighting schemes, we employ a Context-Aware Gating Network parameterized as a shallow MLP. The final forecast is generated as: 
+
+ˆy = μbase + sigmoid( MLP ψ (c)) · ˆr0 (7) where sigmoid (x) = (1 + e−x)−1 and c is the context vector. The final bias of the MLP is initialized to 
+
+−3.0. This initialization ( sigmoid (−3.0) ≈ 0.047 ) imposes a structural bias, so that the model initially relies on the robust retrieval-based prior μbase and dynamically learns to scale the residual contribution based on the specific uncertainty of the item context. A separate gate on the AdaLN context input that handles the warm-start ( L > 0) regime is described in Appendix B.2. 
+
+Remark 3.1 (Residualization reduces target entropy) . By the law of total covariance, the residual target 
+
+R = X − E[X | C] satisfies Cov (X) = Cov (E[X | C]) + Cov (R), so whenever the conditional mean carries information ( Cov (E[X | C]) ̸ = 0 ) the residual has strictly smaller log-determinant covariance and a strictly smaller Gaussian entropy upper bound than the raw target. A self-contained derivation is in Appendix A.2. This entropy reduction motivates the small-S diffusion regime: the residual distribution is materially simpler than the raw signal, and we observe empirically that S = 10 inference steps suffice to recover it, whereas standard data-space diffusion baselines (e.g., CSDI) typically require S ≥ 50 (validated in Section 4.6 and the diffusion-step sweep in Appendix D.4). We treat the connection between the theoretical entropy reduction and the empirical sampler-step count as an empirical finding rather than a formal convergence claim (training/inference pseudocode in Appendix B.1). 54 Experiments 
+
+4.1 Datasets and Protocol 
+
+We evaluate RAID on nine diverse real-world datasets characterized by varying degrees of metadata richness, ranging from unstructured descriptions (Amazon) to hierarchical categories (M5). 
+
+Evaluation Protocol. We employ a strict True Cold-Start evaluation. For the test set agents, the historical context window is masked ( x1: t = ∅). The model must rely solely on the inductive graph G and known future covariates (e.g., calendar embeddings) to forecast the horizon H. We report sMAPE for point accuracy and CRPS for probabilistic calibration. 
+
+Training Protocol. RAID trains on each dataset’s training split and is evaluated on a held-out subset of cold-start items where target-item history is absent. Foundation models (Chronos, TimesFM, Moirai) are evaluated zero-shot, following the convention of TTM [ 4 ] and GIFT-Eval [ 3 ]. Fine-tuning these foundation models on target-domain data does not close the cold-start gap because their published architectures lack a metadata-conditioning channel at L = 0 (Appendix D.3), so the comparison isolates the value of metadata-conditioned cold-start prediction rather than the amount of pre-training data. Implementation and compute details are in Appendix B and Appendix D.5. 
+
+4.2 Baselines 
+
+We compare RAID against a rigorous suite representing the current state-of-the-art [ 5 , 22 –25 ]. To ensure a fair comparison, all supervised baselines are trained using the same static metadata embeddings as RAID. 
+
+• Naive & Classical: Global Mean and LightGBM (gradient boosting on static features). 
+
+• Supervised Deep Learning: – DeepMF: Deep Matrix Factorization initialized with semantic centroids. 
+
+– TiDE & TFT: State-of-the-art transformer architectures modified to accept static embedding inputs. 
+
+– DeepAR: Probabilistic autoregressive RNN, trained with category embeddings. 
+
+• Foundation Models (Zero-Shot): Chronos-Small, TimesFM, and Moirai-Base [ 5]. These are evaluated in a strict zero-shot setting ( L = 0 ) without fine-tuning. 
+
+• Specialized Baselines: – CSDI: Conditional Score-based Diffusion Imputation, using category means as the history input. 
+
+– LLM-Direct: Zero-shot prompting of GPT-4o with raw metadata descriptions (used to quantify scale hallucination). 
+
+4.3 Main Results: General Forecasting Performance 
+
+Table 1 reports the general protocol where each test item retains its history window. In this regime, gradient-boosted trees with engineered lag features (LightGBM, Avg Rank 2.1) remain the strongest method overall, consistent with the M-competition and prior tabular forecasting findings. Among neural methods, RAID (Avg Rank 3.9) is competitive with the foundation-model tier (TimesFM and Chronos both at 3.8) and ahead of TFT ( 4.5), TiDE ( 5.5), and Moirai ( 5.9). RAID achieves the lowest CRPS on Job-SDF, Olist (PT), 1C (RU), and Wiki (ES), and is the runner-up on M5 Retail and 1C (RU) sMAPE. The general protocol is not the regime RAID is designed for. With a non-empty history window every method has access to the same temporal signal, and a tree ensemble over engineered lags is hard to beat. The contribution of RAID is what happens when that history is not available, which the next subsection isolates. Friedman/Nemenyi tests are in Appendix C.1, and WAPE and prediction-interval coverage are in Appendix C. 6Table 1: General forecasting protocol (full history available). sMAPE ( ↓) and CRPS ( ↓) across nine datasets, with per-dataset rank in subscripts. LightGBM achieves the best average rank (2.1), reflecting the well-known strength of gradient-boosted trees on tabular forecasting with engineered lag features. Among neural methods, RAID is competitive with the foundation-model tier (3.9 vs. TimesFM/Chronos 3.8). The strict cold-start regime where RAID is designed to operate is reported in Table 2. 
+
+Method Amz Sports Job-SDF Favorita M5 Retail Amz Elec Amz Groc Olist (PT) 1C (RU) Wiki (ES) Rank sMAPE CRPS sMAPE CRPS sMAPE CRPS sMAPE CRPS sMAPE CRPS sMAPE CRPS sMAPE CRPS sMAPE CRPS sMAPE CRPS 
+
+Naive & Classical 
+
+Global Mean 1.85 (11) 0.88 1.88 (11) 0.55 1.85 (11) 0.49 1.85 (11) 0.52 1.85 (11) 0.90 1.90 (11) 1.01 1.88 (11) 0.62 1.92 (11) 0.69 1.79 (11) 0.56 11.0 LightGBM 0.66 (2) 0.32 1.16 (2) 0.42 1.22 (4) 0.42 1.10 (1) 0.42 0.46 (1) 0.23 0.46 (2) 0.38 1.31 (3) 0.52 1.06 (1) 0.43 1.26 (3) 0.48 2.1 
+
+Supervised Deep Learning 
+
+DeepMF 1.55 (9) 1.05 1.55 (8) 0.47 1.55 (9 .5) 0.39 1.50 (9) 0.59 1.50 (9) 1.00 1.60 (9) 1.10 1.60 (9) 0.71 1.55 (9) 0.71 1.50 (9) 0.53 8.9 TiDE 1.21 (7) 0.65 1.26 (4 .5) 0.48 1.31 (5 .5) 0.45 1.33 (6) 0.50 1.05 (6) 0.55 0.76 (6 .5) 0.48 1.41 (5) 0.58 1.16 (4) 0.53 1.36 (5) 0.65 5.5 TFT 1.16 (6) 0.62 1.11 (1) 0.41 1.41 (7) 0.46 1.26 (3) 0.49 1.10 (7) 0.58 0.76 (6 .5) 0.50 1.11 (1) 0.55 1.11 (2 .5) 0.51 1.41 (6 .5) 0.78 4.5 DeepAR 1.31 (8) 0.95 1.66 (9 .5) 0.78 1.21 (2 .5) 0.48 1.36 (7) 0.51 1.41 (8) 0.78 1.21 (8) 0.72 1.21 (2) 0.59 1.26 (6 .5) 0.65 1.46 (8) 0.66 6.6 
+
+Foundation Models 
+
+TimesFM 0.86 (3) 0.74 1.31 (6) 0.40 0.86 (1) 0.38 1.31 (5) 0.44 0.71 (4) 0.45 0.51 (3) 0.30 1.46 (6) 0.54 1.21 (5) 0.47 0.96 (1) 0.72 3.8 Chronos-Small 0.62 (1) 0.41 1.36 (7) 0.51 1.21 (2 .5) 0.41 1.29 (4) 0.54 0.66 (3) 0.50 0.42 (1) 0.41 1.51 (7) 0.66 1.26 (6 .5) 0.55 1.11 (2) 0.55 3.8 Moirai-Base 0.96 (5) 0.85 1.21 (3) 0.46 1.46 (8) 0.43 1.41 (8) 0.53 0.81 (5) 0.62 0.56 (4 .5) 0.45 1.56 (8) 0.56 1.31 (8) 0.62 1.31 (4) 0.85 5.9 CSDI 1.75 (10) 1.30 1.66 (9 .5) 0.56 1.55 (9 .5) 0.44 1.55 (10) 0.55 1.70 (10) 1.10 1.75 (10) 0.93 1.65 (10) 0.57 1.65 (10) 0.61 1.60 (10) 0.59 9.9 
+
+Ours 
+
+RAID 0.91 (4) 0.45 1.26 (4 .5) 0.35 1.31 (5 .5) 0.47 1.21 (2) 0.56 0.56 (2) 0.30 0.56 (4 .5) 0.40 1.36 (4) 0.49 1.11 (2 .5) 0.34 1.41 (6 .5) 0.45 3.9 
+
+Table 2: Strict cold-start protocol ( L = 0 , no history). Test items have zero historical observations and the model must forecast from metadata alone. RAID achieves the best average rank (1.3), winning sMAPE on six of nine datasets and CRPS on four of nine. LightGBM wins four CRPS columns on retail-tabular features (M5, Amz Elec, Amz Groc, Wiki), and Chronos-Small wins Favorita. The gap to foundation models widens substantially relative to Table 1 (Chronos drops from rank 3.8 to 7.8, TimesFM from 3.8 to 7.6), reflecting that decoder-only time-series transformers have no metadata-conditioning channel and emit their unconditional prior when the input sequence is empty. 
+
+Method Amz Sports Job-SDF Favorita M5 Retail Amz Elec Amz Groc Olist (PT) 1C (RU) Wiki (ES) Rank sMAPE CRPS sMAPE CRPS sMAPE CRPS sMAPE CRPS sMAPE CRPS sMAPE CRPS sMAPE CRPS sMAPE CRPS sMAPE CRPS 
+
+Naive & Classical 
+
+Global Mean 1.78 (10) 0.35 1.86 (11) 0.43 1.86 (11) 0.53 1.88 (11) 0.45 1.78 (10 .5) 0.31 1.74 (10) 0.36 1.91 (11) 0.61 1.91 (11) 0.57 1.85 (11) 0.61 10.7 LightGBM 0.92 (1) 0.34 1.31 (2) 0.34 1.36 (2) 0.43 1.15 (1) 0.39 0.78 (2) 0.23 0.96 (4) 0.29 1.42 (4) 0.55 1.18 (2 .5) 0.41 1.32 (1) 0.52 2.2 
+
+Supervised Deep Learning 
+
+DeepMF 1.22 (3) 0.47 1.62 (8) 0.50 1.59 (9) 0.46 1.51 (5) 0.50 1.18 (3) 0.44 1.31 (5) 0.49 1.69 (9) 0.66 1.55 (6 .5) 0.59 1.66 (9 .5) 0.56 6.4 TiDE 1.32 (5) 0.36 1.34 (3) 0.35 1.43 (3) 0.49 1.40 (4) 0.42 1.28 (4) 0.34 0.94 (2) 0.39 1.32 (3) 0.57 1.18 (2 .5) 0.49 1.45 (3) 0.59 3.3 TFT 1.30 (4) 0.39 1.42 (4) 0.42 1.55 (6) 0.51 1.36 (3) 0.43 1.30 (5) 0.38 0.95 (3) 0.42 1.28 (2) 0.56 1.22 (4) 0.48 1.48 (4) 0.65 3.9 DeepAR 1.55 (6) 0.45 1.74 (10) 0.54 1.58 (8) 0.48 1.55 (6) 0.46 1.55 (8) 0.40 1.42 (6) 0.45 1.50 (5) 0.58 1.55 (6 .5) 0.62 1.55 (5 .5) 0.75 6.8 
+
+Foundation Models (collapse at L = 0 )
+
+TimesFM 1.65 (9) 0.41 1.55 (6) 0.39 1.53 (4) 0.39 1.58 (8) 0.41 1.61 (9) 0.53 1.50 (9) 0.50 1.62 (7) 0.54 1.56 (8) 0.45 1.60 (8) 0.58 7.6 Chronos-Small 1.62 (8) 0.40 1.59 (7) 0.37 1.57 (7) 0.35 1.60 (9) 0.44 1.52 (7) 0.49 1.48 (8) 0.48 1.65 (8) 0.60 1.58 (9) 0.43 1.56 (7) 0.64 7.8 Moirai-Base 1.58 (7) 0.42 1.48 (5) 0.40 1.54 (5) 0.52 1.56 (7) 0.47 1.45 (6) 0.56 1.46 (7) 0.52 1.60 (6) 0.67 1.52 (5) 0.50 1.55 (5 .5) 0.60 5.9 CSDI 1.85 (11) 0.55 1.70 (9) 0.55 1.66 (10) 0.44 1.65 (10) 0.55 1.78 (10 .5) 0.55 1.78 (11) 0.53 1.71 (10) 0.64 1.72 (10) 0.53 1.66 (9 .5) 0.67 10.1 
+
+Ours 
+
+RAID 0.95 (2) 0.32 1.30 (1) 0.32 1.30 (1) 0.50 1.22 (2) 0.49 0.65 (1) 0.26 0.65 (1) 0.34 1.25 (1) 0.52 1.05 (1) 0.34 1.35 (2) 0.55 1.3 
+
+4.4 Strict True Cold-Start Analysis ( L = 0 )
+
+The contribution of RAID is its behavior in the True Cold-Start regime, where a test item has zero historical observations ( L = 0 ). Table 2 isolates this subset. When the history window is empty, every method that depends on temporal context degrades toward a global prior. Foundation models cluster around sMAPE 1.45 –1.7 across the nine datasets, with average ranks dropping from the 3.8 range under the general protocol to 7.6 (TimesFM), 7.8 (Chronos), and 5.9
+
+(Moirai-Base). RAID averages substantially below that band and achieves an Avg Rank of 1.3, with LightGBM the closest competitor at 2.2.The per-dataset gaps are largest on the cross-lingual and sparse domains where neither historical patterns nor English-pretraining priors can rescue the foundation models. On 1C (RU), RAID reaches sMAPE 1.05 
+
+versus Chronos 1.58 and TimesFM 1.56 . On Olist (PT), RAID reaches 1.25 versus Chronos 1.65 . The probabilistic gap moves with the point gap. RAID’s CRPS on 1C (RU) is 0.34 versus Moirai 0.50 and LightGBM 0.41 . Without history, semantic retrieval is the only anchor that grounds the forecast in a population of comparable items. 7Table 3: Scale Hallucination of Zero-Shot LLMs (Amazon Electronics, L = 0 ). A representative slice of the full 8-model × 6-dataset benchmark in Appendix D.1. Scale Ratio is predicted weekly volume divided by ground-truth weekly volume; an unbiased predictor is 1.0×. RAID is the only method that recovers the correct order of magnitude.                       
+
+> Model sMAPE ↓Scale Ratio Latency
+> GPT-4o 1.69 119 .0×3.61s Mistral-Large-3 1.82 145 .2×2.10s Llama-3.3-70B 1.79 170 .0×0.89s Gemini-2.0-Flash 1.78 173 .5×3.38s Qwen2.5-32B 1.77 67 .4×1.15s
+> RAID (Ours) 0.51 1.0 ×0.03s
+
+The mechanism is visible per-item. Graph retrieval identifies substitute products (a new “Nike” running shoe pulls aggregation weight from existing “Adidas” running shoes) to form a base prediction, and the diffusion head adds calibrated residual variance on top. Appendix E.4 shows a single-item case where Chronos flatlines while RAID tracks the seasonal profile. On M5 Retail, which exposes only sparse categorical identifiers rather than rich descriptions, RAID is the runner-up at sMAPE 1.22 behind LightGBM 1.15 and ahead of every foundation model, indicating the graph regularizes the forecast even when the semantic signal is thin. FM baselines are evaluated zero-shot rather than fine-tuned. The reason is architectural: at L = 0 adecoder-only time-series transformer receives an empty token sequence and emits its unconditional prior, and fine-tuning sharpens that prior without adding a metadata-conditioning channel that the published architectures lack. A full discussion is in Appendix D.3. 
+
+Zero-Shot LLM Baselines and Scale Hallucination. A natural alternative to RAID is to drop the structural prior and prompt an LLM with the same metadata. We benchmark eight LLMs (GPT-4o, GPT-4o-mini, Mistral-Large-3, Llama-3.3-70B, Llama-3.1-8B, Qwen2.5-32B, Gemini-2.0-Flash, Gemini-1.5-Flash) at strict L = 0 with title, description, and category. Table 3 shows the failure mode: LLMs identify what an item is but cannot ground how much it sells. The Scale Ratio (predicted / actual volume) routinely exceeds 
+
+100 ×, pushing sMAPE toward the random-guessing ceiling. The pattern holds across all eight LLMs and across cross-lingual datasets, where Scale Ratios reach 48 ×
+
+and sMAPE plateaus at 1.6–1.9 regardless of model scale (Appendix D.1). Semantic understanding alone is not enough: without an explicit calibration mechanism, an LLM cannot infer market-tier magnitude from a description, and this failure does not improve with scale. We separately address whether these results could be confounded by test-set contamination of the underlying pretrained models (BGE-M3 and the eight evaluated LLMs) in Appendix E.2. 
+
+Steelman: RAG-LLM with neighbor sales injected. Injecting the top-5 BGE-M3 neighbors’ weekly sales into the Gemini-2.0-Flash prompt collapses the Scale Ratio from 173 × to a median of 0.46 ×, but median sMAPE remains 1.18 versus RAID’s 0.51 on the same items: the LLM gets the level right and the shape wrong, outputting a flat four-week average. Retrieval fixes scale; the diffusion residual is what recovers shape (full setup and the N = 42 cleaned subset in Appendix D.2). 
+
+4.5 Cross-Lingual Zero-Shot Transfer 
+
+We evaluate two settings: cross-domain retail (train on Amazon Grocery EN, transfer to Favorita ES) and cross-script (train on Wiki ES, transfer to EN/RU/ZH). The model is trained on source only and evaluated on target without fine-tuning. RAID produces valid predictions across script boundaries (Latin → Cyrillic/Hanzi, Table 4). The transfer gap on Wiki ES → {EN, ZH, RU} is within ±3.6% , and on Amz Groc → Favorita within 0.8% . The small positive deltas ( +3 .0% , +3 .6% ) sit inside the single-seed bootstrap band, so the takeaway is the absence of cross-script collapse rather than a strict transfer-beats-native claim. A t-SNE visualization of the aligned manifold and a discussion of the underlying mechanism are in Appendix E.5. 8Table 4: Universal Zero-Shot Transfer. RAID trained on Source, evaluated on Target without fine-tuning. Small positive transfer deltas sit within single-seed bootstrap noise. “Native” here trains and evaluates on the target under the cross-lingual evaluation protocol, which differs slightly from the per-dataset general protocol of Table 1 (hence Wiki ES native 1.366 vs. Table 1’s 1.41 , and Favorita native 1.197 vs. Table 1’s 1.31 ).                                                    
+
+> Setting Source Target Native Transfer Transfer ∆
+> Cross-Script Transfer (Wikipedia)
+> Latin →Latin Wiki (ES) Wiki (EN) 1.366 1.325 +3.0%
+> Latin →Hanzi Wiki (ES) Wiki (ZH) 1.366 1.334 +2.4%
+> Latin →Cyrillic Wiki (ES) Wiki (RU) 1.366 1.317 +3.6%
+> Cross-Domain Transfer (Retail)
+> Same Domain Amz Groc (EN) Favorita (ES) 1.197 1.188 +0.8%
+> Diff Domain Job-SDF (EN) Favorita (ES) 1.197 1.279 -6.8%
+> Embedding Ablation (Amazon →Favorita)
+> Semantic BGE-M3 –1.324 Ref
+> MiniLM –1.323 ≈0%
+> Uninformative Random –1.464 -10.6%
+
+4.6 Efficiency 
+
+Per-series latency on a single A100 (FP16, batch B = 128 , horizon H = 28 ). RAID-Full is 48 .7× faster than Chronos at matched generative capability, and the deterministic RAID-Base reaches 124 ×. The speedup comes from non-autoregressive decoding, since Chronos generates H tokens sequentially while RAID generates the whole horizon in a single pass (Base) or S = 10 refinement steps (Full). For 1M items, RAID needs ∼ 2.9
+
+h (Base) or ∼ 7.4 h (Full) versus > 360 h for Chronos. Table 5: Inference Efficiency. A100, FP16, batch 128. RAID-Full vs. Chronos is the like-for-like probabilistic comparison. 
+
+Model Latency VRAM Speedup 
+
+Chronos-Small 1305 ms 2.4 GB 1.0x CSDI (Diffusion) 398 ms 3.1 GB 3.3x 
+
+RAID (Base) 10.5 ms 0.8 GB 124.3x RAID (Full) 26.8 ms 1.2 GB 48.7x 
+
+4.7 Ablation and Sensitivity 
+
+Component contribution. On three regimes (Job-SDF, Amazon Sports, Olist (PT)), removing the diffusion head increases cold-start sMAPE by 6.9% , 14 .7% , and 7.2% , and replacing the BGE-M3 graph with a random graph increases sMAPE by −0.8% , 8.4% , and 11 .2% . Diffusion dominates on high-entropy domains, while semantics dominate cross-lingually. Full per-row results in Appendix E.7, and a retrieval-size sweep over k ∈ { 1, . . . , 200 } with 5 seeds shows a stable plateau at k ∈ [10 , 50] , so we use k = 20 throughout (Appendix E.8). 
+
+Over-smoothing under sparse metadata. On Job-SDF, removing GATv2 while keeping bottleneck node features improves sMAPE by 1.5% at unchanged CRPS, while Olist (PT) and Amazon Sports show the opposite pattern (sMAPE degrades by 4.8% and 5.3% respectively). GATv2 is net-positive when homophily is strong and over-regularizes when it is weak, and a context-adaptive gate is left for future work. 
+
+Conclusion. RAID decouples semantic retrieval from stochastic generation for true cold-start forecasting, achieving the best average rank on strict L = 0 cold-start ( 1.3 across nine datasets) at 48 .7× lower latency than Chronos, and remains competitive with foundation models when full history is available. RAID rests on three assumptions that can fail in deployment, namely semantic homophily, stationary semantics, and Gaussian residuals, discussed alongside societal-impact considerations in Appendix E.3. 9References 
+
+[1] Abdul Fatir Ansari, Lorenzo Stella, Caner Turkmen, Xiyuan Zhang, Pedro Mercado, Huibin Shen, Oleksandr Shchur, Syama Sundar Rangapuram, Sebastian Pineda Arango, Shubham Kapoor, Jasper Zschiegner, Danielle C. Maddix, Hao Wang, Michael W. Mahoney, Kari Torkkola, Andrew Gordon Wilson, Michael Bohlke-Schneider, and Yuyang Wang. Chronos: Learning the language of time series. 
+
+Transactions on Machine Learning Research (TMLR) , 2024. arXiv:2403.07815. [2] Abhimanyu Das, Weihao Kong, Rajat Sen, and Yichen Zhou. A decoder-only foundation model for time-series forecasting. In International Conference on Machine Learning (ICML) , 2024. [3] Taha Aksu, Gerald Woo, Juncheng Liu, Xu Liu, Chenghao Liu, Silvio Savarese, Caiming Xiong, and Doyen Sahoo. GIFT-Eval: A benchmark for general time series forecasting model evaluation. In NeurIPS Workshop on Time Series in the Age of Large Models , 2024. [4] Vijay Ekambaram, Arindam Jati, Pankaj Dayama, Sumanta Mukherjee, Nam H. Nguyen, Wesley M. Gifford, Chandra Reddy, and Jayant Kalagnanam. Tiny time mixers (TTMs): Fast pre-trained models for enhanced zero/few-shot forecasting of multivariate time series. In Advances in Neural Information Processing Systems (NeurIPS) , 2024. arXiv:2401.03955. [5] Gerald Woo, Chenghao Liu, Akshat Kumar, Caiming Xiong, Silvio Savarese, and Doyen Sahoo. Unified training of universal time series forecasting transformers. In International Conference on Machine Learning (ICML) , 2024. arXiv:2402.02592. [6] Abhimanyu Das, Matthew Faw, Rajat Sen, and Yichen Zhou. In-context fine-tuning for time-series foundation models. In International Conference on Machine Learning (ICML) , 2025. arXiv:2410.24087. [7] Boris N. Oreshkin, Dmitri Carpov, Nicolas Chapados, and Yoshua Bengio. Meta-learning framework with applications to zero-shot time-series forecasting. In AAAI Conference on Artificial Intelligence ,volume 35, pages 9242–9250, 2021. [8] Hao Chen, Yu Yang, Yuanchen Bei, Zefan Wang, Yue Xu, and Feiran Huang. Graph neural patching for cold-start recommendations. In Australasian Database Conference (ADC) , 2024. arXiv:2410.14241. [9] Sameep Chattopadhyay, Pulkit Paliwal, Sai Shankar Narasimhan, Shubhankar Agarwal, and Sandeep P. Chinchali. Context matters: Leveraging contextual features for time series forecasting. arXiv preprint arXiv:2410.12672 , 2024. [10] Andrew Robert Williams, Arjun Ashok, Étienne Marcotte, Valentina Zantedeschi, Jithendaraa Sub-ramanian, Roland Riachi, James Requeima, Alexandre Lacoste, Irina Rish, Nicolas Chapados, and Alexandre Drouin. Context is key: A benchmark for forecasting with essential textual information. In 
+
+NeurIPS Workshop on Time Series in the Age of Large Models , 2024. arXiv:2410.18959; ICML 2025 main conference version available. [11] Wenzhe Niu, Zongxia Xie, Yanru Sun, Wei He, Man Xu, and Chao Hao. LangTime: A language-guided unified model for time series forecasting with proximal policy optimization. arXiv preprint arXiv:2503.08271 , 2025. ICML 2025. [12] Kashif Rasul, Arjun Ashok, Andrew Robert Williams, Hena Ghonia, Rishika Bhagwatkar, Arian Khorasani, Mohammad Javad Darvishi Bayazi, George Adamopoulos, Roland Riachi, Nadhir Hassen, Marin Biloš, Sahil Garg, Anderson Schneider, Nicolas Chapados, Alexandre Drouin, Valentina Zantedeschi, Yuriy Nevmyvaka, and Irina Rish. Lag-llama: Towards foundation models for probabilistic time series forecasting. arXiv preprint arXiv:2310.08278 , 2024. [13] Petar Veličković, Guillem Cucurull, Arantxa Casanova, Adriana Romero, Pietro Liò, and Yoshua Bengio. Graph attention networks. In International Conference on Learning Representations (ICLR) , 2018. [14] Shaked Brody, Uri Alon, and Eran Yahav. How attentive are graph attention networks? In International Conference on Learning Representations (ICLR) , 2022. 10 [15] Zonghan Wu, Shirui Pan, Guodong Long, Jing Jiang, Xiaojun Chang, and Chengqi Zhang. Connecting the dots: Multivariate time series forecasting with graph neural networks. In ACM SIGKDD International Conference on Knowledge Discovery & Data Mining , 2020. [16] Kashif Rasul, Calvin Seward, Ingmar Schuster, and Roland Vollgraf. Autoregressive denoising diffusion models for multivariate probabilistic time series forecasting. In International Conference on Machine Learning (ICML) , 2021. [17] Yusuke Tashiro, Jiaming Song, Yang Song, and Stefano Ermon. Csdi: Conditional score-based diffusion models for probabilistic time series imputation. In Advances in Neural Information Processing Systems ,volume 34, pages 24804–24816, 2021. [18] Jianlv Chen, Shitao Xiao, Peitian Zhang, Kun Luo, Defu Lian, and Zheng Liu. M3-embedding: Multi-linguality, multi-functionality, multi-granularity text embeddings through self-knowledge distillation. In Findings of the Association for Computational Linguistics: ACL 2024 , pages 2318–2335, 2024. arXiv:2402.03216. [19] Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models. In Advances in Neural Information Processing Systems (NeurIPS) , 2020. [20] William Peebles and Saining Xie. Scalable diffusion models with transformers. In Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV) , pages 4195–4205, 2023. [21] Ethan Perez, Florian Strub, Harm de Vries, Vincent Dumoulin, and Aaron Courville. FiLM: Visual reasoning with a general conditioning layer. In AAAI Conference on Artificial Intelligence , 2018. [22] Guolin Ke, Qi Meng, Thomas Finley, Taifeng Wang, Wei Chen, Weidong Ma, Qiwei Ye, and Tie-Yan Liu. LightGBM: A highly efficient gradient boosting decision tree. In Advances in Neural Information Processing Systems (NeurIPS) , 2017. [23] Abhimanyu Das, Weihao Kong, Andrew Leach, Shaan Mathur, Rajat Sen, and Rose Yu. Long-term forecasting with TiDE: Time-series dense encoder. Transactions on Machine Learning Research (TMLR) ,2023. [24] Bryan Lim, Sercan Ö. Arık, Nicolas Loeff, and Tomas Pfister. Temporal fusion transformers for interpretable multi-horizon time series forecasting. International Journal of Forecasting , 37(4):1748–1764, 2021. [25] David Salinas, Valentin Flunkert, Jan Gasthaus, and Tim Januschowski. DeepAR: Probabilistic forecasting with autoregressive recurrent networks. International Journal of Forecasting , 36(3):1181–1191, 2020. [26] Ilya Loshchilov and Frank Hutter. Decoupled weight decay regularization. In International Conference on Learning Representations (ICLR) , 2019. [27] Janez Demšar. Statistical comparisons of classifiers over multiple data sets. Journal of Machine Learning Research , 7:1–30, 2006. [28] OpenAI. GPT-4 technical report. arXiv preprint arXiv:2303.08774 , 2023. [29] Aaron Grattafiori et al. The Llama 3 herd of models. arXiv preprint arXiv:2407.21783 , 2024. [30] Albert Q. Jiang, Alexandre Sablayrolles, Arthur Mensch, Chris Bamford, Devendra Singh Chaplot, Diego de las Casas, Florian Bressand, Gianna Lengyel, Guillaume Lample, Lucile Saulnier, et al. Mistral 7B. 
+
+arXiv preprint arXiv:2310.06825 , 2023. [31] An Yang et al. Qwen2.5 technical report. arXiv preprint arXiv:2412.15115 , 2024. [32] Gemini Team, Google. Gemini: A family of highly capable multimodal models. arXiv preprint arXiv:2312.11805 , 2023. 11 [33] Laurens van der Maaten and Geoffrey Hinton. Visualizing data using t-SNE. Journal of Machine Learning Research , 9:2579–2605, 2008. [34] Donald J. Berndt and James Clifford. Using dynamic time warping to find patterns in time series. In 
+
+Knowledge Discovery in Databases (KDD) Workshop , 1994. 12 A Theoretical Foundations 
+
+A.1 Proof of Semantic Transfer Bound 
+
+Metric Definition. We define the embedding metric de(u, v ) = ∥u − v∥2 on the normalized embedding space E.
+
+Proposition A.1 (Semantic transfer bound for convex retrieval) . Let E ⊂ Rd be the (normalized) embedding space and let F : E → RH map an embedding to the horizon-H trajectory. Assume F is Ltrans -Lipschitz on a neighborhood containing {eu} ∪ { ev : v ∈ N k(u)}:
+
+∥F (e) − F (e′)∥2 ≤ Ltrans ∥e − e′∥2.
+
+Consider a base predictor formed as a convex combination of retrieved neighbors: 
+
+μbase (u) = ∑ 
+
+> v∈N k(u)
+
+wuv F (ev ), wuv ≥ 0, ∑
+
+> v
+
+wuv = 1 .
+
+Then 
+
+∥μbase (u) − F (eu)∥2 ≤ Ltrans 
+
+∑ 
+
+> v∈N k(u)
+
+wuv ∥ev − eu∥2 ≤ Ltrans max   
+
+> v∈N k(u)
+
+∥ev − eu∥2.
+
+If embeddings are unit-normalized, ∥ev − eu∥2 = √2(1 − ⟨ eu, e v ⟩).Proof. Using convexity and the triangle inequality, 
+
+∥μbase (u) − F (eu)∥2 =
+
+∥∥∥∥∥∑
+
+> v
+
+wuv 
+
+(F (ev ) − F (eu))∥∥∥∥∥2
+
+≤ ∑
+
+> v
+
+wuv ∥F (ev ) − F (eu)∥2.
+
+Apply Lipschitz continuity of F to obtain 
+
+∥μbase (u) − F (eu)∥2 ≤ Ltrans 
+
+∑
+
+> v
+
+wuv ∥ev − eu∥2,
+
+and the max bound follows since ∑ 
+
+> v
+
+wuv = 1 and wuv ≥ 0. For unit-normalized embeddings, ∥ev − eu∥22 =
+
+∥ev ∥22 + ∥eu∥22 − 2⟨eu, e v ⟩ = 2(1 − ⟨ eu, e v ⟩).
+
+A.2 Derivation of Entropy Reduction (Theorem 3.1) 
+
+Derivation. Let X ∈ RH and context C be given, and define the baseline μ(C) := E[X | C]. Let R := 
+
+X − μ(C).By the law of total covariance, 
+
+ΣX := Cov( X) = Cov (E[X | C]) + E[Cov( X | C)] = Σ μ + Σ R,
+
+where Σμ := Cov( μ(C)) ⪰ 0 and 
+
+ΣR := Cov( R) = E[Cov( R | C)] = E[Cov( X | C)].
+
+Assume ΣR ≻ 0. Then 
+
+det(Σ X ) = det(Σ R + Σ μ) = det(Σ R) det 
+
+(
+
+I + Σ −1/2 
+
+> R
+
+ΣμΣ−1/2
+
+> R
+
+)
+
+.
+
+Let M := Σ −1/2 
+
+> R
+
+ΣμΣ−1/2 
+
+> R
+
+⪰ 0. All eigenvalues of I + M are ≥ 1, and det (I + M ) > 1 iff M̸ = 0 , i.e., iff 
+
+Σμ̸ = 0 . Hence, when Σμ̸ = 0 , we have det(Σ X ) > det(Σ R).Under a multivariate Gaussian approximation, the differential entropy satisfies h(Z) = 12 log ((2 πe )H det ( Cov (Z)) ),therefore h(R) < h (X).13 Algorithm 1 RAID: Training (Inductive Graph & Diffusion) 
+
+Input: Metadata M, Trajectories Y, Neighbors k, Temp τ , Mask Rate pmask 
+
+Output: Parameters θ (DiT), ϕ (Shape-Scale), ψ (Gating) 
+
+// 1. Construct Semantic Manifold (Frozen) 
+
+for item i ∈ M do 
+
+ei ← Normalize (BGE-M3 (mi)) 
+
+e′ 
+
+> i
+
+← Bottleneck (ei) {Compact feature for learned modules} 
+
+end for 
+
+// 2. Inductive Graph Topology 
+
+Compute Similarity: Sij = ⟨ei, e j ⟩
+
+Mask Top-k: For j ∈ N k(i), set Aij ← exp( Sij /Softplus (τ )) ∑    
+
+> l∈N k(i)exp( Sil /Softplus (τ))
+
+, else 0
+
+// 3. Main Training Loop 
+
+for batch B ⊂ Y do for item i ∈ B do 
+
+// A. Cold-Start Simulation 
+
+Sample u ∼ U (0 , 1) . If u < p mask then yi, 1: t ← 0
+
+// B. Shape-Scale Base Prediction 
+
+Retrieve neighbors Nk(i) via Ai, :
+
+Normalize Neighbors: zj ← Clamp ( yj −μj  
+
+> σj+ε
+
+, −10 , 10) 
+
+Aggregated Shape: zagg ← ∑ 
+
+> j
+
+Aij zj
+
+Predict Scale: ˆσi, ˆμi ← MLP ϕ(e′
+
+> i
+
+)
+
+Base Forecast: μ(i) 
+
+> base
+
+← Softplus (ˆ σi) · zagg + ˆ μi
+
+Residual Target: ri ← yi − μ(i)
+
+> base
+
+// C. Diffusion Conditioning 
+
+Context: ci ← GATv2 (A, e ′
+
+> i
+
+)
+
+end for 
+
+// D. Diffusion Step (DiT) 
+
+Sample noise ϵ ∼ N (0 , I ), step s ∼ U (1 , S train )
+
+Denoise: ˆϵ ← DiT θ (√¯αsr + √1 − ¯αsϵ, s, c)
+
+Loss: L ← ∥ ϵ − ˆϵ∥2 + λbase ∥μbase − y∥2 {λbase = 0 .01 , see Table 6} Update θ, ϕ, ψ via ∇L 
+
+end for 
+
+## B Algorithms and Implementation Details 
+
+B.1 Formal Algorithms B.2 Architecture Specifics 
+
+Backbone. We replace the standard WaveNet architecture used in prior work with a DiT backbone. This consists of 4 identical Transformer blocks. Conditioning is applied via Adaptive Layer Norm (AdaLN), where the scale and shift parameters for each block are regressed from the sum of the graph embedding and time embedding. 
+
+Dynamic Context Gating. To enable a unified architecture that handles both cold-start ( L = 0 )and warm-start ( L > 0) scenarios, we implement a dynamic gating mechanism in the conditioning encoder. The code applies a binary mask mcold = I(|yt−1| < ϵ ). We adjust the embedding gate activation as 
+
+g = Clamp (σ(bg ) + 0 .5 · mcold , 0, 1) , where bg is the learnable gate bias. This ensures that in cold-start regimes, the semantic embedding is strongly injected ( g ≈ 0.55 ) into the AdaLN layers, whereas in warm-start regimes, the model suppresses the static embedding ( g ≈ 0.05 ) to prioritize historical temporal features. 
+
+Cold-Start Boost. To accelerate convergence, we initialize the residual gate’s MLP bias to −3.0. This ensures that at initialization, the model output is dominated ( > 95% ) by the deterministic base prediction, 14 Algorithm 2 RAID: Inference (Cold-Start L = 0 )
+
+Input: Query u, Horizon H, Steps Sinfer = 10 
+
+Output: Forecast ˆy ∈ RH
+
+// 1. Retrieval-Augmented Base 
+
+Embed query: eu ← Normalize (BGE-M3 (mu)) 
+
+Bottleneck: e′ 
+
+> u
+
+← Bottleneck (eu)
+
+Retrieve neighbors Nk(u) using inductive graph Predict Params: ˆσu, ˆμu ← MLP ϕ(e′
+
+> u
+
+)
+
+Aggregate Shape: zagg ← ∑  
+
+> j∈N k(u)
+
+Auj zj
+
+Base Prediction: μbase ← Softplus (ˆ σu) · zagg + ˆ μu
+
+// 2. Residual Generation (Fast Sampling) 
+
+Context: cu ← GATv2 (Graph , e ′
+
+> u
+
+)
+
+Initialize residual: ˆrS ∼ N (0 , I )
+
+for step s = Sinfer , . . . , 1 do 
+
+ˆϵ ← DiT θ (ˆ rs, s, cu)ˆrs−1 ← DDPM_Update (ˆ rs, ˆϵ, s )
+
+end for 
+
+// 3. Gated Fusion 
+
+Gate g ← sigmoid( MLP ψ (cu)) {Bias init to -3.0} Final Forecast: ˆy ← μbase + g · ˆr0
+
+return ˆy
+
+preventing the diffusion loss from destabilizing the embedding learning in the early epochs. 
+
+Fast Sampling. Due to the entropy reduction property (Remark 3.1), we find that 10 inference steps are sufficient to recover the residual distribution, compared to the 50-100 steps typically required for raw data diffusion. 
+
+B.3 Hyperparameters 
+
+Table 6 details the hyperparameters used for the RAID architecture. The model is implemented in PyTorch using a Diffusion Transformer (DiT) backbone. 
+
+Hyperparameter Selection Protocol. To avoid per-dataset tuning that could inflate reported gains, we fix all RAID hyperparameters to a single configuration across the nine evaluation datasets. The configuration in Table 6 was selected on the Amazon Sports training split (the most metadata-rich domain) via a small grid search over k ∈ { 10 , 20 , 50 }, gate-bias initialization in {− 3.0, −1.0, 0.0}, neighbor clamp C ∈ { 5, 10 , 20 },and inference steps S ∈ { 5, 10 , 20 }, with the remaining hyperparameters held at the values reported in the original DiT and Chronos papers. The selected configuration is then frozen and applied without modification to all other datasets, including the cross-lingual benchmarks. We deliberately did not tune on test splits or on cross-lingual targets, so the reported transfer gains in Section 4.5 are not contaminated by held-out leakage. The retrieval temperature τ is the only learnable scalar and is initialized to 1.0 for every run. 
+
+B.4 Serialization Logic 
+
+To facilitate reproducibility, we provide the exact input serialization logic used to feed the BGE-M3 encoder. We use explicit separation tokens to prevent semantic bleeding between fields. 
+
+def serialize_metadata(item): # Truncate description to 512 tokens to fit embedding window desc = truncate(item[’description’], 512) # Construct structured string text = f"[CAT] {item[’category’]} " \ 
+
+15 Table 6: RAID Hyperparameters (Matches Codebase). 
+
+Category Value 
+
+Semantic Retrieval 
+
+Text Encoder BGE-M3 (Frozen) Embedding Dim 1024 Bottleneck Dim 16 (Tanh-activated) Graph Kernel Top-k sparse softmax Neighbors ( k) 20 Temperature ( τ ) 1.0 (Learnable) 
+
+Diffusion Transformer (DiT) 
+
+Backbone DiT w/ AdaLN Conditioning Layers 4Heads 4Hidden Dimension 64 Dropout 0.1 Time Embedding Sinusoidal ( d = 128 )
+
+Training & Inference 
+
+Training Steps ( Strain ) 50 Inference Steps ( Sinf er ) 10 (Fast Sampling) Noise Schedule Linear ( βstart = 10 −4, β end = 0 .02 )Gate Bias Init -3.0 (Sigmoid ≈ 0.047) Base Loss Weight ( λbase ) 0.01 Batch Size 64 Optimizer AdamW [26] ( lr = 5 × 10 −4)
+
+f"[BRAND] {item[’brand’]} " \ f"[TITLE] {item[’title’]} " \ f"[DESC] {desc}" return text 
+
+The [CAT] , [BRAND] , [TITLE] , and [DESC] tokens are added to the tokenizer’s special token list to ensure they are assigned unique embedding vectors. 
+
+## C Extended Experimental Results 
+
+We provide a comprehensive breakdown of secondary metrics to further validate the performance of RAID against all baselines. Table 7: WAPE Comparison. (↓ Lower is better). RAID achieves the lowest WAPE on cross-lingual datasets (1C (RU), Olist (PT)); LightGBM is strongest on English retail (Amazon family, M5); TimesFM is strongest on Favorita and Wiki (ES) where its pre-training corpus overlaps; TFT wins Job-SDF where its rank-1 sMAPE is consistent with WAPE.                                                                                                               
+
+> Dataset Mean LGBM DeepMF TiDE TFT DpAR TimesFM Chronos Moirai CSDI RAID
+> Amz Sports 1.12 0.38 1.18 1.01 0.97 0.99 0.59 0.59 0.80 1.02 0.41 Amz Elec 1.13 0.28 1.20 0.79 0.76 0.88 0.44 0.43 0.56 1.01 0.28
+> Amz Groc 1.13 0.33 1.22 0.60 0.60 0.80 0.39 0.38 0.45 1.00 0.36 M5 Retail 1.05 0.82 1.12 0.96 0.97 0.94 0.85 0.91 1.05 1.04 0.88 Favorita 1.05 0.83 1.15 0.94 0.96 0.95 0.62 0.88 1.11 1.06 0.92 Wiki (ES) 1.04 0.86 1.05 0.95 0.98 1.05 0.65 0.78 0.92 1.03 0.92 1C (RU) 1.20 0.69 1.18 0.90 0.88 0.87 0.77 0.76 1.06 1.02 0.58
+> Olist 1.07 0.89 1.15 0.86 0.86 0.90 0.88 1.11 1.15 1.02 0.84
+> Job-SDF 1.16 0.71 1.10 0.95 0.66 1.05 0.79 0.74 0.78 1.03 0.72
+
+16 Table 8: Prediction Interval Coverage (80%). (Ideal ≈ 0.80 ). Values closer to 0.80 indicate better calibration. LightGBM (with quantile regression) is best on Amazon Sports; TimesFM and TiDE are best on the remaining datasets, while RAID achieves competitive coverage on every dataset (within ±0.12 of nominal; within ±0.11 on eight of nine, with the under-coverage on high-variance Job-SDF reflecting the well-known narrow-interval pathology of Gaussian-residual diffusion). 
+
+Dataset Mean LGBM DeepMF TiDE TFT DpAR TimesFM Chronos Moirai CSDI RAID 
+
+Amz Sports 0.66 0.82 0.51 0.69 0.69 0.21 0.70 0.32 0.30 0.17 0.71 Amz Elec 0.70 0.83 0.59 0.80 0.79 0.36 0.76 0.34 0.27 0.29 0.75 Amz Groc 0.44 0.83 0.32 0.75 0.75 0.48 0.80 0.36 0.29 0.22 0.69 M5 Retail 0.85 0.84 0.84 0.84 0.84 0.45 0.82 0.23 0.69 0.82 0.73 Favorita 0.85 0.88 0.84 0.86 0.85 0.55 0.81 0.15 0.69 0.87 0.70 Wiki (ES) 0.85 0.87 0.83 0.74 0.63 0.19 0.75 0.19 0.32 0.77 0.69 1C (RU) 0.77 0.78 0.74 0.78 0.79 0.10 0.81 0.19 0.41 0.55 0.74 Olist 0.86 0.86 0.84 0.80 0.79 0.75 0.83 0.46 0.67 0.70 0.76 Job-SDF 0.69 0.75 0.80 0.63 0.36 0.46 0.80 0.11 0.73 0.65 0.68 
+
+Table 9: Comprehensive Quantile Loss (P50 & P90). (↓ Lower is better). Median (Left) and 90th-percentile tail risk (Right) per model. RAID is best on 1C (RU) P50/P90 and Olist (PT) P50, ties LightGBM on Job-SDF P50 and TimesFM on M5 P90. On Olist (PT) P90, LightGBM and TimesFM ( 0.23 ) are stronger; RAID’s flat tail ( 0.34 ) reflects the symmetric-Gaussian residual limitation noted in Appendix E.3, a documented failure mode of standard-Gaussian-prior diffusion on heavy-tailed retail distributions, where empirical quantile-regression heads (LightGBM) capture the upper tail directly. 
+
+Dataset Global Mean LightGBM DeepMF TiDE TFT DeepAR TimesFM Chronos Moirai CSDI RAID P50 P90 P50 P90 P50 P90 P50 P90 P50 P90 P50 P90 P50 P90 P50 P90 P50 P90 P50 P90 P50 P90 
+
+Amz Sports 0.62 0.32 0.21 0.10 0.78 0.44 0.56 0.30 0.54 0.30 0.55 0.76 0.47 0.31 0.47 0.63 0.64 0.82 0.84 0.95 0.23 0.19 Amz Elec 0.62 0.33 0.15 0.08 0.72 0.39 0.43 0.22 0.42 0.22 0.48 0.43 0.29 0.16 0.29 0.27 0.36 0.35 0.67 0.74 0.16 0.13 Amz Groc 0.70 0.40 0.20 0.09 0.87 0.60 0.37 0.16 0.37 0.16 0.49 0.34 0.23 0.13 0.23 0.26 0.27 0.33 0.61 0.50 0.22 0.19 M5 Retail 0.37 0.20 0.29 0.16 0.41 0.22 0.34 0.19 0.34 0.19 0.33 0.25 0.30 0.16 0.32 0.27 0.35 0.23 0.37 0.21 0.35 0.33 Favorita 0.33 0.14 0.26 0.12 0.37 0.17 0.29 0.13 0.30 0.13 0.29 0.15 0.28 0.13 0.24 0.20 0.28 0.14 0.29 0.13 0.34 0.32 Wiki (ES) 0.38 0.19 0.32 0.16 0.44 0.22 0.47 0.20 0.58 0.26 0.55 0.70 0.48 0.24 0.48 0.59 0.57 0.61 0.40 0.20 0.38 0.27 1C (RU) 0.50 0.22 0.29 0.14 0.51 0.24 0.36 0.19 0.35 0.18 0.35 0.34 0.32 0.17 0.31 0.24 0.40 0.25 0.42 0.17 0.17 0.13 
+
+Olist 0.44 0.27 0.36 0.23 0.50 0.29 0.35 0.27 0.35 0.28 0.36 0.33 0.37 0.23 0.46 0.27 0.38 0.26 0.41 0.26 0.34 0.34 Job-SDF 0.39 0.19 0.24 0.11 0.45 0.19 0.33 0.18 0.51 0.33 0.57 0.30 0.30 0.14 0.28 0.31 0.31 0.18 0.39 0.20 0.24 0.17 
+
+17 C.1 Statistical Significance: Friedman Test and Critical-Difference Diagram 
+
+To confirm that the average-rank ordering in Tables 1 and 2 is not an artifact of dataset selection, we apply the standard non-parametric procedure of Demšar [27] , a Friedman test on per-dataset ranks across all 11 methods × 9 datasets, followed by a Nemenyi post-hoc test for pairwise comparisons. 
+
+General protocol (Table 1 sMAPE). The Friedman test rejects the null hypothesis of equal average performance ( χ2(10) = 66 .10 , p < 10 −9). Average ranks computed from the per-dataset subscripts in Table 1 (lower is better) are LightGBM 2.1, TimesFM 3.8, Chronos 3.8, RAID 3.9, TFT 4.5, TiDE 5.5, Moirai 5.9,DeepAR 6.6, DeepMF 8.9, CSDI 9.9, Global Mean 11 .0. Under Nemenyi at α = 0 .05 the critical distance is 
+
+5.03 at N = 9 , so the head of the ranking is statistically tied. LightGBM is separated only from DeepMF, CSDI, and Global Mean. The Friedman test confirms overall rank heterogeneity; pairwise distinctions among the top tier would require either larger N or per-cell bootstrap CIs. 
+
+Strict cold-start protocol (Table 2 sMAPE). Under L = 0 the Friedman test rejects with much larger separation ( χ2(10) = 76 .70 , p < 10 −11 ). Average ranks are RAID 1.3, LightGBM 2.2, TiDE 3.3, TFT 
+
+3.9, Moirai 5.9, DeepMF 6.4, DeepAR 6.8, TimesFM 7.6, Chronos 7.8, CSDI 10 .1, Global Mean 10 .7. The foundation-model tier collapses by roughly four rank positions relative to the general protocol, while RAID gains. Under Nemenyi at α = 0 .05 (CD = 5 .03 ), the rank gap from RAID to the foundation-model tier (∆ ≥ 6.3) and to CSDI and Global Mean ( ∆ ≥ 8.8) exceeds the critical distance, so RAID is statistically separated from these methods. RAID is not separated from LightGBM, TiDE, TFT, or Moirai under this conservative all-pairs correction at N = 9 ; finer-grained pairwise distinctions in the top tier would require per-cell bootstrap CIs over a larger evaluation set. 
+
+Bootstrap confidence intervals. For the retrieval-size sweep in Appendix E.8 (Figure 7) we report 95% percentile bootstrap confidence intervals over five training seeds (1,000 resamples), which makes no Gaussian assumption and yields a non-symmetric interval that we summarize by its empirical 2.5 th /97.5 th quantiles. The same per-item bootstrap procedure can be applied to Tables 1 and 2 from saved per-item prediction tensors; we did not include the resulting per-cell intervals in the main tables to keep them legible. 
+
+## D Specialized Analyses & Baselines 
+
+D.1 Extended Analysis of LLM Baselines 
+
+In the main text, we argued that direct Large Language Model (LLM) prompting fails for cold-start forecasting due to Scale Hallucination . To validate this, we conducted a rigorous benchmark across 8 state-of-the-art LLMs [28–32], covering proprietary (GPT, Gemini, Mistral) and open-weights (Llama, Qwen) models. We separated the analysis into two distinct regimes: 1. Metadata-Rich (English): Amazon Electronics, Grocery, and Sports. 2. Metadata-Sparse / Cross-Lingual: Favorita (Store Sales), Wikipedia (Web Traffic), and Olist (Brazilian E-Commerce). 
+
+Experimental Setup. We sampled N = 20 items per dataset. For each item, we constructed a prompt containing the Title, Description, and Category (translated if necessary), and instructed the model to predict volume for the next 4 weeks. We calculated the Scale Hallucination Factor as the ratio of predicted volume to actual volume ( ˆy/y ). 
+
+Results: Catastrophic Scale Failure. As shown in Tables 10 and 11, generic LLMs consistently fail to capture the correct order of magnitude. 
+
+• Rich Metadata (Amazon): On Amazon Electronics, Gemini-2.0-Flash predicted volumes 173.5 ×
+
+higher than reality. Even "reasoning" models like Mistral Large 3 overestimated by 145.2 ×. Smaller models like Llama-3.1-8B showed lower scale ratios (10.2 ×) but equally poor sMAPE (1.76), indicating random guessing rather than signal capture. RAID, utilizing the Shape-Scale decomposition, achieves a ratio of 1.0 × and an sMAPE of 0.51. 18 • Cross-Lingual Barriers (Wiki/Olist): On Wikipedia (Spanish) and Olist (Portuguese), models fail to ground predictions in the local context. Llama-3.3-70B typically hallucinates values 50–100 ×
+
+higher than actuals. RAID leverages the multilingual embedding space (BGE-M3) to transfer demand patterns effectively, achieving sMAPEs < 1.2 where LLMs hover around 1.7–1.9. Table 10: Evaluation on Metadata-Rich Domains (Amazon). Comparison of 8 LLMs vs. RAID. All models including RAID are evaluated on the same N = 20 representative subset per dataset for direct comparison; full-set RAID numbers are reported in Tables 1 and 2. Scale Ratio indicates the factor of overestimation (e.g., 113 × means predicting 1,130 units for an item selling 10). RAID achieves near-perfect scale alignment ( 1.0×).                                                                                                                                                 
+
+> Dataset Model sMAPE WAPE Scale Ratio Cost / 10k Latency Amz Electronics
+> GPT-4o 1.69 118.1 119.0 ×$23.50 3.61s GPT-4o-mini 1.70 112.2 113.1 ×$1.50 3.52s Mistral Large 3 1.82 144.5 145.2 ×$2.80 2.10s Llama-3.3-70B 1.79 169.2 170.0 ×$3.90 0.89s Llama-3.1-8B 1.76 45.1 10.2 ×$0.20 0.45s Qwen2.5-32B 1.77 85.4 67.4 ×$1.82 1.15s Gemini-2.0-Flash 1.78 172.6 173.5 ×$0.90 3.38s Gemini-1.5-Flash 1.75 155.3 156.1 ×$0.70 1.20s
+> RAID (Ours) 0.51 0.29 1.0 ×<$0.01 0.03s Amz Grocery
+> GPT-4o 1.71 29.2 30.1 ×$23.50 3.47s GPT-4o-mini 1.69 13.8 14.6 ×$1.40 3.36s Mistral Large 3 1.75 28.5 29.4 ×$2.80 2.15s Llama-3.3-70B 1.77 32.3 33.1 ×$3.70 0.95s Llama-3.1-8B 1.74 10.5 8.4 ×$0.20 0.42s Qwen2.5-32B 1.73 25.1 26.2 ×$1.82 1.10s Gemini-2.0-Flash 1.74 33.9 34.8 ×$0.90 1.95s Gemini-1.5-Flash 1.72 30.1 31.5 ×$0.70 1.15s
+> RAID (Ours) 0.54 0.36 1.0 ×<$0.01 0.03s Amz Sports
+> GPT-4o 1.79 57.4 58.3 ×$23.50 3.98s GPT-4o-mini 1.86 59.7 60.6 ×$1.50 3.54s Mistral Large 3 1.84 75.2 76.1 ×$2.80 2.20s Llama-3.3-70B 1.87 139.8 140.6 ×$3.70 1.04s Llama-3.1-8B 1.80 25.4 18.2 ×$0.20 0.48s Qwen2.5-32B 1.81 72.3 71.5 ×$1.82 1.20s Gemini-2.0-Flash 1.78 85.2 85.9 ×$0.90 2.22s Gemini-1.5-Flash 1.83 80.1 81.4 ×$0.70 1.25s
+> RAID (Ours) 0.62 0.41 1.0 ×<$0.01 0.03s
+
+Inference setup. All latencies are end-to-end wall-clock for a single non-streamed completion call to each model’s first-party API. Llama-3.1-8B, Llama-3.3-70B, Qwen2.5-32B, and Mistral Large 3 are served via Groq’s production endpoints. Gemini 2.0 Flash and 1.5 Flash via Google AI Studio. GPT-4o and GPT-4o-mini via the OpenAI API. Numbers therefore reflect each provider’s full request stack (TLS, queuing, generation, deserialization) rather than isolated time-to-first-token. Cross-provider comparisons should be read accordingly. 
+
+Prompt Template. The exact prompt used for these baselines was: 
+
+"You are an expert demand planner. I am launching a new product on Amazon. 
+
+Product Title: [Title] 
+
+Description: [Description] 
+
+Category: [Category] 
+
+Task: Predict the weekly sales volume for the first 4 weeks after launch. 
+
+Constraint: Provide ONLY 4 numbers separated by commas. Do not explain." 
+
+D.2 Steelman: RAG-LLM with Neighbor Sales Injected 
+
+A natural reviewer objection is that scale hallucination might be an artifact of zero-shot prompting, and that injecting semantic neighbors’ sales into the prompt would calibrate the scale. We ran this baseline (RAG-Gemini-2.0-Flash) on N = 50 randomly chosen Amazon Electronics items: for each target we retrieved the top-5 BGE-M3 neighbors (the same retrieval RAID uses) and supplied their average weekly sales. The 19 Table 11: Evaluation on Metadata-Sparse & Cross-Lingual Domains. Comparison of the same 8 LLMs on Wiki (ES), Olist (PT), and Favorita (EC). All models including RAID are evaluated on the same 
+
+N = 20 representative subset per dataset for direct comparison; full-set RAID numbers are reported in Tables 1 and 2. Without English cues, LLM performance degrades to near-random levels (sMAPE 1.6–1.9).                                                                                                                  
+
+> Dataset Model sMAPE Scale Ratio Failure Mode RAID Imp. Wiki (ES)
+> GPT-4o 1.62 45.0 ×Traffic Hallucination –GPT-4o-mini 1.65 42.1 ×Scale Variance –Mistral Large 3 1.65 48.5 ×Language Context –Llama-3.3-70B 1.68 52.1 ×Generic Page Vol –Llama-3.1-8B 1.72 12.5 ×Random Noise –Qwen2.5-32B 1.71 61.0 ×Entity Grounding –Gemini-2.0-Flash 1.60 38.2 ×Trend Mismatch –Gemini-1.5-Flash 1.64 40.5 ×High Variance –
+> RAID (Ours) 1.19 1.0 ×–+25.6% Olist (PT)
+> GPT-4o 1.75 40.0 ×Market Ignorance –GPT-4o-mini 1.72 35.5 ×Scale Variance –Mistral Large 3 1.79 48.5 ×Portuguese Nuance –Llama-3.3-70B 1.88 112.0 ×Tokenization –Llama-3.1-8B 1.82 15.2 ×Context Loss –Qwen2.5-32B 1.81 65.2 ×Local Demand –Gemini-2.0-Flash 1.74 38.2 ×Currency Confusion –Gemini-1.5-Flash 1.76 36.5 ×Region Mismatch –
+> RAID (Ours) 0.65 1.0 ×–+62.8% Favorita (EC)
+> GPT-4o 1.65 25.0 ×Store Variance –GPT-4o-mini 1.69 22.4 ×Item Homogeneity –Mistral Large 3 1.68 28.4 ×Spanish Context –Llama-3.3-70B 1.74 33.5 ×Aggregation Error –Llama-3.1-8B 1.71 8.5 ×Unit Confusion –Qwen2.5-32B 1.70 31.4 ×Geographic Context –Gemini-2.0-Flash 1.61 22.1 ×ID Hallucination –Gemini-1.5-Flash 1.66 24.5 ×Store ID Loss –
+> RAID (Ours) 1.23 1.0 ×–+23.6%
+
+Scale Ratio collapses from 173 × (zero-shot) to a median of 0.46 × (mean 2.88 × on the cleaned N = 42 subset that excludes items with sub-unit ground-truth volume), so calibration works. The median sMAPE remains 
+
+1.18 versus RAID’s 0.51 on the same items. The LLM, even given the right scale, outputs a flat four-week average and misses seasonality and trend. Retrieval is necessary to fix scale; the diffusion residual is what recovers shape. 
+
+D.3 Why Fine-Tuning Foundation Models Does Not Help at L = 0 
+
+A reviewer concern is whether the zero-shot FM baselines (Chronos, TimesFM, Moirai) are too weak, and whether fine-tuning these backbones on the target domain would close the gap. Following the precedent of TTM [ 4] (NeurIPS 2024), we evaluate them zero-shot. The reason is architectural rather than budgetary. At strict L = 0 , decoder-only time-series transformers receive an empty input sequence and emit their unconditional prior regardless of weight configuration. Fine-tuning sharpens that prior but does not introduce a metadata-conditioning channel, since none exists in the published architectures. A fair counterfactual would require adding a learned metadata head to each FM backbone, which constitutes a distinct model class (encoder-augmented FMs) outside the scope of this work. 
+
+Mean-seed input convention at L = 0 . Strict L = 0 is architecturally undefined for these foundation models. Chronos uses mean-scaling that divides by zero on empty or zero context, TimesFM expects multiples of input_patch_len = 32 tokens, and Moirai requires context length ≥ patch size. Following the architectural minimum, we adopt the mean-seed convention. Each FM is fed a length-1 seed token equal to the per-series training mean, which elicits the model’s unconditional prior conditioned on a non-degenerate amplitude anchor. No published FM benchmark currently evaluates at literal L = 0 , since GIFT-Eval [ 3] and TTM [ 4]both provide non-zero context to all baselines. Per-cell empirical verification at N = 50 across all nine datasets falls within ±0.25 sMAPE of the values reported in Table 2, consistent with single-seed bootstrap noise. The strict-zero alternative collapses to sMAPE → 2.0 uniformly and is not a meaningful comparison. 20 D.4 Inference Efficiency Analysis 
+
+While Foundation Models like Chronos achieve high accuracy, their computational cost scales quadratically with history length. In the cold-start setting, they revert to expensive autoregressive generation without the benefit of historical context. We benchmark inference latency on a single NVIDIA A100 (40GB) using ‘torch.float16‘ precision and a batch size of B = 128 .Table 12: Latency Comparison (A100, FP16, Batch=128). RAID-Full (probabilistic, with DiT refinement) is 48.7 × faster than Chronos and is the like-for-like comparison. RAID-Base (deterministic, retrieval-only) reaches 124 × but is reported for completeness rather than as the headline number.                  
+
+> Model Mechanism Latency Speedup
+> Chronos-Small Autoregressive ( H= 24 )1305 ms 1.0x CSDI (Diffusion) Score-based 398 ms 3.3x
+> RAID (Full) Diffusion ( S= 10 )26.8 ms 48.7x
+> RAID (Base) Feed-Forward ( O(1) )10.5 ms 124.3x
+
+Throughput & Scalability. For a catalog of 1 million items, RAID can generate forecasts in roughly 2.9 hours (Base, deterministic) or 7.4 hours (Full, probabilistic) on a single GPU, whereas Chronos would require 362 hours (15 days). This efficiency makes RAID uniquely suitable for high-frequency re-forecasting of large SKUs. 
+
+D.5 Training Compute Disclosure 
+
+In line with reproducibility expectations, Table 13 reports the training-time compute footprint for RAID across all evaluation datasets. All runs used a single NVIDIA A100 (40GB) with mixed-precision (FP16). Wall-clock numbers are end-to-end including BGE-M3 embedding extraction (which is amortized across runs because the embeddings are cached on disk after the first pass). Table 13: Training-time compute footprint for RAID per dataset. Single A100-40GB, FP16. Wall-clock includes one pass of BGE-M3 embedding extraction; subsequent reruns reuse the cached embeddings and are roughly 30% faster.                                                       
+
+> Dataset NTWall-clock Peak VRAM
+> Amazon Sports 3,000 281 ≈1.8 h 12.4 GB Amazon Electronics 3,000 281 ≈1.7 h 12.1 GB Amazon Grocery 3,000 281 ≈1.7 h 12.0 GB M5 Retail 3,049 1,913 ≈3.2 h 18.6 GB Favorita 4,100 1,684 ≈3.0 h 17.9 GB Wiki (ES) 2,000 803 ≈1.5 h 10.3 GB Olist (PT) 2,500 730 ≈1.6 h 11.0 GB 1C (RU) 2,500 1,034 ≈1.9 h 12.2 GB Job-SDF 1,500 365 ≈1.0 h 8.9 GB
+> Total (single seed) ——≈17.4 h —
+
+For the multi-seed protocol used in the statistical analysis (5 seeds across the 9 datasets in Table 13), the total RAID compute is approximately 87 A100-hours — ≈ 4 A100-days. Foundation-model baselines (Chronos / TimesFM / Moirai) are evaluated zero-shot rather than fine-tuned, so they incur only inference cost (negligible relative to the training budget above). Inference latency numbers in Table 5 were measured on the same hardware. 21 E Qualitative Analysis & Validity 
+
+E.1 Magnitude Disparity Analysis 
+
+To validate the necessity of scale decoupling, we analyzed semantic neighbors in the Amazon dataset. We identified 55 pairs with high semantic similarity ( ≥ 0.8) that simultaneously exhibited extreme magnitude disparity ( ≥ 10 ×). This confirms that while LLM embeddings capture functional similarity (product type), they do not encode market volume. Figure 2 illustrates the Shape-Scale decomposition pipeline on the canonical Echo Dot pair. Figure 3 provides the deeper view: despite disjoint raw sales distributions, the z-score correlation of r = 0 .951 confirms the underlying temporal dynamics are nearly identical. This motivates the separate MLP scale predictor in Eq. (4). 2019 2020 2021 2022 2023     
+
+> Date
+> 0
+> 1000
+> 2000
+> 3000
+> 4000
+> 5000
+> 6000
+> 7000
+> Weekly Sales
+> (a) Raw Sales
+> Echo Dot Standard
+> Echo Dot Kids
+> 2019 2020 2021 2022 2023
+> Date
+> 1
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> Z-Score
+> r = 0.951
+> (b) After Shape-Scale Decomposition
+> Standard (normalized)
+> Kids (normalized)
+
+Figure 2: Shape-Scale Decomposition (Echo Dot). (a) Raw weekly sales show a 112 × magnitude gap between the Standard and Kids Edition, despite near-identical text descriptions. (b) After Shape-Scale Decomposition, the normalized patterns align ( r = 0 .95 ), allowing RAID to transfer seasonality while predicting the correct scale from the text embedding. 2019-01 2019-07 2020-01 2020-07 2021-01 2021-07 2022-01 2022-07 2023-01 2023-07       
+
+> 0
+> 1000
+> 2000
+> 3000
+> 4000
+> 5000
+> 6000
+> 7000
+> Weekly Sales
+> Standard Echo Dot - Raw Weekly Sales
+> Standard
+> 2019-01 2019-07 2020-01 2020-07 2021-01 2021-07 2022-01 2022-07 2023-01 2023-07
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> 60
+> Weekly Sales
+> Kids Echo Dot - Raw Weekly Sales
+> Kids Edition
+> 2019-01 2019-07 2020-01 2020-07 2021-01 2021-07 2022-01 2022-07 2023-01 2023-07
+> 0
+> 1000
+> 2000
+> 3000
+> 4000
+> 5000
+> 6000
+> Sales (Kids scaled to match)
+> Pattern Comparison (Kids scaled to Standard magnitude)
+> Standard
+> Kids (scaled up)
+> 3210123
+> Standard Echo Dot (z-score)
+> 3
+> 2
+> 1
+> 0
+> 1
+> 2
+> 3
+> Kids Echo Dot (z-score)
+> Z-Score Correlation (r=0.951)
+> Perfect correlation
+
+Figure 3: Deep Dive: Semantic-Temporal Correlation. Top: Raw sales distributions show completely disjoint scales ( 112 × difference). Bottom Right: the Z-score correlation of r = 0 .951 confirms that despite the magnitude gap, the underlying temporal dynamics are nearly identical. 
+
+E.2 Data Contamination and Zero-Shot Integrity 
+
+A potential concern when utilizing pre-trained Large Language Models (such as BGE-M3 or GPT-4) is data contamination. Specifically, reviewers may ask whether the model was pre-trained on the test datasets (e.g., Amazon Reviews) and if this invalidates the zero-shot claim. We address this via two arguments: 22 1. Text vs. Temporal Separation: While BGE-M3 likely observed the textual descriptions of Amazon products during pre-training, it acts strictly as a static feature extractor Φ( mi). It has no access to the 
+
+temporal sales trajectories y1: T of these items. The forecasting task requires mapping text to future dynamics , a relationship that is not encoded in the static text corpus. 2. Strict Cold-Start Protocol: Our evaluation masks the entire history ( L = 0 ) of the test items. Even if the LLM "knows" the product exists, it cannot infer its specific sales volume or seasonality without the inductive bias provided by the RAID graph structure. 
+
+E.3 Assumptions and Limitations 
+
+We explicitly state the assumptions required for RAID to function optimally: 1. Semantic Homophily: We assume that proximity in the embedding space implies similarity in temporal dynamics (see Appendix E.6). When this is violated (e.g., "Apple" the fruit vs. "Apple" the company), the local Markov property fails. We mitigate this via the GAT attention mechanism, which learns to assign near-zero weights to semantically similar but dynamically uncorrelated neighbors. 2. Stationary Semantics: RAID assumes that the relationship between metadata and dynamics is stable. Regime changes (e.g., COVID-19 demand shifts) violate the Lipschitz assumption, as items with identical descriptions suddenly exhibit different behaviors. 3. Gaussian Residuals: The entropy-reduction argument in Remark 3.1 assumes well-behaved distribu-tions. For heavy-tailed or multi-modal residuals (common in intermittent demand), the diffusion model may require more than the standard S = 10 steps to converge. 
+
+Societal impact. Better cold-start forecasts can reduce grocery food waste and improve cloud-energy allocation. Accurate metadata-only forecasting can also enable price discrimination on newly listed marketplace items before sellers establish baseline demand; deployments should pair RAID with downstream auditing of pricing and ranking decisions. 
+
+E.4 Qualitative Cold-Start Case Study 
+
+Figure 4 shows a single-item cold-start forecast on Amazon Sports ( L = 0 ). Chronos reverts to a near-flat mean because it has no historical tokens to attend to; RAID retrieves the seasonal profile from semantic neighbors and recovers realistic variance through the diffusion residual. sMAPE for this specific item is higher than the dataset average — it is a hard example — but RAID preserves the structural shape that history-based baselines miss. 5 10 15 20 25  
+
+> Forecast Horizon (Days)
+> 0.2
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Normalized Sales
+> Cold-Start Forecast Comparison
+> RAID 80% CI
+> Ground Truth
+> RAID (Full)
+> Chronos (L=0)
+> Random Neighbors
+> RAID
+> (Full)
+> RAID
+> (Cold)
+> Chronos
+> (L=0)
+> Random
+> Neighbor
+> KNN
+> Base
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> 1.25
+> 1.50
+> 1.75
+> sMAPE (lower is better)
+> 1.12
+> 1.21
+> 1.62 1.55
+> 1.34
+> Single-Item Cold-Start Error
+> Amz Sports cold-start avg (0.95, Tab 2)
+
+Figure 4: Qualitative Cold-Start Comparison. Amazon Sports, L = 0 . Chronos (red) reverts to a static mean prediction; RAID (blue) retrieves the seasonal profile from semantic neighbors and tracks the ground truth (black) with calibrated uncertainty. 23 E.5 Cross-Lingual Manifold Alignment 
+
+Figure 5 visualizes a t-SNE [ 33 ] projection of BGE-M3 embeddings drawn from Amazon (English) and Favorita (Spanish). Items in the same functional category (Electronics, Grocery, Sports, Home) cluster together regardless of source language, which is consistent with the cross-lingual transfer numbers in Table 4. This clustering motivates an informal hypothesis. Aggregation weights learned on a denser source graph (Spanish, homophily ρ = 0 .94 ) appear to remain robust on a sparser target graph (English, ρ = 0 .79 ) because the embedding space already aligns functionally similar items across languages. A controlled density-sweep ablation that isolates density from semantics at fixed graph topology is left to future work. 30 20 10 0 10 20 30  
+
+> t-SNE Dimension 1
+> 30
+> 20
+> 10
+> 0
+> 10
+> 20
+> 30
+> t-SNE Dimension 2
+> Zero-Shot Semantic Alignment
+> (Amazon Grocery EN Favorita ES)
+> Beverages (Amazon EN)
+> Beverages (Favorita ES)
+> Dairy (Amazon EN)
+> Dairy (Favorita ES)
+> Snacks / Bakery (Amazon EN)
+> Snacks / Bakery (Favorita ES)
+> Cleaning / Hygiene (Amazon EN)
+> Cleaning / Hygiene (Favorita ES)
+
+Figure 5: Zero-Shot Semantic Alignment. t-SNE of item embeddings from Amazon (EN) and Favorita (ES). Functionally similar items cluster together across languages, supporting the manifold-alignment view of cross-lingual transfer. 
+
+E.6 Empirical Semantic Homophily 
+
+We compute pairwise BGE-M3 cosine similarity against Dynamic Time Warping (DTW) distance for 5,000 
+
+random Amazon Sports pairs (Figure 6). The Pearson correlation is ρ = −0.697 (p < 0.001 ). The relationship is strong but not deterministic: lexically similar but dynamically unrelated pairs (e.g., “Apple” the fruit vs. “Apple” the company) populate the lower-similarity tail and motivate the GATv2 attention layer that down-weights such matches. 24 0.4 0.5 0.6 0.7 0.8 0.9 1.0 
+
+> Semantic Cosine Similarity (BGE-M3)
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Temporal DTW Distance
+> Pearson r = -0.697
+> p-value < 0.001
+> N = 5,000 pairs
+> Validation of Semantic Homophily Assumption
+> Linear Fit (r=-0.697, p<0.001)
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> 0.8
+> 0.9
+> Semantic Similarity
+
+Figure 6: Empirical Validation of Semantic Homophily. Pearson ρ = −0.697 (p < 0.001 , N = 5 ,000 
+
+Amazon Sports pairs) between BGE-M3 cosine similarity and DTW [34] distance. 
+
+E.7 Full Component Ablation 
+
+Table 14 reports the full per-row ablation summarized in Section 4.7. Table 14: Component Ablation (Cold-Start L = 0 ). RAID Full values match Table 2. Diffusion is the dominant driver on high-entropy Job-SDF ( +6 .9% sMAPE without it); semantics dominate cross-lingual Olist (+11 .2% without the BGE-M3 graph). On Job-SDF, removing GATv2 while keeping node-level embeddings improves point accuracy by 1.5% — an over-smoothing effect under sparse metadata that we report rather than tune away ( bolded row). 
+
+Dataset Regime Variant Cold-Start Perf. Degradation ( ∆) Component Role Failure Mode sMAPE CRPS sMAPE CRPS Semantics Diffusion Job-SDF 
+
+(Sparse/High-Var) RAID (Full) 1.30 0.32 – – ✓ ✓ –w/o Diffusion 1.39 0.34 +6.9% +6.3% ✓ – Mean Collapse 
+
+w/o Semantics 1.29 0.33 -0.8% +3.1% – ✓ Poor Calibration 
+
+w/o GNN 1.28 0.32 -1.5% 0.0% ✓(Node) ✓ (Over-smoothing) 
+
+Amazon Sports 
+
+(Rich Metadata) 
+
+RAID (Full) 0.95 0.32 – – ✓ ✓ –w/o Diffusion 1.09 0.37 +14.7% +15.6% ✓ – Linearity Bias 
+
+w/o Semantics 1.03 0.35 +8.4% +9.4% – ✓ Loss of Seasonality 
+
+w/o GNN 1.00 0.33 +5.3% +3.1% ✓(Node) ✓ Local Noise 
+
+Olist (PT) 
+
+(Cross-Lingual) 
+
+RAID (Full) 1.25 0.52 – – ✓ ✓ –w/o Diffusion 1.34 0.56 +7.2% +7.7% ✓ – Residual Error 
+
+w/o Semantics 1.39 0.59 +11.2% +13.5% – ✓ Language Gap 
+
+w/o GNN 1.31 0.54 +4.8% +3.8% ✓(Node) ✓ Context Loss 
+
+E.8 Sensitivity to Retrieval Set Size k
+
+Figure 7 sweeps k ∈ { 1, 3, 5, 10 , 20 , 50 , 100 , 200 } on five datasets over five seeds with 95% bootstrap CIs. Cold-start sMAPE drops sharply from k = 1 to k = 10 , sits on a stable plateau over k ∈ [10 , 50] , and rises again past k = 100 as irrelevant neighbors enter the aggregation. We use k = 20 throughout: low end of the plateau, ∼ 5× cheaper retrieval than k = 100 .25 1 3 5 10 20 50 100 200 
+
+Retrieval set size k (log scale) 
+
+1.0 
+
+1.2 
+
+1.4 
+
+1.6 
+
+1.8 
+
+2.0 
+
+2.2  
+
+> sMAPE  ( )
+> k= 20 (chosen)
+
+Sensitivity to Retrieval Set Size k  
+
+> Plateau region k[10, 50]
+> Amazon Sports
+> Job-SDF
+> M5 Retail
+> Olist (PT)
+> 1C (RU)
+
+Figure 7: Sensitivity to Retrieval Set Size k (L = 0 ). sMAPE on five datasets across k, with 95% 
+
+bootstrap CIs over five seeds. Plateau region k ∈ [10 , 50] shaded; k = 20 (dashed) used throughout the paper. 26

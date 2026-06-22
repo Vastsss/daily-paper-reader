@@ -1,0 +1,457 @@
+Title: Tying the Loop – Tied Expert Layers in Mixture-of-Experts Language Models
+
+URL Source: https://arxiv.org/pdf/2606.16825v1
+
+Published Time: Tue, 16 Jun 2026 02:22:47 GMT
+
+Number of Pages: 18
+
+Markdown Content:
+# Tying the Loop - Tied Expert Layers in Mixture-of-Experts Language Models 
+
+Martin Jaggi 
+
+EPFL 
+
+# Abstract 
+
+Mixture-of-Experts (MoE) architectures efficiently scale Large Language Models (LLMs) by activating only a small fraction of their experts per token, yet the full parameter count—dominated by the expert parameters—must be held in training and inference memory. To address this, we introduce Expert Tying, an architectural modification that shares expert parameters across consecutive transformer layers while preserving independent, layer-wise routing and attention. We evaluate this approach across common, state-of-the-art architectures, including OLMoE, Qwen3, and DeepSeek-style MoEs. Our pretraining experiments demonstrate that tying experts can reduce memory footprint by almost 2× at virtually no degradation in perplexity or downstream quality. By exploiting the parameter redundancy inherent in MoE pathways, our method provides a highly favorable compute-to-memory trade-off, advancing efficient training and scaling of next-generation LLMs. Our codebase is public at github.com/epfml/looped-moe 
+
+# 1 Introduction 
+
+Mixture-of-Experts (MoE) architectures have become a standard technique for scaling language models: by activating only a small subset of expert feed-forward networks (FFNs) per token, they decouple total parameter count from per-token compute [ SMM +17 , FZS22 ]. Recent open-weights MoE models push this decoupling to extremes. DeepSeek-V3 activates only 37B of its 671B parameters per token ( ≈ 5.5% ), Qwen3-235B-A22B ≈ 9.4% , and Kimi-K2 ≈ 3.2% . As this active fraction shrinks, the memory footprint of an MoE is governed almost entirely by parameters that sit idle in any given forward pass: the full model must reside in training and inference memory even though only a tiny percentage of parameters contribute compute for each token. This is in strong tension with a second trend: reasoning models and looped-depth models aim to extract more compute from each unique parameter, building more capable models at the same parameter count—the kind of parameter efficiency recently incentivized by OpenAI’s Parameter Golf challenge [ Ope26 ]. From this second perspective, standard MoE looks like a step backward—inflating memory with parameters that are often inactive. 
+
+Our approach. We propose expert tying to reconcile the two opposing trends of the compute vs. memory trade-off. By reusing the same expert FFN weights across a group of consecutive layers while keeping routers, attention, and normalization layer-specific, we preserve MoE’s low per-token compute yet raise compute per unique parameter, removing the memory penalty of sparsity rather than the sparsity itself. Concretely, given a group of g layers, the gate/up/down projections of the N
+
+experts are aliased across all g layers, reducing the unique FFN parameters by a factor of g; each layer still computes its own routing distribution and its own attention output, so the hidden state continues to flow through g distinct layer operators, not g copies of the same one. The implementation is simple—a single Python-level pointer assignment in HuggingFace transformers models—and 
+
+> Preprint.
+> arXiv:2606.16825v1 [cs.CL] 15 Jun 2026
+
+requires no changes to training or inference infrastructure beyond the optimizer, which must correctly accumulate gradients from the tied parameters’ multiple use sites. 
+
+Why this works. The intuition is that the FFN expert pool can be shared across nearby layers because per-layer attention keeps each layer’s effective operator distinct: even with identical expert parameters, attending over a different mixture of token positions produces a different transformation at each depth. Our component ablation (Section 3) confirms this directly: tying the router across consecutive layers barely affects loss, while tying attention costs an order of magnitude more. Expert tying therefore trades a small amount of expressive capacity for a large parameter reduction, with attention—not routing—doing the work of keeping layers distinct. Our experiments confirm this scales: across three state-of-the-art MoE architectures (OLMoE, Qwen3-MoE, DeepSeekMoE) and both fine-grained and coarse-grained expert configurations, group sizes up to g = 4 yield minimal degradation in validation loss and downstream accuracy, while cutting total FFN parameters by 75%. 
+
+Relation to looped transformers. Expert tying is a partial loop : the MoE FFN sub-block is shared (“looped”) across g consecutive layers, while the rest of the block is not. This places it in the growing family of looped/recurrent-depth designs [ DGV +19 , GMJ +25 , ZWH +25 , PNBKF26 ], most of which loop the entire block on dense models; by sharing only the FFN sub-block in a feedforward (non-recurrent) MoE stack, we capture the parameter-efficiency benefit of block reuse at the compute and memory profile of an ordinary MoE. A separate line of MoE-specific work shares parameters across layers but each commits to one component—routers, expert pools, or whole blocks [GLT +26 , T+25 , CIS24 , CGS +26 ]—without isolating which one keeps tied layers distinct; Megrez2 [LLL +25 ] productionizes a single configuration like ours. Our contribution is not the configuration itself but the controlled study identifying, across architectures and granularities, which components can be shared at little quality cost. 
+
+Contributions. This paper makes the following contributions: 1. Expert tying works at scale. On three common MoE architectures (OLMoE, Qwen3-MoE, DeepSeekMoE) with up to 7B parameters, tying expert FFN weights in groups of four reduces total parameter count by up to 52% with negligible degradation in pretraining loss or downstream accuracy, and delivers a wall-clock training speed-up of up to 23 .7% .2. Per-layer attention, not routing, is what differentiates layers. A controlled component ablation shows that untying attention across tied layers improves loss by an order of mag-nitude more than untying only the router, even though freed routers visibly diversify their expert choices. This explains why expert tying is cheap and identifies tying experts (largest parameter pool, modest cost) as the highest-leverage component to share. We further identify that first and last layers should not be looped or tied — a 2+2 untied prelude and coda yields the single largest architectural gain in our ablation. 3. Heterogeneous width expansion reinvests the parameters saved by expert tying into more experts in the tied middle layers, consistently outperforming the untied baseline at iso-parameter count on all three architectures. This recasts expert tying as a depth-vs-width design axis rather than just a compression technique. 4. We show that expert tying composes cleanly with standard MoE training recipes (load balancing, Muon/AdamW optimization), and requires no architectural changes to attention or routing, making it a drop-in modification for existing MoE codebases. 
+
+# 2 Related Work 
+
+2.1 Mixture-of-Experts Architectures 
+
+Mixture-of-Experts (MoE) architectures decouple total parameter count from per-token compute by activating only a subset of expert FFN networks per token [ SMM +17 , LLX +21 , FZS22 ]. Recent work has pushed toward fine-grained experts with large expert pools: DeepSeek-V3 [ Dee24 ] uses 256 routed experts with an auxiliary-loss-free load-balancing strategy; Qwen3 [ YYZ +25 ] employs 128 experts; Kimi-K2 scales to 384. These models demonstrate that richer expert combinations with smaller individual experts consistently improve expressiveness and downstream quality. OLMoE [ MSG +24 ] shows that even at the 7B-total / 1B-active scale, MoE can outperform dense models trained with 6–7 × more compute. Routing mechanisms remain an active research area: ReMoE 2[WCZ25 ] replaces top-k + softmax routing with continuous ReLU routing for full differentiability, and Expert Choice routing [ZLL +22] inverts the standard token-to-expert assignment. Despite strong scaling properties, MoE models carry a substantial memory footprint due to the large number of expert parameters. While only a small fraction of the parameters are activated per token, the full parameters still need to reside in memory. This motivates cross-layer expert sharing as a means to reduce the unique parameter count without changing the activated compute budget. 
+
+2.2 Looped Transformers and Parameter Sharing 
+
+Our work is closely connected to a growing body of research on looped transformers —architectures that reuse the same block of layers multiple times, increasing effective depth without proportionally increasing parameter count. Under this lens, our approach is a partial loop: the MoE FFN sub-block is shared (“looped”) across a group of consecutive layers, while attention, normalization, and routers remain distinct at each position in the group. 
+
+Foundations and theory. Universal Transformers [ DGV +19 ] first demonstrated that sharing a single transformer block across depth can match standard transformers on certain tasks via adaptive-computation-time halting. [GRS +23 ] provide a constructive expressivity result, showing that a constant-depth transformer placed in a loop can emulate a programmable instruction-set computer. [ SDL +25 ] formalized the reasoning inductive bias of this design, showing both theoretically and empirically that a k-layer transformer looped L times closely matches the performance of a kL -layer non-looped model on reasoning-intensive tasks, despite using L× fewer unique parameters. Their central claim—that many reasoning problems require depth but not necessarily parameters—provides the theoretical basis for the broader looped transformer program. 
+
+Scaling looped pretraining. Recent work has demonstrated that looped architectures can be scaled effectively. Huginn [ GMJ +25 ] introduces a depth-recurrent 3.5B-parameter LM with a prelude–core–coda topology, trained on 800B tokens, where unrolling the core block more times at inference improves downstream quality. Ouro [ ZWH +25 ] pretrains 1.4B and 2.6B looped models for 7.7T tokens, matching the performance of 4B and 8B standard transformers respectively. Ouro’s controlled experiments offer a key insight for our work: looping does not increase knowledge 
+
+capacity per parameter (both looped and non-looped models encode roughly 2 bits/parameter on synthetic memorization tasks), but it preserves or improves knowledge manipulation on multi-hop reasoning. Parcae [ PNBKF26 ] establishes the first scaling laws for looped architectures, showing that a 770M Parcae matches a 1.3B parameter transformer on the same data, and that compute-optimal training requires scaling loop count and data together. Parcae also identifies stability bottlenecks (residual explosion, loss spikes) specific to loop-based training and addresses them via spectral-norm constraints on the input injection. Most recently, [ SRK26 ] fit scaling laws for fully-looped language models and find that each additional recurrence contributes substantially less than an additional unique block, providing a quantitative complement to our component-ablation perspective. 
+
+Differentiating iterations. A central challenge in fully-looped architectures is that the same block processes every iteration, limiting per-depth specialization. Several methods add lightweight per-iteration adaptation on top of a shared core. Relaxed Recursive Transformers [BFH +25 ] attach depth-wise LoRA modules to each loop iteration of a dense recursive transformer, recovering most of the performance of the original full-size model when retrofitting pretrained LLMs into looped form. 
+
+RingFormer [HFSK25 ] generates input-dependent level signals via depth-specific low-rank matrices that modulate the shared block at each iteration. LoopFormer [ JCT26 ] trains a looped transformer on variable unrolling depths with a consistency loss between short and long trajectories. MeSH [ Y+25 ]externalizes state management into an explicit memory buffer with step-wise routers to diversify computation across iterations. Mixture-of-Recursions [BKB +25 ] uses lightweight routers to assign different recursion depths to individual tokens, unifying parameter sharing with adaptive computation. 
+
+ModernALBERT / Mixture of LoRAs [ NRR25 ] inserts LoRA experts with token-conditional routing inside the shared FFN of a recursive encoder. SpiralFormer [ Y+26 ] introduces multi-resolution recursion, operating the shared core at varying sequence resolutions across loop iterations. All of these works operate on dense (non-MoE) transformers. Concurrently, Hyperloop Transformers 
+
+[ ZTHK26 ] loop a middle block (with untied begin/end layers) in dense transformers, adding loop-level hyper-connections to differentiate iterations. Their dense design needs an explicit per-iteration 3mechanism; our MoE design achieves the same differentiation by keeping attention per-layer while tying only experts. 
+
+2.3 Cross-Layer Sharing in MoEs 
+
+The idea of sharing expert parameters across layers in MoE architectures has emerged in several recent works. Because the FFN/expert block carries the bulk of parameters in a modern MoE, sharing experts is the most impactful axis of parameter reduction—and, through the lens of looping, corresponds to looping only the MoE sub-block while leaving attention and routing free to vary per layer. 
+
+MoEUT [CIS24 ] combines fully-shared MoE layers in a Universal Transformer framework. MoEUT uses σ-MoE for both attention and feedforward layers, groups non-shared layers into blocks that are then recurrently stacked, and introduces a custom “peri-layernorm” scheme. MoEUT shares every component—including routers and attention—across loop iterations, and does not explore which components to untie. 
+
+Megrez2 [ LLL +25 ] is architecturally closest to our work: it partitions an L-layer transformer into groups of n consecutive layers that share expert weights while retaining per-layer gating networks, attention, and normalization. Combined with pre-gated routing for memory-efficient expert prefetch-ing, Megrez2 achieves competitive performance with 7.5B total / 3B active parameters. Megrez2 is a single production system optimised for inference efficiency on memory-constrained devices, and reports one tying configuration without isolating its contribution to model quality. Our work gives a controlled decomposition that varies group size, tying topology, expert granularity, and base architecture (OLMoE, Qwen3-MoE, DeepSeekMoE), and that isolates which component of a tied MoE layer is responsible for cross-depth differentiation. The looped MoE variant of [ CLH +26 ] is concurrent work on the special case of fully-looped MoE blocks, sharing all components across iterations and then restoring per-iteration distinctness with an architecture modification, an adaptive-layernorm modulation conditioned on the iteration index. Our finding is more direct: the component ablation shows that per-iteration distinctness is carried by attention, which improves over just distinct layernorm gains between loops. 
+
+ReXMoE [T+25 ] approaches cross-layer expert reuse from a complementary angle. Rather than tying expert weights, ReXMoE expands each layer’s candidate expert pool to include experts from adjacent layers, with per-layer routers selecting from a union of its own and its neighbors’ experts. This increases routing diversity without adding parameters, using a progressive scaling routing (PSR) strategy during training. Our work is complementary: we share the actual weight tensors (reducing unique parameters) while keeping routers per-layer, whereas ReXMoE keeps weights independent while broadening routing scope. 
+
+PathMoE [ GLT +26 ] shares router parameters (rather than expert weights) across consecutive layers, arguing that independent per-layer routing over N experts across L layers creates a too large path space of N L possible expert sequences, while tokens in practice concentrate on a small fraction of coherent linguistic paths. Shared routers constrain the effective path space and improve sample efficiency at 0.9B and 16B scale. PathMoE is the mirror image of our approach—they share routers with distinct experts, while we share experts with distinct routers. A related line of work coordinates routing across layers without sharing any weights: [ HCK +26 ] adds an auxiliary cross-layer coupling loss that aligns top-k routing across adjacent layers, improving expert specialization; this is complementary to weight tying/looping and further supports that cross-layer routing structure is a meaningful axis. 
+
+Mixture of Universal Experts (MoUE) [ CGS +26 ] takes the sharing idea to its extreme: a single expert pool is shared across all layers of the network. To make this work, MoUE introduces a staggered rotational topology for structured expert exposure, a universal load-balancing loss that accounts for repeated expert access across depth, and a universal router with trajectory state to coordinate routing across layers. Where MoUE unifies the expert pool globally, our work studies the intermediate regime of group-wise sharing, which preserves more per-layer flexibility at the cost of less aggressive parameter reduction. Our ablations over group size effectively trace the continuum between per-layer independent experts ( g = 1 ) and fully shared experts ( g = L, MoUE-like). 
+
+WideNet [XSW +22 ] is an earlier dense approach that shares both FFN and self-attention weights across all transformer layers. Unlike our work, WideNet is dense (non-MoE) and ties all components. 43 Which Components Should Be Tied Across Layers? 
+
+A standard MoE transformer layer comprises four learned components: the expert FFN weights, the self-attention Q,K,V,O projections, the router, and the normalization layer gains (the RMSNorm scaling parameters). Each can in principle be tied (or “looped”) across a group of consecutive layers or kept independent. Before turning to large-scale experiments on production MoE architectures (Section 4), we establish on a smaller controlled architecture which of these components must remain unique-per-layer to preserve quality, and which can share weights cheaply. 
+
+Setup. A depth-32 decoder-only transformer with dmodel = 512 , nheads = 8 , sequence length 512 ,and a fine-grained MoE FFN ( 32 experts, top-k = 8, dff,expert = 128 ). All blocks are pre-norm [ XYH +20 ] with RMSNorm [ ZS19 ], rotary position embeddings (RoPE) [ SAL +24 ], and QK-norm [ HDPC20 ] applied to queries and keys before the dot product. Full architectural and optimisation details are in Appendix A. We sweep three orthogonal axes: • Tying mode. The three modes ALL -TIE , ATTN -TIE , and EXPERT -TIE differ in which of the four layer components are tied within a group; they form a monotone chain from most to least tied (Table 1). • Topology. The 28 middle layers form k tying groups, each consisting of a parameter block of b unique transformer layers reused ℓ times in succession (so k · b · ℓ = 28 ); we denote this k (group of b)ℓ×. The 2-layer prelude and 2-layer coda are always left untied. We sweep five topologies: 1 ( group of 2) 14 ×, 2 ( group of 2) 7×, 3 ( group of 2) (5 ,4,5) × (non-uniform loop count, 5+4+5=14 ), 4 ( group of 1) 7×, and 7 ( group of 1) 4×. As an additional refer-ence point we evaluate a universal transformer (MoEUT) [ CIS24 ] configuration in which all 
+
+32 layers form a single tying group with no untied prelude or coda ( 1 ( group of 2) 16 × over the full stack). • Granularity. Fine ( 32 experts, top-8) versus coarse ( 8 experts, top-2, with per-expert FFN width scaled up so that active compute is unchanged). All ablation runs use the same loss recipe as the production-architecture experiments in Section 4: a load-balancing auxiliary loss [ SMM +17 , FZS22 ] at coefficient αaux = 10 −2 and a router z-loss [ZBK +22] at coefficient αz = 10 −4, both added to the next-token cross-entropy. Table 1: Tying modes. Within a tying group of g consecutive layers, each component is either tied 
+
+(one parameter tensor shared by all g layers) or per-layer (each layer has its own copy). Norm gains are always per-layer in our codebase (each transformer layer has its own RMSNorm).                 
+
+> Mode FFN experts Attention Router Norm gains
+> ALL -TIE tied tied tied per-layer
+> ATTN -TIE tied tied per-layer per-layer
+> EXPERT -TIE tied per-layer per-layer per-layer
+
+Routing diagnostic. Beyond final validation loss, we report cross-loop agreement : the average fraction of routing decisions that match across pairs of layers within the same tying group 1, measured on the held-out validation set at the end of training. A value of 1 means tied layers always pick the same experts for the same tokens; a value of 0 means they pick disjoint expert subsets. The metric isolates the per-layer differentiation produced by the router, irrespective of whether the underlying expert weights or attention projections are also tied, and is well-defined for all three modes (in 
+
+> ALL
+
+-TIE mode, the same router still sees different hidden states at each layer, so agreement is non-trivial). Cross-loop agreement therefore lets us decouple the question “do tied layers behave like one operator?” from the question of model quality (loss). 
+
+3.1 Finding 1: Per-layer attention drives loss 
+
+Table 2 reveals a sharp decomposition. At fixed topology, untying only the router ( ALL -TIE → ATTN -
+
+> TIE
+
+) cuts cross-loop agreement by ∼ 4−7× at every mid-stack topology ( 0.733 → 0.160 at 2-group,        
+
+> 1For each token we compare the top-1(argmax ) expert selected by each layer in a tying group, and report the fraction of layer pairs that select the same top-1expert, averaged over tokens and over the first 3validation batches. The metric reflects top-1routing only, irrespective of lower-ranked expert choices overlap.
+
+5Table 2: Fine-grained ablation ( 32 experts, top-k = 8 ): final validation loss at 10 ,000 steps and cross-loop agreement. “ ∆” is loss relative to the MoE baseline (no cross-layer tying). “Total” is unique parameter count; “Saved” is the relative reduction vs. the baseline. “MoEUT” denotes a single 
+
+32 -layer tying group with no prelude or coda; all other rows have 28 middle layers in k tying groups with a 2+2 untied prelude/coda. Random chance cross-loop agreement (32 experts) is 0.031. Within each topology, modes are listed in order of increasing per-layer freedom. Configuration Total Saved ↑ Loss ↓ ∆ ↓ Cross-loop params memory agreement 
+
+Baseline (no cross-layer tying) 
+
+MoE, no tying 488 M — 3.432 0.000 —dense, no tying 186M 61 .9% 3.560 +0.128 —
+
+MoEUT-style ( 1 ( group of 2) 16 ×, no prelude/coda) 
+
+MoEUT ALL -TIE 65 M 86 .7% 3.650 +0.218 0.740 MoEUT ATTN -TIE 66 M 86 .6% 3.653 +0.221 0.071 
+
+Mid-stack ( 28 middle layers, 2+2 prelude/coda) 
+
+1 ( group of 2) 14 ×, ALL -TIE 121 M 75 .2% 3.553 +0.121 0.785 
+
+1 ( group of 2) 14 ×, ATTN -TIE 121 M 75 .1% 3.548 +0.116 0.155 
+
+1 ( group of 2) 14 ×, EXPERT -TIE 148 M 69 .6% 3.490 +0.058 0.087 
+
+2 ( group of 2) 7×, ALL -TIE 161 M 67 .1% 3.511 +0.079 0.733 
+
+2 ( group of 2) 7×, ATTN -TIE 161 M 67 .0% 3.512 +0.080 0.160 
+
+2 ( group of 2) 7×, EXPERT -TIE 186 M 61 .9% 3.469 +0.037 0.121 
+
+3 ( group of 2) (5 ,4,5) ×, ALL -TIE 151 M 69 .1% 3.481 +0.049 0.756 
+
+3 ( group of 2) (5 ,4,5) ×, ATTN -TIE 151 M 69 .0% 3.481 +0.049 0.193 
+
+3 ( group of 2) (5 ,4,5) ×, EXPERT -TIE 174 M 64 .5% 3.451 +0.019 0.107 
+
+4 ( group of 1) 7×, ALL -TIE 161 M 67 .1% 3.525 +0.093 0.831 
+
+4 ( group of 1) 7×, ATTN -TIE 161 M 67 .0% 3.516 +0.084 0.126 
+
+4 ( group of 1) 7×, EXPERT -TIE 186 M 61 .9% 3.470 +0.038 0.090 
+
+7 ( group of 1) 4×, ALL -TIE 202 M 58 .6% 3.485 +0.053 0.764 
+
+7 ( group of 1) 4×, ATTN -TIE 202 M 58 .5% 3.485 +0.053 0.142 
+
+7 ( group of 1) 4×, EXPERT -TIE 224 M 54 .1% 3.454 +0.022 0.126 
+
+0.831 → 0.126 at 4-group), and by ∼ 10 × at MoEUT ( 0.740 → 0.071 ). Untying also the attention (ATTN -TIE → EXPERT -TIE ) produces only a residual ∼ 1.2−1.8× further drop. Per-layer routers do strongly individuate layers when free to, even though the underlying expert weights remain identical. The loss response is the inverse: • Untying the router ( ALL -TIE → ATTN -TIE ) changes loss by at most 0.009 in any cell, and the sign is not consistent across topologies ( ATTN -TIE better at 1- and 4-group; ALL -TIE 
+
+marginally better at MoEUT and 2-group; tied at 3- and 7-group). Within the resolution of this ablation, the loss effect of router-untying is essentially zero. • Untying attention ( ATTN -TIE → EXPERT -TIE ) reduces loss by 0.030 –0.058 at every topology—several times the router effect, consistent in sign and magnitude across runs. The two effects are decoupled: routing diversity is produced almost entirely by the router, while the loss benefit of distinct per-layer operators flows almost entirely through attention. Per-layer routing freedom is observable in the routing distribution but does not translate into model capability when the attention operator is shared across the group. 
+
+Component cost ranking. Reading the chain at 2-group fine yields ∆( tie experts ) ≈ +0 .037 ,
+
+∆( also tie attention ) ≈ +0 .043 , ∆( also tie router ) ≈ 0 (slightly negative, −0.001 ), summing to the cumulative gap baseline → ALL -TIE of 0.079 . The MoEUT-style configurations (which tie all components together) correspond to the regime measured at scale by [ SRK26 ]; their finding that full-block recurrence carries substantial capacity cost is consistent with the gap we observe. Two practical conclusions follow. First, expert-tying and attention-tying carry comparable single-component costs ( ≈ +0 .037 and ≈ +0 .043 at 2-group fine), but the FFN expert pool dominates 6Table 3: Coarse-grained variant ( 8 experts, top-k = 2 , active FFN compute matched). The component ordering and the loss-vs-routing decoupling observed at fine granularity hold without modification. “Total” is unique parameter count; “Saved” is the relative reduction vs. the coarse baseline. Random chance cross-loop agreement (8 experts) is 0.125. Configuration Total Saved ↑ Loss ↓ ∆ ↓ Cross-loop params memory agreement 
+
+Baseline MoE (no cross-layer tying) 488 M — 3.481 0.000 —MoEUT ALL -TIE (1 ( group of 2) 16 ×, full stack) 65 M 86 .7% 3.663 +0.182 0.896 MoEUT ATTN -TIE (1 ( group of 2) 16 ×, full stack) 65 M 86 .7% 3.664 +0.183 0.172 
+
+2 ( group of 2) 7×, EXPERT -TIE 186 M 61 .9% 3.489 +0.008 0.192 
+
+4 ( group of 1) 7×, ALL -TIE 161 M 67 .1% 3.559 +0.078 0.847 
+
+4 ( group of 1) 7×, ATTN -TIE 161 M 67 .0% 3.546 +0.065 0.226 
+
+4 ( group of 1) 7×, EXPERT -TIE 186 M 61 .9% 3.489 +0.008 0.185 
+
+7 ( group of 1) 4×, EXPERT -TIE 224 M 54 .2% 3.475 −0.006 0.185 attention by an order of magnitude in parameter count, so expert-tying remains the highest-leverage memory move per parameter saved. Second, the router can be tied at no measurable cost on top of expert-and-attention-tying. The +0 .043 attention figure is its cost conditional on experts already being tied; we did not run an attention-only-tied configuration. The ranking motivates our main design (Section 4): tie expert weights, keep attention per-layer, and treat the router as tied or untied indifferently. 
+
+3.2 Finding 2: Topology choice within EXPERT -TIE gives major memory savings, without compromising quality 
+
+Once the tying mode is fixed at EXPERT -TIE , partitioning the 28 middle layers into groups is a relatively minor knob: loss across k ∈ { 2, 3, 4, 7} groups varies by only 0.019 (3.451 to 3.470 ), and adding 1-group (the most aggressive sharing, at 148 M unique params) extends the range to 0.039 .Cross-loop agreement is similarly stable (range 0.087 –0.126 ), confirming that topology choice does not qualitatively change routing behaviour. Topology within EXPERT -TIE therefore sets the parameter-savings ratio without large quality consequences—a knob we use in Section 4 to interpret tie-group size as a parameter-efficiency dial. 
+
+3.3 Finding 3: Component ranking holds for all expert granularities 
+
+A natural concern is that the dominance of attention over the router might depend on the routing capacity afforded by fine-grained MoE: with 32 experts and top-k = 8 , each layer’s router has rich combinatorial flexibility; with coarse routing ( 8 experts, top-2) it does not. We re-run the MoE baseline, MoEUT ALL -TIE , MoEUT ATTN -TIE , the three-mode 2-group cross-section, and three 
+
+> EXPERT
+
+-TIE topologies at the coarse setting, with per-expert FFN width scaled up so active FFN compute is unchanged. The pattern in Table 3 is the same as at fine expert granularity. The router-untying step ( ALL - 
+
+> TIE
+
+→ ATTN -TIE at 4-group) collapses cross-loop agreement by 3.7× (0.847 → 0.226 ) while moving loss by only 0.013 . The attention-untying step ( ATTN -TIE → EXPERT -TIE ) produces a 1.22 ×
+
+residual agreement drop and a 0.057 loss improvement. Topology spread within EXPERT -TIE remains small ( 0.014 ). The component ranking, the routing–loss decoupling, and the practical conclusion are robust to granularity. 
+
+3.4 Finding 4: Untied prelude/coda dominates all other architectural choices 
+
+The largest single effect in either Table 2 or Table 3 is the gap between MoEUT-style configurations and any mid-stack configuration. At fine granularity, the gap spans 0.097 –0.202 , dwarfing the within-mid-stack mode effect ( ∼ 0.05 ), the topology spread within EXPERT -TIE (∼ 0.04 ), and the granularity effect. At coarse, the analogous gap is 0.104 –0.189 .7The table provides a clean mode-matched isolation: MoEUT ALL -TIE (3.650 ) versus 1-group mid-stack ALL -TIE (3.553 ) differ by 0.097 , and the corresponding ATTN -TIE pair differs by 0.105 . The two configurations differ only in the size of the tying region ( 32 vs. 28 middle layers) and in the presence of an untied 2+2 prelude/coda; since topology width within EXPERT -TIE accounts for at most 0.04 , the bulk of the ∼ 0.10 mode-matched gap is attributable to the prelude/coda itself. The interpretation is that the first and last layers of the stack are qualitatively different from the rest—they perform embedding-input and lm-head-output adjustments—and forcing them into the shared parameter pool of a fully-recurrent design imposes a penalty that no expressive routing or attention freedom in the middle can recover. Practitioners adopting expert tying should preserve at least a thin untied prelude and coda. 
+
+3.5 Optimization dynamics of tied experts 
+
+When sharing expert parameters across g consecutive layers, the tied-parameter learning rate must be scaled to control the per-step update magnitude. The classical heuristic for shared weights [ LBOM98 , HHS17 ] prescribes 1/√g under the random-walk assumption, but Muon’s Newton– Schulz orthogonalisation normalises the backward-pass gradient magnitude regardless of g, so the relevant argument concerns forward-pass amplification: the same ∆W is applied g times in sequence within the forward pass. A linear penalty ( 1/g ) corresponds to the conservative case in which a token routes to the same expert at every depth, producing residual-stream growth analogous to the explosion observed in fully looped architectures [ PNBKF26 ]. With independent per-layer routers and intermediate self-attention, tokens take diverse, shifting paths and amplification compounds sub-linearly, motivating a milder 1/√g rule. 
+
+Empirical validation. We ablate the divisor on the 4-group topology. Averaging the final validation loss across all three tying modes ( ALL -TIE , ATTN -TIE , EXPERT -TIE ), the 1/√g rule ( 3.503 ) and the strict 1/g rule ( 3.506 ) perform near-identically, while no scaling is clearly worst ( 3.542 ). This suggests that forward-pass amplification compounds sub-linearly under independent routing and attention. We adopt 1/√g as the default for the remainder of this paper: it matches the linear rule’s empirical performance while reflecting the milder amplification expected when tokens take diverse paths. 
+
+# 4 Main Experiments on Production MoE Architectures 
+
+The component ablation of Section 3 converged on a clear design recipe: tie expert FFN weights, keep attention and routers per-layer, and preserve a 2+2 untied prelude and coda. We now apply this recipe to three production MoE architectures (OLMoE [ MSG +24 ], Qwen3-MoE [ YYZ +25 ], DeepSeekMoE [ Dee24 ]) and study two practical questions: (i) how much parameter saving does g=4 
+
+expert tying buy, and at what quality cost? (ii) does heterogeneous width expansion —reinvesting the parameters saved by tying as additional experts in the tied middle layers—recover quality at iso-parameter count, turning expert tying from compression into a depth-vs-width design axis? 
+
+Setup. For each architecture we train five configurations. The baseline (g=1 ) is the standard untied MoE; two tied configurations share expert weights across consecutive groups of g=2 and g=4 layers, with a 2+2 untied prelude and coda; and two width-expanded configurations widen the tied middle layers (at g=4 ) to 2× and 4× the baseline expert count, with the 4× variant chosen so that total parameter count returns to within 1% of the baseline (“iso-base”). Active parameters per forward pass are identical within each architecture across all configurations. All variants train on a 75:25 
+
+mixture of DCLM-edu [ ALB +25 ] and FinePhrase [ NPK +26 ] for 20 ,000 steps at effective batch size 524 k tokens ( ≈ 10 .5B tokens total). Models are scaled-down variants of the named production architectures; full hyperparameters in Appendix B. 
+
+Optimizer. We use Muon [ JJB +24 , LSY +25 ] for the 2D hidden weights—attention Q,K,V,O projections and FFN gate/up/down projections—at base learning rate ηMuon = 2 × 10 −2 with weight decay 0.1. AdamW [ LH19 ] handles the embeddings, output head, norm gains, biases, and routers at 
+
+ηAdamW = 0 .1 · ηMuon = 2 × 10 −3 with weight decay 0.01 .2 Tied expert weight tensors receive an  
+
+> 2Routers are kept on AdamW even though their weights are 2D, because the router output behaves as a per-token classifier head where adaptive per-parameter learning rates suit the heavy-tailed gradient distribution. Weight decay for AdamW parameters according to [JJB +24].
+
+8LR scaled by 1/√g (Section 3.5); without this the tied stack effectively trains at a higher step size on its expert weights, since gradients accumulate from g layer use-sites into the same parameter. Weight decay is left uncompensated: tied and untied parameter groups use the same base λ (baseline λ = 0 .1
+
+on Muon, λ = 0 .01 on AdamW; see Appendix B). Both optimisers follow the same cosine schedule (linear warmup, decay to 0.1× peak). All configurations train with a load-balancing auxiliary loss [ SMM +17 , FZS22 ] at coefficient αaux = 10 −2 and a router z-loss [ ZBK +22 ] at coefficient 
+
+αz = 10 −4, both added to the next-token cross-entropy. We extensively monitor router health and confirm that cross-layer tying does not induce expert collapse (see Appendix C for detailed routing dynamics). Full details and hyperparameters are given in Appendix B. Table 4: Final pretraining and downstream metrics on three MoE architectures (native depths: 16 layers for OLMoE/DeepSeekMoE, 28 for Qwen3-MoE), 20 ,000 steps ( ≈ 10 .5B tokens). Per-architecture configurations: baseline = standard untied MoE; g=4 = expert weights tied across consecutive groups of 4 layers with 2+2 untied prelude/coda; + w× width = the tied middle layers widened to w times the baseline expert count. The 4× row matches each baseline’s total-parameter budget (“iso-base”). Active is parameters used per token in the forward pass; it is unchanged across configurations within each architecture, since neither cross-layer tying nor width expansion changes top-k compute. Saved is the relative reduction in total parameters vs. that architecture’s baseline. LM Loss on validation set, not including aux losses. Avg Acc is the macro-average 3-shot accuracy on {ARC-Easy, ARC-Challenge, HellaSwag, PIQA, WinoGrande, OpenBookQA} via 
+
+lm-evaluation-harness . Arrows mark direction of preference.                                                                                                      
+
+> Arch Topology Active 3Total Saved ↑Loss ↓PPL ↓Avg Acc% ↑
+> DeepSeekMoE baseline
+> 158 M
+> 523 M—3.132 22 .92 41 .5
+> g=2 372 M29% 3.149 23 .30 41 .2
+> g=4 296 M43% 3.180 24 .06 41 .0
+> g=4 ,2×width 372 M29% 3.143 23 .19 40 .9
+> g=4 ,4×width (iso-base) 523 M≈0% 3.105 22 .31 41 .9
+> OLMoE baseline
+> 170 M
+> 523 M—3.119 22 .62 41 .9
+> g=2 372 M29% 3.136 23 .00 42 .1
+> g=4 296 M43% 3.171 23 .83 40 .8
+> g=4 ,2×width 372 M29% 3.132 22 .93 41 .5
+> g=4 ,4×width (iso-base) 523 M≈0% 3.089 21 .95 42 .1
+> Qwen3-MoE baseline
+> 112 M
+> 459 M—3.171 23 .84 41 .7
+> g=2 300 M35% 3.201 24 .55 40 .6
+> g=4 220 M52% 3.238 25 .47 39 .8
+> g=4 ,2×width 300 M35% 3.192 24 .34 40 .4
+> g=4 ,4×width (iso-base) 459 M≈0% 3.142 23 .17 41 .6
+
+Expert tying g=4 is essentially free. Going from baseline to tied/looped configurations saves 29 –
+
+52% of total parameters at a modest quality cost that scales monotonically with the tying group size. At g=2 the loss penalty is only 0.02 –0.03 (OLMoE 3.119 →3.136 , DeepSeekMoE 3.132 →3.149 ,Qwen3-MoE 3.171 →3.201 ); at g=4 it grows to 0.05 –0.07 (OLMoE +0 .052 , DeepSeekMoE +0 .048 ,Qwen3-MoE +0 .067 ) while saving 43 –52% of total parameters. Average downstream accuracy follows the same trend, dropping by at most 1.9% at g=4 . The cost is consistent across all three architectures and free of any cliff: the smooth baseline → g=2 → g=4 progression shows that quality degrades gracefully as more layers share weights. We’ll show below that larger models show even less degradation when tying experts. 
+
+At iso-parameter count, width expansion beats the untied baseline. Reinvesting the parameters saved by tying as additional experts in the tied middle layers (the g=4 , 4× width variant) returns to the baseline’s parameter budget—and consistently exceeds it. Loss improves by ≈ 0.03 on all three architectures (OLMoE 3.089 vs 3.119 , DeepSeekMoE 3.105 vs 3.132 , Qwen3-MoE 3.142 vs 
+
+3.171 ) with downstream accuracy matched or better, a gain consistent in sign and magnitude across architectures. The effect persists at full scale: the 7B g=4 , 2× width model improves on the untied baseline in both loss ( 2.812 vs 2.820 ) and accuracy ( 48 .2% vs 47 .4% ; Table 5). At a fixed parameter budget, spending capacity on wider experts shared across tied layers is thus a better use of parameters than a standard untied stack. 9Efficiency and throughput gains. Beyond memory savings, expert tying accelerates wall-clock training. With fewer unique parameter tensors the architecture incurs less weight-loading bandwidth, smaller optimizer state updates, and reduced gradient communication under data parallelism. In our setup ( 4×H200 GPUs, PyTorch DDP), the g=4 tied large OLMoE configuration sustains 51 ,777 
+
+tokens/sec—a 23 .7% speed-up over the untied baseline ( 41 ,859 tokens/sec). On the smaller config shown in Table 4, the throughput gain is 15 .7% (again with DDP on 4 GPUs). Throughput gains are increasing further for large models. See Appendix B for detailed measurements. 
+
+Scaling to 7B model size. To confirm expert tying holds beyond our reduced-scale sweep, we train the full-size OLMoE-1B-7B architecture ( 7.12 B total, ≈ 1.3B active; 16 layers, 2048 hidden, 64 
+
+experts, top-8) from scratch, in three configurations: untied baseline, g=4 tying, and g=4 with 2×
+
+width, each for 30 ,000 steps ( ≈ 15 .7B tokens) on 4×H200 GPUs under the same recipe.The result mirrors the small scale and is in fact stronger: g=4 tying matches the untied baseline in both loss (2.825 vs 2.820 ) and downstream accuracy ( 47 .5% vs 47 .4% ) while using half the total parameters (3.50 B vs 7.12 B, active compute unchanged). Reinvesting part of the saving as 2×-width experts (4.71 B total) exceeds the baseline even more significantly in loss, PPL and downstream accuracy. As an external reference point, our g=4 configuration also surpasses the official OLMoE-1B-7B-0924 checkpoint ( step5000-tokens20B , 44 .4% at ≈ 20 B tokens) even when trained on only half the tokens, and even with a g=4 looped model only half the size—though this is a reference point rather than a controlled comparison, as that model differs in tokenizer, data, and optimizer. Expert tying thus preserves quality at billion-parameter scale while halving the memory footprint. Table 5: Full-scale OLMoE-1B-7B ( 7.12 B total, ≈ 1.3B active) under expert tying, 30 ,000 steps (≈ 15 .7B tokens). Columns as in Table 4. Compared to the baseline, the g=4 looped model reaches the same downstream accuracy with less than half the model parameters, and at 23 .7% 
+
+higher throughput (Full details in Appendix B). Width expansion increases accuracy further (while inherently saving slightly less parameters). Our model also beats the official OLMoE-1B-7B-0924 
+
+step5000-tokens20B checkpoint evaluated under the same protocol. While our g=4 looped model reached 45 .1% after ≈ 10 .5B tokens ( 20 ,000 steps), the official OLMoE-1B-7B-0924 reached 44 .4% 
+
+average accuracy only after ≈ 20 B tokens, despite having about twice as many model parameters. (Note though that the official OLMoE-1B-7B-0924 step5000-tokens20B training recipe differs from our recipe in tokenizer ( 50 K vs our 100 K vocab), training data, and optimizer (AdamW vs Muon)).                                   
+
+> Configuration Total Saved ↑Loss ↓PPL ↓Avg Acc% ↑
+> baseline ( g=1 )7.12 B—2.82 16 .78 47 .4
+> g=4 3.50 B50 .9% 2.82 16 .86 47 .5
+> g=4 ,2×width 4.71 B33 .8% 2.81 16 .64 48 .2
+> OLMoE-1B-7B-0924 (ref., ≈20 Btok) 6.9B4—N/A N/A 44 .4
+
+# 5 Conclusion 
+
+MoE lowers compute per unique parameter, leaving most weights idle and the model memory-bound, whereas reasoning models raise this ratio. Expert tying reconciles the two: sharing expert FFN weights across consecutive layers preserves the low per-token compute of MoE yet raises compute per unique parameter, removing the memory cost of sparsity rather than the sparsity itself. A controlled ablation shows that per-layer attention, not routing, is what keeps tied layers distinct, so the largest parameter pool is the cheapest to share. Out change not only saves parameters but also improves throughput and reduces communication cost. Reinvested as additional experts, the saved parameters render width and depth exchangeable at a fixed parameter budget. 
+
+Limitations. Our experiments reach 7B parameters at a fixed token budget, leaving frontier scale and longer-horizon training untested. Width expansion is competitive rather than uniformly dominant. Our implementation uses PyTorch without tied-layer-aware kernels, so the reported efficiency gains are a lower bound. 10 Acknowledgments and Disclosure of Funding 
+
+We thank Vinko Sabolˇ cec for pointing out grouped GEMM, and to the EPFL RCP compute cluster team for the infrastructure. MJ acknowledges funding from SNSF Grant 10005248, from the Swiss AI Initiative Projects a139 and a140, from EU Horizon ELSA, from Google, Huawei and Microsoft Lingua. 
+
+# References 
+
+[ALB +25] Loubna Ben Allal, Anton Lozhkov, Elie Bakouch, Gabriel Martín Blázquez, Guilherme Penedo, Lewis Tunstall, Andrés Marafioti, Hynek Kydlíˇ cek, Agustín Piqueres Lajarín, Vaibhav Srivastav, Joshua Lochner, Caleb Fahlgren, Xuan-Son Nguyen, Clémentine Fourrier, Ben Burtenshaw, Hugo Larcher, Haojun Zhao, Cyril Zakka, Mathieu Morlon, Colin Raffel, Leandro von Werra, and Thomas Wolf. SmolLM2: When smol goes big – data-centric training of a small language model, 2025. Dataset card: https://huggingface.co/datasets/HuggingFaceTB/dclm-edu .[BFH +25] Sangmin Bae, Adam Fisch, Hrayr Harutyunyan, Ziwei Ji, Seungyeon Kim, and Tal Schuster. Re-laxed recursive transformers: Effective parameter sharing with layer-wise LoRA. In International Conference on Learning Representations (ICLR) , 2025. [BKB +25] Sangmin Bae, Yujin Kim, Reza Bayat, Sungnyun Kim, Jiyoun Ha, Tal Schuster, Adam Fisch, Hrayr Harutyunyan, Ziwei Ji, Aaron Courville, and Se-Young Yun. Mixture-of-recursions: Learning dynamic recursive depths for adaptive token-level computation. In Advances in Neural Information Processing Systems (NeurIPS) , 2025. [CGS +26] Yilong Chen, Naibin Gu, Junyuan Shang, Zhenyu Zhang, Yuchen Feng, Jiawei Sheng, Tingwen Liu, Shuohuan Wang, Yu Sun, Hua Wu, and Haifeng Wang. Mixture of universal experts: Scaling virtual width via depth-width transformation. arXiv preprint arXiv:2603.04971 , 2026. [CIS24] Róbert Csordás, Kazuki Irie, and Jürgen Schmidhuber. MoEUT: Mixture-of-experts universal transformers. In Advances in Neural Information Processing Systems (NeurIPS) , 2024. [CLH +26] Wenkai Chen, Tianshu Li, Wenyong Huang, Yichun Yin, Lifeng Shang, and Chengwei Qin. Loopmoe: Unifying iterative computation with mixture-of-experts for language modeling. arXiv preprint arXiv:2606.04438 , 2026. [Dee24] DeepSeek-AI. DeepSeek-V3 technical report. arXiv preprint arXiv:2412.19437 , 2024. [DGV +19] Mostafa Dehghani, Stephan Gouws, Oriol Vinyals, Jakob Uszkoreit, and Lukasz Kaiser. Universal transformers. In International Conference on Learning Representations (ICLR) , 2019. [FZS22] William Fedus, Barret Zoph, and Noam Shazeer. Switch transformers: Scaling to trillion parameter models with simple and efficient sparsity. Journal of Machine Learning Research , 23(120):1–39, 2022. [GLT +26] Zijin Gu, Tatiana Likhomanenko, Vimal Thilak, Jason Ramapuram, and Navdeep Jaitly. Path-constrained mixture-of-experts. arXiv preprint arXiv:2603.18297 , 2026. [GMJ +25] Jonas Geiping, Sean McLeish, Neel Jain, John Kirchenbauer, Siddharth Singh, Brian R. Bartoldson, Bhavya Kailkhura, Abhinav Bhatele, and Tom Goldstein. Scaling up test-time compute with latent reasoning: A recurrent depth approach. arXiv preprint arXiv:2502.05171 , 2025. [GRS +23] Angeliki Giannou, Shashank Rajput, Jy-Yong Sohn, Kangwook Lee, Jason D. Lee, and Dimitris Papailiopoulos. Looped transformers as programmable computers. In International Conference on Machine Learning (ICML) , pages 11398–11442, 2023. [HCK +26] Rizhen Hu, Yuan Cao, Boao Kong, Mou Sun, and Kun Yuan. Synergistic intra-and cross-layer regularization losses for moe expert specialization. arXiv preprint arXiv:2602.14159 , 2026. [HDPC20] Alex Henry, Prudhvi Raj Dachapally, Shubham Shantaram Pawar, and Yuxuan Chen. Query-key normalization for transformers. In Findings of the Association for Computational Linguistics: EMNLP 2020 , pages 4246–4253. Association for Computational Linguistics, 2020. [HFSK25] Jaemu Heo, Eldor Fozilov, Hyunmin Song, and Taehwan Kim. RingFormer: Rethinking recurrent transformer with adaptive level signals. arXiv preprint arXiv:2502.13181 , 2025. 
+
+11 [HHS17] Elad Hoffer, Itay Hubara, and Daniel Soudry. Train longer, generalize better: Closing the generalization gap in large batch training of neural networks. In Advances in Neural Information Processing Systems 30 (NIPS 2017) , pages 1731–1741, 2017. [JCT26] Ahmadreza Jeddi, Marco Ciccone, and Babak Taati. LoopFormer: Elastic-depth looped trans-formers for latent reasoning via shortcut modulation. In International Conference on Learning Representations (ICLR) , 2026. [JJB +24] Keller Jordan, Yuchen Jin, Vlado Boza, You Jiacheng, Franz Cesista, Laker Newhouse, and Jeremy Bernstein. Muon: An optimizer for hidden layers in neural networks, 2024. [LBOM98] Yann LeCun, Léon Bottou, Genevieve B. Orr, and Klaus-Robert Müller. Efficient Backprop. In Genevieve B. Orr and Klaus-Robert Müller, editors, Neural Networks: Tricks of the Trade , volume 1524 of Lecture Notes in Computer Science , pages 9–50. Springer, 1998. [LH19] Ilya Loshchilov and Frank Hutter. Decoupled weight decay regularization. In International Conference on Learning Representations , 2019. [LLL +25] Boxun Li, Yadong Li, Zhiyuan Li, Congyi Liu, Weilin Liu, Guowei Niu, Zheyue Tan, Haiyang Xu, Zhuyu Yao, Tao Yuan, Dong Zhou, Yueqing Zhuang, Bo Zhao, Guohao Dai, and Yu Wang. Megrez2 technical report. arXiv preprint arXiv:2507.17728 , 2025. [LLX +21] Dmitry Lepikhin, HyoukJoong Lee, Yuanzhong Xu, Dehao Chen, Orhan Firat, Yanping Huang, Maxim Krikun, Noam Shazeer, and Zhifeng Chen. GShard: Scaling giant models with conditional computation and automatic sharding. In International Conference on Learning Representations (ICLR) , 2021. [LSY +25] Jingyuan Liu, Jianlin Su, Xingcheng Yao, Zhejun Jiang, Guokun Lai, Yulun Du, Yidao Qin, Weixin Xu, Enzhe Lu, Junjie Yan, et al. Muon is scalable for LLM training, 2025. [MSG +24] Niklas Muennighoff, Luca Soldaini, Dirk Groeneveld, Kyle Lo, Jacob Morrison, Sewon Min, Weijia Shi, Pete Walsh, Oyvind Tafjord, Nathan Lambert, et al. OLMoE: Open mixture-of-experts language models. arXiv preprint arXiv:2409.02060 , 2024. [NPK +26] Joel Niklaus, Guilherme Penedo, Hynek Kydlicek, Elie Bakouch, Lewis Tunstall, Ed Beeching, Thibaud Frere, Colin Raffel, Leandro von Werra, and Thomas Wolf. The synthetic data playbook: Generating trillions of the finest tokens. https://huggingface.co/spaces/HuggingFaceFW/ finephrase , 2026. HuggingFace Space and dataset, https://huggingface.co/datasets/ HuggingFaceFW/finephrase .[NRR25] Mohammadmahdi Nouriborji, Morteza Rohanian, and Omid Rohanian. Improving recursive transformers with mixture of LoRAs. arXiv preprint arXiv:2512.12880 , 2025. [Ope26] OpenAI. What parameter golf taught us. https://openai.com/index/ what-parameter-golf-taught-us/ , 2026. Accessed: 2026-06-14. [PNBKF26] Hayden Prairie, Zachary Novack, Taylor Berg-Kirkpatrick, and Daniel Y. Fu. Parcae: Scaling laws for stable looped language models. arXiv preprint arXiv:2604.12946 , 2026. [SAL +24] Jianlin Su, Murtadha Ahmed, Yu Lu, Shengfeng Pan, Wen Bo, and Yunfeng Liu. RoFormer: Enhanced transformer with rotary position embedding. Neurocomputing , 568:127063, 2024. [SDL +25] Nikunj Saunshi, Nishanth Dikkala, Zhiyuan Li, Sanjiv Kumar, and Sashank J. Reddi. Reasoning with latent thoughts: On the power of looped transformers. In International Conference on Learning Representations (ICLR) , 2025. [Sha20] Noam Shazeer. GLU variants improve transformer. 2020. [SMM +17] Noam Shazeer, Azalia Mirhoseini, Krzysztof Maziarz, Andy Davis, Quoc V. Le, Geoffrey E. Hinton, and Jeff Dean. Outrageously large neural networks: The sparsely-gated mixture-of-experts layer. In International Conference on Learning Representations (ICLR) , 2017. [SRK26] Kristian Schwethelm, Daniel Rueckert, and Georgios Kaissis. How much is one recurrence worth? iso-depth scaling laws for looped language models. arXiv preprint arXiv:2604.21106 , 2026. [T +25] Zheyue Tan et al. ReXMoE: Reusing experts with minimal overhead in mixture-of-experts. arXiv preprint arXiv:2510.17483 , 2025. 
+
+12 [TBB +25] Kimi Team, Yifan Bai, Yiping Bao, Y Charles, Cheng Chen, Guanduo Chen, Haiting Chen, Huarong Chen, Jiahao Chen, Ningxin Chen, et al. Kimi k2: Open agentic intelligence. arXiv preprint arXiv:2507.20534 , 2025. [WCZ25] Ziteng Wang, Jianfei Chen, and Jun Zhu. ReMoE: Fully differentiable mixture-of-experts with ReLU routing. In International Conference on Learning Representations (ICLR) , 2025. [XSW +22] Fuzhao Xue, Ziji Shi, Futao Wei, Yuxuan Lou, Yong Liu, and Yang You. Go wider instead of deeper. In AAAI Conference on Artificial Intelligence , 2022. [XYH +20] Ruibin Xiong, Yunchang Yang, Di He, Kai Zheng, Shuxin Zheng, Chen Xing, Huishuai Zhang, Yanyan Lan, Liwei Wang, and Tieyan Liu. On layer normalization in the transformer architecture. In International Conference on Machine Learning (ICML) , pages 10524–10533. PMLR, 2020. [Y +25] Chengting Yu et al. MeSH: Memory-as-state-highways for recursive transformers. arXiv preprint arXiv:2510.07739 , 2025. [Y +26] Chengting Yu et al. SpiralFormer: Looped transformers can learn hierarchical dependencies via multi-resolution recursion. arXiv preprint arXiv:2602.11698 , 2026. [YHB +21] Ge Yang, Edward Hu, Igor Babuschkin, Szymon Sidor, Xiaodong Liu, David Farhi, Nick Ryder, Jakub Pachocki, Weizhu Chen, and Jianfeng Gao. Tuning large neural networks via zero-shot hyperparameter transfer. Advances in Neural Information Processing Systems , 34:17084–17097, 2021. [YYZ +25] An Yang, Baosong Yang, Beichen Zhang, et al. Qwen3 technical report. arXiv preprint arXiv:2505.09388 , 2025. [ZBK +22] Barret Zoph, Irwan Bello, Sameer Kumar, Nan Du, Yanping Huang, Jeff Dean, Noam Shazeer, and William Fedus. ST-MoE: Designing stable and transferable sparse expert models. arXiv preprint arXiv:2202.08906 , 2022. [ZLL +22] Yanqi Zhou, Tao Lei, Hanxiao Liu, Nan Du, Yanping Huang, Vincent Zhao, Andrew Dai, Zhifeng Chen, Quoc Le, and James Laudon. Mixture-of-experts with expert choice routing. In Advances in Neural Information Processing Systems (NeurIPS) , 2022. [ZS19] Biao Zhang and Rico Sennrich. Root mean square layer normalization. In Advances in Neural Information Processing Systems (NeurIPS) , volume 32, 2019. [ZTHK26] Abbas Zeitoun, Lucas Torroba-Hennigen, and Yoon Kim. Hyperloop transformers. arXiv preprint arXiv:2604.21254 , 2026. [ZWH +25] Rui-Jie Zhu, Zixuan Wang, Kai Hua, Tianyu Zhang, Ziniu Li, Haoran Que, Boyi Wei, Zixin Wen, Fan Yin, et al. Scaling latent reasoning via looped language models. arXiv preprint arXiv:2510.25741 , 2025. 
+
+13 A Reproducibility details: Component ablations (Section 3) 
+
+This appendix documents the full hyperparameter configuration used in the component-tying ablation of Section 3, sufficient to reproduce all reported numbers. The accompanying codebase will be released on acceptance. 
+
+Architecture. We use a vanilla depth-32 decoder-only transformer with dmodel = 512 , nheads = 8 ,
+
+dhead = 64 , sequence length 512 , and a tiktoken cl100k_base tokenizer (vocab size 100 ,277 ). Each transformer layer is pre-norm [ XYH +20 ] with RMSNorm [ ZS19 ]: a multi-head self-attention sub-block—using rotary position embeddings (RoPE) [SAL +24] and QK-norm [HDPC20] (RMSNorm applied to queries and keys before the RoPE rotation and the dot product)—followed by a sparsely-activated MoE FFN sub-block with SwiGLU activations [ Sha20 ]. The fine-grained MoE uses 32 
+
+experts per layer with top-k = 8 and dff,expert = 128 ; the coarse-grained variant uses 8 experts with top-k = 2 and dff,expert = 256 , holding active FFN compute approximately constant. All linear projections (attention Q,K,V,O, FFN gate/up/down, router) have biases disabled. Every input sequence starts with a <BoD> token, allowing to channel attention-sink behavior. 
+
+Tying topologies. The depth-32 stack is partitioned into an untied 2-layer prelude, k tying groups covering the 28 middle layers, and an untied 2-layer coda. Each tying group is a parameter block of b
+
+unique transformer layers reused ℓ times consecutively; the group therefore spans b · ℓ layers, and the topology overall covers k · b · ℓ = 28 middle layers. We denote a topology with k groups, block size b, and loop count ℓ as k (group of b)ℓ×. The five topologies we sweep are: 1 ( group of 2) 14 ×,
+
+2 ( group of 2) 7×, 3 ( group of 2) (5 ,4,5) × (non-uniform loop count 5+4+5=14 ), 4 ( group of 1) 7×,and 7 ( group of 1) 4×. The MoE baseline corresponds to no cross-layer tying (all 32 layers carry independent parameters). We additionally evaluate a MoEUT-style topology [ CIS24 ] in which the entire 32-layer stack forms a single tying group ( 1 ( group of 2) 16 ×) with no untied prelude or coda; this serves as the maximal-tying extreme of the design space. 
+
+Tying modes. Within each group, the chosen subset of components is tied across the group’s layers (i.e., each layer in the group references the same parameter tensor for the tied components, while the layers compute forward on distinct activations as in any standard transformer stack). Norm gains are always per-layer in our codebase (each transformer layer has its own RMSNorm scaling parameter) and are therefore not listed as a tying option. We evaluate three modes (Table 1): • ALL -TIE : FFN expert weights, attention Q,K,V,O projections, and the router are all tied across the group. • ATTN -TIE : FFN expert weights and attention Q,K,V,O projections are tied; the router is per-layer. • EXPERT -TIE : only the FFN expert weights are tied; attention and router are per-layer. Gradient accumulation through tied parameters’ multiple use sites is handled natively by PyTorch autograd; no manual gradient manipulation is required. 
+
+Optimizer. Following the established recipe of [ JJB +24 , LSY +25 ], we use Muon for all 2Dhidden weights (attention Q,K,V,O projections, FFN gate/up/down projections) with ηMuon = 2 ×
+
+10 −2, momentum 0.95 with Nesterov, weight decay 0.1, and 5 Newton–Schulz iterations for the orthogonalisation step. The remaining parameters (token and output embeddings, norm gains, router weights, biases) are optimised with AdamW [ LH19 ] at ηAdamW = 2 × 10 −3 (i.e., 0.1 × ηMuon ,the empirical ratio used by [ JJB +24 ]), β1 = 0 .9, β2 = 0 .95 , and zero weight decay. Routers are kept on AdamW because their output behaves as a per-token classifier head, where adaptive per-parameter learning rates suit the sparse and heavy-tailed gradient distribution. 5 The ablation configurations in this section never use cross-layer tying that affects 2D hidden weights touched by Muon (FFN expert weights are 3D and handled separately), so no tied-LR scaling is applied here; the production-architecture experiments in Section 4 do introduce such scaling and are documented in Appendix B.  
+
+> 5This differs from the convention in some Muon-MoE implementations [ LSY +25 ] that route 2D router weights through Muon. Our preliminary experiments found neither convention substantially superior at the scales considered here; we use the AdamW-router convention uniformly across all experiments in this paper.
+
+14 Learning rate schedule. Both optimizers follow a cosine schedule with 50 -step linear warmup, decaying from peak to ηmin = 0 .1 × ηpeak at the final step. The Muon and AdamW peaks decay synchronously. 
+
+Loss. Standard next-token cross-entropy plus a load-balancing auxiliary loss [ SMM +17 , FZS22 ]with coefficient αaux = 10 −2 and a router z-loss with coefficient αz = 10 −4. The same loss recipe is used in the production-architecture experiments of Section 4 (Appendix B). 
+
+Training. Effective batch size 32 × 8 × 512 = 131 ,072 tokens per optimization step (per-step batch × gradient accumulation × sequence length), trained for 10 ,000 steps ( ≈ 1.3B tokens total). Gradient clipping at global norm 1.0. Mixed precision: bfloat16 forward and backward with float32 master weights. We enable torch.compile .
+
+Data. A 75:25 mixture of DCLM-edu [ ALB +25 ] and FinePhrase [ NPK +26 ], streamed from Hug-gingFace with shuffle buffers of 10 ,000 documents per source and a fixed seed (42) for reproducibility. A held-out 10M-token validation slice (sampled deterministically by skipping the first 10M tokens of the stream before evaluation) is used for all loss reporting. 
+
+Random seeds. Model initialization, data shuffling, and stochastic optimizer behavior are all seeded (default seed 42 ). Within-sweep variance from CUDA matmul nondeterminism is empirically below 
+
+0.005 in final loss across re-runs, much smaller than the architectural effects under study. 
+
+Downstream evaluation. We report only validation loss for the ablations of Section 3. The relevant signal in this section is the relative comparison between tying modes at fixed parameter budget; absolute downstream task accuracy at this model scale is below the resolution at which our task suite reliably distinguishes architectural variants. Downstream numbers for our main configurations, evaluated at larger model scale, are reported in Section 4 (Table 4). 
+
+Hardware. Each ablation run completes in approximately 3 hours on a single H100 GPU. 
+
+# B Reproducibility details: Main experiments (Section 4) 
+
+This appendix documents the configuration of the production-architecture runs in Table 4, sufficient to reproduce the reported numbers given the released codebase. 
+
+Architectures. Scaled-down variants of OLMoE [ MSG +24 ], Qwen3-MoE [ YYZ +25 ], and DeepSeekMoE [ Dee24 ], instantiated through the HuggingFace transformers v5 reference im-plementations. All three are pre-norm [ XYH +20 ] with RMSNorm [ ZS19 ], SwiGLU FFN activa-tions [ Sha20 ], and rotary position embeddings [ SAL +24 ]; Qwen3-MoE additionally applies QK-norm [ HDPC20 ] (RMSNorm on queries and keys) by default, whereas OLMoE and DeepSeekMoE 
+
+use the QKV-clipping mechanism inherited from the OLMoE config (clip threshold 8) instead. Our DeepSeekMoE-style configuration adopts DeepSeek’s fine-grained routing (top-6 over 64 experts, without using shared experts). It does not use Multi-head Latent Attention (MLA), as it is only Transformers v5.9 and does not support grouped GEMM. Since expert tying operates only on the FFN sub-block and routing, it is independent of the attention variant and is expected to compose well with any alternative attention mechanism, as for example MLA. 
+
+OLMoE and DeepSeekMoE : dmodel = 512 , 16 layers, 4 attention heads (no GQA), 64 routed experts of FFN intermediate size 256 each, top-k = 8 for OLMoE and top-k = 6 for DeepSeekMoE; the only difference between the two is top-k, which affects active compute but not total parameter count. 
+
+Qwen3-MoE : dmodel = 384 , 28 layers, 6 attention heads with grouped-query attention (1 KV head), 
+
+60 routed experts of MoE intermediate size 192 each, top-k = 4 . All three architectures use the HuggingFace tiktoken cl100k_base tokenizer (vocab size 100 ,277 ) with tie_word_embeddings =
+
+False . Same as in our smaller ablations setup, every input sequence starts with a <BoD> token, allowing to channel attention-sink behavior. Active and total parameter counts per configuration are reported in Table 4. 
+
+Tying topology and width expansion. For each architecture the five configurations are: baseline 
+
+(g=1 , no tying); g=2 and g=4 (expert FFN tensors aliased across consecutive groups of 2 or 4 middle layers, 2-layer prelude and 2-layer coda untied); g=4 , 2× width and g=4 , 4× width ; the latter two double or quadruple the number of experts in the tied middle layers, leaving prelude and coda at the 15 baseline expert count. The 4× variant returns each architecture’s total parameter count to within 1% 
+
+of its baseline (“iso-base”). Heterogeneous width is implemented by constructing a temporary model with the expanded expert count and transplanting its middle-layer MLPs into the main model before applying expert tying. 
+
+Optimizer. Identical optimiser to the ablation runs (Appendix A): Muon [ JJB +24 , LSY +25 ] for 
+
+2D hidden weights at ηMuon = 2 × 10 −2 with weight decay 0.1, momentum 0.95 Nesterov, 5 Newton– Schulz iterations; AdamW [ LH19 ] optimizes the embeddings, output head, norm gains, biases, and routers at ηAdamW = 0 .1 · ηMuon = 2 × 10 −3 with (β1, β 2) = (0 .9, 0.95) . We apply a uniform weight decay of 0.01 to all AdamW parameters. While some large-scale Muon-MoE recipes apply heavy regularization ( 0.1) to AdamW parameters [ TBB +25 ], we adopt the lighter 0.01 standard from the foundational Muon baseline [ JJB +24 ]. For the routers specifically, this provides a gentle physical shrinkage that works in tandem with the auxiliary z-loss to prevent logit explosion and softmax saturation. The disparity between our ηMuon = 2 × 10 −2 and the η ≈ 2 × 10 −4 reported by [ LSY +25 ] and Kimi K2 [ TBB +25 ] is an artifact of two distinct shape-factor conventions, not a genuine difference in update magnitude. [ LSY +25 ] multiply the orthogonalised update by 0.2 · pmax( din , d out ), which cancels the 1/pmax( din , d out ) per-entry RMS of the orthogonalised update and leaves a shape-independent per-entry update RMS of 0.2 η. The original Jordan recipe [ JJB +24 ] we use applies pmax(1 , d out /d in ) ≈ 1 for the near-square FFN matrices in our architectures, leaving a per-entry update RMS of ηMuon /pmax( din , d out ). For our largest ablation matrices ( max d ≈ 1024 ), this gives 
+
+∼ 6×10 −4 per entry, against 4×10 −5 per entry for K2 — a ∼ 16 × gap that closely matches the ∼ 18 ×
+
+width ratio between K2’s hidden size ( 7168 ) and our hidden size in the larger experiment configs (384 ), as predicted by the 1/width LR-transfer rule of muP [ YHB +21 ]. We therefore operate in the same effective regime as production Muon-MoE recipes; the two conventions are interchangeable up to a corresponding LR rescaling. 
+
+3D expert tensors and tied-LR scaling. The HuggingFace MoE implementations stack expert weights into 3D tensors of shape (E, 2dff,expert , d model ) (fused gate/up) and (E, d model , d ff,expert ) (down). Muon expects 2D inputs, so we register one 2D proxy parameter per expert that shares storage with its slice of the 3D tensor; gradients are copied from the 3D parameter into the proxies via a post-backward hook before the optimiser step. For tied expert tensors, gradients accumulate into the same parameter from g layer use-sites, producing an effective gradient of approximately g times the untied magnitude. We compensate by dividing the learning rate of tied-expert parameter groups by √g
+
+(tied_lr_divisor=2.0 for g=4 ), as motivated in Section 3.5; this is applied to both the Muon and AdamW LR streams. Without this scaling the tied middle stack effectively trains at a higher step size on its expert weights, which we found degrades early-step stability and final loss in preliminary runs. The non-tied baseline uses divisor 1.Decoupled optimizers apply weight decay as a penalty proportional to the learning rate: W ←
+
+W − η∇L − ηλW . Dividing η by √g for tied parameters therefore also reduces their per-step regularization ηλ by the same factor. We leave this uncompensated: all parameter groups, tied and untied, use the same base λ with no √g adjustment, so tied parameters receive proportionally less structural shrinkage per step. In an ablation at g=4 we found that compensating the decay (multiplying λ by √g for tied groups, restoring the untied ηλ ) gave worse final loss than leaving it uncompensated, so the simpler uniform-λ scheme is used throughout. 
+
+Learning rate schedule. Cosine schedule with 100 -step linear warmup, decaying from ηpeak 
+
+to ηmin = 0 .1 × ηpeak at the final step; Muon and AdamW peaks decay synchronously (and the tied-LR-divided groups inherit the same shape). 
+
+Loss. Standard next-token cross-entropy plus a load-balancing auxiliary loss [ SMM +17 , FZS22 ]with coefficient αaux = 10 −2 and a router z-loss with coefficient αz = 10 −4. Identical to the ablation runs of Section 3 (Appendix A). 
+
+Training and data. Training used ≈ 10 .5B tokens total for the smaller configs, and ≈ 15 .7B tokens for the 7B configs. This corresponds to 20 ,000 or 30 ,000 optimisation steps respectively. All configs use a global batch size of 256 sequences per step, or 524 ,288 tokens, at 2048 sequence length. All small configurations use 16 micro batch size. For DDP=4 this means gradient accumulation 4. For additional single-GPU throughput experiments, the same micro-batch size results in grad accumu-16 lation 16. Gradient clipping is active at a global norm 1.0. Mixed precision: bfloat16 forward and backward, float32 master weights, torch.compile enabled where available. Larger configs use gradient checkpointing for saving GPU memory. We use the same 75:25 DCLM-edu [ ALB +25 ]and FinePhrase [ NPK +26 ] data mixture as the ablations (Appendix A), with the same data loader, tokenised with the same cl100k_base encoding. 
+
+Hardware. Each run uses 4×H200 GPUs with PyTorch DDP. For the smaller config in Table 4, each 20 ,000 -step wall-clock time per run is roughly 5 hours. The larger 7B scale experiments with 
+
+30 ,000 -step as in Table 5 takes about 3.5 days ( g=4 tied setting) on the 4 GPUs. 
+
+Efficiency & Throughput. To verify that expert tying does not introduce computational bottlenecks, we measured sustained training throughput across configurations at the 1,000 -step mark. Because hardware accelerators like the H200 are typically memory-bandwidth bound rather than compute bound in MoE architectures, the reduction in unique parameter count yields a direct wall-clock speedup. Our large untied OLMoE baseline of 7B-A1B, as detailed in Table 5, processes 41 ,859 
+
+tokens/sec. The g=4 tied topology (with experts tied) processes 51 ,777 tokens/sec, a 23 .7% increase in throughput (identical global batch size, grad-accumulation 4x larger on baseline, as the identical local batch size setting results in out of memory ). On the smaller config shown in Table 4, the throughput gain is 15 .7% (again with DDP on 4 GPUs). For the small models we use identical global and local batch sizes in the comparison, as both can fit into GPU memory. One should note that the throughput gains are also influenced by the reduced DDP communication need resulting from our tying. We relied on a fast intra-node GPU-to-GPU communication via NVLink via NVSwitch, 900 GB/s bidirectional bandwidth. In addition, another part of the gain (only used for 7B configs) is the possibility to run with 2x or 4x local batch size, due to the reduced GPU memory again from the parameter tying. Finally, our code in plain PyTorch does not use any optimized compute kernels. Tailored compute kernels for tied layers could therefore likely result in further throughput improvements, both at training and inference time. Our preliminary results confirm that the parameter savings translate directly into efficiency gains due to reduced memory traffic, reduced communication bandwidth, and improved MFU. 
+
+Downstream evaluation. We report macro-average 3-shot accuracy on {ARC-Easy, ARC-Challenge, HellaSwag, PIQA, WinoGrande, OpenBookQA} via lm-evaluation-harness , evalu-ated on the final saved checkpoint of each run. 
+
+# C Monitoring Router Health and Expert Utilization 
+
+A common failure mode in MoE training is router collapse, where the gating network degenerates to selecting a small subset of experts and the model effectively reduces to a dense network [ SMM +17 ]. Because our architecture forces consecutive layers to share the same underlying expert weights, it is important to verify that tying does not encourage collapse or degrade routing diversity. 
+
+Logged metrics. For every Section 4 run we track, averaged across all routing layers: • Auxiliary load-balancing loss [ SMM +17 , FZS22 ] ( αaux = 10 −2), which penalises imbal-anced expert usage. • Mean routing entropy: the Shannon entropy of the softmax-normalised routing distribu-tions; low entropy indicates the router is committing to few experts. • Router z-loss [ ZBK +22 ] ( αz = 10 −4), which tracks the magnitude of the pre-softmax router logits and guards against logit explosion. • Cross-loop agreement: for tied configurations, the per-token top-1 routing agreement between layers that share an expert (the same metric defined in Section 3). High agreement indicates the shared expert is being reused with near-identical routing across loop positions; lower agreement indicates genuinely different per-layer use. Note that the router parameters receive relatively weak weight decay in the AdamW split (see Appendix B), so they undergo less structural shrinkage. The z-loss prevents logit explosion in its absence. 17 Observations. Across all tying topologies the router remains healthy throughout training: the auxiliary loss stays bounded (it does not run away or collapse to zero), routing entropy stays well above zero, and the z-loss keeps router logits in a stable range rather than diverging. Tying does not induce router collapse at any group size. 2000 4000 6000 8000          
+
+> step
+> 1.05
+> 1.10
+> 1.15
+> 1.20
+> 1.25
+> 1.30
+> 1.35
+> Aux loss
+> 2000 4000 6000 8000
+> step
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Cross-loop agreement
+> 2000 4000 6000 8000
+> step
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> 2.0
+> 2.5
+> 3.0
+> Mean routing entropy
+> 2000 4000 6000 8000
+> step
+> 2.5
+> 5.0
+> 7.5
+> 10.0
+> 12.5
+> 15.0
+> 17.5
+> 20.0
+> Router z-loss
+> Topology
+> baseline
+> 1g
+> 2g
+> 3g
+> 4g
+> 7g
+> moeut
+> Topology
+> baseline
+> 1g
+> 2g
+> 3g
+> 4g
+> 7g
+> moeut
+> Tying mode
+> untied (baseline)
+> attn-tie
+> expert-tie
+> all-tie
+
+Figure 1: Router-health metrics across the Section 3 fine-grained ablation runs, under the √g tied-LR scaling. Colour encodes topology (baseline = black, 1g = red, 2g = orange, 3g = olive, 4g = green, 
+
+7g = blue, MoEUT = purple); line style encodes tying mode ( ATTN -TIE dashed, EXPERT -TIE solid, 
+
+ALL -TIE dotted, untied baseline thick solid). The auxiliary loss, routing entropy, and z-loss remain stable across all configurations, indicating no router collapse under tying. EXPERT -TIE tracks ATTN -
+
+TIE closely on cross-loop agreement and entropy—shared experts are reused with genuinely different routing across loop positions—while ALL -TIE shows elevated cross-loop agreement, as expected when the router itself is also shared. 18

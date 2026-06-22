@@ -1,0 +1,607 @@
+Title: PreLort: Prefix-Nested LoRA for Federated Fine-Tuning under Rank Heterogeneity
+
+URL Source: https://arxiv.org/pdf/2606.15963v1
+
+Published Time: Tue, 16 Jun 2026 01:24:35 GMT
+
+Number of Pages: 16
+
+Markdown Content:
+# PreLort: Prefix-Nested LoRA for Federated Fine-Tuning under Rank Heterogeneity 
+
+Muhammad Waseem 1, Nurbek Tastan 1, Andrej Jovanovic 2,3, Nicholas D. Lane 2,3
+
+Nils Lukas 1, Karthik Nandakumar 1,4, Samuel Horváth 11MBZUAI, UAE 2University of Cambridge, UK 
+
+> 3
+
+Flower Labs, UK 4Michigan State University, USA 
+
+## Abstract 
+
+Federated fine-tuning of large language models using parameter-efficient meth-ods such as LoRA enables privacy-preserving adaptation of foundation models. Heterogeneous hardware resources introduce challenges, as clients with differ-ent adapter ranks cannot be directly aggregated. While existing methods enable aggregation under heterogeneous ranks, they fail to control how information is distributed across rank dimensions, leading to suboptimal use of shared low-rank representations. Instead, we propose PreLort : a nested low-rank formulation for federated LoRA that organizes adapter dimensions into a prefix hierarchy. Our approach ensures that lower-rank dimensions encode task-relevant information, while higher-rank dimensions capture additional capacity. Building on this, we introduce (i) a segment-wise aggregation rule that averages only over clients con-tributing to each rank segment, avoiding dilution from zero-padded lower-rank clients, and (ii) a prefix-nested training strategy that optimizes each adapter under multiple rank truncations, encouraging useful signal to concentrate in low-rank pre-fix dimensions. Together, these components encourage a consistent low-rank prefix capturing the most task-relevant information, while higher-rank dimensions learn additional capacity. This allows low-rank clients to benefit from richer information contributed by higher-rank clients, as prefix dimensions are consistently learned and aggregated. Experiments demonstrate that our method consistently outper-forms prior heterogeneous federated LoRA methods in accuracy and ROUGE-L, while achieving lower or comparable perplexity across multiple base models. 
+
+## 1 Introduction 
+
+Federated learning (FL) enables collaborative training without sharing raw data [McMahan et al., 2017], but it does not inherently guarantee privacy, as model updates can leak sensitive information. Stronger privacy guarantees typically require additional techniques such as differential privacy or secure aggregation [Kairouz et al., 2021]. Large language models (LLMs) are increasingly adapted to downstream tasks via fine-tuning, but their scale makes full-parameter training impractical in decentralized environments [Zhang et al., 2024a]. To reduce computational and communication costs, parameter-efficient fine-tuning (PEFT) methods such as LoRA, prefix tuning, and prompt tuning have become the standard approach, learning low-rank updates while keeping the base model frozen [Hu et al., 2022, Houlsby et al., 2019, Pfeiffer et al., 2021, Lester et al., 2021] . A key challenge in federated LoRA is rank heterogeneity [Cho et al., 2024, Wang et al., 2024]. In realistic cross-device settings, clients operate under varying memory and compute constraints. As such, clients may initialize non-identical LoRA adapters, preventing direct aggregation of adapters. A native solution is to enforce a uniform rank across clients. This is suboptimal as enforcing minimal rank across all clients will produce a model that does not have enough representational power. Recent 
+
+> Preprint. Under review.
+> arXiv:2606.15963v1 [cs.DC] 14 Jun 2026
+
+works have provided solutions to this problem enabling aggregation across heterogeneous LoRA modules through zero-padding [Wang et al., 2024, Cho et al., 2024, Singhal et al., 2025]. However, these methods focus primarily on how to combine updates algebraically, without considering how information is distributed across rank dimensions. This leads to a fundamental limitation: heterogeneous ranks induce misaligned representations . Even when aggregation is mathematically well-defined, combining independently trained models may intro-duce inconsistencies due to misaligned representations or incompatible parameter updates [Wortsman et al., 2022, Ilharco et al., 2023, Matena and Raffel, 2022]. As a result, lower-rank clients do not benefit from higher-rank updates. In this work, we argue that addressing rank heterogeneity requires not only improved aggregation, but also structured alignment of representations across ranks . We introduce PreLort : a nested low-rank formulation that organizes LoRA adapter dimensions into a prefix structure, where lower-rank dimen-sions capture task-relevant information and higher dimensions provide additional capacity [Kusupati et al., 2022, Cai et al., 2020, Yu et al., 2019, Yu and Huang, 2019]. This structure encourages impor-tant information to concentrate hierarchically in prefix dimensions, enabling consistent aggregation across heterogeneous ranks. Building on this formulation, we propose two key components. First , we design a nested training objective that explicitly trains multiple rank truncations within each client update, encouraging task-relevant signal to concentrate in shared low-rank prefixes hierarchically. This produces representations that remain useful under arbitrary truncation and are consistently aligned across clients. Second ,we introduce a segment-wise aggregation rule that leverages this structure by aggregating adapter parameters only over the subset of clients that support each rank segment, avoiding zero-padding and preserving the contribution of higher-rank clients without introducing bias. Our approach differs from prior work in that it jointly addresses representation alignment across rank dimensions, training dynamics, and aggregation under heterogeneous ranks. 
+
+Our main contributions are summarized as follows: 
+
+• We identify representation misalignment across rank dimensions as a key limitation in heteroge-neous federated LoRA. • We propose a nested low-rank formulation that imposes a common prefix structure over adapter dimensions, and develop a unified training and aggregation strategy that enables consistent aggregation across heterogeneous ranks without zero-padding. • We empirically demonstrate consistent improvements in model quality and stability over prior heterogeneous federated LoRA methods on instruction-tuning benchmarks. 
+
+## 2 Related Work 
+
+Parameter-Efficient Fine-Tuning. Parameter-efficient fine-tuning (PEFT) methods adapt large language models by training a small set of additional parameters while keeping the base model frozen. Among these, LoRA [Hu et al., 2022] represents weight updates as low-rank decompositions and has become a widely adopted approach for LLM adaptation. Other PEFT methods include adapter-based approaches [Houlsby et al., 2019, Pfeiffer et al., 2021], prompt-based methods such as prompt tuning and prefix tuning [Lester et al., 2021, Li and Liang, 2021] and bias-only or partial finetuning techniques like BitFit [Ben Zaken et al., 2022]. More recent work has explored improving efficiency and flexibility through adaptive rank allocation and structured updates, including LoFT [Tastan et al., 2026], AdaLoRA [Zhang et al., 2023], DoRA [Liu et al., 2024], and other variants that modify the parameterization or training dynamics of low-rank updates. While these approaches are effective in centralized settings, they do not directly address the challenges of heterogeneous resource constraints and rank variability that arise in federated learning. 
+
+Federated Fine-Tuning and Heterogeneous LoRA. Federated fine-tuning adapts large language models using decentralized data while avoiding direct data sharing. To reduce communication and computation costs, recent methods combine federated learning with parameter-efficient fine-tuning, especially LoRA. FedIT [Zhang et al., 2024a] applies LoRA with FedAvg for federated instruction tuning, but direct factor-wise averaging introduces aggregation noise because averaging LoRA factors does not correspond to averaging their induced updates. Recent work has also 2explored stronger privacy requirements in federated adaptation: BlindFed [Tastan and Nandakumar, 2025] considers a double-blind setting in which neither private client data nor the proprietary foundation model is directly exposed, using encrypted inference, low-rank parallel adapters, and secure aggregation. FLoRA [Wang et al., 2024] addresses heterogeneous LoRA aggregation with stacking-based aggregation, which is exact in update space and naturally supports heterogeneous ranks. HetLoRA [Cho et al., 2024] further considers rank heterogeneity across clients through rank self-pruning and sparsity-weighted aggregation. These methods enable heterogeneous LoRA aggregation, but they mainly focus on how to combine adapters after local training. In contrast, our work focuses on aligning the internal rank structure during training itself. By enforcing a prefix-nested organization of LoRA dimensions and aggregating rank segments only over contributing clients, PreLort encourages shared low-rank prefixes to capture task-relevant information while higher-rank dimensions provide additional capacity. 
+
+Slimmable Networks. Slimmable networks, introduced by [Yu and Huang, 2019], train a single model that can operate at multiple widths, enabling dynamic trade-offs between model capacity and efficiency. This idea has inspired follow-up work in federated learning, mainly for resource-aware training [Mei et al., 2022, Horváth et al., 2021], communication and computational efficiency [Wang et al., 2022], and neural architecture search [Yu and Huang, 2020]. Recent work such as Aequa [Tastan et al., 2025] further leverages slimmable networks for fair federated learning by allocating model capacity (width) to participants based on their contributions. To the best of our knowledge, our work is the first to exploit this paradigm for addressing rank heterogeneity in federated LoRA. 
+
+## 3 Preliminaries 
+
+3.1 Federated Learning Setup 
+
+We consider a standard federated learning (FL) setting with K clients, each holding a private local dataset Dk of size nk, with N = P 
+
+> k
+
+nk denoting the total data size, where k ∈ K. In each communication round, a subset of clients performs local training and uploads their updates to a central server, which aggregates them into a global model and redistributes it to the clients. The goal is to minimize the global objective: 
+
+min  
+
+> W
+
+F (W ) = X
+
+> k
+
+nk
+
+N Fk(W ), (1) where Fk(W ) is the local empirical loss on Dk.
+
+3.2 Low-Rank Adaptation 
+
+Fine-tuning all parameters of a large pre-trained model W0 ∈ Rm×n is often infeasible in FL due to communication and memory constraints. LoRA [Hu et al., 2022] addresses this by freezing W0 and representing the weight update as a low-rank decomposition: 
+
+W ′ = W0 + ∆ W = W0 + BA, (2) where B ∈ Rm×r , A ∈ Rr×n, and r ≪ min( m, n ). Only A and B are trained, significantly reducing the number of trainable parameters. The rank r controls the capacity of the update, trading off expressivity and resource cost. 
+
+3.3 LoRA Aggregation in Federated Learning 
+
+In federated LoRA, each client k ∈ K locally trains its adapter parameters (Ak, B k) and sends them to the server for aggregation. In the homogeneous setting, a straightforward approach is to average the individual adapters: 
+
+Aglobal = X
+
+> k
+
+nk
+
+N Ak, Bglobal = X
+
+> k
+
+nk
+
+N Bk. (3) However, the product of the averaged LoRA adapters is not equal to the average of the corresponding low-rank updates BkAk. In particular, 3X
+
+> k
+
+nk
+
+N BkAk
+
+| {z } 
+
+> ∆Wideal
+
+̸
+
+= Bglobal Aglobal = X
+
+> k
+
+nk
+
+N Bk
+
+! X
+
+> k
+
+nk
+
+N Ak
+
+!| {z } 
+
+> ∆Wavg
+
+(4) The right-hand side introduces cross client terms BiAj for i̸ = j [Wang et al., 2024, Singhal et al., 2025], highlighting the challenge of aggregating decomposed updates in federated settings. 
+
+3.4 Aggregation in the Gradient Space 
+
+In practice, clients may operate under different resource constraints and thus use different LoRA ranks rk, leading to heterogeneous adapter dimensions across clients. This makes direct aggregation challenging and often requires additional handling such as zero padding of low-rank clients. Additionally, to avoid cross-client interaction terms introduced by factor-wise averaging, we perform aggregation in the update space via pseudo-gradients. Each client computes gradients with respect to its local adapter parameters, ∇Ak and ∇Bk, and shares these with the server. The server then performs a aggregation following the segment-wise aggregation in Section 4.3 and applies these aggregated gradients to obtain the global adapter parameters Aglobal and Bglobal .This formulation avoids explicit multiplication of independently averaged factors and thus eliminates cross terms of the form BiAj for i̸ = j, ensuring that only valid client-specific update directions contribute to the global model. 
+
+## 4 Method 
+
+We address rank heterogeneity in federated LoRA by jointly designing a nested training strategy and a segment-wise aggregation rule. The key idea is to ensure that lower-rank dimensions en-code meaningful and shared representations across clients, while higher-rank dimensions capture additional capacity. To achieve this, we train each client to make its adapter useful under multiple truncations, encouraging task-relevant signal to concentrate in low-rank prefix dimensions. We then aggregate adapters in a segment-wise manner, combining only the clients that contribute to each rank segment. This coupling between training and aggregation enables consistent knowledge sharing across heterogeneous ranks. 
+
+4.1 Nested Low-Rank Structure 
+
+We impose a prefix-structured organization over adapter dimensions. For a client with rank rk, only the first rk dimensions are active. During local training, however, the adapter is optimized not only at full rank but also under multiple truncated configurations, where only prefix subsets of dimensions are used. This ensures that lower-rank segments within a high-rank adapter are individually trained to be effective, rather than relying solely on higher dimensions. As a result, prefix dimensions encode meaningful representations that remain useful across different rank levels. As illustrated in Figure 1, a higher-rank adapter naturally contains multiple lower-rank sub-adapters within its leading dimensions. 
+
+4.2 Local Training Strategy 
+
+To ensure that prefix dimensions encode meaningful representations, we train each client to perform well not only at its full rank but also at the lower rank levels that appear in the federation. Let R = {r1 < r 2 < · · · < r L} denote the set of distinct rank levels in the system. For a client with rank rk, we define its active training ranks as 
+
+Rk = {r ∈ R | r ≤ rk}. (5) Thus, a client is trained at its full rank as well as all lower rank levels that may participate in aggregation with it. 4(a) Nested local Training — Rank -16 (Client 4)                                     
+
+> Single adapter trained jointly at full rank and all sub -ranks
+> (b) Segment -wise Aggregation
+> Each rank segment averaged only over contributing clients
+> 024816
+> Rank 16 · dims 0→15 · full -rank pass
+> Loss
+> ℒ₁₆
+> Rank 8 · dims 0→7 · sub -rank pass
+> Loss
+> ℒ₈dims 8 –15 masked
+> Rank 4 · dims 0→3
+> Loss
+> ℒ₄dims 4 –15 masked
+> Rank 2
+> Loss
+> ℒ₂dims 2 –15 masked
+> Joint objective ℒₖ = ¼( ℒ₁₆ + ℒ₈ + ℒ₄ + ℒ₂)
+> Full Rank
+> r = 16
+> Sub Rank
+> r=8
+> Sub Rank
+> r=4
+> Sub Rank
+> r=2
+> 024816
+> Client 1
+> Rank 2 seg 0 –2no contribution
+> Client 2
+> Rank 4 seg 0 –2seg 2 –4no contribution
+> Client 3
+> Rank 8 seg 0 –2seg 2 –4segment 4 –8no contribution
+> Client 4
+> Rank 16 seg 0 –2seg 2 –4segment 4 –8segment 8 –15
+> Aggregated adapter (segment -wise average of gradients)
+> ÷4 clients
+> seg 0 –2
+> ÷3 clients
+> seg 2 –4
+> ÷2 clients
+> segment 4 –8
+> ÷1 client
+> segment 8 –15
+> Rank 2 Rank 4 Rank 8 Rank 16
+> No contribution
+> towards
+> aggregation
+> 𝛁𝐀
+> or
+> 𝛁𝐁
+
+Figure 1: Overview of the proposed nested federated LoRA method using an illustrative example with ranks 2, 4, 8, 16. Left: nested local training optimizes a single adapter at full rank along with multiple prefix sub-ranks, encouraging lower-rank dimensions to capture task-relevant information through a joint objective. Right: segment-wise aggregation in the update space, where each client shares pseudo-gradients ( ∇Ak, ∇Bk) for its active rank segments. The server performs segment-wise averaging of these gradients over contributing clients and applies the aggregated updates to obtain the global adapter parameters ( Aglobal , B global ). For each r ∈ R k, we construct a truncated adapter by activating only the first r dimensions and masking the remaining dimensions. Denoting the corresponding model by f (·; θ, r ), where θ includes the shared frozen backbone and LoRA parameters, the local objective for client k is 
+
+Lk = 1
+
+|R k|
+
+X
+
+r∈R k
+
+LCE 
+
+ f (·; θ, r ), Dk
+
+, (6) where LCE denotes the standard cross-entropy loss. In practice, each training step consists of one full-rank forward/backward pass and additional sub-rank passes for all r ∈ R k \ { rk}. This training strategy ensures that each prefix segment is explicitly optimized at the same rank granularity used later during aggregation, encouraging task-relevant signal to concentrate in lower-rank dimensions. As a result, prefix segments remain informative and directly compatible with segment-wise aggregation across heterogeneous clients. The total local objective is the average over all |R k| sub-rank losses. This encourages the prefix dimensions to concentrate the most task-relevant signal, while higher dimensions encode incremental refinements, as depicted in Figure 1. The resulting adapter is thus meaningful at every prefix truncation, making it compatible with aggregation across clients of varying ranks. 
+
+4.3 Segment-wise Aggregation 
+
+Since clients contribute only to rank segments within their capacity, standard averaging across all clients requires aligning heterogeneous adapters, typically via zero-padding lower-rank adapters to the maximum rank. This introduces zero-valued contributions in higher-rank segments for low-rank clients, diluting updates from high-rank clients. Instead, we aggregate each rank segment independently in the update space, averaging only over clients whose rank is sufficient to contribute to that segment. 5Formally, let {r1 < r 2 < · · · < r L} denote the set of distinct rank levels across clients. For the l-th segment [rl−1, r l), clients share pseudo-gradients ∇Ak and ∇Bk, and the server computes: 
+
+∇Aglobal  
+
+> rl−1:rl
+
+=
+
+X  
+
+> k:rk≥rl
+
+nk ∇Akrl−1:rl
+
+X  
+
+> k:rk≥rl
+
+nk
+
+, (7) and analogously for ∇Bglobal  
+
+> rl−1:rl
+
+. The aggregated gradients are then applied to obtain Aglobal and 
+
+Bglobal .This aligns with training: each segment [rl−1, r l) is optimized only by clients with rank at least rl, so the same clients contribute during aggregation, ensuring consistency. As illustrated in Figure 1, segment 0–2 aggregates over all clients, 2–4 over three, 4–8 over two, and 8–16 over only the highest-rank client, preventing signal dilution while preserving meaningful lower-rank sharing. 
+
+## 5 Experiments 
+
+5.1 Experimental Setup Datasets and Setup. We evaluate on two standard instruction-tuning benchmarks: Alpaca (52K ex-amples) [Taori et al., 2023] and Databricks-dolly-15 [Zhang et al., 2024a], as well as a classification dataset, 20 Newsgroups [Mitchell, 1997]. We evaluate both classification and generation performance. Specifically, we report accuracy on MMLU (Dolly, Alpaca) and 20 Newsgroups, and Rouge-L on instruction-tuning benchmarks, as shown in Table 1. We additionally report perplexity to measure token-level likelihood, as shown in Table 2. We evaluate on two base models: TinyLlama-1.1B [Zhang et al., 2024b] and Qwen2.5-0.5B [Qwen Team et al., 2025]. All experiments run for 15 communication rounds. 
+
+Implementation Details. For both TinyLlama-1.1B and Qwen2.5-0.5B, LoRA modules are applied to self-attention layers only following Hu et al. [2022]. Local training uses the AdamW optimizer with a learning rate of 3 × 10 −4, batch size of 16, and gradient accumulation over 4 steps (effective batch size of 64). Clients are sampled uniformly at random in each round. Each selected client performs two local epochs per round (unless otherwise specified), and the datasets are uniformly partitioned between clients using a fixed random split. All experiments are conducted on a single NVIDIA GPU with 49GB of memory. Training each experiment takes approximately 10-17 hours, depending on the model and dataset. We did not use distributed large-scale training or specialized hardware. 
+
+Baselines. We compare against representative heterogeneous federated LoRA methods: Ze-roPad [Zhang et al., 2024a, Wang et al., 2024], which applies FedAvg with zero-padding to align heterogeneous ranks; HetLoRA [Cho et al., 2024], which uses rank self-pruning with sparsity-weighted aggregation; and FLoRA [Wang et al., 2024], which employs stacking-based aggregation for noise-free updates. We also report a homogeneous reference curve , where all clients use a fixed rank r ∈{1, 2, 4, 8, 16 , 32 , 64 , 128 }. This provides a reference for understanding the effective rank– performance trade-off under uniform capacity. In the heterogeneous LoRA setting, we follow [Wang et al., 2024] and adopt their rank configuration for the 10-client case, assigning local ranks [64, 32, 16, 16, 8, 8, 4, 4, 4, 4]. For the 5-client setting, we use a similar rank pattern, i.e., [16, 8, 4, 2, 1], to simulate heterogeneous computational resources. Nested training evaluates all valid prefix sub-ranks for each batch. 6Table 1: Evaluation of heterogeneous federated LoRA methods across base models. Accuracy is reported for MMLU (Dolly, Alpaca) and 20 Newsgroups classification, while Rouge-L is reported for instruction-tuning benchmarks (Dolly, Alpaca). Higher is better.                                                                    
+
+> Foundation Model Method Accuracy ROUGE-L MMLU Dolly Alpaca 20 Newsgroups Dolly Alpaca TinyLlama-1.1B
+> ZeroPad 29.1 26.72 14.68 27.34 32.1 HetLoRA 29.9 29.09 17.01 28.13 33.27 FLoRA 28.42 29.19 34.08 28.72 33.21 Nested Aggregation Only 29.63 28.63 29.48 28.16 28.76 Nested Training Only 28.73 30.21 31.68 26.65 33.2 PreLort 33.86 30.76 32.47 29.34 33.79 Qwen2.5-0.5B
+> ZeroPad 38.36 33.1 16.95 27.07 30.49 HetLoRA 38.88 34.59 30.90 27.23 32.47 FLoRA 38.84 34.51 32.94 28.33 34.22 Nested Aggregation Only 38.32 32.71 39.93 28.42 30.6 Nested Training Only 39.33 34.66 28.22 26.53 34.43 PreLort 39.85 35.76 39.52 28.79 35.03
+
+Table 2: Perplexity comparison of heterogeneous federated LoRA methods on instruction-tuning benchmarks using TinyLlama-1.1B and Qwen2.5-0.5B. Lower is better.                                           
+
+> Method ZeroPad HetLoRA FLoRA Nested Aggregation Only Nested Training Only PreLort TinyLlama 1.1B
+> Dolly 4.5902 4.5589 4.4407 4.9115 4.5492 4.4030
+> Alpaca 2.6822 2.6822 2.6230 3.1084 2.6699 2.6379 NewsGroup 7.1240 6.9611 6.5561 6.6924 6.6105 6.4899 Qwen-2.5-0.5B
+> Dolly 7.0482 7.0276 6.8025 7.6927 6.9159 6.8156 Alpaca 2.8185 2.7983 2.6774 2.6695 3.4447 2.6378
+> NewsGroup 11.6069 11.5412 11.4055 11.9582 11.3023 11.2229
+
+5.2 Main Results 
+
+Table 1 presents the main comparison across heterogeneous federated LoRA methods in terms of accuracy and ROUGE-L. Across both TinyLlama-1.1B and Qwen2.5-0.5B, our method (PreLort) consistently achieves the best performance on MMLU (Dolly, Alpaca) and ROUGE-L metrics. In particular, it outperforms all baselines on both MMLU tasks across models, and achieves the highest ROUGE-L scores on Dolly and Alpaca. On 20 Newsgroups, PreLort remains competitive, achieving the second-best performance while outperforming most baselines. These results indicate that our approach improves instruction-following and generalization performance without sacrificing robustness across tasks. Table 2 reports perplexity on instruction-tuning datasets. Our method achieves the lowest perplexity on Dolly and NewsGroup for both base models, and remains competitive on a few settings, where FLoRA performs strongly. Compared to FLoRA, which benefits from stacking-based aggregation that increases effective rank, PreLort achieves comparable or better perplexity while maintaining a fixed parameter budget, avoiding growth in adapter size as the number of clients increases [Wang et al., 2024]. Overall, the results demonstrate that (i) segment-wise aggregation effectively utilizes heterogeneous rank capacity without dilution, and (ii) the nested training objective is critical for aligning represen-tations across ranks. The ablation (Nested Aggregation Only and Nested Training Only) confirms 71 2 4 8 16 32 64 128 160            
+
+> 2.7
+> 2.8
+> 2.9
+> rank
+> perplexity
+> Alpaca
+> 124816 32 64 128
+> rank
+> Dolly
+> Homogeneous ZeroPad HetLoRA
+> FLoRA Nested Aggregation Nested Training
+> PreLort
+
+Figure 2: Comparison of homogeneous and heterogeneous methods on Alpaca and Dolly. For heterogeneous methods, each curve shows performance under prefix rank truncation: the rightmost point corresponds to the full trained rank, and points to the left reflect evaluation at progressively smaller prefix sub-ranks of the same trained adapter. FLoRA is shown as a single point at its effective rank (160 for 10 client setting, 31 for 5 client setting), as it merges adapters into the backbone after each round and does not maintain a persistent adapter amenable to truncation that aggregation alone is insufficient, and that performance gains arise from the combination of both components. 
+
+5.3 Analysis 5.3.1 Per-Dimension Importance 
+
+To better understand how nested training affects the internal structure of the adapter, we analyze the per-dimension importance of each rank index i. We define importance as the product of the Frobenius norm of the i-th row of A and the i-th column of B, normalized across all dimensions. This provides a proxy for the contribution of each rank component to the overall update ∆W = BA .As shown in Figure 3, standard training yields an approximately uniform distribution of importance across all 16 dimensions, closely matching the 1/16 baseline. In contrast, our approach produces a strongly structured distribution, where importance is concentrated in the leading dimensions. This behavior suggests that the adapter learns an implicit prioritization over rank components. Such a structure is particularly beneficial for nested aggregation. Low-rank clients contribute to these high-impact dimensions, while higher-rank clients provide incremental refinements, leading to more stable and effective updates. 
+
+5.3.2 Rank Robustness 
+
+Figure 2 further illustrates the rank–performance trade-off. It shows the performance of each method across different effective rank levels. The homogeneous reference improves steadily as rank increases, as expected. In contrast, our method remains stable across the lower-rank regime and achieves consistently lower perplexity than the heterogeneous baselines on both Alpaca and Dolly. 
+
+Evaluation Protocol. For FLoRA , adapter updates are merged into the frozen backbone after each communication round, and fresh adapters are initialized in subsequent rounds. As a result, there is no persistent aggregated adapter at the end of training, and we report a single perplexity value corresponding to the final merged model. The effective rank of FLoRA corresponds to the stacked adapter rank accumulated during training, which equals the sum of client ranks. In our setup, this results in an effective rank of 160 for the Alpaca (10-client) setting and 31 for the Dolly (5-client) setting. 80 4 8
+
+> 0.04
+> 0.06
+> 0.08
+> 0.1
+> 0.12
+> dim. index
+> importance
+
+r = 16     
+
+> 02467
+> 0.1
+> 0.15
+> 0.2
+> dim. index
+
+r = 8    
+
+> 0123
+> 0.2
+> 0.25
+> 0.3
+> 0.35
+> dim. index
+> importance
+
+r = 4  
+
+> 01
+> 0.4
+> 0.5
+> 0.6
+> dim. index
+
+r = 2   
+
+> Nested aggregation only PreLort Uniform
+
+Figure 3: Per-dimension importance across rank budgets. Nested aggregation only and our method are shown for ranks 16 , 8, 4, and 2. Shaded regions denote one standard deviation, and the dotted line denotes the uniform importance baseline 1/r .In contrast, methods such as ZeroPad, HetLoRA, Nested Aggregation, and PreLort maintain an explicit aggregated adapter after each round of aggregation on the server. This allows us to evaluate rank robustness by truncating the final aggregated adapter to prefix ranks at evaluation time. The reported curves for these methods therefore reflect the performance of the same trained adapter under different truncation levels. The Nested Aggregation only baseline exhibits unstable behavior, particularly at higher ranks, in-dicating that aggregation alone is insufficient. Without nested training, importance is not aligned with the aggregation structure: higher-rank dimensions can dominate locally but are supported by only a subset of clients during aggregation. As illustrated in Figure 3, these dimensions exhibit high importance despite limited support, leading to overfitting and instability. In contrast, our nested training enforces a hierarchical ordering of importance, concentrating task-relevant signal in shared prefix dimensions. This acts as an implicit regularizer and yields stable performance across rank levels. 
+
+5.4 Limitations. 
+
+The effectiveness of the proposed nested training strategy depends on sufficient local optimization steps; with limited local epochs, the model may not fully learn well-aligned low-rank prefix repre-sentations. But this also improves communication efficiency by converging faster. Nested training introduces additional computational overhead due to multiple forward/backward passes per batch, increasing training time by approximately 40% in our setup, although per-step compute efficiency remains unchanged. We observe this overhead to be the same in our experimental settings, though its behavior at larger scales is not explicitly evaluated. 96 Conclusion 
+
+We introduced PreLort, a federated LoRA fine-tuning method designed for rank-heterogeneous clients. The core idea is to make heterogeneous ranks compatible not just at aggregation time, but during training itself. To this end, nested training optimizes each adapter under multiple prefix truncations, forcing task-relevant information to concentrate in shared low-rank dimensions. Segment-wise aggregation then averages each rank segment only over clients that actually contribute to it, avoiding zero-padding dilution while preserving useful higher-rank capacity. Across Alpaca, Dolly, and 20 Newsgroups with TinyLlama-1.1B and Qwen2.5-0.5B, PreLort consis-tently improves accuracy and ROUGE-L over heterogeneous LoRA baselines, while achieving lower or comparable perplexity. The ablation and per-dimension analysis further show that aggregation alone is not enough: the gains come from coupling segment-wise aggregation with nested training, which produces aligned, robust prefix representations across ranks. Overall, our results show that rank heterogeneity in federated LoRA is best handled by jointly structuring how adapters are trained and how their updates are aggregated. 
+
+## References 
+
+Elad Ben Zaken, Yoav Goldberg, and Shauli Ravfogel. BitFit: Simple parameter-efficient fine-tuning for transformer-based masked language-models. In Smaranda Muresan, Preslav Nakov, and Aline Villavicencio, editors, Proceedings of the 60th Annual Meeting of the Association for Computational Linguistics (Volume 2: Short Papers) , pages 1–9, Dublin, Ireland, May 2022. Association for Computational Linguistics. doi: 10.18653/v1/2022.acl-short.1. URL https: //aclanthology.org/2022.acl-short.1/ .Han Cai, Chuang Gan, Tianzhe Wang, Zhekai Zhang, and Song Han. Once for all: Train one network and specialize it for efficient deployment. In International Conference on Learning Representations , 2020. URL https://arxiv.org/pdf/1908.09791.pdf .Yae Jee Cho, Luyang Liu, Zheng Xu, Aldi Fahrezi, and Gauri Joshi. Heterogeneous LoRA for federated fine-tuning of on-device foundation models. In Yaser Al-Onaizan, Mohit Bansal, and Yun-Nung Chen, editors, Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing , pages 12903–12913, Miami, Florida, USA, November 2024. Association for Computational Linguistics. doi: 10.18653/v1/2024.emnlp-main.717. URL 
+
+https://aclanthology.org/2024.emnlp-main.717/ .Samuel Horváth, Stefanos Laskaridis, Mario Almeida, Ilias Leontiadis, Stylianos Venieris, and Nicholas Donald Lane. FjORD: Fair and accurate federated learning under heterogeneous targets with ordered dropout. In A. Beygelzimer, Y. Dauphin, P. Liang, and J. Wortman Vaughan, editors, 
+
+Advances in Neural Information Processing Systems , 2021. URL https://openreview.net/ forum?id=4fLr7H5D_eT .Neil Houlsby, Andrei Giurgiu, Stanislaw Jastrzebski, Bruna Morrone, Quentin De Laroussilhe, Andrea Gesmundo, Mona Attariyan, and Sylvain Gelly. Parameter-efficient transfer learning for NLP. In Proceedings of the 36th International Conference on Machine Learning , 2019. Edward J Hu, yelong shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean Wang, Lu Wang, and Weizhu Chen. LoRA: Low-rank adaptation of large language models. In International Conference on Learning Representations , 2022. URL https://openreview.net/forum?id= nZeVKeeFYf9 .Gabriel Ilharco, Marco Tulio Ribeiro, Mitchell Wortsman, Ludwig Schmidt, Hannaneh Hajishirzi, and Ali Farhadi. Editing models with task arithmetic. In The Eleventh International Conference on Learning Representations , 2023. URL https://openreview.net/forum?id=6t0Kwf8-jrj .Peter Kairouz, H. Brendan McMahan, Brendan Avent, Aurélien Bellet, Mehdi Bennis, Arjun Nitin Bhagoji, Kallista Bonawitz, Zachary Charles, Graham Cormode, Rachel Cummings, Rafael G. L. D’Oliveira, Hubert Eichner, Salim El Rouayheb, David Evans, Josh Gardner, Zachary Garrett, Adrià Gascón, Badih Ghazi, Phillip B. Gibbons, Marco Gruteser, Zaid Harchaoui, Chaoyang He, Lie He, Zhouyuan Huo, Ben Hutchinson, Justin Hsu, Martin Jaggi, Tara Javidi, Gauri Joshi, 10 Mikhail Khodak, Jakub Konecný, Aleksandra Korolova, Farinaz Koushanfar, Sanmi Koyejo, Tan-crède Lepoint, Yang Liu, Prateek Mittal, Mehryar Mohri, Richard Nock, Ayfer Özgür, Rasmus Pagh, Hang Qi, Daniel Ramage, Ramesh Raskar, Mariana Raykova, Dawn Song, Weikang Song, Sebastian U. Stich, Ziteng Sun, Ananda Theertha Suresh, Florian Tramèr, Praneeth Vepakomma, Jianyu Wang, Li Xiong, Zheng Xu, Qiang Yang, Felix X. Yu, Han Yu, and Sen Zhao. Advances and open problems in federated learning. Found. Trends Mach. Learn. , 14(1–2):1–210, June 2021. ISSN 1935-8237. doi: 10.1561/2200000083. URL https://doi.org/10.1561/2200000083 .Aditya Kusupati, Gantavya Bhatt, Aniket Rege, Matthew Wallingford, Aditya Sinha, Vivek Ramanu-jan, William Howard-Snyder, Kaifeng Chen, Sham M. Kakade, Prateek Jain, and Ali Farhadi. Matryoshka representation learning. In Alice H. Oh, Alekh Agarwal, Danielle Belgrave, and Kyunghyun Cho, editors, Advances in Neural Information Processing Systems , 2022. URL 
+
+https://openreview.net/forum?id=9njZa1fm35 .Brian Lester, Rami Al-Rfou, and Noah Constant. The power of scale for parameter-efficient prompt tuning. In Marie-Francine Moens, Xuanjing Huang, Lucia Specia, and Scott Wen-tau Yih, editors, Proceedings of the 2021 Conference on Empirical Methods in Natural Lan-guage Processing , pages 3045–3059, Online and Punta Cana, Dominican Republic, November 2021. Association for Computational Linguistics. doi: 10.18653/v1/2021.emnlp-main.243. URL 
+
+https://aclanthology.org/2021.emnlp-main.243/ .Xiang Lisa Li and Percy Liang. Prefix-tuning: Optimizing continuous prompts for generation. In Chengqing Zong, Fei Xia, Wenjie Li, and Roberto Navigli, editors, Proceedings of the 59th Annual Meeting of the Association for Computational Linguistics and the 11th International Joint Conference on Natural Language Processing (Volume 1: Long Papers) , pages 4582–4597, Online, August 2021. Association for Computational Linguistics. doi: 10.18653/v1/2021.acl-long.353. URL https://aclanthology.org/2021.acl-long.353/ .Shih-yang Liu, Chien-Yi Wang, Hongxu Yin, Pavlo Molchanov, Yu-Chiang Frank Wang, Kwang-Ting Cheng, and Min-Hung Chen. DoRA: Weight-decomposed low-rank adaptation. In Forty-first International Conference on Machine Learning , 2024. URL https://openreview.net/forum? id=3d5CIRG1n2 .Michael S Matena and Colin Raffel. Merging models with fisher-weighted averaging. In Alice H. Oh, Alekh Agarwal, Danielle Belgrave, and Kyunghyun Cho, editors, Advances in Neural Information Processing Systems , 2022. URL https://openreview.net/forum?id=LSKlp_aceOC .Brendan McMahan, Eider Moore, Daniel Ramage, Seth Hampson, and Blaise Aguera y Arcas. Communication-Efficient Learning of Deep Networks from Decentralized Data. In Aarti Singh and Jerry Zhu, editors, Proceedings of the 20th International Conference on Artificial Intelligence and Statistics , volume 54 of Proceedings of Machine Learning Research , pages 1273–1282. PMLR, 20–22 Apr 2017. URL https://proceedings.mlr.press/v54/mcmahan17a.html .Yiqun Mei, Pengfei Guo, Mo Zhou, and Vishal Patel. Resource-adaptive federated learning with all-in-one neural composition. In Alice H. Oh, Alekh Agarwal, Danielle Belgrave, and Kyunghyun Cho, editors, Advances in Neural Information Processing Systems , 2022. URL https://openreview. net/forum?id=wfel7CjOYk .Tom Mitchell. Twenty Newsgroups. UCI Machine Learning Repository, 1997. DOI: https://doi.org/10.24432/C5C323. Jonas Pfeiffer, Aishwarya Kamath, Andreas Rücklé, Kyunghyun Cho, and Iryna Gurevych. Adapter-Fusion: Non-destructive task composition for transfer learning. In Paola Merlo, Jorg Tiedemann, and Reut Tsarfaty, editors, Proceedings of the 16th Conference of the European Chapter of the Association for Computational Linguistics: Main Volume , pages 487–503, Online, April 2021. Association for Computational Linguistics. doi: 10.18653/v1/2021.eacl-main.39. URL 
+
+https://aclanthology.org/2021.eacl-main.39/ .Qwen Team, An Yang, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chengyuan Li, Dayiheng Liu, Fei Huang, Haoran Wei, Huan Lin, Jian Yang, Jianhong Tu, Jianwei Zhang, Jianxin Yang, Jiaxi Yang, Jingren Zhou, Junyang Lin, Kai Dang, Keming Lu, Keqin Bao, Kexin Yang, Le Yu, Mei Li, Mingfeng Xue, Pei Zhang, Qin Zhu, Rui Men, Runji Lin, Tianhao Li, 11 Tianyi Tang, Tingyu Xia, Xingzhang Ren, Xuancheng Ren, Yang Fan, Yang Su, Yichang Zhang, Yu Wan, Yuqiong Liu, Zeyu Cui, Zhenru Zhang, and Zihan Qiu. Qwen2.5 technical report, 2025. URL https://arxiv.org/abs/2412.15115 .Raghav Singhal, Kaustubh Ponkshe, and Praneeth Vepakomma. FedEx-LoRA: Exact aggregation for federated and efficient fine-tuning of large language models. In Wanxiang Che, Joyce Nabende, Ekaterina Shutova, and Mohammad Taher Pilehvar, editors, Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pages 1316– 1336, Vienna, Austria, July 2025. Association for Computational Linguistics. ISBN 979-8-89176-251-0. doi: 10.18653/v1/2025.acl-long.67. URL https://aclanthology.org/2025. acl-long.67/ .Rohan Taori, Ishaan Gulrajani, Tianyi Zhang, Yann Dubois, Xuechen Li, Carlos Guestrin, Percy Liang, and Tatsunori B. Hashimoto. Stanford alpaca: An instruction-following llama model. 
+
+https://github.com/tatsu-lab/stanford_alpaca , 2023. Nurbek Tastan and Karthik Nandakumar. A framework for double-blind federated adaptation of foundation models. In Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV) , pages 923–933, October 2025. Nurbek Tastan, Samuel Horváth, and Karthik Nandakumar. Aequa: Fair model rewards in collabo-rative learning via slimmable networks. In Forty-second International Conference on Machine Learning , 2025. URL https://openreview.net/forum?id=Tw81RElDpe .Nurbek Tastan, Stefanos Laskaridis, Martin Takáˇ c, Karthik Nandakumar, and Samuel Horváth. LoFT: Low-rank adaptation that behaves like full fine-tuning. In The Fourteenth International Conference on Learning Representations , 2026. URL https://openreview.net/forum?id=86P3sb1dpr .Hui-Po Wang, Sebastian U Stich, Yang He, and Mario Fritz. Progfed: Effective, communication, and computation efficient federated learning by progressive training, 2022. URL https:// openreview.net/forum?id=Gpp1dfvZYYH .Ziyao Wang, Zheyu Shen, Yexiao He, Guoheng Sun, Hongyi Wang, Lingjuan Lyu, and Ang Li. FLoRA: Federated fine-tuning large language models with heterogeneous low-rank adaptations. In The Thirty-eighth Annual Conference on Neural Information Processing Systems , 2024. URL 
+
+https://openreview.net/forum?id=TcCorXxNJQ .Mitchell Wortsman, Gabriel Ilharco, Samir Ya Gadre, Rebecca Roelofs, Raphael Gontijo-Lopes, Ari S Morcos, Hongseok Namkoong, Ali Farhadi, Yair Carmon, Simon Kornblith, and Ludwig Schmidt. Model soups: averaging weights of multiple fine-tuned models improves accuracy without increasing inference time. In Kamalika Chaudhuri, Stefanie Jegelka, Le Song, Csaba Szepesvari, Gang Niu, and Sivan Sabato, editors, Proceedings of the 39th International Conference on Machine Learning , volume 162 of Proceedings of Machine Learning Research , pages 23965–23998. PMLR, 17–23 Jul 2022. URL https://proceedings.mlr.press/v162/wortsman22a.html .Jiahui Yu and Thomas Huang. Autoslim: Towards one-shot architecture search for channel numbers, 2020. URL https://openreview.net/forum?id=H1gz_nNYDS .Jiahui Yu and Thomas S. Huang. Universally slimmable networks and improved training techniques. 
+
+2019 IEEE/CVF International Conference on Computer Vision (ICCV) , pages 1803–1811, 2019. URL https://api.semanticscholar.org/CorpusID:76660361 .Jiahui Yu, Linjie Yang, Ning Xu, Jianchao Yang, and Thomas Huang. Slimmable neural networks. In 
+
+International Conference on Learning Representations , 2019. URL https://openreview.net/ forum?id=H1gMCsAqY7 .Jianyi Zhang, Saeed Vahidian, Martin Kuo, Chunyuan Li, Ruiyi Zhang, Tong Yu, Yufan Zhou, Guoyin Wang, and Yiran Chen. Towards building the federated gpt: Federated instruction tuning, 2024a. URL https://arxiv.org/abs/2305.05644 .Peiyuan Zhang, Guangtao Zeng, Tianduo Wang, and Wei Lu. Tinyllama: An open-source small language model, 2024b. URL https://arxiv.org/abs/2401.02385 .12 Qingru Zhang, Minshuo Chen, Alexander Bukharin, Pengcheng He, Yu Cheng, Weizhu Chen, and Tuo Zhao. Adaptive budget allocation for parameter-efficient fine-tuning. In The Eleventh International Conference on Learning Representations , 2023. URL https://openreview.net/forum?id= lq62uWRJjiY .13 A Algorithm 
+
+Algorithm 1 PreLort: Nested Local Training 
+
+Require: Client k with rank rk, local dataset Dk, global rank set R = {r1 < r 2 < · · · < r L},adapter parameters (Ak, Bk) ∈ Rrk ×n × Rm×rk , learning rate η, local epochs E
+
+Ensure: Updated adapter parameters (Ak, Bk), pseudo-gradients (∇Ak, ∇Bk) 
+
+> 1:
+
+Rk ← { r ∈ R | r ≤ rk} ▷ Active training ranks for client k 
+
+> 2:
+
+for e = 1 to E do  
+
+> 3:
+
+for each minibatch B ⊆ D k do  
+
+> 4:
+
+Lk ← 0 
+
+> 5:
+
+for each r ∈ R k do  
+
+> 6:
+
+Construct truncated adapter: A(r) 
+
+> k
+
+← Ak[: r, :] , B(r) 
+
+> k
+
+← Bk[: , : r] 
+
+> 7:
+
+Lk ← L k + LCE (f (·; θ, r ), B) 
+
+> 8:
+
+end for  
+
+> 9:
+
+Lk ← 1  
+
+> |R k|
+
+Lk ▷ Average over sub-rank losses  
+
+> 10:
+
+(Ak, Bk) ← (Ak, Bk) − η ∇(Ak ,Bk ) Lk 
+
+> 11:
+
+end for  
+
+> 12:
+
+end for  
+
+> 13:
+
+Compute pseudo-gradients: ∇Ak ← A(0)  
+
+> k
+
+− Ak, ∇Bk ← B(0)  
+
+> k
+
+− Bk 
+
+> 14:
+
+return (∇Ak, ∇Bk)
+
+Algorithm 2 PreLort: Segment-wise Aggregation 
+
+Require: Pseudo-gradients {(∇Ak, ∇Bk)}k∈K from participating clients, client ranks {rk}k∈K ,dataset sizes {nk}k∈K , rank levels R = {r1 < r 2 < · · · < r L} with r0 = 0 , global adapter 
+
+(Aglobal , Bglobal )
+
+Ensure: Updated global adapter (Aglobal , Bglobal ) 
+
+> 1:
+
+for l = 1 to L do  
+
+> 2:
+
+Kl ← { k ∈ K | rk ≥ rl} ▷ Clients contributing to segment l 
+
+> 3:
+
+Nl ← P 
+
+> k∈K l
+
+nk 
+
+> 4:
+
+∇Aglobal  
+
+> rl−1:rl
+
+← 1
+
+Nl
+
+P 
+
+> k∈K l
+
+nk ∇Ak[rl−1 : rl, :]  
+
+> 5:
+
+∇Bglobal  
+
+> rl−1:rl
+
+← 1
+
+Nl
+
+P 
+
+> k∈K l
+
+nk ∇Bk[: , r l−1 : rl] 
+
+> 6:
+
+end for  
+
+> 7:
+
+Assemble ∇Aglobal and ∇Bglobal from all segments  
+
+> 8:
+
+Aglobal ← Aglobal + ∇Aglobal  
+
+> 9:
+
+Bglobal ← Bglobal + ∇Bglobal  
+
+> 10:
+
+return (Aglobal , Bglobal )
+
+## B Environments, Datasets, and Metric 
+
+Computer Resources. All experiments were run on a single NVIDIA RTX A6000 GPU. Additional GPUs were used to run experiments in parallel. 
+
+Dolly dataset. The Dolly dataset is an open-source dataset containing 15k text samples generated by Databricks employees. Topics covered include brainstorming, classification, closed QA, generation, information extraction, open QA, and summarization. 
+
+Alpaca dataset. The Alpaca dataset contains 52K instruction-following data samples used for fine-tuning language models. The dataset is designed to be diverse enough for fine-tuning LLMs. 
+
+20 Newsgroup dataset. The 20 Newsgroup dataset is a widely used benchmark collection of approximately 20,000 news documents partitioned across 20 different categories. It is commonly used for text classification tasks. 
+
+Evaluation Metrics. We evaluate model performance using three metrics: 14 • Accuracy: Each model is fine-tuned on the Dolly, Alpaca, and 20 Newsgroup datasets respectively, and evaluated on the corresponding held-out test set. • ROUGE-L: Measured on the held-out test sets for the Dolly and Alpaca datasets to assess the quality of generated text. • Perplexity: Also computed on the held-out test sets for Dolly and Alpaca to evaluate language modeling performance. 
+
+## C Hyperparameter Details 
+
+In all our experiments, the batch size is 128 and the micro batch size is 16. We explored various learning rates ( 5 × 10 −3, 1 × 10 −4, 3 × 10 −4, 1 × 10 −5, 5 × 10 −5) and found that 3 × 10 −4 yielded the best overall performance. Table 3 summarizes the communication rounds and local epochs used for each experiment. Table 3: Communication rounds and local epochs per experiment. Rounds denotes the number of federated communication rounds, and Epochs denotes the number of local fine-tuning epochs per round. 
+
+Foundation Dataset Rounds Epochs TinyLlama 
+
+Dolly 10 3Alpaca 10 320 Newsgroup 15 1
+
+Qwen2.5-0.5B 
+
+Dolly 10 3Alpaca 10 320 Newsgroup 15 1
+
+## D Perplexity Convergence     
+
+> 13579
+> 5
+> 6
+> 7
+
+Round 
+
+> Perplexity
+
+TinyLlama, Dolly     
+
+> 13579
+> 3
+> 4
+> 5
+
+Round 
+
+TinyLlama, Alpaca        
+
+> 1357911 13 15
+> 8
+> 10
+> 12
+> 14
+
+Round 
+
+TinyLlama, 20 Newsgroup     
+
+> 13579
+> 7
+> 8
+> 9
+> 10
+
+Round 
+
+> Perplexity
+
+Qwen2.5-0.5B, Dolly     
+
+> 13579
+> 3
+> 4
+> 5
+
+Round 
+
+Qwen2.5-0.5B, Alpaca        
+
+> 1357911 13 15
+> 12
+> 14
+> 16
+> 18
+> 20
+
+Round 
+
+Qwen2.5-0.5B, 20 Newsgroup 
+
+ZeroPad HetLoRA FLoRA 
+
+Nested Agg Only Nested Train Only PreLort 
+
+Figure 4: Perplexity convergence across communication rounds for TinyLlama and Qwen2.5-0.5B on Dolly, Alpaca, and 20 Newsgroup datasets. 15 Figure 4 shows the perplexity convergence of all methods across communication rounds on both models and all three datasets. PreLort consistently achieves competitive or lower final perplexity compared to baselines, though the visual gap is diminished due to the high initial perplexity of ZeroPad and HetLoRA dominating the y-axis scale. Nested Aggregation Only diverges over rounds on most settings, confirming that segment-wise aggregation alone is insufficient without the corre-sponding local training strategy. Similarly, Nested Training Only exhibits poor or sometimes unstable convergence, suggesting that segment-wise local training must be coupled with the corresponding aggregation strategy to achieve stable performance. 16
