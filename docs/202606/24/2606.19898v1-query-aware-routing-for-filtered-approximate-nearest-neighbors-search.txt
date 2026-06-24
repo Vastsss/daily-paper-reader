@@ -1,0 +1,733 @@
+Title: Query-aware Routing for Filtered Approximate Nearest Neighbors Search
+
+URL Source: https://arxiv.org/pdf/2606.19898v1
+
+Published Time: Fri, 19 Jun 2026 00:34:43 GMT
+
+Number of Pages: 12
+
+Markdown Content:
+# Query-aware Routing for Filtered Approximate Nearest Neighbors Search 
+
+# Qianqian Xiong 
+
+Australian National University Canberra, Australia secundussg@gmail.com 
+
+# Mengxuan Zhang ∗
+
+Australian National University Canberra, Australia mengxuan.zhang@anu.edu.au 
+
+## Abstract 
+
+Filtered ANN search, which combines vector similarity with at-tribute predicates, is a core primitive in modern vector databases and retrieval-augmented generation. We benchmark all major cate-gorical filtered ANN methods across multiple datasets under three predicates and find that no single method dominates. Moreover, even within a single dataset and predicate type, the best method for a query can vary. Therefore, we propose a query-aware rout-ing framework. A lightweight ML model predicts each candidate method’s recall on the query, and the router consults an offline benchmark table that maps every method and parameter setting to its measured recall and QPS, then selects the method with the best recall–QPS trade-off. Our ablation study narrows 22 candidate features to a minimal set of three and we adopt regression rather than classification as the prediction target to sharpen accuracy. Our model is trained on six real-world datasets and applied to five unseen validation datasets. The final result shows that our router achieves state-of-the-art recall and QPS balance across all five vali-dation datasets compared to existing filtered ANN baselines, while incurring negligible latency overhead. 
+
+## CCS Concepts 
+
+• Information Systems → Efficient Data Processing .
+
+## Keywords 
+
+Filtered ANN, Approximate nearest neighbor search, High-dimensional data, ML-based router 
+
+## 1 Introduction 
+
+The development of deep learning and large pre-trained models has made it standard to encode unstructured data such as text, image, audio and video as high-dimensional dense vectors. Approx-imate Nearest Neighbor (ANN) search over such vector dataset has become a foundational component of recommendation systems, semantic retrieval, and Retrieval-Augmented Generation (RAG) [ 15 ,21 ]. Given a query 𝑞 on a vector dataset 𝐷 , ANN search retrieves the top-𝑘 most similar vectors to 𝑞 from 𝐷 . In real-world deploy-ments, however, queries rarely involve only vector similarity. They typically carry additional attribute constraints, for instance, an e-commerce shopper searching for “red dress” requires both color and category to match; document retrieval could limit results by both time range and topic; Malt (Europe’s largest freelancer marketplace) searches nearest neighbors with geo-spatial filtering. This class of attribute-filtered approximate nearest neighbor search, known as 
+
+> ∗Mengxuan Zhang is the corresponding author
+
+Figure 1: Recall-QPS Pareto curves of filtered ANN methods on YFCC dataset under OR and Equality predicate types. 
+
+filtered ANN , has become a core capability of modern vector data-base systems such as Pinecone [ 17 ], Milvus [ 23 ], Weaviate [ 26 ], and hybrid analytical engines [27, 32]. Filtered ANN queries are classified into two categories, depend-ing on the filtered attribute type, namely range filtered ANN filters by a numerical interval such as a timestamp or price band [ 6, 30 , 35 ]and categorical filtered ANN filters by a finite set of labels such as col-ors, categories, or tags. In this paper, we focus on the latter, whose solutions fall into two broad camps. The first camp consists of 
+
+generic adaptations on top of standard ANN indexes: Pre-filter [ 19 ]method filters candidates by label first and then selects the top-𝑘 
+
+results over the filtered set, which guarantees recall but degenerates to linear scan when the filtered set is large; Post-filter [ 19 ] method first retrieves a large candidate pool with the top-𝑘 ′ (𝑘 ′ > 𝑘 ) results by leveraging an ANN index and then filters them by verifying their labels, which is simple to deploy. But it requires 𝑘 ′ >> 𝑘 to obtain 𝑘 
+
+valid results under high label selectivity (i.e., only a small fraction of vectors satisfy the predicate), which results in slow query process-ing. The second camp consists of specialized indexes that use label information directly during index construction: UNG [ 4] indexes label-set containment relationships and supports cross-subgraph navigation; ACORN [ 16 ] augments HNSW [ 15 ] with expansion edges to preserve same-label reachability; FilteredVamana [ 8] inte-grates label-aware pruning into the Vamana graph [ 21 ]; SIEVE [ 12 ]pre-builds a workload-specialized collection of sub-indexes and picks the most suitable one per query. CAPS [ 9] builds a two-level index with coarse 𝑘 -means clusters refined by label-based sub-clusters; and NHQ [ 24 ] builds a navigating proximity graph whose edge weights fuse vector distance with label Hamming distance. 
+
+Observation. Based on the predicate type, filtered ANN queries can be categorized into three types: Containment (also known as AND), which requires results to satisfy all query labels; Overlap (also known as OR), which requires results to satisfy at least one label; and Equality , which requires the label set to match exactly. Through  
+
+> arXiv:2606.19898v1 [cs.DB] 18 Jun 2026 Conference’17, July 2017, Washington, DC, USA Xiong and Zhang
+
+the preliminary experimental study, we observe that each method excels in its target setting, but no single method dominates across all combinations of datasets and predicate types ( Observation 1 ). Fig-ure 1 contrasts representative filtered ANN methods on the YFCC dataset [ 22 ] under two predicate types, i.e., OR and Equality. UNG and SIEVE exhibit opposite trends: UNG dominates Equality at re-call = 1.0 but collapses on OR to recall ≈ 0.58, while SIEVE leads OR at recall > 0.9 but stalls on Equality at recall ≈ 0.5. Moreover, even within the same dataset and predicate type, the best method varies from query to query ( Observation 2 ). For instance, we observe that some queries reach 100% recall with UNG while Post-filter man-ages only 10%, whereas others show the opposite pattern for AND queries on YFCC dataset. Therefore, given a filtered ANN query, it is essential to take the dataset, predicate type, and query into consideration to select the best-performing methods. 
+
+Motivation. Based on the above two observations, how about selecting the best-performing filtered ANN method each time a query comes, such that we can achieve the best query performance? Motivated by Observation 1, we first attempted Rule-based Router (in Section 3), i.e., assign one method based on both the dataset-level features and predicate type. However, it was found that such a router can hardly route queries to their best-fit method, causing substantial recall loss. This happens because the query itself also determines the best-performed method according to Observation 2. We therefore propose to dive further by making routing decisions at the per-query level. Specifically, in the offline pre-processing stage, an ML model is trained to evaluate candidate methods for each query. And a lookup table is built by benchmarking each method across multiple parameter settings on every combination of dataset and predicate type, and record the corresponding query performance. Then, in the query processing stage, the router first builds a feature for one query and leverages the lookup table to select one combination of method and its parameter setting to achieve the best query performance. 
+
+Challenges. Nevertheless, it is non-trivial to design a router with both high-quality and fast decision making in selecting the best-performed method. The first challenge lies in the Feature selection . The key question is: how can we choose features that enable the ML model to accu-rately predict each candidate method’s recall on a given query? To solve this question, we first explored over 20 per-query and dataset-level statistics, covering factors known to affect ANN search diffi-culty: geometric complexity (e.g., LID, relative contrast) [ 1 ], label structure (e.g., cardinality, entropy), label density, and label–vector coupling (e.g., distribution factor) [ 14 , 19 ]. However, using more than 20 features risks redundancy. Since additional features beyond the final chosen set add little predictive gain on the training set, while inflating the risk of overfitting training-specific patterns that fail to transfer to the validation set. Therefore, we use a nested feature ablation (Section 6) to narrow these to a 3-feature minimal set: selectivity (per-query), LID (dataset-level geometric difficulty), and predicate type. The second challenge is how to design the model architecture .The most intuitive choice is a classification model that directly outputs the best method for each query. However, the classification loss only sees whether the predicted method is correct, ignoring the actual recall gap, i.e., it does not distinguish the cost of being slightly off from being far off. We therefore switch to per-method regression with Mean Squared Error loss, which captures the magnitude of er-ror, by assigning one independent MLP for each candidate method to predict the method’s query performance. Moreover, the router’s latency is also critical since it directly affects the user-perceived query latency. That means, to achieve fast inference, the MLPs must remain lightweight (i.e., shallow with no extra vector computation) so as to produce negligible overhead to the per-query latency. Be-yond accuracy, predicting recall alone is insufficient since different applications have different recall-QPS trade-offs. To handle this, the router uses an application-specified recall threshold 𝑇 : at query time, it predicts each candidate method’s recall, keeps only methods whose predicted recall meets 𝑇 , and picks the parameter setting with the highest QPS from the offline lookup table. Since the model does not depend on 𝑇 , a single trained model serves a flexible 𝑇 .
+
+Contribution. This paper makes the following contributions: 
+
+• We establish the empirical motivation of this work through an extensive experimental study over ten filtered ANN algo-rithms across six datasets, three predicate types, and thou-sands of parameter settings. 
+
+• We identify a minimal feature set that matches the perfor-mance of larger feature sets while reducing variance and overfitting risk. 
+
+• We propose a lightweight regression-based routing architec-ture with high recall. 
+
+• We demonstrate that our proposed router generalizes ro-bustly to unseen datasets, achieving near-optimal recall with negligible routing overhead. 
+
+## 2 Preliminaries 
+
+We now formally define the filtered ANN problem and review its key evaluation metrics. 
+
+## 2.1 Filtered ANN Problem Definition 
+
+Let the dataset 𝑉 = {( 𝑣 𝑖 , 𝐿 𝑖 )} 𝑛 𝑖 =1 contain 𝑛 vectors with attribute labels, where 𝑣 𝑖 ∈ R𝑑 and 𝐿 𝑖 ⊆ 𝑈 is a discrete subset of a label uni-verse 𝑈 . A filtered ANN query is a triple 𝑞 = (𝑥 𝑞 , 𝐿 𝑞 , 𝑃 ) comprising a query vector 𝑥 𝑞 ∈ R𝑑 , a query label set 𝐿 𝑞 ⊆ 𝑈 , and a Boolean predicate 𝑃 : 2 𝑈 × 2𝑈 → { true , false }. Three predicate types are commonly used: 
+
+• Equality: 𝑃 (𝐿 𝑖 , 𝐿 𝑞 ) = (𝐿 𝑖 = 𝐿 𝑞 ), requiring identical label sets. 
+
+• Containment (AND): 𝑃 (𝐿 𝑖 , 𝐿 𝑞 ) = (𝐿 𝑞 ⊆ 𝐿 𝑖 ), requiring the candidate to carry every query label. 
+
+• Overlap (OR): 𝑃 (𝐿 𝑖 , 𝐿 𝑞 ) = (𝐿 𝑞 ∩ 𝐿 𝑖 ≠ ∅) , requiring at least one shared label. An entry (𝑣 𝑖 , 𝐿 𝑖 ) is considered a valid candidate if and only if 
+
+𝑃 (𝐿 𝑖 , 𝐿 𝑞 ) = true ; otherwise, it is excluded. Given 𝑞 and an integer 𝑘 ,the goal is to retrieve 𝑘 vectors with the smallest Euclidean distance to 𝑥 𝑞 from the valid candidates. ANN algorithms trade a small amount of accuracy for query speed and return an approximate top-𝑘 set 𝑅 (𝑞 ) as: 
+
+𝑅 (𝑞 ) = 𝑘 
+
+arg min      
+
+> (𝑣 𝑖 ,𝐿 𝑖 ) ∈ 𝑉 , 𝑃 (𝐿 𝑖 ,𝐿 𝑞 )=true
+
+∥𝑣 𝑖 − 𝑥 𝑞 ∥ (1) Query-aware Routing for Filtered Approximate Nearest Neighbors Search Conference’17, July 2017, Washington, DC, USA 
+
+## 2.2 Evaluation Metrics 
+
+We adopt the two metrics standard in the ANN literature [2]: 
+
+recall@ 𝑘 (𝑞 ) = |𝑅 (𝑞 ) ∩ TopK (𝑞 )| 
+
+min (𝑘, |TopK (𝑞 )|) , QPS = |𝑄 |
+
+Í𝑞 ∈𝑄 𝑡 (𝑞 ) . (2) 
+
+recall @𝑘 measures the fraction of true top-𝑘 retrieved by the algo-rithm; when fewer than 𝑘 candidates satisfy 𝑃 , the denominator falls back to |TopK (𝑞 )| to avoid under-counting. QPS characterizes throughput as the test set size |𝑄 | divided by the total processing time, where 𝑡 (𝑞 ) is the end-to-end latency of a single query. 
+
+## 3 Rule-based Router 
+
+In this section, we introduce a rule-based router, motivated by a key observation from our empirical study: no single filtered ANN method dominates across all combinations of datasets and predi-cate types. Figure 2 shows the recall–QPS comparison of all bench-marked methods, where the best method shifts from one combina-tion to another. A natural idea is to select a method with a small set of rules based on the dataset and predicate type. We instantiate this idea as a hand-crafted decision tree, which we call RuleRouter .For the dataset-level features, we use two characteristics of dataset[1] to demonstrate it: 
+
+• Local Intrinsic Dimensionality (LID) [1 ] is a distance distri-bution based measure of local geometric complexity. For a query 𝑞 with its 𝑘 nearest-neighbor distances 𝑟 1 ≤ 𝑟 2 ≤ · · · ≤ 
+
+𝑟 𝑘 , the maximum-likelihood per-query estimator is 
+
+LID (𝑞 ) = − 1
+
+𝑘 
+
+> 𝑘
+
+∑︁ 
+
+> 𝑖 =1
+
+ln 𝑟 𝑖 
+
+𝑟 𝑘 
+
+! −1
+
+, (3) and the dataset-level local intrinsic dimensionality 𝐿𝐼𝐷 𝑚𝑒𝑎𝑛 
+
+is the average of LID (𝑞 ) over a fixed sample 𝑄 sample of queries: 
+
+LID mean = 1
+
+|𝑄 sample |∑︁ 𝑞 ∈𝑄 sample 
+
+LID (𝑞 ). (4) Intuitively, high LID (𝑞 ) indicates that many candidates lie at similar distances around 𝑞 , making nearest-neighbor dis-crimination harder. So LID mean summarises this difficulty at dataset level. 
+
+• Label cardinality. For a dataset 𝑉 with label universe 𝑈 =
+
+Ð𝑖 𝐿 𝑖 , the label cardinality is 
+
+card (𝑉 ) = |𝑈 |. (5) It is a coarse indicator of label-distribution sparsity: small 
+
+card (𝑉 ) means most queries share label sets with vectors in dataset, while large card (𝑉 ) means each label is sparsely populated. Therefore, we use both dataset-level features and predicate type as the decision features for RuleRouter: predicate type, LID mean ,and label cardinality. Then, we benchmark all methods on all combinations of training datasets and predicate types, with the best performed method in each combination shown in Table 1. As analyzed based on three decision features: (i) When the predicate type is Equality, UNG wins on every dataset. Since UNG’s navigating graph clusters vectors with identical label sets, this is exactly what an exact-match predi-cate exploits. (ii) When predicate type is AND, the winner splits by 
+
+Table 1: Best performed method for each combination of Dataset and Predicate type.                                     
+
+> Dataset LID mean card (𝑉 )Equality AND OR arxiv 25.5 4,231 UNG SIEVE Post-filter yfcc 23.0 181,931 UNG SIEVE Post-filter LAION-1M 36.3 30 UNG UNG Post-filter tripclick 31.5 29 UNG UNG Post-filter ytb_audio 20.5 3,862 UNG SIEVE Post-filter ytb_video 236.0 3,862 UNG UNG UNG
+
+label cardinality and LID mean . When card (𝑉 ) is small (LAION-1M, tripclick: only ∼30 distinct labels) or LID mean is high (ytb_video, 
+
+LID mean = 236 ), the filtered candidate pool is small or hard to search and UNG remains safest; otherwise SIEVE’s pre-built sub-indexes deliver higher QPS. (iii) When predicate type is OR, the pattern follows LID mean alone. With high LID mean such as on ytb_video, UNG’s same-label connectivity beats brute candidate enumeration of Post-filter; on the remaining datasets with low-LID mean , Post-filter on a generic ANN index suffices. Therefore, we formalize these patterns as the decision tree as shown in Algorithm 1. 
+
+Algorithm 1 RuleRouter: routing based on dataset-level features 
+
+Require: predicate type 𝑝𝑡 , dataset features LID mean and card (𝑉 )
+
+Ensure: routing method 𝑚  
+
+> 1:
+
+if 𝑝𝑡 = Equality then  
+
+> 2:
+
+return UNG  
+
+> 3:
+
+else if 𝑝𝑡 = AND then  
+
+> 4:
+
+if LID mean > 100 or card (𝑉 ) < 100 then  
+
+> 5:
+
+return UNG  
+
+> 6:
+
+else  
+
+> 7:
+
+return SIEVE  
+
+> 8:
+
+end if  
+
+> 9:
+
+else if 𝑝𝑡 = OR then  
+
+> 10:
+
+if LID mean > 100 then  
+
+> 11:
+
+return UNG  
+
+> 12:
+
+else  
+
+> 13:
+
+return Post-filter  
+
+> 14:
+
+end if  
+
+> 15:
+
+end if 
+
+Since RuleRouter operates based on the decision features related to dataset and predicate type, all queries within one combination of dataset and predicate type are routed to the same method. However, as revealed in Observation 2, for queries in the same combination of dataset and predicate type, their best performance methods are different. That means, the RuleRoute ignores the query-aware fea-ture. For example, on yfcc dataset with predicate type of AND, some queries achieve 100% recall using UNG while Post-filter yields only 10% recall, and other queries show the opposite pattern. This difference stems from query-aware features, such as the number of labels carried by query and per-label frequency statistics. To improve the routing quality, we enrich the feature set by in-cluding the query-aware features, and training an Machine Learning model (ML model) to select the best performed method. However, this design faces two core challenges. The first is feature selection ,as the candidate feature space grows once we union query-aware Conference’17, July 2017, Washington, DC, USA Xiong and Zhang 
+
+Figure 2: Recall–QPS comparison of all benchmarked filtered ANN methods across datasets and predicate types. 
+
+and dataset-level features. What’s worse, too many features would potentially result in overfitting with only six training datasets. The second challenge is model architecture , as the router needs to select the best performed method per query, it could be time-consuming. So there will be extremely high requirement on the balance of the model’s inference speed and recall. 
+
+## 4 ML Router 
+
+To help understand our query-aware ML Routing system better, we first formalize the per-query routing setup. Let M = {𝑚 1, 𝑚 2, . . . }
+
+be a set of candidate filtered ANN methods. Each method 𝑚 ∈ M 
+
+exposes one or more tunable parameter settings, which we denote by ps ∈ S , where ps is the parameter setting of one method (e.g., 
+
+𝐿 search for UNG) and S is the union of all methods’ parameter spaces. We use an offline benchmark table 𝐵 indexed by dataset ds ,Query-aware Routing for Filtered Approximate Nearest Neighbors Search Conference’17, July 2017, Washington, DC, USA 
+
+predicate type pt , method 𝑚 , and parameter setting ps :
+
+𝐵 [ds , pt , 𝑚, ps ] =  recall ds ,pt ,𝑚, ps , QPS ds ,pt ,𝑚, ps 
+
+ (6) Table 𝐵 records the average performance of each method under each specific parameter setting, by testing the query performance under all combinations of predicate type and dataset. A router R
+
+takes a query 𝑞 , the dataset ds , and a specified recall threshold 𝑇 ,predicts the query performance of each method 𝑚 , and then selects the best-performing method satisfying 𝑇 along with its parameter setting, i.e., R ( 𝑞, ds ,𝑇 ) → ( 𝑚, ps ).After that, the system will process the filtered ANN query by using method 𝑚 with parameter setting ps to retrieve the top-𝑘 
+
+results. We assume 𝐵 is obtained via offline benchmarking, which is standard practice for stable datasets (document collections, knowl-edge bases) and is routinely employed in industrial-scale ANN systems [17, 23]. 
+
+## 4.1 Overview 
+
+Our query-aware ML router instantiates R as a two-stage pipeline as demonstrated in Figure 3. The pipeline contains two main stages. For the offline stage, we train a model for each of the five candidate methods and build a lookup table 𝐵 on the validation datasets. For the online stage, a query and its dataset are input. We first extract their features, which are fed to five trained models. Then we can get predicted recall for each candidate method, filter them by the predefined threshold 𝑇 , search over the table 𝐵 , and finally get a combination of method and parameter setting with maximum QPS. Next, we will focus on feature selection and model design. 
+
+## 4.2 Feature Selection 
+
+We start with 22 candidate features in three groups: (1) 6 query-aware features, i.e., number of labels in query, selec-tivity, minimum per-label frequency, maximum per-label fre-quency, mean per-label frequency, and label co-occurrence. Specifically, 
+
+• selectivity is the fraction of base vectors satisfying the pred-icate and defined as sel (𝑞 ) = |{( 𝑣 𝑖 , 𝐿 𝑖 ) ∈ 𝑉 : 𝑃 (𝐿 𝑖 , 𝐿 𝑞 ) =
+
+true }|/ 𝑛 ;
+
+• label co-occurrence is the fraction of base vectors whose label set contains all of 𝑞 ’s labels and denoted as |{ 𝑣 ∈ 𝑉 :
+
+𝐿 𝑞 ⊆ 𝐿 𝑣 }|/ 𝑛 .
+
+• the three per-label frequency statistics are the minimum, maximum, and mean of 𝑓 (𝑙 𝑖 ) = |{ 𝑣 ∈ 𝑉 : 𝑙 𝑖 ∈ 𝐿 𝑣 }|/ 𝑛 taken over the labels 𝑙 𝑖 ∈ 𝐿 𝑞 ;(2) 15 dataset-level feature, i.e., dataset size, dimensionality, LID mean, LID median, LID standard deviation, relative-contrast [ 10 ] median, relative-contrast 5–95% trimmed mean, relative-contrast 95th percentile, label cardinality, label en-tropy, number of unique label combinations, average labels per vector, distribution factor (mean sliced Wasserstein dis-tance [ 3]), correlation ratio, and normalized correlation ratio. 
+
+• the three LID statistics are the mean, median, and standard deviation of LID (𝑞 ) over a fixed sample of base vectors; 
+
+• the three relative-contrast statistics are the median, 5–95% trimmed mean, and 95th percentile of RC (𝑞 ) over the sam-ple queries where RC (𝑞 ) = dist (𝑞, 𝑘 -th NN )/ dist (𝑞, 1st NN );
+
+• Label entropy is − Í𝑙 ∈𝑈 𝑝 (𝑙 ) log 𝑝 (𝑙 ) with 𝑝 (𝑙 ) = |{ 𝑣 : 𝑙 ∈
+
+𝐿 𝑣 }|/ 𝑛 ;
+
+• number of unique label combinations is |{ 𝐿 𝑣 : 𝑣 ∈ 𝑉 }| ;
+
+• average labels per vector is 1
+
+> 𝑛
+
+Í𝑣 ∈𝑉 |𝐿 𝑣 |;
+
+• distribution factor is the mean sliced Wasserstein distance between each label’s vector subset and the global base distribution; 
+
+• correlation ratio is the size-weighted mean of per-label LID divided by the global LID; 
+
+• normalized correlation ratio rescales the correlation ratio by its expected value under a random subset of the same size, removing small-sample LID bias. (3) 1 feature for predicate type. The first 21 features are numeric and the last one is categori-cal. Since using all features risks overfitting, we perform feature selection. We rank the numeric features by RandomForest feature importance on the training set, then construct nested subsets of different sizes in the order of importance, and train the ML model under five random seeds for each size to average out initialization noise. The full setup, results, and analysis appear in Section 6.2. Based on our experimental results (Section 6.2), we finally select three features: selectivity, LID mean , predicate type. They will be combined into one feature vector as the input of the ML model. 
+
+## 4.3 Model Design 
+
+An ML model can usually be divided into classification and regres-sion. We choose regression (which predicts each method’s recall) over classification (which directly predicts the best method) because numeric recall output of different methods carries strictly more information than a single discrete label. It will keep the decision stable when several methods sit at similar recall levels. This choice can be validated in Section 6.2. We chose the Multi-layer Perception regression model (MLP-Reg) as our final choice. For each candidate method 𝑚 ∈ M , we independently train a MLP regressor 𝑓 𝑚 . Its input is the feature vector x(𝑞, ds ), and its out-put is the predicted recall@ 10 that 𝑚 would attain on query 𝑞 . This design is flexible. As each candidate method uses its independent MLP regressor, it only requires training the corresponding new 𝑓 𝑚 
+
+without retraining the existing ones when a new candidate method is added to the router. Each 𝑓 𝑚 is a 2-layer MLP with hidden layer sizes (64, 32) , ReLU activation, MSE loss, and Adam optimization. This depth is selected by the layer ablation study in Section 6.2 as a balance of filtered ANN search’s recall and inference latency. The final ML routing algorithm can be obtained by combining the regression models with the offline benchmark table 𝐵 , as shown in Algorithm 2. Lines 1–4 extract features and predict per-method recall. Line 5 filters methods by the deployment threshold 𝑇 , yield-ing the passing set P. If P is non-empty (lines 6–11), the algorithm picks the (method, parameter setting) pair with the maximum QPS within P: for each surviving method it first selects from 𝐵 the pa-rameter setting whose mean recall on the current (dataset, predicate type) combination is at least 𝑇 and whose QPS is maximum; then it picks the method with the overall best QPS. If P is empty (lines 13–15, fallback), the algorithm picks the method with the highest predicted recall and pairs it with the max-recall parameter setting available, getting as close to the precision target as possible. Conference’17, July 2017, Washington, DC, USA Xiong and Zhang 
+
+Figure 3: Query-aware ML routing pipeline. Algorithm 2 Per-Query ML Routing 
+
+Require: query 𝑞 , dataset context ds , deployment threshold 𝑇 
+
+Ensure: (method 𝑚 ∗, parameter setting ps ∗) 
+
+> 1:
+
+x ← ExtractFeatures (𝑞, ds ) // Section 4.2  
+
+> 2:
+
+for each 𝑚 ∈ M do  
+
+> 3:
+
+ˆ𝑟 𝑚 ← 𝑓 𝑚 (x) // five MLP forwards  
+
+> 4:
+
+end for  
+
+> 5:
+
+P ← { 𝑚 ∈ M : ˆ 𝑟 𝑚 ≥ 𝑇 } // 𝑇 -threshold filter  
+
+> 6:
+
+if P ≠ ∅ then  
+
+> 7:
+
+for each 𝑚 ∈ P do  
+
+> 8:
+
+ps 𝑚 ← arg max ps QPS (𝐵 [ds , pt , 𝑚, ps ]) s.t. 
+
+recall (𝐵 [ds , pt , 𝑚, ps ]) ≥ 𝑇  
+
+> 9:
+
+end for  
+
+> 10:
+
+𝑚 ∗ ← arg max 𝑚 ∈ P QPS (𝐵 [ds , pt , 𝑚, ps 𝑚 ])  
+
+> 11:
+
+ps ∗ ← ps 𝑚 ∗ 
+
+> 12:
+
+else  
+
+> 13:
+
+𝑚 ∗ ← arg max 𝑚 ˆ𝑟 𝑚 // fallback  
+
+> 14:
+
+ps ∗ ← arg max ps QPS (𝐵 [ds , pt , 𝑚 ∗, ps ]) s.t. recall ≥ 𝑇 (or the max-recall setting if none satisfies)  
+
+> 15:
+
+end if  
+
+> 16:
+
+return (𝑚 ∗, ps ∗)
+
+The threshold 𝑇 acts as a flexible and deployment-oriented knob: the same trained model can serve different values of 𝑇 (typically 
+
+0.5 to 0.99 ). A larger 𝑇 favors high recall at lower QPS; a smaller 𝑇 
+
+favors high QPS at lower recall; sweeping 𝑇 traces out a full recall– QPS Pareto curve from a single training run (see Section 6.3 and Figure 5). The fallback branch occurs only under extreme thresholds, such as 𝑇 = 0.99 .
+
+## 5 Related Work 
+
+This paper is related to three research topics: filtered ANN meth-ods (Section 5.1), adaptive query planning and method selection (Section 5.2), and related benchmarks (Section 5.3). 
+
+## 5.1 Filtered ANN Search 
+
+Existing filtered ANN (FANNS) methods can be categorized into two types based on the filtered attribute type: categorical filter ANN 
+
+and range filtered ANN methods. Categorical Filtered ANN methods can be further divided into three types based on the execution strategy [ 19 ]. Filter-then-search 
+
+methods first apply the attribute constraint to obtain a candidate subset, then perform ANN search on this subset. Representative methods include Pre-filter, which performs a brute-force search on the filtered subset, and UNG [ 4 ], which builds per-attribute sub-graph indexes connected by a label-navigating graph for cross-partition traversal. These methods perform well under high selec-tivity but degrade toward linear scan as selectivity drops. Search-then-filter methods first perform ANN search on a global index, then apply the attribute constraint to the retrieved candidates. Representative methods include Post-filter HNSW [ 15 ] and Post-filter IVFPQ [ 11 ]. While they directly reuse mature ANN index structures, under strong selectivity few of the initial top-𝑘 ′ candi-dates satisfy the constraint; maintaining recall therefore requires substantial candidate-set expansion at significant efficiency cost. 
+
+Hybrid-search methods embed attribute constraints directly into ANN index construction or search. HQANN [ 28 ] introduces light-weight attribute-aware filtering on HNSW; Filtered-DiskANN and Stitched-DiskANN [ 8] apply label-aware neighbor selection on the Vamana graph; ACORN-1 and ACORN-𝛾 [16 ] extend HNSW with attribute-aware pruning and multi-hop neighbor expansion; SIEVE [ 12 ] leverages historical query workloads to offline-construct a heterogeneous collection of sub-indices targeting common filter Query-aware Routing for Filtered Approximate Nearest Neighbors Search Conference’17, July 2017, Washington, DC, USA 
+
+patterns; CAPS [ 9] and NHQ [ 24 ] target fixed-length-label scenar-ios, with CAPS partitioning the attribute space via K-means and AFT, and NHQ fusing vector and attribute distances into a unified weighted distance. Although these methods generally achieve more balanced performance across filter scenarios, each retains a struc-tural preference for particular filter types (containment, overlap, equality) and data distributions. Range filtered ANN methods filters over numerical attributes such as timestamps and prices. Representative methods include iRangeGraph [ 30 ] (range-dedicated graphs assembled from sub-graphs), SeRF [ 35 ] (segment-graph augmentation of HNSW), ARK-Graph [ 34 ] (all-range 𝑘 -NN graph), UNIFY [ 13 ] (unified index span-ning the full range axis), WindowFilters [ 6] (window-based precom-puted indices), RangePQ [ 31 ] (efficient dynamic indexing for range queries), and TimestampANN [ 25 ] (timestamp-specialized variant). As noted in the FANNS benchmark [ 19 ], these methods are largely incompatible with the categorical-label algorithms discussed above and fall outside the scope of this paper. 
+
+## 5.2 Adaptive Query Planning and Method Selection 
+
+Our routing work instantiates the algorithm selection problem [ 18 ]in the FANNS domain. This paradigm has mature portfolio-based solutions in adjacent fields such as SAT solving [ 29 ], where the optimal solver is predicted from problem-instance features rather than chosen as a single universal method. Similar ideas have only re-cently begun to extend to vector retrieval. The most closely related work is the learning-based query planner of Gan and Wang [ 7], which trains a per-dataset two-layer MLP classifier to select be-tween Pre-filter and Post-filter on a per-query basis, using light-weight features (selectivity, dimensionality, dataset distribution). This work reports up to 4× speedup over single-strategy baselines. However, its strategy space is restricted to these two basic meth-ods, excluding hybrid-search approaches such as UNG, ACORN, and SIEVE. Moreover, as the planner is trained on each dataset, no empirical evidence of cross-dataset generalization is reported. A complementary line of work comes from unfiltered vector similarity search (VSS). Iceberg [ 5] addresses method selection for general VSS from a task-centric view, proposing the Information Loss Funnel model and deriving an interpretable decision tree over easy-to-compute meta-features such as the Davies–Bouldin index (DBI) for clustering tightness, vector-norm coefficient of variation (CV), relative angle (RA), and relative contrast (RC), to guide se-lection among methods such as HNSW, NSG, and RaBitQ. While Iceberg does not address attribute filtering, its methodology of con-structing an interpretable decision tree from dataset meta-features is structurally analogous to ours, validating meta-feature routing as a viable direction in the broader VSS area. Our work differs from the above in three notable ways: (1) broader method coverage — the candidate pool spans all three FANNS ex-ecution paradigms (filter-then-search, search-then-filter, hybrid-search) rather than only Pre- vs. Post-filter; (2) both rule-based and learned routers are provided — the former is derived directly from structural analysis via a three-feature decision tree (query scenario, label cardinality, LID), while the latter approximates the Oracle upper bound via per-method regression modeling; (3) systematic evaluation of generalization — we evaluate on five mid-scale out-of-sample validation datasets (500K–800K vectors, including Yahoo and DBpedia real-text data), directly testing routing transferability beyond the training distribution. 
+
+## 5.3 Benchmarks for Filtered ANN 
+
+The most directly related benchmark is the unified FANNS bench-mark of Shi et al. [ 19 ], which systematically evaluates 10 FANNS algorithms (NHQ, Filtered-DiskANN, Stitched-DiskANN, ACORN-1, ACORN-𝛾 , CAPS, UNG, Pre-filter Brute-Force, Post-filter HNSW, Post-filter IVFPQ) on 6 real-world datasets (including YFCC and YouTube) under five filter modes (containment, overlap, equality, fixed-equality, combined). It categorizes methods into the filter-then-search, search-then-filter, and hybrid-search paradigms, and emphasizes parameter fairness in evaluation. Our empirical foun-dation builds directly on this benchmark: on top of its method and dataset pool, we introduce dataset difficulty features (LID, RC, dis-tribution factor) as routing signals, and independently construct five mid-scale validation datasets (including Yahoo and DBpedia real-text data) to assess routing generalization beyond the training set. General ANN benchmarks such as ANN-Benchmarks [ 2] and Big-ANN-Benchmarks [ 20 ] are mature in the unfiltered setting, but their evaluation protocols do not cover attribute-filtered scenarios. Iceberg [ 5] extends end-to-end task-centric evaluation in the gen-eral VSS setting but likewise does not address filter constraints. Our work complements this ecosystem by transitioning from bench-marking toward method selection grounded in structural observation 
+
+in the FANNS setting. 
+
+## 6 Experiments 
+
+All experiments run on a Linux node equipped with an AMD EPYC 9654 processor (96 cores, 192 threads, 594 GB RAM). For each exper-iment, 16 CPU cores are allocated with 128 GB of memory; multi-threaded runs use 16 threads. 
+
+## 6.1 Experimental Setup 
+
+6.1.1 Methods. Two batches of method are used in different stages of the experimental study: 
+
+• The first batch is ten filtered ANN methods used in our initial benchmark, which are used to implement extensive experimental study and derive our motivation to propose novel router. They are Pre-filter [ 19 ], Post-filter [ 19 ], UNG[ 4 ], SIEVE[ 12 ], ACORN-𝛾 , ACORN-1[ 16 ], NHQ[ 24 ], CAPS[ 9], FilteredVamana and StichedVamana[ 8], which cover almost all existing categorical filtered ANN methods. Our systematic experimental results for these methods are shown in Figure 2. 
+
+• The second batch is the baseline methods, which will be com-pared with our proposed methods. We select five methods (UNG, Post-filter, SIEVE, ACORN-𝛾 , and FilteredVamana) from the first batch, as they have optimal performance on at least one combination of dataset and predicate type, as shown in Figure 2. The remaining methods in the empirial study are excluded from the candidate set out of different reasons: Pre-filter has recall = 1, however its QPS is far lower than the other methods; ACORN-1 is the 𝛾 = 1 special case of ACORN-𝛾 , and ACORN-1 either performs comparably to Conference’17, July 2017, Washington, DC, USA Xiong and Zhang 
+
+ACORN-𝛾 or is dominated by it; CAPS and NHQ restrict la-bels to fixed-length formats and cannot handle the variable-length label structures present in real world depolyment. We further observed that StitchedVamana exhibits stabil-ity issues across many parameter parameter settings: some parameter settings crash with segmentation faults, while others produce corrupted indices that yield zreo recall. We also include our RuleRouter (introduced in section 3) as one baseline method, which is a hand-crafted router that select the best performed method based on dataset-level features and predicate type. Moreover, Gan [ 7] proposes a learned binary planner that picks either Pre-filter or Post-filter execution for each query. Since both pre-filter and Post-filter are already sit within our setting, the action space of [ 7] is therefore a strict subset of ours. So we do not include this work as our baseline. We report recall@10 and average QPS over 16 threads as the primary metrics; the ML router’s QPS aggregates both the routing time and per-query search latency. 
+
+6.1.2 Training. 
+
+Datasets. We use six real-world training datasets [ 19 ] as sum-marised in Table 2. These datasets span a wide range of domain, size, dimensionality, and label cardinality, along with LID mean and 
+
+𝑐𝑎𝑟𝑑 (𝑉 ) as shown in Table 1. They cover the typical workload characteristics of filtered ANN retrieval and can be downloaded 1.
+
+Table 2: Six real-world training datasets.                             
+
+> Dataset Domain Size Dim #Labels arxiv academic paper embeddings 132K 768 4,231 yfcc Flickr images (YFCC100M) 1M 192 181,931 LAION-1M image–text pairs 1M 512 30 tripclick travel-search logs 1M 768 29 ytb_audio YouTube-8M audio 5M 128 3,862 ytb_video YouTube-8M video 1M 1024 3,862
+
+Training data collection. For each training data containing the combination of training dataset, predicate type, and candidate meth-ods, we first perform a parameter sweep over the method’s parame-ter space. Candidate methods are five methods in the second batch of method as mentioned in section 6.1.1. Table 3 lists each method’s sweep range and a typical best parameter setting as a reference. Then we select the parameter setting with the best recall–QPS trade-off for each training data and run the full query workload under the selected parameter setting to record per-query recall@10. The resulting training set contains approximately 6 × 3 × 1,000 ×
+
+5 ≈ 90 ,000 records, which are produced under 6 training datasets, 3 predicate types, 1,000 queries on each dataset, 5 candidate methods. The candidate methods serve as labels for the MLP-Reg model. We select the best parameter setting for each candidate method under all combinations of dataset and predicate type, rather than a globally fixed setting. This ensures that the training labels re-flect each method’s potential best performance for that specific combination. It can avoid the underestimation that would arise if a 
+
+> 1https://huggingface.co/datasets/ffa500/filterbenchmark
+
+parameter setting is globally reasonable but locally underfit. The drawback is that method selection and parameter setting selection must be modeled separately. Specifically, MLP-Reg predicts the query performance of each candidate method given one query. 
+
+6.1.3 Validation. 
+
+Datasets. There are five validation datasets that router never sees during training, as summarised in Table 4. Their dimensions and la-bel cardinality generally follow that of the training datasets. Three synthetic datasets are generated by sampling Zipf-distributed label sets over Gaussian vector clusters with a fixed seed. The two real-world text datasets (yahoo800k and dbpedia560k), both encoded with the same sentence-transformer model, evaluate the router on natural-language workloads that differ structurally from distribu-tions of the training datasets. For each combination of dataset and predicate type, we sample 1,000 queries, yielding 15 ,000 validation queries in total. 
+
+Dataset preparation and query generation. We use each dataset as it ships from its source. Each dataset comes with two parts: a 
+
+base set (the vectors over which the index is built) and a separate 
+
+query set (a small subset of vectors held out for testing); we use both as released. Every base vector 𝑣 𝑖 carries a label set 𝐿 𝑖 from the dataset’s metadata (subject classifications for arxiv, image tags for yfcc, 30 categorical labels for LAION1M). To evaluate the router under arbitrary query workloads, we generate 1,000 queries for each combination of dataset and predicate type. Each query has two parts: a query vector 𝑞 and a query label set 𝐿 𝑞 . The query vectors are drawn from a pre-defined set that is disjoint from the dataset. Specifically, for the two real-world text datasets (yahoo800k and dbpedia560k), the query set originates from the source dataset; for the three synthetic datasets, query vectors are constructed by adding Gaussian noise (scale = 10% of median base-vector norm) to randomly chosen vectors from the datasets. We choose the size of 𝐿 𝑞 to match how real queries are typically issued: for Equality and AND predicate types, queries are usually specified with a few labels, so |𝐿 𝑞 | is small (1–3); for OR predicate type, query labels are typically span a wide range, so |𝐿 𝑞 |
+
+is broader. The ground-truth results for validation are obtained through brute-force search over all candidate vectors 𝑣 𝑖 whose label set 𝐿 𝑖 
+
+satisfies the query predicate with 𝐿 𝑞 .
+
+## 6.2 Design Ablations 
+
+In this section, we conduct ablation studies for the ML router from three perspectives: feature selection, model type (classification vs. regression), and MLP depth. 
+
+(a) Feature Selection. Starting from the 22 candidate features described in Section 4.2, we will test which are actually needed by MLP-Reg. We rank numeric candidate features by RandomForest feature importance on the training set and construct a nested family of subsets with different sizes, each prepended with predicate type . We use 𝑛 to denote the number of most important features. For every 𝑛 , we train MLP-Reg under five random seeds and report the mean and standard deviation of validation recall@10. Multi-seed averaging is necessary because MLP training is sensitive to Query-aware Routing for Filtered Approximate Nearest Neighbors Search Conference’17, July 2017, Washington, DC, USA 
+
+Table 3: Parameter sweep ranges for training data collection. 
+
+Method Build parameters Search parameter Typical best config UNG max_degree={32,48,64,96}, 
+
+𝐿 build ={100,150,200} 
+
+𝐿 search ={100,300,500} max_degree=96, 𝐿 build =200, 𝐿 search =500 Post-filter 𝑀 ={32,48,64}, efc={100,200,400} ef={1200,1500,2000} 𝑀 =64, efc=100, ef=2000 SIEVE 𝑀 ={16,32}, index_budget={1,2,3}, hist_pct={0.25,0.5} ef_search=[30,200] 𝑀 =32, index_budget=2.0, hist_pct=0.25, ef_search=200 ACORN-𝛾 𝑀 ={48,64}, 𝑀 𝛽 ={48,64,96}, 𝛾 ={1,4,8,12,24} ef={1000,1200} 𝑀 =64, 𝑀 𝛽 =96, 𝛾 =8, ef=1200 FilteredVamana 𝑅 ={32,64,128} 𝐿 search ={100,200,500,1000,2000} 𝑅 =128, 𝐿 search =2000 
+
+Table 4: Five validation datasets. 
+
+Dataset Domain Size Dim #Labels synth_192d synthetic (Zipf/Gaussian) 800K 192 200 synth_512d synthetic (Zipf/Gaussian) 800K 512 30 synth_768d_hc synthetic (Zipf/Gaussian) 800K 768 1,000 yahoo800k Yahoo Answers topics [33] 800K 768 14 dbpedia560k DBpedia ontology [33] 560K 768 14 
+
+initialisation, and a single-seed estimate at the same 𝑛 would make the curve essentially unreadable. 1 2 3 4 5 6 7 8 10 12 15 18 20 22 
+
+> Number of input features (n)
+> 0.800
+> 0.825
+> 0.850
+> 0.875
+> 0.900
+> 0.925
+> 0.950
+> 0.975
+> 1.000
+> Validation recall@10 (mean ± std over 5 seeds)
+> candidate sets
+> Feature ablation
+
+Figure 4: MLP-Reg validation recall vs. feature count. 
+
+The validation recall under different feature numbers is shown in Figure 4. For 𝑛 ≥ 10 the curve becomes non-monotone and per-seed variance grows by an order of magnitude (std up to 0.06 ). This can be explained that individual feature additions can either lift or depress mean recall depending on whether the added feature is informative or merely a dataset “fingerprint” that overfits the six training dataset. We therefore restrict the number of candidate feature to 𝑛 ≤ 8,where the mean recall is stable and high across seeds, and pick candidates in this range. Within the 𝑛 ≤ 8 plateau, the model achieves the highest recall with 𝑛 = 2 and 𝑛 = 3. The two candidates are separated by only 0.005 recall and both have tight per-seed variance, so recall alone does not distinguish them. We therefore evaluate them on per-query latency before committing to the final minimal feature set. Table 5 reports the per-query latency on two real-world validation datasets. On both real-world text datasets, 
+
+𝑛 = 3 is 1.7 to 5.6 times faster than 𝑛 = 2, because the LID_mean 
+
+feature steers the router away from latency-heavy methods such as UNG on AND/OR queries (where UNG must scan many label partitions per query, which is slow on the high-LID text embeddings these datasets produce). So we adopt 𝑛 = 3 as our final number of features. 
+
+Table 5: Per-query latency under two candidate feature sets 
+
+Dataset 𝑛 = 2 latency ( 𝜇 s) 𝑛 = 3 latency ( 𝜇 s) dbpedia560k 8559 4993 (1.7×)yahoo800k 20974 3727 (5.6×)
+
+(b) Classification vs. Regression. The ML model can be trained either as a classifier or as a regressor. The two model families share the same input features, training set, and network capacity, but they differ in training objective and output form. Specifically, clas-sification directly outputs the discrete top-1 method label, whereas regression outputs a continuous predicted recall for each candidate method. For a fair comparison of the two training objectives, we reduce the regression output to plain argmax (selecting the method with the highest predicted recall) to align with the classifier’s top-1 out-put. Note that the model in the deployment evaluation of Section 6.3 additionally filters methods by their predicted recall ( ˆ𝑟 𝑚 ≥ 𝑇 ) before selecting the lookup-table max-QPS parameter setting, which a clas-sifier cannot do since it emits only a single label. The plain argmax evaluation in this section therefore underestimates regression’s deployment time performance. 
+
+Table 6: Recall@10 of classification and regression models 
+
+Family Router yahoo800k dbpedia560k Aggregate Classification LogisticReg 0.892 0.931 0.903 MLP 0.871 0.933 0.937 RandomForest 0.940 0.927 0.958 Regression Ridge 0.954 0.977 0.985 MLP-Reg 0.957 0.993 0.986 
+
+RF-Reg 0.950 0.994 0.987 
+
+We select three representative algorithms from each model fam-ily: classification uses LogisticRegression, MLP, and RandomForest; regression uses Ridge, MLP-Reg, and RF-Reg. Table 6 demonstrates their recall in two datasets (yahoo800k, dbpedia560k) along with the aggregate recall (denoted as Aggregate in the Table) on all five validation datasets. The regression family is significantly better than the classification family overall. The gap stems from how Conference’17, July 2017, Washington, DC, USA Xiong and Zhang 
+
+Table 7: MLP depth ablation: routing recall and inference latency. 
+
+#Layers Recall 𝜇 s/query 2 0.9863 0.50 
+
+3 0.9896 1.50 
+
+4 0.9874 3.38 
+
+much information the two training losses can exploit. Classification is trained with cross-entropy loss, which only checks whether the argmax falls on the ground-truth method: a prediction is either correct or wrong, with no distinction between being slightly off (picking a method whose recall is 0.005 below the best) and being far off (picking one 0.5 below). On validation set where almost every method’s recall sits close to the ceiling, ties are frequent and the cross-entropy gradient cannot smoothly steer the model toward the truly optimal method. Regression instead is trained with MSE on each candidate’s measured recall, giving a continuous, differ-entiable error that grows with the distance between predicted and true recall. The gradient is proportional to the induced recall loss, so the argmax stays stable when several methods sit at similar recall. We therefore choose regression as the training objective. Within the regression family, the three models have nearly iden-tical overall recall (Ridge 0.985 / MLP-Reg 0.986 / RF-Reg 0.987 ), but inference latency differs by an order of magnitude ( 0.13 / 0.74 /
+
+7.83 𝜇 s per query): RF-Reg is 10 .5× slower than MLP-Reg. Filtered ANN queries in high-QPS workloads commonly take hundreds of microseconds, so any routing overhead exceeding 1–2 𝜇 s starts to reduce the overall QPS. We therefore select MLP-Reg, since its recall is only 0.001 below the strongest RF-Reg and its latency is an order of magnitude lower. 
+
+(c) MLP Depth. Since the input is only 3 features, the model does not need to be deep. We adopt a 2-hidden-layer MLP (64 , 32 ): with so few inputs, a single hidden layer has limited capacity to capture interactions among the features (in the worst case collapsing toward a logistic-regression-like decision boundary), while two layers reach adequate approximation capacity at sub-microsecond inference cost. Deeper hidden layers (such as 3-4) bring no obvious recall gain on this low-dimensional input but raise inference latency 3-7× per query as shown in Table 7. 
+
+## 6.3 Main Result: Full Recall-QPS Comparison 
+
+Having fixed the ML Router design in section 6.2, we compare the router against all baselines and RuleRouter in the (recall, QPS) plane on all five validation datasets over three predicate types, with results shown in Figure 5. 
+
+Overall performance. We define the Oracle as a hypothetical router that selects the method achieving the highest recall for each query, i.e., the Oracle achieves the theoretical best performance. The ML Router curve (magenta) has the best performance on almost all datasets and predicate types. By routing each query to the method the model deems most suitable via per-query prediction, the ML Router achieves a multi-workload aggregate performance that no single method can match. 
+
+Gains over RuleRouter. Since RuleRouter picks one candidate method for each combination of validation dataset and predicate type, its performance will overlap with one baseline method. So we only mark its picked method rather than show its recall-QPS curve 5. The ML Router’s gains over RuleRouter manifest in two situations. First, for the OR predicate type on several datasets (synth_768d_hc, yahoo800k, synth_192d, dbpedia560k), the RuleRouter chooses Post-filter via an LID threshold, but Post-filter must use a very slow parameter setting to reach recall ≥ 0.9 on these workloads, with QPS pushed down to the 10 –100 range. The ML Router routes most queries to SIEVE or FilteredVamana, achieving overall QPS one to two orders of magnitude higher. Second, for the AND predicate type on two datasets (yahoo800k, dbpedia560k), the rule chooses UNG, which attains a maximum mean recall of only 0.67 and 0.82 
+
+respectively across all sweep parameter settings, short of threshold 
+
+𝑇 = 0.9. Therefore, RuleRouter could fail to meet the recall threshold, which degrades its performance. 
+
+ML Router latency. To put the routing overhead in context, we measured the full streaming routing pipeline (Roaring-bitmap se-lectivity + feature scaling + 5 MLP-Reg forwards + offline config lookup) over all 1,000 queries on all combinations of validation datasets and predicate types. The 5 MLP forwards account for 41 𝜇 s(median); Roaring-bitmap selectivity takes ∼ 0.4 𝜇 s on Equality (hash lookup over the precomputed set-count table) and 5–58 𝜇 s on AND/OR (bitmap intersection/union over query labels). Across all 
+
+15 ,000 queries, the routing per-query latency has median 54 𝜇 s, p95 93 𝜇 s, and max 167 𝜇 s. The routing-to-query latency ratio is overall 0.2% with a worst-case of 2.6% on synth_512d/AND. Therefore, the routing latency is negligible compared to the query latency. 
+
+## 7 Conclusion 
+
+We presented a per-query ML routing framework for categorical filtered ANN query processing. Motivated by two key observa-tions obtained from extensive experimental study, we propose a framework to train a lightweight router to predict each candidate method’s recall on the incoming query, and selects the best method along with the parameter settting. On five validation datasets un-seen during training, the router attains average recall@10 = 0.986, with 0.9% gap to the ground truth. Routing overhead has a median latency of around 54 𝜇 s per query, which is two orders of magnitude lower than the millisecond-scale latency of the underlying filtered ANN search. This demonstrates the practicality of the framework in real-world deployment. Our two observations could also apply for range filtered ANN methods. Therefore, in the future, we plan to extend our framework to per-query routing among range filtered ANN methods. 
+
+## References          
+
+> [1] Laurent Amsaleg, Oussama Chelly, Teddy Furon, Stéphane Girard, Michael E. Houle, Ken-ichi Kawarabayashi, and Michael Nett. 2015. Estimating Local In-trinsic Dimensionality. In Proceedings of the 21st ACM SIGKDD International Conference on Knowledge Discovery and Data Mining . ACM, 29–38. doi:10.1145/ 2783258.2783405 [2] Martin Aumüller, Erik Bernhardsson, and Alexander Faithfull. 2020. ANN-Benchmarks: A Benchmarking Tool for Approximate Nearest Neighbor Algo-rithms. Information Systems 87 (2020), 101374. doi:10.1016/j.is.2019.02.006 [3] Nicolas Bonneel, Julien Rabin, Gabriel Peyré, and Hanspeter Pfister. 2015. Sliced and Radon Wasserstein Barycenters of Measures. Journal of Mathematical Imag-ing and Vision 51, 1 (2015), 22–45.
+
+Query-aware Routing for Filtered Approximate Nearest Neighbors Search Conference’17, July 2017, Washington, DC, USA 0.0 0.2 0.4 0.6 0.8 1.0 
+
+10 1
+
+10 3
+
+> QPS @ 16 threads (log)
+> RuleRouter pick: SIEVE
+
+synth_192d / and 
+
+0.0 0.2 0.4 0.6 0.8 1.0 
+
+10 1
+
+10 2
+
+10 3
+
+10 4
+
+> RuleRouter pick: Post-filter
+
+synth_192d / or 
+
+0.0 0.2 0.4 0.6 0.8 1.0 
+
+10 1
+
+10 3
+
+> RuleRouter pick: UNG
+
+synth_192d / equal 
+
+0.0 0.2 0.4 0.6 0.8 1.0 
+
+10 1
+
+10 3
+
+> QPS @ 16 threads (log)
+> RuleRouter pick: UNG
+
+synth_512d / and 
+
+0.0 0.2 0.4 0.6 0.8 1.0 
+
+10 1
+
+10 2
+
+10 3
+
+> RuleRouter pick: Post-filter
+
+synth_512d / or 
+
+0.0 0.2 0.4 0.6 0.8 1.0 
+
+10 1
+
+10 3
+
+> RuleRouter pick: UNG
+
+synth_512d / equal 
+
+0.0 0.2 0.4 0.6 0.8 1.0 
+
+10 0
+
+10 2
+
+10 4
+
+> QPS @ 16 threads (log)
+> RuleRouter pick: SIEVE
+
+synth_768d_hc / and 
+
+0.0 0.2 0.4 0.6 0.8 1.0 
+
+10 1
+
+10 3
+
+> RuleRouter pick: Post-filter
+
+synth_768d_hc / or 
+
+0.0 0.2 0.4 0.6 0.8 1.0 
+
+10 1
+
+10 3
+
+> RuleRouter pick: UNG
+
+synth_768d_hc / equal 
+
+0.0 0.2 0.4 0.6 0.8 1.0 
+
+10 1
+
+10 2
+
+10 3
+
+10 4
+
+> QPS @ 16 threads (log)
+> RuleRouter pick: UNG
+
+yahoo800k / and 
+
+0.0 0.2 0.4 0.6 0.8 1.0 
+
+10 1
+
+10 2
+
+10 3
+
+10 4
+
+> RuleRouter pick: Post-filter
+
+yahoo800k / or 
+
+0.0 0.2 0.4 0.6 0.8 1.0 
+
+10 1
+
+10 2
+
+10 3
+
+10 4
+
+> RuleRouter pick: UNG
+
+yahoo800k / equal 
+
+0.0 0.2 0.4 0.6 0.8 1.0 
+
+Recall@10 
+
+10 1
+
+10 2
+
+10 3
+
+10 4
+
+> QPS @ 16 threads (log)
+> RuleRouter pick: UNG
+
+dbpedia560k / and 
+
+0.0 0.2 0.4 0.6 0.8 1.0 
+
+Recall@10 
+
+10 1
+
+10 2
+
+10 3
+
+> RuleRouter pick: Post-filter
+
+dbpedia560k / or 
+
+0.0 0.2 0.4 0.6 0.8 1.0 
+
+Recall@10 
+
+10 1
+
+10 2
+
+10 3
+
+10 4
+
+> RuleRouter pick: UNG
+
+dbpedia560k / equal       
+
+> UNG Post-filter SIEVE ACORN FilteredVamana ML Router (MLP-Reg) Oracle
+
+Figure 5: Recall–QPS Pareto on all combinations of dataset and predicate type. 
+
+[4] Yuzheng Cai, Jiayang Shi, Yizhuo Chen, and Weiguo Zheng. 2024. Navigating La-bels and Vectors: A Unified Approach to Filtered Approximate Nearest Neighbor Search. Proceedings of the ACM on Management of Data 2, 6, Article 246 (2024), 27 pages. doi:10.1145/3698822 [5] Tingyang Chen, Cong Fu, Jiahua Wu, Haotian Wu, Hua Fan, Xiangyu Ke, Yunjun Gao, Yabo Ni, and Anxiang Zeng. 2026. Reveal Hidden Pitfalls and Navigate Next Generation of Vector Similarity Search from Task-Centric Views. In Proceedings of the ACM SIGMOD International Conference on Management of Data (SIGMOD’26) .Association for Computing Machinery. arXiv:2512.12980 [6] Joshua Engels, Ben Landrum, Shangdi Yu, Laxman Dhulipala, and Julian Shun. 2024. Approximate Nearest Neighbor Search with Window Filters. In Proceedings of the 41st International Conference on Machine Learning (ICML) . PMLR, 12469– 12490. https://proceedings.mlr.press/v235/engels24a.html [7] Zhuocheng Gan and Yifan Wang. 2026. Efficient Filtered-ANN via Learning-based Query Planning. arXiv preprint arXiv:2602.17914 (2026). University of Hawaii at Manoa. [8] Siddharth Gollapudi, Neel Karia, Varun Sivashankar, Ravishankar Krishnaswamy, Nikit Begwani, Swapnil Raz, Yiyong Lin, Yin Zhang, Neelam Mahapatro, Premku-mar Srinivasan, Amit Singh, and Harsha Vardhan Simhadri. 2023. Filtered-DiskANN: Graph Algorithms for Approximate Nearest Neighbor Search with Filters. In Proceedings of the ACM Web Conference 2023 . Association for Computing Machinery, 3406–3416. doi:10.1145/3543507.3583552 [9] Gaurav Gupta, Jonah Yi, Benjamin Coleman, Chen Luo, Vihan Lakshman, and Anshumali Shrivastava. 2023. CAPS: A Practical Partition Index for Filtered Similarity Search. (2023). arXiv:2308.15014 [cs.IR] https://arxiv.org/abs/2308. 15014 [10] Junfeng He, Sanjiv Kumar, and Shih-Fu Chang. 2012. On the Difficulty of Nearest Neighbor Search. In Proceedings of the 29th International Conference on Machine Learning (ICML) . 1127–1134. [11] Jeff Johnson, Matthijs Douze, and Hervé Jégou. 2019. Billion-Scale Similarity Search with GPUs. IEEE Transactions on Big Data 7, 3 (2019), 535–547. [12] Zhaoheng Li, Silu Huang, Wei Ding, Yongjoo Park, and Jianjun Chen. 2025. SIEVE: Effective Filtered Vector Search with Collection of Indexes. In Proceedings of the VLDB Endowment , Vol. 18. [13] Anqi Liang, Pengcheng Zhang, Bin Yao, Zhongpu Chen, Yitong Song, and Guangxu Cheng. 2025. UNIFY: Unified Index for Range Filtered Approximate Nearest Neighbors Search. Proceedings of the VLDB Endowment 18, 4 (2025), 1118–1130. doi:10.14778/3717755.3717770 [14] Yanjun Lin, Kai Zhang, Zhenying He, Yinan Jing, and X. Sean Wang. 2025. Survey of Filtered Approximate Nearest Neighbor Search over the Vector-Scalar Hybrid Conference’17, July 2017, Washington, DC, USA Xiong and Zhang 
+
+Data. (2025). arXiv:2505.06501 [cs.DB] [15] Yu. A. Malkov and D. A. Yashunin. 2018. Efficient and Robust Approximate Nearest Neighbor Search Using Hierarchical Navigable Small World Graphs. IEEE Transactions on Pattern Analysis and Machine Intelligence (2018). arXiv:1603.09320 [16] Liana Patel, Peter Kraft, Carlos Guestrin, and Matei Zaharia. 2024. ACORN: Per-formant and Predicate-Agnostic Search Over Vector Embeddings and Structured Data. (2024). arXiv:2403.04871 [cs.IR] https://arxiv.org/abs/2403.04871 [17] Pinecone Systems, Inc. 2024. Pinecone: Vector Database for Machine Learning. https://www.pinecone.io. Accessed: 2025-01-15. [18] John R. Rice. 1976. The Algorithm Selection Problem. In Advances in Computers .Vol. 15. Elsevier, 65–118. doi:10.1016/S0065-2458(08)60520-3 [19] Jiayang Shi, Yuzheng Cai, and Weiguo Zheng. 2025. Filtered Approximate Nearest Neighbor Search: A Unified Benchmark and Systematic Experimental Study. (2025). arXiv:2509.07789 [cs.DB] https://arxiv.org/abs/2509.07789 [20] Harsha Vardhan Simhadri, George Williams, Martin Aumüller, Matthijs Douze, Artem Babenko, Dmitry Baranchuk, Qi Chen, Lucas Hosseini, Ravishankar Kr-ishnaswamy, Gopal Srinivasa, Suhas Jayaram Subramanya, and Jingdong Wang. 2022. Results of the NeurIPS’21 Challenge on Billion-Scale Approximate Nearest Neighbor Search. In Proceedings of the NeurIPS 2021 Competitions and Demonstra-tions Track . PMLR. [21] Suhas Jayaram Subramanya, Fnu Devvrit, Harsha Vardhan Simhadri, Ravishankar Krishnawamy, and Rohan Kadekodi. 2019. DiskANN: Fast Accurate Billion-point Nearest Neighbor Search on a Single Node. In Advances in Neural Information Processing Systems (NeurIPS) , Vol. 32. Curran Associates, Inc. [22] Bart Thomee, David A. Shamma, Gerald Friedland, Benjamin Elizalde, Karl Ni, Douglas Poland, Damian Borth, and Li-Jia Li. 2016. YFCC100M: The New Data in Multimedia Research. Commun. ACM 59, 2 (2016), 64–73. [23] Jianguo Wang, Xiaomeng Yi, Rentong Guo, Hai Jin, Peng Xu, Shengjun Li, Xi-angyu Wang, Xiangzhou Guo, Chengming Li, Xiaohai Xu, Kun Yu, Yuxing Yuan, Yinghao Zou, Jiquan Long, Yudong Cai, Zhenxiang Li, Zhifeng Zhang, Yihua Mo, Jun Gu, Ruiyi Jiang, Yi Wei, and Charles Xie. 2021. Milvus: A Purpose-Built Vector Data Management System. In Proceedings of the 2021 ACM SIGMOD International Conference on Management of Data . Association for Computing Machinery, 2614–2627. doi:10.1145/3448016.3457550 [24] Mengzhao Wang, Lingwei Lv, Xiaoliang Xu, Yuxiang Wang, Qiang Yue, and Jiongkang Ni. 2023. An Efficient and Robust Framework for Approximate Nearest Neighbor Search with Attribute Constraint. In Advances in Neural Information Processing Systems (NeurIPS) , Vol. 36. 15738–15751. [25] Yuxiang Wang, Ziyuan He, Yongxin Tong, Zimu Zhou, and Yiman Zhong. 2025. Timestamp Approximate Nearest Neighbor Search over High-Dimensional Vec-tor Data. In Proceedings of the 2025 IEEE 41st International Conference on Data Engineering (ICDE) . IEEE, 3043–3055. doi:10.1109/ICDE65448.2025.00228 [26] Weaviate B.V. 2024. Weaviate: Open-Source Vector Search Engine. https:// weaviate.io. Accessed: 2025-01-15. [27] Chuangxian Wei, Bin Wu, Sheng Wang, Renjie Lou, Chaoqun Zhan, Feifei Li, and Yuanzhe Cai. 2020. AnalyticDB-V: a hybrid analytical engine towards query fusion for structured and unstructured data. Proc. VLDB Endow. 13, 12 (2020), 3152–3165. [28] Wei Wu, Junlin He, Yu Qiao, Guoheng Fu, Li Liu, and Jin Yu. 2022. HQANN: Efficient and Robust Similarity Search for Hybrid Queries with Structured and Unstructured Constraints. (2022). arXiv:2207.07940 [cs.DB] https://arxiv.org/ abs/2207.07940 [29] Lin Xu, Frank Hutter, Holger H. Hoos, and Kevin Leyton-Brown. 2008. SATzilla: Portfolio-based Algorithm Selection for SAT. Journal of Artificial Intelligence Research 32 (2008), 565–606. doi:10.1613/jair.2490 [30] Yuexuan Xu, Jianyang Gao, Yutong Gou, Cheng Long, and Christian S. Jensen. 2024. iRangeGraph: Improvising Range-dedicated Graphs for Range-filtering Nearest Neighbor Search. Proceedings of the ACM on Management of Data 2, 6, Article 239 (2024), 26 pages. doi:10.1145/3698814 [31] Fangyuan Zhang, Mengxu Jiang, Guanhao Hou, Jieming Shi, Hua Fan, Wenchao Zhou, Feifei Li, and Sibo Wang. 2025. Efficient Dynamic Indexing for Range Filtered Approximate Nearest Neighbor Search. Proceedings of the ACM on Management of Data 3, 3, Article 152 (2025), 26 pages. doi:10.1145/3725401 [32] Qianxi Zhang, Shuotao Xu, Qi Chen, Guoxin Sui, Jiadong Xie, Zhizhen Cai, Yaoqi Chen, Yinxuan He, Yuqing Yang, Fan Yang, Mao Yang, and Lidong Zhou. 2023. VBASE: Unifying Online Vector Similarity Search and Relational Queries via Relaxed Monotonicity. In Proceedings of the 17th USENIX Symposium on Operating Systems Design and Implementation (OSDI 2023) . USENIX Association, 377–395. [33] Xiang Zhang, Junbo Zhao, and Yann LeCun. 2015. Character-Level Convolutional Networks for Text Classification. In Advances in Neural Information Processing Systems . 649–657. [34] Chaoji Zuo and Dong Deng. 2023. ARKGraph: All-Range Approximate K-Nearest-Neighbor Graph. Proceedings of the VLDB Endowment 16, 10 (2023), 2645–2658. doi:10.14778/3603581.3603601 [35] Chaoji Zuo, Miao Qiao, Wenchao Zhou, Feifei Li, and Dong Deng. 2024. SeRF: Segment Graph for Range-Filtering Approximate Nearest Neighbor Search. Pro-ceedings of the ACM on Management of Data 2, 1, Article 69 (2024), 26 pages. doi:10.1145/3639324
