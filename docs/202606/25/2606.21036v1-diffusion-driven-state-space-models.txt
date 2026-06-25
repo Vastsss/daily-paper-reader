@@ -1,0 +1,3564 @@
+Title: Diffusion-Driven State Space Models
+
+URL Source: https://arxiv.org/pdf/2606.21036v1
+
+Published Time: Tue, 23 Jun 2026 00:28:39 GMT
+
+Number of Pages: 39
+
+Markdown Content:
+Published at ProbML 2026 
+
+# Diffusion-Driven State Space Models 
+
+Jack Ruder 1, ∗ Michael Wojnowicz 1, †
+
+> 1
+
+Montana State University 
+
+> ∗
+
+jackruder@montana.edu 
+
+> †
+
+michael.wojnowicz@montana.edu 
+
+## Abstract 
+
+In many domains, practitioners seek models that produce accurate forecasts while faithfully capturing latent system dynamics. Existing approaches typically sacrifice one of these goals: deep state space models often assume Gaussian latent transitions, limiting fit and forecasting, while diffusion models are highly expressive but lack principled inference for the underlying dynamics. To combine the strengths of both, we introduce the Diffusion-Driven State Space Model (DDSSM), which replaces the conventional Gaussian transition distribution with a diffusion model. Our DDSSM resolves the open problem of how to jointly train an autoencoder and a diffusion model on sequential data, thereby extending the literature on latent diffusion models for time series. Moreover, we find that the DDSSM empirically outperforms a state-of-the-art deep SSM at fitting and forecasting a simulated time series with multimodal transitions. 
+
+## 1. Introduction 
+
+Diffusion models (Sohl-Dickstein et al., 2015; Ho et al., 2020) have emerged as a powerful class of generative models for high-dimensional data. For time series data, emerging evidence demonstrates state-of-the-art performance on forecasting, imputation, and sample-generation tasks (Yang et al., 2024), where diffusion models are typically used as generative samplers to produce future trajectories conditioned on past observations (Su et al., 2025). Some approaches perform diffusion directly in observation space (Tashiro et al., 2021; Rasul et al., 2021; Kollovieh et al., 2023; Price et al., 2025), while others apply diffusion in the latent space of an autoencoder (Feng et al., 2024; Liu et al., 2024; Blattmann et al., 2023), which can improve tractability for high-dimensional data. However, existing latent time-series diffusion methods typically rely on two-stage training: first learning the autoencoder, then training the diffusion model. This may produce an over-regularized latent space (Liu et al., 2024) that discards information needed for downstream generative dynamics, consistent with research on latent diffusion for static data where two-stage training leads to poorer representations and generative performance (Vahdat et al., 2021; Shmakov et al., 2023). In contrast, State Space Models (SSMs) (Kalman, 1960; Shumway and Stoffer, 1982; Durbin and Koopman, 2001) provide a classical framework for temporal data that naturally supports end-to-end training, captures timestep-by-timestep dynamics, and admits well-studied extensions to diverse settings. SSMs typically assume observed data are generated from latent states that evolve over time via a Markov process, with each observation depending on the current state. Classically, the linear Gaussian state-space model assumes first-order Markovian linear dynamics and linear Gaussian observation models (Roweis and Ghahramani, 1999). To absolve linearity, transition and emission densities may be parameterized with deep neural networks (Krishnan et al., 2015, 2017), where training is performed via stochastic backpropagation (Rezende et al., 2014; Kingma and Welling,  
+
+> arXiv:2606.21036v1 [stat.ML] 19 Jun 2026 Diffusion SSM 2
+
+2014). These neural-network-parameterized SSMs may be referred to as Deep SSMs, or Dynamical Variational Autoencoders (DVAEs); see Girin et al. (2022) for a review. While neural-networks allow the mean of each latent state to be a nonlinear function of the previous latent state, the transition densities in these models assume some parametric form (Karl et al., 2016), most often Gaussian (Krishnan et al., 2015; Johnson et al., 2016; Fraccaro et al., 2017; Krishnan et al., 2017; Ansari et al., 2021; Girin et al., 2022; Revach et al., 2022; Dowling et al., 2024; Hashempoorikderi and Choi, 2024; Chinellato and Marcuzzi, 2025), thereby limiting their expressivity. Moreover, Gaussian transition densities induce a Gaussian prior on the latent trajectories. Within the VAE framework the Gaussian prior is known to over-regularize, yielding latent representations that poorly represent the structure of the data (Tomczak and Welling, 2018; Klushyn et al., 2019; Chen et al., 2017). Inspired by the framework of composing probabilistic graphical models with neural networks (John-son et al., 2016), we propose to get the “best of both worlds” by composing SSMs with diffusion models. Our diffusion-driven SSMs (DDSSMs) naturally model the real-time dynamics of a system without imposing restrictive Gaussian assumptions about its latent dynamics. Further, we adapt SSM ideas to resolve the open problem of how to jointly train an autoencoder and a diffusion model on sequential data in a principled manner. In this way, we extend latent diffusion models for time series. 
+
+## 2. Method 
+
+Generative Model. Let x1: T = ( x1, . . . , xT ) with xt ∈ RD be a time series of T observations, and let u1: T = ( u1, . . . , uT ) with ut ∈ RV denote covariates observed at all time steps. We assume the observations x1: T are generated from latent variables z1: T = ( z1, . . . , zT ) with zt ∈ RM that capture the underlying system dynamics. After applying standard conditional independence assumptions, the density of the complete data likelihood p(x1: T , z1: T |u1: T ) can be factorized in the form of a State Space Model (SSM) as 
+
+p(x1: T , z1: T |u1: T ) = pη,θ (z1: j , x1: j |u1: j )
+
+| {z }
+
+> State Initialization
+> T
+
+Y
+
+> t=j+1
+
+p(t) 
+
+> ψ
+
+(zt|zt−j:t−1, ut−j:t)
+
+| {z }
+
+> Transition Density
+
+p(t) 
+
+> θ
+
+(xt|zt−j+1: t, ut−j+1: t)
+
+| {z }
+
+> Emissions Density
+
+, (1) where θ denotes the parameters of the emissions density, ψ the parameters of the transition density, and η the parameters of the initialization model. The hyperparameter j determines the size of the conditioning set for the transition and emissions densities, and in particular the Markov order of the latent sequence. The superscript t designates that the emissions and transitions are time-inhomogeneous. See Appendix A.1 for the derivation and assumptions leading to this factorization. As mentioned in the introduction, most existing deep SSMs model the transitions with Gaussian densities where the means and variances are parameterized by neural networks. We depart from this assumption by modeling the transition density p(t) 
+
+> ψ
+
+with a diffusion model, which allows us to learn arbitrary transition densities in the latent space. Our diffusion-driven transition model induces a wider prior over the latent trajectories, allowing us to learn more flexible latent representations of the data. The diffusion model introduces a sequence of intermediate (increasingly noisy) latent states ( z1 
+
+> t
+
+, z2 
+
+> t
+
+, . . . , zKt ) for each time step t, giving an augmented transition model 
+
+p(t) 
+
+> ψ
+
+(z0 
+
+> t
+
+, z1: Kt |zt−j:t−1, ut−j:t) = p(zKt )
+
+> K
+
+Y
+
+> k=1
+
+p(t) 
+
+> ψ
+
+(zk−1 
+
+> t
+
+|zkt , zt−j:t−1, ut−j:t), (2) where z0 
+
+> t
+
+:= zt and zKt is approximately distributed as N (0, I). Marginalizing z1: Kt recovers the transition density in Eq. (1) while enabling complex, multimodal transitions beyond Gaussian dy-namics. Following (Tashiro et al., 2021), we include the time index t and the diffusion noise level kDiffusion SSM 3
+
+as conditioning inputs, such that a single neural network with parameters ψ can parameterize the family of densities ( p(t) 
+
+> ψ
+
+)Tt=1 across all time steps and noise levels 1.For simplicity, we assume Gaussian emissions, with the diffusion model handling non-Gaussian structure and the emissions capturing any remaining uncertainty. We choose the standard pa-rameterization of the emissions as p(t) 
+
+> θ
+
+(xt|rt) = N (μθ (rt), Σθ (rt)), where μθ and Σ θ are neural networks mapping recent latent states and covariates rt = ( zt−j+1: t, ut−j+1: t) to the mean and covariance parameters of a Gaussian distribution in observation space. As with the transitions, a single neural network can be used to parameterize the emissions at all time steps by including the time index t within the covariates ut. We model the initialization density via the factorization 
+
+pη,θ (z1: j , x1: j |u1: j ) = pη (z1: j |u1: j )p(t) 
+
+> θ
+
+(x1: j |z1: j , u1: j ). Then, pη (z1: j |u1: j ) is made expressive using a variational hierarchical prior (VHP) (Klushyn et al., 2019, 2021)—as demonstrated to be effective for deep SSMs. See Appendix G for further discussion and implementation details. 
+
+Inference. As the true posterior density p(z1: T , {z1: Kt }Tt=j+1 |x1: T , u1: T ) is intractable, we approxi-mate it with a variational density qϕ(z1: T , {z1: Kt }Tt=j+1 |x1: T , u1: T ) with learnable parameters ϕ . Our Lemma 1 (see Appendix C.1) along with the well-known fact that the optimal variational posterior factorizes identically to the true posterior (Wainwright and Jordan, 2008) implies that we can as-sume the following factorization for the variational posterior density qϕ(z1: T , {z1: Kt }Tt=j+1 |x1: T , u1: T )without making any approximation other than the dependence on ϕ:
+
+qϕ(z1: T , {z1: Kt }Tt=j+1 |x1: T , u1: T ) = qϕ(z1: j |x1: T , u1: j )
+
+| {z }
+
+> State Initialization
+
+×
+
+> T
+
+Y
+
+> t=j+1
+
+q(t) 
+
+> ϕ
+
+(zt| zt−j:t−1, xt:T , ut−j:t)
+
+| {z }
+
+> Smoothed Transitions
+
+×
+
+> T
+
+Y
+
+> t=j+1
+
+qchain (z1: Kt |zt)
+
+| {z }
+
+> Diffusion Noising Process
+
+. (3) Notably, this factorization contains the Kalman smoothing factor q(t) 
+
+> ϕ
+
+(zt|zt−j:t−1, xt:T , ut−j:t), so the optimal encoder’s latent state at time t depends on the past latent states and covariates, but 
+
+future observations. Also note that as with models for static data, the diffusion noising process does not require learning. We jointly learn the variational parameters ϕ along with our model’s generative parameters ( θ, ψ, η )by maximizing an evidence lower bound (ELBO) on the marginal log-likelihood log p(x1: T |u1: T ). The ELBO for our model is log p (x1: T |u1: T ) ≥ − DKL (qϕ(z1: j |x1: T , u1: T ) ∥ pη (z1: j |u1: j )) 
+
+| {z }
+
+> KL Divergence for Initialization
+
++
+
+> T
+
+X
+
+> t=1
+
+Eqϕ(z1: T |x1: T ,u1: T )
+
+h
+
+log p(t)
+
+> θ
+
+ xt|zmax( t−j+1 ,1): t, umax( t−j+1 ,1): t
+
+ i| {z }
+
+> Negative Reconstruction Error
+
+(4a) 
+
+−
+
+> T
+
+X
+
+> t=j+1
+
+DKL 
+
+
+
+q(t) 
+
+> ϕ
+
+(zt|zt−j:t−1, x1: T , u1: T ) p(t) 
+
+> ψ
+
+(zt|zt−j:t−1, ut−j:t)
+
+| {z }
+
+> KL Divergence for Transition
+
+, (4b)    
+
+> 1Some works instead include the time difference as a covariate, in which case the transition model is time-homogeneous (Krishnan et al., 2017). Diffusion SSM 4
+
+where Eq. (4b) can be further rewritten as 
+
+> T
+
+X
+
+> t=j+1
+
+Eqϕ(z1: T ,{z1: Kt }Tt=j+1 |x1: T ,u1: T )
+
+h
+
+log p(zKt ) + 
+
+> K
+
+X
+
+> k=1
+
+− log q(zkt |zk−1 
+
+> t
+
+) + log p(t) 
+
+> ψ
+
+(zk−1 
+
+> t
+
+|zkt , ct)
+
+i| {z }
+
+> Diffusion Chain
+
+(5a) +
+
+> T
+
+X
+
+> t=j+1
+
+Eqϕ(z1: T |x1: T ,u1: T )
+
+h
+
+− log q(t) 
+
+> ϕ
+
+(zt|zt−j:t−1, xt:T , ut−j:t)
+
+i| {z }
+
+> Posterior Transition Entropy
+
+, (5b) with ct = ( zt−j:t−1, ut−j:t) denoting the conditioning set for the diffusion model at time t. Unlike existing latent time-series diffusion models that model qϕ(z1: T |x1: T , u1: T ) without factorization, our objective mirrors the conditional independence structure of the true posterior, providing a strong inductive bias that narrows the ELBO approximation gap. Specifically per Eq. (3), the encoder constructs latent representations for zt by connecting the past (via zt−j:t−1) to the future (via xt:T ). The transition model does not observe xt:T , thus by jointly training the transition model and the encoder, Eq. (4b) encourages the encoder to produce latent states that are predictable under the dynamics learned by the transition model. Moreover, as our diffusion model is highly expressive, the regularization of zt is no longer constrained towards a strict Gaussian prior. 
+
+Parameterization and Training. The design of the neural networks parameterizing these den-sities is detailed in Appendix H. We follow standard practice (Girin et al., 2022) in minimizing the negative ELBO with stochastic backpropagation. To ensure the flow of gradients through the diffusion model to the VAE are normalized across noise levels, we use preconditioning (Karras et al., 2022) as implemented in Appendix D.2 to rewrite Eq. (5a). Our full training algorithm, along with an explanation of how to compute each of the terms in the ELBO, can be found in Appendix I. 
+
+## 3. Related work 
+
+Deep state space models. Similarly to other Deep State Space Models (DSSMs) (Girin et al., 2022) such as the Deep Kalman Filter (DKF) (Krishnan et al., 2015, 2017), our Diffusion-Driven State Space Model (DDSSM) parametrizes the transitions and emissions densities of a state space model with a neural network. However, our model replaces the parametric (typically Gaussian) transition distribution of a DSSM with a diffusion model. This design enables complex, potentially multi-modal transition dynamics (validated in Section 4) and avoids the restrictive regularization of Gaussian transitions (Karl et al., 2016). Integration with advances such as the extended Kalman filter VAE (Klushyn et al., 2021) is left for future work. 
+
+Diffusion models for temporal data. Some works (Rasul et al., 2021; Tashiro et al., 2021; Kollovieh et al., 2023) apply diffusion directly in observation space, but the high computational cost of diffusion – motivating latent diffusion for static data (Rombach et al., 2022) – is exacerbated in time series due to the need to model both high-dimensional structure and temporal dynamics. This has led to latent diffusion approaches for time series (Qian et al., 2024; Suh et al., 2025; Liu et al., 2024; Feng et al., 2024), which typically rely on two-stage training (autoencoder then diffusion), potentially yielding over-regularized latent spaces that discard information needed for generative dynamics (Liu et al., 2024; Vahdat et al., 2021; Shmakov et al., 2023). Our approach instead follows Vahdat et al. (2021) and Shmakov et al. (2023) by training diffusion end-to-end in latent space, extended here to the temporal setting. For further details on related works, see Appendix J. Diffusion SSM 5
+
+## 4. Simulation study: Bimodal Noise 
+
+To demonstrate the advantage of flexible transitions, we implement a latent dependent-step random walk with bimodal noise 
+
+z(i) 
+
+> t
+
+= 0 .9z(i) 
+
+> t−1
+
++ 4 s(i) 
+
+> t
+
+, s(i) 
+
+> t
+
+∼ Unif( {− 1, 1}).x(i) 
+
+> t
+
+= z(i) 
+
+> t
+
++ ϵ(i) 
+
+> t
+
+, ϵ(i) 
+
+> t
+
+∼ N (0 , 0.2) ,
+
+where i = 1 , . . . , N indexes i.i.d sequences, and t = 1 , . . . , T indexes the time steps of those sequences. We fix T = 32 and generate N = 1024 distinct sequences each for training, validation, and testing. We fit three models to the data, fixing a latent dimension of 1. The first is the DKF equipped with a VHP, and second is our DDSSM model. As a na¨ ıve baseline we include a Last Observation Carried Forward (LOCF) strategy (Shao and Zhong, 2003), which carries forward the last observed value, i.e ˆ x(i) 
+
+> t
+
+= x(i)
+
+> t−1
+
+. Details of the exact training procedure are in Appendix I; model configurations and hyperparameter search procedure are provided in Appendix F. To evaluate the performance of the   
+
+> (a) Predictive distributions, centered on x31 (b) Jensen-Shannon Divergence
+
+Figure 1: On the left, the average predictive distribution of each model across the test set is plotted against the true distribution. On the right, the JSD is plotted as the mean across the test set for each model, with (small) error bars giving ± 1 standard error of the mean. models, we draw 1024 samples from each model. Then, we compute the Jensen-Shannon Divergence (JSD) between the 1-step predictive distribution of each model and the true distribution of x(i)32 
+
+given x(i)1:31 for each example in the test set. Each sample is drawn by first drawing a latent sample ˆz(i)31 from the encoder, and then sampling the transition and emission distributions to produce ˆ x(i)32 .Figure 1a reveals, as expected, that the DKF places probability mass between the two modes of the true distribution, while the DDSSM is able to capture both modes. Qualitatively, this results in a significantly lower JSD as shown in Fig. 1b. To investigate the impacts of diffusion transitions on prediction, we plot the reconstructions and forecasts of two representative samples from the test set, chosen according to the median value of the JSD metric for the DDSSM model. Figure 2 shows that the DDSSM’s trajectories are representative of the data, while the DKF’s forecasts do not have a consistent pattern. Notably, the DKF fails to provide good reconstructions of the observed data, supporting our claim that a Gaussian prior over the latent trajectories is harmful for learning latent representations. Diffusion SSM 6 
+
+> (a) DDSSM (b) DKF
+
+Figure 2: Reconstructions and Forecasts. The dashed line shows ˆ x(i)1:32 for each model, computed by sampling ˆ z(i)1:32 from the encoder, and subsequently sampling ˆ x(i)1:32 from the decoder. Given the encoder’s sample ˆ z(i)24 , we generate trajectories of ˆ x(i)25:32 by sampling from the transitions and emissions. Trajectories are shown in light red, and the mean of these trajectories is in solid red. 
+
+## 5. Discussion 
+
+In this work we have demonstrated that we can formulate latent diffusion models for time series by casting the problem as a state space model with a diffusion transition distribution. This allows end-to-end training, allowing flexible reconstructions without penalizing the learning of the latent dynamics. We aim to continue our work by applying the DDSSM to large-scale datasets, and by incorporating ideas from deep SSM literature to fully utilize the power of the diffusion transition distribution. Diffusion SSM 7
+
+## Acknowledgements 
+
+Funding. This material is based upon work supported in part by the National Science Foundation EPSCoR Cooperative Agreement OIA-2242802. Any opinions, findings, and conclusions or recom-mendations expressed in this material are those of the author(s) and do not necessarily reflect the views of the National Science Foundation. 
+
+Computing Resources. Computational efforts were performed on the Tempest High Performance Computing System, operated and supported by University Information Technology Research Cy-berinfrastructure (RRID:SCR 026229) at Montana State University. 
+
+## References 
+
+Takuya Akiba, Shotaro Sano, Toshihiko Yanase, Takeru Ohta, and Masanori Koyama. Optuna: A next-generation hyperparameter optimization framework. In The 25th ACM SIGKDD Interna-tional Conference on Knowledge Discovery & Data Mining , pages 2623–2631, 2019. Abdul Fatir Ansari, Konstantinos Benidis, Richard Kurle, Ali Caner Turkmen, Harold Soh, Alexan-der J Smola, Bernie Wang, and Tim Januschowski. Deep explicit duration switching models for time series. Advances in Neural Information Processing Systems , 34:29949–29961, 2021. Andreas Blattmann, Robin Rombach, Huan Ling, Tim Dockhorn, Seung Wook Kim, Sanja Fidler, and Karsten Kreis. Align your latents: High-resolution video synthesis with latent diffusion models. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , pages 22563–22575, June 2023. Tianqi Chen, Bing Xu, Chiyuan Zhang, and Carlos Guestrin. Training deep nets with sublinear memory cost. arXiv preprint arXiv:1604.06174 , 2016. Xi Chen, Diederik P Kingma, Tim Salimans, Yan Duan, Prafulla Dhariwal, John Schulman, Ilya Sutskever, and Pieter Abbeel. Variational lossy autoencoder. In International Conference on Learning Representations , 2017. Xiongjie Chen and Yunpeng Li. Normalizing flow-based differentiable particle filters. IEEE Trans-actions on Signal Processing , 73:493–507, 2025. Erik Chinellato and Fabio Marcuzzi. State, parameters and hidden dynamics estimation with the deep kalman filter: Regularization strategies. Journal of Computational Science , 87:102569, 2025. Emmanuel De Bezenac, Syama Sundar Rangapuram, Konstantinos Benidis, Michael Bohlke-Schneider, Richard Kurle, Lorenzo Stella, Hilaf Hasson, Patrick Gallinari, and Tim Januschowski. Normalizing kalman filters for multivariate time series analysis. Advances in Neural Information Processing Systems , 33:2995–3007, 2020. Matthew Dowling, Yuan Zhao, and Il Memming Park. exponential family dynamical systems (xfads): Large-scale nonlinear gaussian state-space modeling. Advances in Neural Information Processing Systems , 37:13458–13488, 2024. James Durbin and Siem Jan Koopman. Time series analysis by state space methods . Oxford Uni-versity Press (UK), 2001. Shibo Feng, Chunyan Miao, Zhong Zhang, and Peilin Zhao. Latent diffusion transformer for proba-bilistic time series forecasting. In Proceedings of the AAAI Conference on Artificial Intelligence ,volume 38, pages 11979–11987, 2024. Marco Fraccaro, Simon Kamronn, Ulrich Paquet, and Ole Winther. A disentangled recognition and nonlinear dynamics model for unsupervised learning. Advances in neural information processing systems , 30, 2017. Diffusion SSM 8
+
+Laurent Girin, Simon Leglaive, Xiaoyu Bie, Julien Diard, Thomas Hueber, and Xavier Alameda-Pineda. Dynamical variational autoencoders: A comprehensive review. Foundations and Trends in Machine Learning , 15(1-2):1–175, 2022. Hamidreza Hashempoorikderi and Wan Choi. Gated inference network: Inference and learning state-space models. Advances in Neural Information Processing Systems , 37:39036–39073, 2024. Irina Higgins, Loic Matthey, Arka Pal, Christopher Burgess, Xavier Glorot, Matthew Botvinick, Shakir Mohamed, and Alexander Lerchner. beta-vae: Learning basic visual concepts with a constrained variational framework. In International conference on learning representations , 2017. Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models. Advances in neural information processing systems , 33:6840–6851, 2020. Matthew J Johnson, David K Duvenaud, Alex Wiltschko, Ryan P Adams, and Sandeep R Datta. Composing graphical models with neural networks for structured representations and fast infer-ence. Advances in neural information processing systems , 29, 2016. Rudolph Emil Kalman. A new approach to linear filtering and prediction problems. 1960. Maximilian Karl, Maximilian Soelch, Justin Bayer, and Patrick Van der Smagt. Deep varia-tional bayes filters: Unsupervised learning of state space models from raw data. arXiv preprint arXiv:1605.06432 , 2016. Tero Karras, Miika Aittala, Timo Aila, and Samuli Laine. Elucidating the design space of diffusion-based generative models. Advances in neural information processing systems , 35:26565–26577, 2022. Diederik P Kingma and Max Welling. Auto-encoding variational bayes. In International Conference on Learning Representations (ICLR) , 2014. Alexej Klushyn, Nutan Chen, Richard Kurle, Botond Cseke, and Patrick van der Smagt. Learning hierarchical priors in vaes. Advances in neural information processing systems , 32, 2019. Alexej Klushyn, Richard Kurle, Maximilian Soelch, Botond Cseke, and Patrick van der Smagt. Latent matters: Learning deep state-space models. Advances in Neural Information Processing Systems , 34:10234–10245, 2021. Marcel Kollovieh, Abdul Fatir Ansari, Michael Bohlke-Schneider, Jasper Zschiegner, Hao Wang, and Yuyang Bernie Wang. Predict, refine, synthesize: Self-guiding diffusion models for probabilistic time series forecasting. Advances in Neural Information Processing Systems , 36:28341–28364, 2023. Rahul Krishnan, Uri Shalit, and David Sontag. Structured inference networks for nonlinear state space models. In Proceedings of the AAAI conference on artificial intelligence , volume 31, 2017. Rahul G Krishnan, Uri Shalit, and David Sontag. Deep kalman filters. arXiv preprint arXiv:1511.05121 , 2015. Tuan Anh Le, Maximilian Igl, Tom Rainforth, Tom Jin, and Frank Wood. Auto-encoding sequential monte carlo. arXiv preprint arXiv:1705.10306 , 2017. Yuhang Liu, Yingxue Zhang, Xin Zhang, Yu Yang, Yiqun Xie, Sahar Ghanipoor Machiani, Yanhua Li, and Jun Luo. Align along time and space: A graph latent diffusion model for traffic dynamics prediction. In 2024 IEEE International Conference on Data Mining (ICDM) , pages 271–280. IEEE, 2024. George Papamakarios, Eric Nalisnick, Danilo Jimenez Rezende, Shakir Mohamed, and Balaji Lak-shminarayanan. Normalizing flows for probabilistic modeling and inference. Journal of Machine Learning Research , 22(57):1–64, 2021. Diffusion SSM 9
+
+Ilan Price, Alvaro Sanchez-Gonzalez, Ferran Alet, Tom R Andersson, Andrew El-Kadi, Dominic Masters, Timo Ewalds, Jacklynn Stott, Shakir Mohamed, Peter Battaglia, et al. Probabilistic weather forecasting with machine learning. Nature , 637(8044):84–90, 2025. Jian Qian, Bingyu Xie, Biao Wan, Minhao Li, Miao Sun, and Patrick Yin Chiang. Timeldm: Latent diffusion model for unconditional time series generation. arXiv preprint arXiv:2407.04211 , 2024. Kashif Rasul, Calvin Seward, Ingmar Schuster, and Roland Vollgraf. Autoregressive denoising diffusion models for multivariate probabilistic time series forecasting. In International conference on machine learning , pages 8857–8868. PMLR, 2021. Guy Revach, Nir Shlezinger, Xiaoyong Ni, Adria Lopez Escoriza, Ruud JG Van Sloun, and Yonina C Eldar. Kalmannet: Neural network aided kalman filtering for partially known dynamics. IEEE Transactions on Signal Processing , 70:1532–1547, 2022. Danilo Jimenez Rezende and Fabio Viola. Taming vaes. arXiv preprint arXiv:1810.00597 , 2018. Danilo Jimenez Rezende, Shakir Mohamed, and Daan Wierstra. Stochastic backpropagation and approximate inference in deep generative models. In International conference on machine learning ,pages 1278–1286. PMLR, 2014. Maria Isabel Ribeiro. Kalman and extended kalman filters: Concept, derivation and properties. 
+
+Institute for Systems and Robotics , 43(46):3736–3741, 2004. Robin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Esser, and Bj¨ orn Ommer. High-resolution image synthesis with latent diffusion models. In Proceedings of the IEEE/CVF confer-ence on computer vision and pattern recognition , pages 10684–10695, 2022. Sam Roweis and Zoubin Ghahramani. A unifying review of linear gaussian models. Neural compu-tation , 11(2):305–345, 1999. Jun Shao and Bob Zhong. Last observation carry-forward and last observation analysis. Statistics in medicine , 22(15):2429–2441, 2003. Alexander Shmakov, Kevin Greif, Michael Fenton, Aishik Ghosh, Pierre Baldi, and Daniel Whiteson. End-to-end latent variational diffusion models for inverse problems in high energy physics. In A. Oh, T. Naumann, A. Globerson, K. Saenko, M. Hardt, and S. Levine, editors, Advances in Neural Information Processing Systems , volume 36, pages 65102–65127. Curran Associates, Inc., 2023. Robert H Shumway and David S Stoffer. An approach to time series smoothing and forecasting using the em algorithm. Journal of time series analysis , 3(4):253–264, 1982. Jascha Sohl-Dickstein, Eric Weiss, Niru Maheswaranathan, and Surya Ganguli. Deep unsupervised learning using nonequilibrium thermodynamics. In International conference on machine learning ,pages 2256–2265. pmlr, 2015. Yang Song, Jascha Sohl-Dickstein, Diederik P Kingma, Abhishek Kumar, Stefano Ermon, and Ben Poole. Score-based generative modeling through stochastic differential equations. arXiv preprint arXiv:2011.13456 , 2020. Chen Su, Zhengzhou Cai, Yuanhe Tian, Zhuochao Chang, Zihong Zheng, and Yan Song. Diffusion models for time series forecasting: A survey. arXiv preprint arXiv:2507.14507 , 2025. Namjoon Suh, Yuning Yang, Din-Yin Hsieh, Qitong Luan, Shirong Xu, Shixiang Zhu, and Guang Cheng. Timeautodiff: A unified framework for generation, imputation, forecasting, and time-varying metadata conditioning of heterogeneous time series tabular data. Transactions on Machine Learning Research , 2025. Diffusion SSM 10 
+
+Yusuke Tashiro, Jiaming Song, Yang Song, and Stefano Ermon. Csdi: Conditional score-based dif-fusion models for probabilistic time series imputation. Advances in neural information processing systems , 34:24804–24816, 2021. Jakub Tomczak and Max Welling. Vae with a vampprior. In International conference on artificial intelligence and statistics , pages 1214–1223. PMLR, 2018. Arash Vahdat, Karsten Kreis, and Jan Kautz. Score-based generative modeling in latent space. 
+
+Advances in neural information processing systems , 34:11287–11302, 2021. Martin J Wainwright and Michael I Jordan. Graphical models, exponential families, and variational inference. Foundations and Trends ® in Machine Learning , 1(1-2):1–305, 2008. Yiyuan Yang, Ming Jin, Haomin Wen, Chaoli Zhang, Yuxuan Liang, Lintao Ma, Yi Wang, Chenghao Liu, Bin Yang, Zenglin Xu, Jiang Bian, Shirui Pan, and Qingsong Wen. A survey on diffusion models for time series and spatio-temporal data, 2024. Zachary Ziegler and Alexander Rush. Latent normalizing flows for discrete sequences. In Kamalika Chaudhuri and Ruslan Salakhutdinov, editors, Proceedings of the 36th International Conference on Machine Learning , volume 97 of Proceedings of Machine Learning Research , pages 7673–7682. PMLR, 09–15 Jun 2019. Diffusion SSM 11 
+
+## A. State Space Model Derivation 
+
+A.1. Derivation of the Generative Model 
+
+Our goal is to learn a model of the conditional distribution p(x1: T |u1: T ). Following the general framework of Girin et al. (2022), we introduce a sequence of latent variables z1: T = ( z1, z2, . . . , zT ), where each zt ∈ Rd is a d-dimensional vector, and factorize the joint distribution p(x1: T , z1: T |u1: T )as 
+
+p(x1: T , z1: T |u1: T ) = 
+
+> T
+
+Y
+
+> t=1
+
+p(xt|x1: t−1, z1: t, u1: t)p(zt|x1: t−1, z1: t−1, u1: t). (6) We make the Markovian assumption that the latent state at time t only depends on a fixed-length history of j previous latent states and covariates, rather than the entire history, i.e. 
+
+p (zt|z1: t−1, u1: t) = p (zt|zt−j:t−1, ut−j:t) , (7) for t > j where j is a fixed Markov order. On the emissions model, we assume that the observation at time t only depends on a fixed-length history of j previous latent states and covariates, i.e. 
+
+p(xt|x1: t−1, z1: t, u1: t) = p(xt|zt−j+1: t, ut−j+1: t). (8) We explicitly choose the same conditioning set for the emissions model, arguing that the most recent 
+
+j states carry the full information about the system’s current state, and thus the most recent j states and covariates should be sufficient for predicting the current observation. Alternatively we could choose a smaller order on the emissions as well; this is not a key aspect of our model and leave this choice to future work. Lastly, we assume that the initial j latent states are generated from a separate initial state distri-bution, i.e. 
+
+p(z1: j , x1: j |u1: j ) = pη (z1: j |u1: j )pθ (x1: j |z1: j , u1: j ). (9) Rewriting Eq. (6) with the above assumptions, we have 
+
+p(x1: T , z1: T |u1: T ) = pη (z1: j |u1: j )pθ (x1: j |z1: j , u1: j )
+
+| {z }
+
+> State Initialization
+
+×
+
+> T
+
+Y
+
+> t=j+1
+
+p(t) 
+
+> ψ
+
+(zt|zt−j:t−1, ut−j:t)
+
+| {z }
+
+> Transition Density
+
+× p(t) 
+
+> θ
+
+(xt|zt−j+1: t, ut−j+1: t)
+
+| {z }
+
+> Emissions Model
+
+,
+
+(10) where we have indicated the parameters as explained in the main text. The inclusion of j as a hyperparameter for our model is inspired by the GenCast model of Price et al. (2025), which found that a second-order Markov assumption (in observation space) was more effective for forecasting in contrast to a first-order assumption. We note that another option for increasing the Markov order would be to use a higher-dimensional latent state, where the transition density is still first-order in the latent space, but the latent state at time t includes the previous j
+
+states. However, the representation here allows for independently controlling the Markov order and the dimension of the latent state. Another motivation for this representation is that it allows us to view our method as a direct generalization of autoregressive diffusion models. For example, the model proposed by Price et al. (2025) can be viewed as our model with j = 2 and identity emissions. Diffusion SSM 12 
+
+## B. Modeling the Transition Density with Diffusion Models 
+
+To model the transition density p(zt|zt−j:t−1) as a diffusion model, we must introduce the interme-diate states used in the diffusion process. To simplify notation, we will denote the history of latent states and covariates as ct := ( zt−j:t−1, ut−j:t), as this conditioning set remains fixed across the diffusion steps for a given time t.Eq. (27) shows that we may write the transition density as 
+
+p(t) 
+
+> ψ
+
+(zt|ct) = 
+
+Z
+
+p(t) 
+
+> ψ
+
+(z0 
+
+> t
+
+|z1 
+
+> t
+
+, ct)
+
+> K
+
+Y
+
+> k=2
+
+p(t) 
+
+> ψ
+
+(zk−1 
+
+> t
+
+|zkt , ct) p(zKt ) dz1: Kt , (11) where z0 
+
+> t
+
+:= zt is the clean latent state, p(zKt ) has standard normal density, and 
+
+p(t) 
+
+> ψ
+
+(zk−1 
+
+> t
+
+|zkt , zt−j:t−1) is the learned reverse process of the diffusion model. Thus, we augment Eq. (1) to include the intermediate diffusion states z1: Kt for t > j .The augmented joint distribution is 
+
+p(x1: T , z1: T , z1: Kt 
+
+> Tt=j+1
+
+|u1: T )= pη,θ (z1: j , x1: j |u1: j ) ×
+
+> T
+
+Y
+
+> t=j+1
+
+"
+
+p(zKt )
+
+> K
+
+Y
+
+> k=1
+
+p(t) 
+
+> ψ
+
+(zk−1 
+
+> t
+
+|zkt , ct)) × p(t) 
+
+> θ
+
+(xt|zt−j+1: t, ut−j+1: t)
+
+#
+
+. (12) We may recover Eq. (1) by marginalizing out the diffusion states z1: Kt for t > j .
+
+## C. ELBO Derivation 
+
+C.1. Posterior Factorization 
+
+Learning our generative model in Eq. (12) requires performing inference over the latent variables z1: T
+
+and {z1: Kt }Tt=j+1 . To do so, we follow works from the deep state-space modeling literature (Krishnan et al., 2015, 2017; Girin et al., 2022) and train under the VAE framework which allows jointly learning the generative model and the inference model. The primary objective is to maximize the marginal log-likelihood log p(x1: T |u1: T ) with respect to the parameters of the generative model. As is typical with latent-variable models, exact inference depends on the smoothing posterior distribution 
+
+p(z1: T , {z1: Kt }Tt=j+1 | x1: T , u1: T ), (13) whose normalization involves integrating over a high-dimensional latent space and is generally in-tractable. To obtain a tractable objective, we introduce a variational distribution 
+
+qϕ(z1: T , z1: Kt 
+
+> Tt=j+1
+
+|x1: T , u1: T ) (14) to approximate the true posterior distribution. It is important to choose a family of variational distributions which matches the conditional independence structure of the true posterior distribu-tion (Girin et al., 2022). If the variational distribution misses important dependencies required to capture the true posterior, then the variational distribution will not be able to approximate the true posterior well, resulting in a looser bound on the marginal log-likelihood. Therefore, we examine the form of the true posterior distribution p(z1: T , {z1: Kt }Tt=j+1 |x1: T , u1: T ) to determine the appropriate factorization for the variational distribution. The conditional indepen-dence structure of the true posterior distribution can be determined by applying d-separation to the directed graphical model corresponding to the generative model in Eq. (12), resulting in the following lemma. Diffusion SSM 13 
+
+Lemma 1. For the generative model in Eq. (12) , the exact smoothing posterior factorizes as 
+
+p(z1: T , {z1: Kt }Tt=j+1 |x1: T , u1: T ) (15) =
+
+" jY
+
+> t=1
+
+p(zt|xt:T , z1: t−1, u1: t)
+
+#
+
+×
+
+
+
+> T
+
+Y
+
+> t=j+1
+
+p(zt|xt:T , zt−j:t−1, ut−j:t)
+
+ (16) 
+
+×
+
+
+
+> T
+
+Y
+
+> t=j+1
+
+p(z1: Kt |zt, zt−j:t−1, ut−j:t)
+
+ , (17) 
+
+where 
+
+p(z1: Kt |zt, zt−j:t−1, ut−j:t) ∝ p(zKt )
+
+> K
+
+Y
+
+> k=1
+
+p(t) 
+
+> ψ
+
+(zk−1 
+
+> t
+
+|zkt , zt−j:t−1, ut−j:t), (18) 
+
+with z0 
+
+> t
+
+:= zt.Proof. Let the reverse-time markov chain zKt → · · · → z1 
+
+> t
+
+→ z0 
+
+> t
+
+be parameterized by the time-homogeneous transition densities p(t) 
+
+> ψ
+
+(zk−1 
+
+> t
+
+|zkt , zt−j:t−1, ut−j:t). Applying Bayes rule to p(z1: T , {z1: Kt }Tt=j+1 |x1: T , u1: T ), we have 
+
+p(z1: T , {z1: Kt }Tt=j+1 |x1: T , u1: T )= p(x1: T , z1: T , {z1: Kt }Tt=j+1 |u1: T )
+
+p(x1: T |u1: T )
+
+∝ pη,θ (z1: j , x1: j |u1: j )
+
+×
+
+> T
+
+Y
+
+> t=j+1
+
+"
+
+p(zKt )
+
+> K
+
+Y
+
+> k=1
+
+p(t) 
+
+> ψ
+
+(zk−1 
+
+> t
+
+|zkt , ct)) · p(t) 
+
+> θ
+
+(xt|zt−j+1: t, ut−j+1: t)
+
+#
+
+.
+
+This induces a directed acyclic graph (DAG) over the variables x1: T , z1: T , {z1: Kt }Tt=j+1 , u1: T .Applying the chain rule to the desired posterior form, we have 
+
+p(z1: T , {z1: Kt }Tt=j+1 | x1: T , u1: T ) ∝
+
+> j
+
+Y
+
+> t=1
+
+p(zt | x1: T , z1: t−1, u1: T )
+
+·
+
+> T
+
+Y
+
+> t=j+1
+
+p(zt | x1: T , z1: t−1, u1: T ) ·
+
+> T
+
+Y
+
+> t=j+1
+
+p(z1: Kt | x1: T , u1: T , z1: T , {z1: Ks }s<t ).
+
+In the augmented DAG, any path from z1: Kt to {xs}Ts=1 or to latents outside of ct must pass through (zt−j:t). Hence by d-separation, 
+
+p(z1: Kt | x1: T , u1: T , z1: T , {z1: Ks }s<t ) = p(z1: Kt | zt, ct).
+
+Moreover, by the Markov structure of the reverse chain, and p(zKt ) being a prior independent of ct,
+
+p(z1: Kt | zt, ct) ∝ p(zKt )
+
+> K
+
+Y
+
+> k=1
+
+p(t) 
+
+> ψ
+
+(zk−1 
+
+> t
+
+| zkt , ct), z0 
+
+> t
+
+≡ zt,
+
+with the same parameter set ψ for all t (time-homogeneous in t). For t > j , by the j-th order Markov property, zt ⊥⊥ z1: t−j−1 | (zt−j:t−1, ut−j:t). Conditioning on all observations, any influence of x1: t−1 on zt is blocked by the parents zt−j:t−1; thus 
+
+zt ⊥⊥ x1: t−1 | (zt−j:t−1, ut−j:t, xt:T ).Diffusion SSM 14 
+
+Therefore, 
+
+p(zt | x1: T , z1: t−1, u1: T ) = p(zt | xt:T , zt−j:t−1, ut−j:t), t > j. 
+
+For t ≤ j, we similarly have 
+
+p(zt | x1: T , z1: t−1, u1: T ) = p(zt | xt:T , z1: t−1, u1: t).
+
+Substituting the two reductions back into the chain-rule factorization yields 
+
+p(z1: T , {z1: Kt }Tt=j+1 | x1: T , u1: T ) ∝
+
+" jY
+
+> t=1
+
+p(zt | xt:T , z1: t−1, u1: t)
+
+#
+
+·
+
+" TY
+
+> t=j+1
+
+p(zt | xt:T , zt−j:t−1, ut−j:t)
+
+#
+
+·
+
+" TY
+
+> t=j+1
+
+p(z1: Kt | zt, ct)
+
+#
+
+.
+
+Re-normalizing both sides gives the stated posterior factorization. Once again, if we marginalize the intermediate diffusion states z1: Kt , Eq. (18) recovers the original transition density p(t) 
+
+> ψ
+
+(zt|zt−j:t−1, ut−j:t). This serves to highlight that there are two perspectives to our model. First, we may view our model as replacing the transition density in a standard state-space model with a diffusion model, which allows for more flexible transitions. Alternatively, we may view our model as a state-space model with an augmented latent space which includes the intermediate diffusion states, where marginalization of the intermediate states recovers the more-general state-space model in Eq. (1). The optimal variational posterior factorizes identically to the true posterior (Wainwright and Jordan, 2008). Hence, given Lemma 1, we assume the following factorization for the variational posterior density qϕ(z1: T , {z1: Kt }Tt=j+1 |x1: T , u1: T ) without making any approximation other than the depen-dence on ϕ:
+
+qϕ(z1: T , {z1: Kt }Tt=j+1 |x1: T , u1: T ) = qϕ(z1: j |x1: T , u1: j )
+
+| {z }
+
+> State Initialization
+
+(19) 
+
+×
+
+> T
+
+Y
+
+> t=j+1
+
+q(t) 
+
+> ϕ
+
+(zt| zt−j:t−1, ut−j:t, xt:T )
+
+| {z }
+
+> Smoothed Transitions
+
+×
+
+> T
+
+Y
+
+> t=j+1
+
+qchain (z1: Kt |zt)
+
+| {z }
+
+> Diffusion Noising Process
+
+. (20) Note the dependence of the true and variational posteriors of the latent state zt on the future observations xt:T ; the same structure is used in the smoothing posterior of the DKF (Krishnan et al., 2017) and other works on deep state-space models (Girin et al., 2022). To implement this dependence, we follow Krishnan et al. (2017) and employ a neural-network to summarize the future observations xt:T for each timestep t into a fixed-dimensional vector ht. We define (hT , hT −1, . . . h1) = Fϕ(concat( x1: T )) (21) The implementation of Fϕ used by Krishnan et al. (2017) is a backward RNN, which produces a sequence of hidden states hT , hT −1, . . . , h1. By design each ht is intended to summarize the future observations for each time step. We employ a similar implementation, for which details can be found in Appendix H.4. Diffusion SSM 15 
+
+C.2. ELBO 
+
+We now derive an evidence lower bound (ELBO) for our model, by finding a lower bound on the marginal log-likelihood log p(x1: T |u1: T ). We have log p (x1: T |u1: T ) = log 
+
+Z
+
+p
+
+
+
+x1: T , z1: T , z1: Kt 
+
+> Tt=j+1
+
+|u1: T
+
+
+
+dZ
+
+= log 
+
+Z
+
+qϕ
+
+
+
+z1: T , z1: Kt 
+
+> Tt=j+1
+
+|x1: T , u 1: T
+
+ p
+
+
+
+x1: T , z1: T , z1: Kt 
+
+> Tt=j+1
+
+|u1: T
+
+
+
+qϕ
+
+
+
+z1: T , z1: Kt 
+
+> Tt=j+1
+
+|x1: T , u 1: T
+
+ dZ
+
+≥ Eqϕ 
+
+> 
+> z1: T,
+
+{z1: Kt }Tt=j+1 |x1: T ,u1: T
+
+> 
+
+"
+
+log p
+
+
+
+x1: T , z1: T , z1: Kt 
+
+> Tt=j+1
+
+|u1: T
+
+
+
+− log qϕ
+
+
+
+z1: T , z1: Kt 
+
+> Tt=j+1
+
+|x1: T , u1: T
+
+ #
+
+,
+
+where for shorthand we have written dZ = dz1: T d z1: Kt
+
+> Tt=j+1
+
+. Substituting in Eq. (1) and Eq. (19), we have log p (x1: T |u1: T )
+
+≥ Eqϕ
+
+h
+
+log pη,θ (z1: j , x1: j |u1: j )+
+
+> T
+
+X
+
+> t=j+1
+
+log p(t) 
+
+> θ
+
+(xt|zt−j+1: t, ut−j+1: t)) +
+
+> T
+
+X
+
+> t=j+1
+
+log p(zKt ) + X
+
+> t=j+1
+> K
+
+X
+
+> k=1
+
+log p(t) 
+
+> ψ
+
+(zk−1 
+
+> t
+
+|zkt , ct)) 
+
+−
+
+> j
+
+X
+
+> t=1
+
+log qϕ (z1: j |x1: T , u1: t)
+
+−
+
+> T
+
+X
+
+> t=j+1
+
+log q(t) 
+
+> ϕ
+
+(zt|xt:T , zt−j:t−1, ut−j:t)
+
+−
+
+> T
+
+X
+
+> t=j+1
+> K
+
+X
+
+> k=1
+
+log q(zkt |zk−1 
+
+> t
+
+)
+
+i
+
+.Diffusion SSM 16 
+
+Grouping terms, log p (x1: T |u1: T )
+
+≥ Eqϕ
+
+h
+
+log pη,θ (z1: j , x1: j |u1: j )
+
+− log qϕ (z1: j |x1: T , u1: t)+
+
+TX
+
+t=j+1 
+
+log p(t)
+
+θ (xt|zt−j+1: t, ut−j+1: t)) +
+
+TX
+
+t=j+1 
+
+h
+
+log p(zKt )+
+
+KX
+
+k=1 
+
+log p(t)
+
+ψ (zk−1
+
+t |zkt , ct) − log q(zkt |zk−1
+
+t )
+
+i
+
+.
+
+−
+
+TX
+
+t=j+1 
+
+log q(t)
+
+ϕ (zt|xt:T , zt−j:t−1, ut−j:t)= Eqϕ(z1: T |x1: T ,u1: T ) [log pη,θ (z1: j , x1: j |u1: j ) − log qϕ (z1: j |x1: T , u1: t)] +
+
+TX
+
+t=j+1 
+
+Eqϕ(z1: T |x1: T ,u1: T )
+
+h
+
+log p(t)
+
+θ (xt|zt−j+1: t, ut−j+1: t)
+
+i
+
++
+
+TX
+
+t=j+1 
+
+Eqϕ(z1: T ,{z1: Kt }Tt=j+1 |x1: T ,u1: T )
+
+h
+
+log p(zKt ) + 
+
+KX
+
+k=1 
+
+log p(t)
+
+ψ (zk−1
+
+t |zkt , ct) − log q(zkt |zk−1
+
+t )
+
+i
+
+−
+
+TX
+
+t=j+1 
+
+Eqϕ(z1: T |x1: T ,u1: T )
+
+h
+
+log q(t)
+
+ϕ (zt|xt:T , zt−j:t−1, ut−j:t)
+
+i
+
+.
+
+Expanding log pη,θ (z1: j , x1: j |u1: j ) = log pη (z1: j |u1: j ) + log p(t)
+
+θ (x1: j |z1: j , u1: j ), log p (x1: T |u1: T )
+
+≥ Eqϕ(z1: T |x1: T ,u1: T ) [log pη (z1: j |u1: j ) − log qϕ (z1: j |x1: T , u1: t)] +
+
+TX
+
+t=1 
+
+Eqϕ(z1: T |x1: T ,u1: T )
+
+h
+
+log p(t)
+
+θ
+
+ xt|zmax( t−j+1 ,1): t, umax( t−j+1 ,1): t
+
+ i
+
++
+
+TX
+
+t=j+1 
+
+Eqϕ(z1: T ,{z1: Kt }Tt=j+1 |x1: T ,u1: T )
+
+h
+
+log p(zKt ) + 
+
+KX
+
+k=1 
+
+log p(t)
+
+ψ (zk−1
+
+t |zkt , ct) − log q(zkt |zk−1
+
+t )
+
+i
+
+−
+
+TX
+
+t=j+1 
+
+Eqϕ(z1: T |x1: T ,u1: T )
+
+h
+
+log q(t)
+
+ϕ (zt|xt:T , zt−j:t−1, ut−j:t)
+
+i
+
+.
+
+To obtain a minimization objective we multiply by −1 yielding the negative ELBO, Diffusion SSM 17 
+
+− log p (x1: T |u1: T )
+
+≤ Eqϕ(z1: T |x1: T ,u1: T ) [log qϕ (z1: j |x1: T , u1: t) − log pη (z1: j |u1: j )] 
+
+| {z }
+
+> Initialization Loss
+
+(22) +
+
+> T
+
+X
+
+> t=1
+
+Eqϕ(z1: T |x1: T ,u1: T )
+
+h
+
+− log p(t)
+
+> θ
+
+ xt|zmax( t−j+1 ,1): t, umax( t−j+1 ,1): t
+
+ i| {z }
+
+> Reconstruction Loss
+
+(23) +
+
+> T
+
+X
+
+> t=j+1
+
+Eqϕ(z1: T ,{z1: Kt }Tt=j+1 |x1: T ,u1: T )
+
+h
+
+− log p(zKt ) + 
+
+> K
+
+X
+
+> k=1
+
+log q(zkt |zk−1 
+
+> t
+
+) − log p(t) 
+
+> ψ
+
+(zk−1 
+
+> t
+
+|zkt , ct)
+
+i| {z }
+
+> Diffusion Chain
+
+(24) +
+
+> T
+
+X
+
+> t=j+1
+
+Eqϕ(z1: T |x1: T ,u1: T )
+
+h
+
+log q(t) 
+
+> ϕ
+
+(zt|xt:T , zt−j:t−1, ut−j:t)
+
+i| {z }
+
+> Negative of Posterior Entropy
+
+.. (25) For convenience, we will refer to each of the four terms in Eqs. (22) to (25) as Linit (ϕ, η, θ ; x1: T , u1: T ), 
+
+Lrecon (ϕ, θ ; x1: T , u1: T ), Ldiff (ϕ, ψ ; x1: T , u1: T ), and Lentropy (ϕ; x1: T , u1: T ), respectively. Yet again we show the marginalized perspective, where marginalization of the intermediate diffu-sion states z1: Kt in Eq. (24) recovers the transition density p(t) 
+
+> ψ
+
+(zt|zt−j:t−1). Combining Eq. (24) with Eq. (25) post-marginalization, we recover the KL divergence between the smoothed transition posterior and the transition density, 
+
+DKL 
+
+
+
+q(t) 
+
+> ϕ
+
+(zt|xt:T , zt−j:t−1) p(t) 
+
+> ψ
+
+(zt|zt−j:t−1)
+
+
+
+, (26) again making a j-th order extension of the form given by Krishnan et al. (2015, 2017). 
+
+## D. Diffusion Modeling 
+
+D.1. Background for Conditional Diffusion models 
+
+Diffusion models are a class of generative models which learn to sample from some arbitrary data distribution by learning to reverse a gradual noising process. In the conditional setting, we wish to learn a model of the form p(x|c), where c is some conditioning information. To formulate the diffusion objective, we first must define a forward noising process. This process may be defined in either continuous or discrete time; we present the discrete-time case here. In discrete-time, the forward noising process is a Markov chain which gradually adds Gaussian noise to the data. As shown by Ho et al. (2020), the forward noising process first takes an initial data point z0 := z
+
+sampled from the data, and then iteratively adds noise to produce a sequence of noisy latent states 
+
+z1, z2, . . . , zK . The corruption process for each step k is defined by a transition density 
+
+q(zk|zk−1) = N (zk; p1 − βkzk−1, β kI),
+
+where 0 < β 1, β 2, . . . , β K < 1 is a fixed noise schedule, The noise schedule is chosen such that the terminal latent state zK is approximately distributed as 
+
+N (0 , I). This forward process allows direct sampling of a latent zkt for some time step t since q(zkt |z0 
+
+> t
+
+) ∼N (zkt ; √αkz0 
+
+> t
+
+, (1 − αk)I), where αk = (1 − βk) and αk = Qki=1 αi.Diffusion SSM 18 
+
+For data z, a reversal process may be defined as 
+
+p(t)
+
+> ψ
+
+ zk−1|zk, c ,
+
+such that 
+
+p(t) 
+
+> ψ
+
+(z0|c) = 
+
+Z
+
+p(t)
+
+> ψ
+
+ z0: K−1|zK , c p(zK )dz1: K
+
+=
+
+Z 1Y
+
+> k=K
+
+p(t)
+
+> ψ
+
+ zk−1|zk, c p(zK )dz1: K (27) where p(t) 
+
+> ψ
+
+(zk−1|zk, c) is learned by a neural network with parameters ψ. Typically, a single neural network with shared parameters ψ is used to learn the reverse process across all noise levels, with the noise level k fed in as an additional input to the network. Training this model can be accomplished by minimizing the variational bound on the negative log-likelihood of the data, we provide details in Appendix C.2 as this is key to our methodology. Sampling from the diffusion model is accomplished by first sampling zK ∼ N (0 , I), and then sampling 
+
+zK−1, zK−2, . . . , z0 using the learned reverse process, however more efficient samplers are used in practice. We refer the reader to Ho et al. (2020); Song et al. (2020); Karras et al. (2022) for more details on diffusion models. 
+
+D.2. Diffusion Reparameterization 
+
+We follow prior works and reparameterize the diffusion model in terms of a noise prediction network 
+
+Fψ (·), which predicts the noise added at each step of the diffusion process, so that the diffusion loss may be written as 
+
+Lddiff (ϕ, ψ ; x1: T , u1: T ) = 
+
+> T
+
+X
+
+> t=j+1
+
+Eqϕ(z1: T |x1: T ,u1: T )
+
+h
+
+DKL 
+
+ q(zKt |z0 
+
+> t
+
+) p(zKt )
+
++ Eϵ∼N (0 ,I),k ∼Unif {1,...,K }
+
+K ˜wk|| Fψ (zkt , ct, k ) − y(z0 
+
+> t
+
+, k )|| 22
+
+ i
+
+. (28) The derivation and motivation for Eq. (28) is given in Appendix E. In the above equation, Fψ
+
+denotes the neural network parameterizing the reverse diffusion process, conditioned on the noisy latent zkt , the Markov history ct, and the diffusion step k. The target y(z0 
+
+> t
+
+, k ) is a function of the clean latent z0 
+
+> t
+
+and the preconditioned noisy latent, as defined in Appendix E (see Eq. (37)). The coefficient ˜ wk weights the loss at each noise level and is given by Eq. (41) and its subsequent scaling. We have written the diffusion loss as Lddiff to distinguish it from the KL form in Eq. (26). 
+
+## E. Derivation of the diffusion loss 
+
+E.1. Derivation of Noise-Prediction Loss 
+
+We now proceed with describing our specific loss for the diffusion transitions. Notice that the diffusion model is trained under an expectation over the variational distribution qϕ. This means that the loss of the diffusion model is informative to the encoder, so we must carefully consider the full ELBO objective during our derivation. Diffusion SSM 19 
+
+With the goal of maximizing the log-likelihood of p(t) 
+
+> ψ
+
+(z0 
+
+> t
+
+|ct), we can derive a variational bound on the negative log-likelihood of the transition density. We have 
+
+− log p(t) 
+
+> ψ
+
+(z0 
+
+> t
+
+|ct)= − log 
+
+Z
+
+p(t) 
+
+> ψ
+
+(z0: K−1 
+
+> t
+
+|zKt , ct)p(zKt )dz1: Kt (29a) = − log 
+
+Z
+
+q(z1: Kt |z0 
+
+> t
+
+) p(t) 
+
+> ψ
+
+(z0: K−1 
+
+> t
+
+|zKt , ct)p(zKt )
+
+q(z1: Kt |z0 
+
+> t
+
+) dz1: Kt (29b) 
+
+≤ Eq(z1: Kt |z0 
+
+> t)
+
+"
+
+− log p(t) 
+
+> ψ
+
+(z0: K−1 
+
+> t
+
+|zKt , ct)p(zKt )
+
+q(z1: Kt |z0 
+
+> t
+
+)
+
+#
+
+(29c) = Eq(z1: Kt |z0 
+
+> t)
+
+"
+
+− log p(zKt ) −
+
+> K
+
+X
+
+> k=1
+
+log p(t) 
+
+> ψ
+
+(zk−1 
+
+> t
+
+|zkt , ct)
+
+q(zkt |zk−1 
+
+> t
+
+, z0 
+
+> t
+
+)
+
+#
+
+(29d) = Eq(z1: Kt |z0 
+
+> t)
+
+"
+
+− log p(zKt ) −
+
+> K
+
+X
+
+> k=2
+
+log p(t) 
+
+> ψ
+
+(zk−1 
+
+> t
+
+|zkt , ct)
+
+q(zkt |zk−1 
+
+> t
+
+, z0 
+
+> t
+
+) − log p(t) 
+
+> ψ
+
+(z0 
+
+> t
+
+|z1 
+
+> t
+
+, ct)
+
+q(z1 
+
+> t
+
+|z0 
+
+> t
+
+)
+
+#
+
+(29e) = Eq(z1: Kt |z0 
+
+> t)
+
+h
+
+− log p(zKt ) −
+
+> K
+
+X
+
+> k=2
+
+log p(t) 
+
+> ψ
+
+(zk−1 
+
+> t
+
+|zkt , ct)
+
+q(zk−1 
+
+> t
+
+|zkt , z0 
+
+> t
+
+) · q(zk−1 
+
+> t
+
+|z0 
+
+> t
+
+)
+
+q(zkt |z0 
+
+> t
+
+)
+
+− log p(t) 
+
+> ψ
+
+(z0 
+
+> t
+
+|z1 
+
+> t
+
+, ct)
+
+q(z1 
+
+> t
+
+|z0 
+
+> t
+
+)
+
+i
+
+(29f) = Eq(z1: Kt |z0 
+
+> t)
+
+h
+
+− log p(zKt )
+
+q(zKt |z0 
+
+> t
+
+) −
+
+> K
+
+X
+
+> k=2
+
+log p(t) 
+
+> ψ
+
+(zk−1 
+
+> t
+
+|zkt , ct)
+
+q(zk−1 
+
+> t
+
+|zkt , z0 
+
+> t
+
+) − log p(t) 
+
+> ψ
+
+(z0 
+
+> t
+
+|z1 
+
+> t
+
+, ct)
+
+i
+
+(29g) = DKL 
+
+ q(zKt |z0 
+
+> t
+
+) p(zKt ) +
+
+> K
+
+X
+
+> k=2
+
+Eq(zkt |z0 
+
+> t)
+
+h
+
+DKL 
+
+
+
+q(zk−1 
+
+> t
+
+|zkt , z0 
+
+> t
+
+) p(t) 
+
+> ψ
+
+(zk−1 
+
+> t
+
+|zkt , ct)
+
+i 
+
+− Eq(z1  
+
+> t|z0
+> t)
+
+h
+
+log p(t) 
+
+> ψ
+
+(z0 
+
+> t
+
+|z1 
+
+> t
+
+, ct)
+
+i
+
+. (29h) This derivation is very similar to the one presented by Ho et al. (2020), except for the presence of conditioning information. The only additional step needed is made on the first line, where we utilize that the forward process is designed so that zKt ∼ N (0, I). This implies that p(zKt |zt−j:t−1) = p(zKt ), allowing the simplification seen after applying the chain rule in Eq. (29a). Also note that the use of conditioning information here is exactly the same in function as presented by Tashiro et al. (2021), and the included conditioning information is not limited to the previous latent states. Equation (29h) reveals that training the diffusion model is accomplished by simply teaching the diffusion model to learn the reverse process by matching the reverse transition density to the forward transition density at each noise scale. The first term in Eq. (29h) is constant with respect to ψ, and solely depends on the noise schedule and the initial latent state z0 
+
+> t
+
+. Most works simply drop this term, since z0 
+
+> t
+
+in their case is usually data, and not trainable. In our case z0 
+
+> t
+
+is sampled from the encoder, and therefore we must keep this first term to respect the true ELBO. We denote this term as Lforward (z0 
+
+> t
+
+), and compute it in closed form as 
+
+DKL 
+
+ q(zKt |z0 
+
+> t
+
+) p(zKt ) = DKL 
+
+ N (√αK z0 
+
+> t
+
+, (1 − αK )I) N (0 , I)
+
+= 12
+
+d(1 − αK ) + αK || z0 
+
+> t
+
+|| 2 − d − d log(1 − αK )
+
+= 12
+
+αK || z0 
+
+> t
+
+|| 2 − dα K − d log(1 − αK )
+
+:= Lforward (z0 
+
+> t
+
+).Diffusion SSM 20 
+
+For the second term, Ho et al. (2020) uses Bayes rule to derive the parameterization of the fixed reverse direction kernel as 
+
+q(zk−1 
+
+> t
+
+|zkt , z0 
+
+> t
+
+) = N (zk−1 
+
+> t
+
+; ˜ μk(zkt , z0 
+
+> t
+
+), ˜βkI),
+
+where ˜ μk(zkt , z0 
+
+> t
+
+) = 
+
+√αk−1βk
+
+1 − αk
+
+z0 
+
+> t
+
++
+
+√αk(1 − αk−1)1 − αk
+
+zkt and ˜βk = 1 − αk−1
+
+1 − αk
+
+βk.
+
+To turn the training objective of the diffusion model into a regression problem, we must param-eterize the reverse direction kernel p(t) 
+
+> ψ
+
+(zk−1 
+
+> t
+
+|zkt , ct) in a way that allows us to reparameterize the KL divergence as a noise prediction error. We continue to follow Ho et al. (2020), and parame-terize the reverse direction kernel as p(t) 
+
+> ψ
+
+(zk−1 
+
+> t
+
+|zkt , ct) = N (zk−1 
+
+> t
+
+; μψ (zkt , k, ct), σ 2I). Then, we may reparameterize the predicted mean μψ as 
+
+μψ (zkt , k, ct) = 1
+
+√αk
+
+
+
+zkt − βk
+
+√1 − αk
+
+ϵψ (zkt , k, ct)
+
+
+
+, (30) where ϵψ is a neural network with parameters ψ that predicts the noise added at step k.Under this reparameterization, Ho et al. (2020) shows that the second KL term of Eq. (29h) for a fixed k is equivalent to 
+
+Ez0  
+
+> t∼q,ϵ ∼N (0,I)
+
+ β2
+
+> k
+
+2σ2
+
+> k
+
+αk(1 − αk) ϵ − ϵψ
+
+ √αkz0 
+
+> t
+
++ √1 − αkϵ, k, ct
+
+ 22
+
+
+
++ Ck, (31) where Ck is solely a function of the noise schedule. For the last term of Eq. (29h), observe that when k = 1, that 
+
+DKL 
+
+
+
+q(zk−1 
+
+> t
+
+|zkt , z0 
+
+> t
+
+) p(t) 
+
+> ψ
+
+(zk−1 
+
+> t
+
+|zkt , ct)
+
+
+
+= DKL 
+
+
+
+q(z0 
+
+> t
+
+|z1 
+
+> t
+
+, z0 
+
+> t
+
+) p(t) 
+
+> ψ
+
+(z0 
+
+> t
+
+|z1 
+
+> t
+
+, ct)
+
+
+
+.
+
+The term q(z0 
+
+> t
+
+|z1 
+
+> t
+
+, z0 
+
+> t
+
+) is a Dirac delta, i.e., it has zero entropy and 
+
+DKL 
+
+
+
+q(z0 
+
+> t
+
+|z1 
+
+> t
+
+, z0 
+
+> t
+
+) p(t) 
+
+> ψ
+
+(z0 
+
+> t
+
+|z1 
+
+> t
+
+, ct)
+
+
+
+= −Eq(z1  
+
+> t|z0
+> t)
+
+h
+
+log p(t) 
+
+> ψ
+
+(z0 
+
+> t
+
+|z1 
+
+> t
+
+, ct)
+
+i
+
+.
+
+It follows that the last term in Eq. (29h) is equivalent to the second term of Eq. (29h) with k = 1, allowing us to combine these two terms into a single sum. Rewriting Eq. (29h) with the above results, we have 
+
+Ezt∼q(t)
+
+> ϕ
+
+[− log p(t) 
+
+> ψ
+
+(z0 
+
+> t
+
+|ct)] 
+
+≤ Ez0 
+
+> t∼q(t)
+> ϕ
+
+"
+
+Lforward (z0 
+
+> t
+
+) + 
+
+> K
+
+X
+
+> k=1
+
+Eϵ∼N (0,I)
+
+h
+
+wk ϵ − ϵψ
+
+ ˜zkt , k, ct
+
+ 22
+
+i| {z }
+
+> := Ldiff
+
++C
+
+#
+
+. (32) where wk = βk   
+
+> 2αk(1 −αk)
+
+, ˜ zkt = √αkz0 
+
+> t
+
++ √1 − αkϵ, and C is summation of the Ck terms. As C still is solely a function of the noise schedule, we can drop it from the optimization objective. 
+
+E.2. Preconditioning as a Variational Bound 
+
+While training standard diffusion models, the signal-to-noise ratio of the noisy inputs to the diffusion model changes drastically across different noise levels. This results in the magnitude of the regression targets for the noise prediction model to fluctuate, and thus the magnitude of the gradients of the diffusion model to fluctuate drastically as well. As the diffusion model is being trained alongside Diffusion SSM 21 
+
+the encoder and decoder, this results in high variance gradients for the encoder and decoder, which may lead to instability in training. To sidestep this issue and ensure stability of the gradients, we employ the preconditioning introduced by Karras et al. (2022), where the proposed preconditioning re-scales the inputs and outputs of the neural network targets. This rescaling enforces that magnitudes are roughly unit variance across all noise levels, and thus the gradients of the diffusion model are more stable across noise levels. The purpose of this section is to show that the preconditioning of Karras et al. (2022) is a proper bound on the original log-likelihood log p(t) 
+
+> ψ
+
+(z0 
+
+> t
+
+|ct), given proper weighting of the objective. In turn, we detail the optimization objective for the diffusion transitions for our model, specifically Eq. (5a) from the main text. To align with the framework from Karras et al. (2022), we re-scale our forward process, writing ˆzkt = ˜zkt
+
+√αk
+
+(33) =
+
+√αkz0 
+
+> t
+
++ √1 − αkϵ
+
+√αk
+
+(34) = z0 
+
+> t
+
++
+
+r 1 − αk
+
+αk
+
+ϵ, (35) where we have the additive noise as 
+
+σk =
+
+r 1 − αk
+
+αk
+
+.
+
+From Karras et al. (2022), the preconditioned denoiser is written as 
+
+Dψ (ˆ zkt , σ k, ct) = cskip (σk)ˆ zkt + cout (σk)Fψ
+
+ cin (σk)ˆ zkt , c noise (σk), ct
+
+ .
+
+where Fψ is a neural network with parameters ψ, and the coefficients c are those used by Karras et al. (2022) (see Table 1, in the ”Ours” column) with σdata = 1. For reference, these coefficients are 
+
+cskip (σk) = 1
+
+σ2 
+
+> k
+
++ 1 , cout (σk) = σk
+
+pσ2 
+
+> k
+
++ 1 , c in (σk) = 1
+
+pσ2 
+
+> k
+
++ 1 , cnoise (σk) = 14 log( σk).
+
+To recover our original objective, we use that ϵ = ˆzkt −z0 
+
+> t
+> σk
+
+to recover the predicted noise, 
+
+ϵψ
+
+ ˜zkt , k, ct
+
+ = ˆzkt − Dψ (ˆ zkt , σ k, ct)
+
+σk
+
+.
+
+We now may find a new form for the noise prediction error term in Eq. (32). We have 
+
+wk ϵ − ϵψ
+
+ ˜zkt , k, ct
+
+ 22 = wk
+
+ˆzkt − z0
+
+> t
+
+σk
+
+− ˆzkt − Dψ (ˆ zkt , σ k, ct)
+
+σk
+
+> 22
+
+= wk
+
+σ2
+
+> k
+
+Dψ (ˆ zkt , σ k, ct) − z0
+
+> t
+> 22
+
+= wk
+
+σ2
+
+> k
+
+cout (σk)Fψ + cskip (σk)ˆ zkt − z0
+
+> t
+> 22
+
+= wkcout (σk)2
+
+σ2
+
+> k
+
+Fψ − z0 
+
+> t
+
+− cskip (σk)ˆ zkt
+
+cout (σk)
+
+> 22
+
+,
+
+(36) where to simplify notation going forward we will write the regression targets as 
+
+y(z0 
+
+> t
+
+, k ) = z0 
+
+> t
+
+− cskip (σk)ˆ zkt
+
+cout (σk) , (37) Diffusion SSM 22 
+
+and the coefficient in front of the squared error as ˜wk = wkcout (σk)2
+
+σ2
+
+> k
+
+.
+
+We substitute our value for cout (σk) and obtain our diffusion loss for a given t as 
+
+Ldiff =
+
+> K
+
+X
+
+> k=1
+
+Eϵ∼N (0,I)
+
+h
+
+˜wk Fψ (·) − y(z0 
+
+> t
+
+, k ) 22
+
+i
+
+. (38) Directly implementing the summation in Eq. (38) is prohibitively expensive since it requires a for-ward pass through the diffusion model K times per example. Instead, we employ a Monte-Carlo approximation by sampling k from an arbitrary density ρ(k) on {1, . . . , K } such that 
+
+Ldiff =
+
+> K
+
+X
+
+> k=1
+
+Eϵ∼N (0,I)
+
+h
+
+˜wk Fψ (·) − y(z0 
+
+> t
+
+, k ) 22
+
+i
+
+(39) = Ek∼ρ(k),ϵ ∼N (0,I)
+
+ ˜wk
+
+ρ(k) Fψ (·) − y(z0 
+
+> t
+
+, k ) 22
+
+
+
+. (40) The choice of ρ(k) affects the variance of the Monte-Carlo estimate. The coefficient ˜ wk is typically viewed as a weight, where in our case we have ˜wk = wkcout (σk)2
+
+σ2
+
+> k
+
+(41) = wk · αk (42) = βkαk
+
+2αk(1 − αk) . (43) Many works drop the weights and perform uniform sampling, implicitly reweighting the objective. Dropping this term imbalances the terms in the ELBO. Vahdat et al. (2021) also trains a diffusion model end-to-end in a VAE framework, and highlight this issue as well; during training of the encoder, Vahdat et al. (2021) choose to retain the weights so that the encoder is encouraged to match the true posterior of the diffusion model. We provide an alternative perspective on this issue by noting that the weights ˜ wk are very large for small k (small noise levels), and very small for large k (large noise levels). Intuitively, this means that maximizing the ELBO penalizes errors in the noise prediction at small noise levels, where the signal-to-noise ratio is high. On the other hand, errors in noise prediction at large noise levels are not penalized as much, where the diffusion model is focused on denoising the lower-frequency structure of the sample. In the context of our full model, this property implies that the strongest regularization of the encoder comes from the small noise levels, penalizing the encoder for producing latent samples that cannot reveal the fine-grained structure of the data. We retain the weights in our implementation, as we do not separately train the diffusion model from the encoder. Lastly, we set ρ(k) = 1 
+
+> K
+
+for uniform sampling, to ensure that the Monte-Carlo estimate is unbiased without requiring any additional weighting of the loss. 
+
+## F. Experiment Details 
+
+To ensure a fair comparison for our synthetic experiments, we fix architectural hyperparameters across the DKF and DDSSM models, and tune hyperparameters for both models using Optuna (Ak-iba et al., 2019). The only difference in architecture is the implementation for the transition model, where the DKF uses a Gaussian transition module and the DDSSM uses a conditional U-Net pa-rameterized diffusion model. We provide identical search spaces to the tuning algorithm, using the one-step JSD as the evaluation metric on a validation set of examples. Diffusion SSM 23 
+
+F.1. Synthetic Experiment Architectural Parameters 
+
+We construct our models using the modular elements described in Appendix H. Specifically, we define the time mixer (operating over the sequence length axis) and the feature mixer (operating across the latent or observation dimensions) for each individual module. Across all synthetic experiments, we fix the latent dimension to M = 1, the sequential latent lag to j = 1, the context channels to 16, and the dense hidden dimension to 16. Embeddings for continuous time steps are disabled, while discrete mask embeddings have dimension 8. For both the baseline DKF and our DDSSM, the shared contextual architectures are summarized in Table 1. 
+
+Module Layers Channels Hidden Dim Time Mixer Feature Mixer 
+
+Encoder Summary 3 – 16 GRU –Encoder Context 2 16 16 Conv ( k = 2) Conv ( k = 2) Decoder Context 2 16 16 Conv ( k = 2) Conv ( k = 2) Initialization Context 2 16 16 Identity Conv ( k = 2) Gaussian Transition (DKF) 3 16 16 Identity Conv ( k = 2) Table 1: Shared architectural parameters across models, including the baseline DKF transition model. The Gaussian transition relies on an identity time mixer since it only projects summary statistics for a single target step, whereas the encoder and decoder leverage temporal convolutions to process multi-step histories and future summaries. 
+
+Diffusion Transition Specifications. For the DDSSM, we substitute the Gaussian transition module with a conditional U-Net parameterized diffusion model. Unlike the Gaussian baseline, the diffusion denoiser utilizes a convolutional time mixer rather than an identity map. This is because at each diffusion step k, the transition model observes both the clean history states zt−j:t−1 and the noisy target state zkt , requiring explicit temporal mixing. We summarize the network sizing and diffusion schedule parameters in Table 2. 
+
+Parameter Value 
+
+U-Net Layers 3U-Net Channels (Blocks) 16 Time Mixer Conv ( k = 2) Feature Mixer Conv ( k = 2) Diffusion Step Embedding Space 64 (projected to 128) Feature Embedding Dimension 8
+
+Diffusion Schedule 
+
+Number of Diffusion Steps ( K) 128 Noise Schedule Linear Table 2: Architectural and schedule parameters specific to the diffusion-based transition model in DDSSM. 
+
+F.1.1. Hyperparameters and Tuning 
+
+We use Optuna (Akiba et al., 2019) for hyperparameter tuning. Each trial consists of training a model for 1500 steps and evaluating the CRPS-sum metric on unseen validation data. We use 1024 training examples, 1024 validation examples, and 1024 test examples for the synthetic experiment, each generated by simulating the same underlying process with a fixed random seed. Diffusion SSM 24 
+
+The parameters we tune, their tuning ranges, and the optimal parameters found for the DKF and DDSSM models are summarized in Tables 3 and 4. 
+
+Parameter Tuning Range DKF DDSSM 
+
+lambda schedule linear, cosine cosine cosine lambda warmup steps 200 – 1200 867 889 lambda end 0.3 – 2 1.245 1.243 enc lr 5 × 10 −5 – 10 −2 (log) 0.00887 0.000864 dec lr 5 × 10 −5 – 10 −2 (log) 0.00777 0.000300 trans lr 5 × 10 −5 – 10 −2 (log) 0.000099 0.00941 zinit lr 10 −4 – 10 −3 (log) 0.005 0.000801 S 1 – 4 2 2batch size 64, 128, 256, 512 512 128 transition.schedule.S k 1 – 8 (Diffusion only) 1 5Table 3: Tuning ranges and optimal parameters found for DKF and DDSSM models. 
+
+Hyperparameter Fixed Value 
+
+Number of training steps 1500 (tuning), 3000 (final) Number of Optuna trials 50 Number of startup trials 10 Encoder/decoder channels 16 Encoder/decoder layers 2Weight decay 0.01 Table 4: Hyperparameters fixed across all models during tuning. 
+
+## G. Variational Hierarchical Prior 
+
+Klushyn et al. (2021, 2019), consider the problem of defining the prior distribution over the initial latent state p(z1) in the j = 1 case. Typically, the prior is chosen by DSSMs to be a standard Gaussian Krishnan et al. (2015, 2017); Karl et al. (2016). The prior over z1 however regularizes the rest of the latent trajectory, as both the transition model and the encoder posterior are conditioned on z1. This is experimentally validated by Klushyn et al. (2019, 2021), where it is demonstrated that a more flexible prior over the initial latent state can lead to better inference about the latent trajectory. As our diffusion transition model can be highly expressive, we wish to avoid inhibiting the expres-siveness of the transition model by imposing a simple prior over the initial latent states. We therefore follow Klushyn et al. (2021) and use an expressive initial distribution via a variational hierarchical prior (VHP). In our case, we wish to handle higher Markov orders, so our initial state distribution is over the first 
+
+j latents, p(z1: j ). For the j = 1 case, Klushyn et al. (2021) uses a two-level hierarchical prior, where the initial latent state z1 is modeled as 
+
+p(z1) = 
+
+Z
+
+pη (z1|z0)p(z0)dz0,
+
+where p(z0) is a standard Gaussian. This choice mimics the fact that the optimal empirical bayes prior for a VAE is p ∗ (z1) = Ep(x1: T )[qϕ(z1|x1: T )]. Diffusion SSM 25 
+
+We generalize this to the j-order Markovian setting by introducing j auxiliary variables z−j+1:0 .The conditional distribution pη (z1: j |z−j+1:0 ) is given by the chain rule, 
+
+pη (z1: j |z−j+1:0 ) = 
+
+> j
+
+Y
+
+> t=1
+
+pη (zt|zt−1, . . . , z−j+1 )=
+
+> j
+
+Y
+
+> t=1
+
+pη (zt|zt−j:t−1),
+
+where we have used the j-order Markovian property in the second line. Marginalizing over the auxiliary variables, we have 
+
+pη (z1: j ) = 
+
+Z
+
+pη (z1: j |z−j+1:0 )p(z−j+1:0 )dz−j+1:0 
+
+=
+
+Z jY
+
+> t=1
+
+pη (zt|zt−j:t−1)p(z−j+1:0 )dz−j+1:0 .
+
+Continuing, we introduce the variational distribution qΦ(z−j+1:0 |z1: j ), parameterized by Φ, to ap-proximate the posterior over the auxiliary variables. We find the bound on the optimal expected marginal log-likelihood of p(z1: j ) as 
+
+Ep∗(z1: j )[log pη (z1: j )] 
+
+≥ Ep(x1: T )Eqϕ(z1: T |x1: T ,u1: T )
+
+
+
+EqΦ(z−j+1:0 |z1: j )
+
+
+
+log pη (z1: j |z−j+1:0 )p(z−j+1:0 )
+
+qΦ(z−j+1:0 |z1: j )
+
+ 
+
+= Ep(x1: T )Eqϕ(z1: T |x1: T ,u1: T )
+
+EqΦ(z−j+1:0 |z1: j ) [log pη (z1: j |z−j+1:0 ) + log p(z−j+1:0 ) − log qΦ(z−j+1:0 |z1: j )] 
+
+= Ep(x1: T )Eqϕ(z1: T |x1: T ,u1: T )
+
+"
+
+EqΦ(z−j+1:0 |z1: j )
+
+" jX
+
+> t=1
+
+log pη (zt|zt−j:t−1)
+
+#
+
+− DKL (qΦ(z−j+1:0 |z1: j ) ∥ p(z−j+1:0 )) 
+
+#
+
+,
+
+where in the last line we have expanded the conditional prior and recognized the KL divergence. In line with Klushyn et al. (2021), we set p(z−j+1:0 ) = N (0 , I), and parameterize qΦ(z−j+1:0 |z1: j ) as a diagonal Gaussian with mean and variance given by neural networks that take z1: j as input. Note that in the variational posterior, qϕ(z1: j |x1: T , u1: T ) depends on all observations and inputs, while in the prior pη (z1: j |z−j+1:0 ) only depends on the auxiliary variables. Therefore it is unnecessary to provide a hierarchical structure to the initial latent states for the variational posterior, as the variational posterior can already leverage the full context of the observations and inputs to infer the initial latent states. As we implement a network to parameterize q(t) 
+
+> ϕ
+
+(zt|zt−j:t−1, xt:T , ut−j:t), we can simply use the same network to parameterize qϕ(z1: j |x1: T , u1: T ) by providing zero inputs for 
+
+zt−j:t−1 when t ≤ j. These drawn latent states are then used for drawing from qΦ(z−j+1:0 |z1: j ) to compute the hierarchical prior. Diffusion SSM 26 
+
+Rewriting Linit (ϕ, η ; x1: T , u1: T ) from Eq. (22) using the hierarchical prior, we have 
+
+Linit (ϕ, η, Φ; x1: T , u1: T ) = Eqϕ(z1: T |x1: T ,u1: T )
+
+h
+
+log qϕ (z1: j |x1: T , u1: t)
+
+− pη (z1: j |z−j+1:0 )p(z−j+1:0 )dz−j+1:0 
+
+i
+
+≤ Eqϕ(z1: T |x1: T ,u1: T )
+
+h
+
+log qϕ (z1: j |x1: T , u1: t)
+
+− EqΦ(z−j+1:0 |z1: j ) [log pη (z1: j |z−j+1:0 ) + log p(z−j+1:0 ) − log qΦ(z−j+1:0 |z1: j )] 
+
+i
+
+= Eqϕ(z1: T |x1: T ,u1: T )
+
+h
+
+log qϕ (z1: j |x1: T , u1: t)
+
+i| {z }
+
+> negative entropy
+
++ Eqϕ(z1: T |x1: T ,u1: T )
+
+h
+
+EqΦ(z−j+1:0 |z1: j )
+
+h
+
+− log pη (z1: j |z−j+1:0 )
+
+− log p(z−j+1:0 ) + log qΦ(z−j+1:0 |z1: j )
+
+iii 
+
+= Eqϕ(z1: T |x1: T ,u1: T )
+
+h
+
+log qϕ (z1: j |x1: T , u1: t)
+
+i| {z }   
+
+> Lentropy init (ϕ;x1: T,u1: T)
+
++ Eqϕ(z1: T |x1: T ,u1: T )
+
+h
+
+EqΦ(z−j+1:0 |z1: j )
+
+h
+
+−
+
+> j
+
+X
+
+> t=1
+
+log pη (zt|zt−j:t−1)+ DKL (qΦ(z−j+1:0 |z1: j ) ∥ p(z−j+1:0 )) 
+
+iii 
+
+:= Lentropy init (ϕ; x1: T , u1: T ) + LVHP (ϕ, η, Φ; x1: T , u1: T ), (44) and notice that we have split the final line into two terms, the negative entropy of the variational posterior over the initial states, and the variational hierarchical prior (VHP) loss, where we have defined 
+
+LVHP (ϕ, η, Φ; x1: T , u1: T ) = Eqϕ(z1: T |x1: T ,u1: T )
+
+h
+
+EqΦ(z−j+1:0 |z1: j )
+
+h
+
+−
+
+> j
+
+X
+
+> t=1
+
+log pη (zt|zt−j:t−1)+ DKL (qΦ(z−j+1:0 |z1: j ) ∥ p(z−j+1:0 )) 
+
+ii 
+
+.
+
+Performing a substitution of the resulting inequality in Eq. (44) into the ELBO in Eq. (22), we obtain the ELBO which incorporates the variational hierarchical prior: 
+
+− log p (x1: T |u1: T )
+
+≤ L entropy init (ϕ; x1: T , u1: T ) + LVHP (ϕ, η, Φ; x1: T , u1: T )+ Lrecon (ϕ, θ ; x1: T , u1: T ) + Lddiff (ϕ, ψ ; x1: T , u1: T ) + Lentropy (ϕ; x1: T , u1: T ). (45) which we minimize with respect to the parameters ϕ, η, θ, ψ, Φ. 
+
+## H. Model Architecture Details 
+
+The method of Tashiro et al. (2021), titled “CSDI: Conditional Score-based Diffusion Models for Probabilistic Time Series Imputation”, uses a well-established architecture for modeling time-series data with diffusion models Tashiro et al. (2021), and we adapt it to our setting of autoregressive generation in the latent space. We choose to extend the architecture of Tashiro, Song, Song, and Ermon (2021), for several reasons. First, it is a well-established architecture for modeling time-series data with diffusion models, Second, its success in modeling directly in observation space suggests that it is sufficiently powerful to model the transition distribution in latent space, and it is simple Diffusion SSM 27 
+
+enough to allow us to modularize the architecture depending on the specific needs of the encoder, decoder, and transition modules. Specifically, we extend the U-net architecture from CSDI to not only our diffusion model, but also to the encoder, decoder, and initialization modules, which all operate on latent histories. 
+
+H.1. U-net Architecture 
+
+Because we operate in the latent space and generate autoregressively, we utilize a static mask indi-cating which time steps functionally serve as the conditioning history versus the generated output, rather than a dynamic missing-data mask. Our mask is thus a binary mask mhist of shape ( j + 1), which equals one for history steps and zero for the target step, since we are always generating a single step and conditioning on j history steps. The input to the denoiser is a tensor Z ∈ RM ×(j+1) ,where M is the latent dimension. The target noise is always located at the last time step, while the clean history is located in the preceding j time steps. 
+
+Input Projection Following Tashiro et al. (2021), we separate the input into two components via the mask: a clean history Zhist = Z ⊙ mhist and a noisy target Znoisy = Z ⊙ (1 − mhist ). These are concatenated along a new channel dimension to form a tensor in R2×M ×(j+1) . A 1 × 1convolution and a ReLU activation project this input to a hidden channel dimension C, yielding an initial representation H0 ∈ RC×M ×(j+1) .
+
+Extra Conditioning Information Conditioning is injected via a continuous diffusion timestep embedding and a side information tensor. The scalar diffusion noise level is embedded via sinusoidal positional encodings and a two-layer multi-layer perceptron into ediff ∈ REdiff . The side information tensor S ∈ REside ×M ×(j+1) concatenates dynamic covariates ut−j:t, absolute time embeddings, and the mask mhist . Since this diffusion operates on compressed latents rather than the original explicitly meaningful observation coordinates, in contrast to Tashiro et al. (2021), we do not utilize static feature embeddings here. 
+
+Residual Blocks The core of our network consists of L stacked residual blocks, each of which takes in a representation of shape ( C, M, j + 1) and produces an output of the same shape as well as a skip connection. The residual block itself is mostly unchanged from CSDI, except we abstract the time-mixing and feature-mixing operations. This allows us to replace computationally heavy attention operations with architectures like a 1D convolution stack or a Gated Recurrent Unit (GRU) when the sequence length j is small. We refer the reader to Tashiro et al. (2021) for more details on the architecture of the residual block. 
+
+Output Projection We continue to follow CSDI for handling the residual block inputs and out-puts, as well as the skip connections. However, we deviate from CSDI in the output projection step. Because we generate autoregressively, we only need to produce an output for the target time step, rather than a full sequence of length j + 1. So, we slice the final output of the residual block stack to only keep the target time step, yielding a tensor of shape ( M ), containing the predicted noise for the target time step. 
+
+H.2. Context Producer 
+
+The encoder, decoder and initialization module, similar to the denoiser, operate on latent histories. Therefore for the encoder, decoder, and initialization module, we adapt the U-net architecture above as a general input-output architecture, where the inputs and outputs are tensors of shape ( h, L ) for some hidden dimension h and sequence length L.The encoder, decoder, and initialization modules process sequential latent and observable data histories. To support this repetition, we abstract the U-net framework into a generalized feature-extraction module, which we call the Context Producer . The Context Producer accepts inputs of Diffusion SSM 28 
+
+shape ( Hseq , L ), where Hseq is the spatial or feature dimension and L is the temporal sequence length. The output is a vector representing the entire trajectory. 
+
+Input Projection Unlike the denoiser which separates clean and noisy data, the Context Producer takes a single sequence tensor Hin ∈ RHseq ×L. We treat this input sequence as having a single channel, flattening it temporarily to shape (1 , H seq × L), and apply a 1 × 1 convolution followed by a ReLU activation. This projects the input to a hidden channel dimension C, yielding an initial representation H0 ∈ RC×Hseq ×L.
+
+Extra Conditioning Information Because the Context Producer does not reverse a diffusion process, we completely omit the diffusion step embedding. As with the denoiser, we inject condi-tioning information via a side information tensor, but we adapt the construction of this tensor to a side-information tensor S ∈ REside ×Hseq ×L, where Eside is the side information embedding dimen-sion. We carefully construct this tensor to support both temporal and static covariates, as well as absolute time embeddings and the history/target mask. To construct the tensor we handle temporal and static information separately, and then concatenate them along the feature dimension. For each type of information we have: 
+
+• Temporal Information. Dynamic covariates, time embeddings, and valid/padding masks vary over time L but are uniform across the feature dimension Hseq . These are computed as a tensor of shape ( Etime + Emask , L ) and expanded along the feature dimension to ( Etime +
+
+Emask , H seq , L ). 
+
+• Static Information. Static categorical or contextual embeddings vary across the features but are constant across time. These are mapped to a tensor ( Estatic , H seq ) and expanded along the time dimension to ( Estatic , H seq , L ). We concatenate the temporal and static information along the feature dimension to yield the final side information tensor S ∈ REside ×Hseq ×L where Eside = Etime + Emask + Estatic .
+
+Residual Blocks The residual blocks of the context producer are unchanged from Appendix H.1, except the diffusion embedding is omitted. The utilization of the side information tensor is un-changed. 
+
+Output Projection The rest of the architecture is unchanged from our denoiser adaptation, except we do not project the ( C, h, L ) output back to (1 , h, L ) before slicing as we wish to produce a dense summary of the input rather than a noise prediction for a single time step. To concisely collapse the temporal dimension, we reshape the tensor equivalently to ( C × Hseq , L ) and apply a 1D convolution over the time dimension. Standard 1D convolutions would mix representations across the feature dimension, so we strictly use a grouped 1D convolution with groups equal to C × Hseq 
+
+and a kernel size equal to the sequence length L. This operation pools the sequence, outputting a flattened context vector in RC×Hseq .
+
+H.3. Decoder Architecture 
+
+The decoder architecture parameterizes the emissions density p(t) 
+
+> θ
+
+(xt|zt−j+1: t, ut−j+1: t) as a diagonal Gaussian distribution over the observation xt ∈ RD . It takes the sequential latent history and extracts a summary using a Context Producer to predict the observation parameters. 
+
+Input Preparation The inputs include the length-j latent history zt:t−j+1 and covariates 
+
+ut−j+1: t. For early time steps where t < j , the available history is left-padded with zero vec-tors to strongly enforce a fixed sequence length j. We include a binary mask to indicate which time steps are padded versus valid, and add this to the set of conditioning information. Diffusion SSM 29 
+
+The resulting sequence of shape ( M, j ) is processed step-wise by a linear layer mapping the latent dimension M to the Context Producer’s spatial dimension Hseq . This outputs the primary input sequence Hin ∈ RHseq ×j for the Context Producer. 
+
+Conditioning Construction The decoder’s Context Producer requires side information aligned to its j-step temporal axis: 
+
+• Temporal Information: We compute absolute time embeddings for the j history steps. These are concatenated with the step-aligned dynamic covariates ut−j+1: t. As previously mentioned, we embed a binary padding mask—which flags valid history vectors versus left-padded zero vectors—into a continuous embedding space. 
+
+• Static Information: If static observation-level covariates are present, they are linearly pro-jected from the data dimension D to the spatial hidden dimension Hseq . The purpose of this projection is to ease the decoder’s task of matching its generated data to observed data, since the semantically meaningful static covariates are in the data space rather than the latent space. These elements are integrated as the side information tensor S utilizing the mechanisms defined in Appendix H.2. 
+
+Gaussian Output The Context Producer condenses the sequence into a final structured summary vector of shape ( C × Hseq ). Because the Context Producer utilizes several non-linear residual blocks, we preserve a residual path for available static covariates by mapping the flattened static covariates through an auxiliary linear layer and adding the result directly to the summary vector. This resulting context vector is passed into the Gaussian output head, which comprises two multi-layer perceptrons producing the distribution parameters: the mean μθ (rt) ∈ RD and the log-variance log Σ θ (rt) ∈ RD
+
+for the components of xt.
+
+H.4. Encoder Architecture 
+
+The encoder approximates the smoothed variational density q(t) 
+
+> ϕ
+
+(zt|zt−j:t−1, x1: T , ut−j:t). As mentioned in Appendix C.1, we simplify the conditioning set by summarizing all future in-formation into a sequence of continuous vectors h1: T , i.e. our variational family assumes 
+
+q(t) 
+
+> ϕ
+
+(zt|zt−j:t−1, ut−j:t, xt:T ) ≈ q(t) 
+
+> ϕ
+
+(zt|zt−j:t−1, ut−j:t, ht). Therefore, there are two stages to our encoder’s operation: (i) a full-sequence Future Summary module that processes the entire future trajectory to produce a sequence of future summaries h1: T , and (ii) an autoregressive Context Pro-ducer that takes in the current latent history and the current future summary to produce the parameters of the variational distribution over zt. We provide the algorithmic details of sampling a full trajectory from the encoder in Algorithm 2. 
+
+Future Summary Module The Future Summary module computes h1: T = Fϕ(x1: T , mobs ). At each time step across the length-T sequence, we concatenate the observations xt, absolute time embeddings, observation missingness masks mobs ,t , and the flattened static covariates. This feature vector is linearly projected to a hidden dimension Csummary . In line with Krishnan et al. (2017), to ensure that ht only absorbs information from the future and present (time t . . . T ), the entire projected sequence is reversed along the time dimension and passed through a causal sequence model (such as a Gated Recurrent Unit or a causally-masked Transformer). The output sequence is reversed again, restoring the original chronological order while guaranteeing that ht ∈ RCsummary 
+
+depends only on sequence indices ≥ t.
+
+Input Preparation Given the future summary ht, the encoder autoregressively infers the param-eters for zt contingent on previously sampled states zt−j:t−1. For the first j time steps, we left-pad the latent history with zero vectors and include a binary mask to indicate which time steps are Diffusion SSM 30 
+
+padded versus valid, and add this to the set of conditioning information. This is the same strategy taken by the decoder (see Appendix H.3). We linearly project the future summary from Csummary to the Context Producer spatial dimension 
+
+Hseq . Likewise, the j history vectors are mapped from the latent dimension M to Hseq . These are concatenated along the temporal axis to yield the primary input tensor Hin ∈ RHseq ×(j+1) for the Context Producer, where the future summary is located at index 0 and the history vectors are located at indices 1 . . . j . By placing the future summary at the beginning of the sequence, we allow the Context producer to attend to the future summary at each layer of its architecture. This choice is once again inspired by Krishnan et al. (2017), who project the future summary to the initial hidden state of their RNN-based encoder, which allows the future summary to influence the entire inference process. In fact, this is the behavior of the Context Producer when we use an RNN for the time-mixing operation in the residual blocks. 
+
+Conditioning Construction The side information for the encoder’s Context Producer includes absolute time embeddings for the j history steps, as well as a binary mask indicating which of the 
+
+j history steps are valid versus left-padded, and dynamical covariates for the j history steps. We additionally include static covariates, and similar to the encoder we project these from the data space to the Context Producer’s spatial dimension to ease the task of matching the generated latent states to the observed data. To summarize these inputs, we have: 
+
+• Temporal & Covariate Information: We gather absolute time embeddings and dynamic covariates aligned with the exact ( j + 1) slots: time t for the summary slot, and t − j . . . t − 1for the history slots. 
+
+• Role Mask: We employ a binary mask—set to 0 for the future summary slot and 1 for the history slots—which is projected through a learned linear layer. This explicitly instructs the residual blocks to treat the two modalities differently. 
+
+• Padding Mask: We use an additional binary mask representing valid versus zero-padded history steps, which is also passed through a learned embedding layer. 
+
+• Static Information: Similar to the decoder, static categorical or continuous covariates are mapped to the spatial attribute Hseq and expanded identically across the temporal axis. 
+
+Gaussian Output The sequence Hin and side information S are evaluated through the Context Producer described in Appendix H.2, returning a flattened representation vector in RC×Hseq . Finally, this vector is processed by a Gaussian MLP head to produce the mean μt ∈ RM and diagonal log-variance log Σ t ∈ RM defining the variational posterior for zt.
+
+H.5. Transition Architecture (Baselines) 
+
+The Gaussian baseline transition model parameterizes p(t) 
+
+> ψ
+
+(zt|zt−j:t−1, ut−j:t) as a diagonal Gaussian, where the mean and log-variance are produced by a Context Producer followed by a Gaussian MLP head. 
+
+Input Preparation The transition model receives only the length-j latent history zt−j:t−1 as input (no future summary or observation information). Each latent vector zt−i ∈ RM is linearly projected to the Context Producer’s spatial dimension Hseq , yielding the primary input tensor 
+
+Hin ∈ RHseq ×j . Unlike the encoder, no padding is required: the transition model is only invoked for 
+
+t > j , so a full history of length j is always available. Diffusion SSM 31 
+
+Conditioning Construction Because the transition model has no future summary and no padded positions, its side information is considerably simpler than the encoder’s: 
+
+• Temporal Information: Absolute time embeddings for the j history steps t − j, . . . , t − 1are gathered and, if dynamic covariates ut−j:t are present, concatenated along the feature dimension. 
+
+• Mask Information: No mask embeddings are used. The Context Producer receives a zero-dimensional mask tensor (i.e. mask tot dim = 0), so no role mask or padding mask is injected. 
+
+• Static Information: No static covariates are provided, since the transition operates entirely in the latent space and does not need to align with observation-level features. 
+
+Gaussian Output The Context Producer condenses the history into a flattened context vector in RC×Hseq , which is passed to a Gaussian MLP head producing the mean μψ (zt−j:t−1) ∈ RM and diagonal log-variance log Σ ψ (zt−j:t−1) ∈ RM . The transition density is then 
+
+p(t) 
+
+> ψ
+
+(zt|zt−j:t−1, ut−j:t) = N (zt; μψ (zt−j:t−1), diag(exp log Σ ψ (zt−j:t−1))) .
+
+H.6. VHP Architecture 
+
+The variational hierarchical prior (VHP) for the initial latent states pη (z1: j |z−j+1:0 ) is implemented with two small Context Producers, one for the conditional prior pη and one for the auxiliary varia-tional posterior qΦ(z−j+1:0 |z1: j ). The architectures described below we implement with fewer layers and smaller hidden dimensions, given the simpler task of modeling only j time steps rather than the full sequence of length T . We refer to Appendix G for the mathematical derivation. 
+
+Conditional Prior pη (zt|zt−j:t−1) The conditional prior for t ≤ j shares the same architecture as the Gaussian baseline transition described above: a Context Producer of temporal length j followed by a Gaussian MLP head producing μη , log Σ η ∈ RM . Its side information consists of absolute time embeddings, optional dynamic covariates, and an embedded padding mask, since during the autoregressive generation of z1, . . . , zj , the conditioning history may include auxiliary latents z−j+1:0 
+
+sampled from the VHP prior p(z−j+1:0 ) = N (0, I) or from the auxiliary posterior qΦ. Concretely, at step t ∈ { 1, . . . , j }, the history zt−j:t−1 is formed by concatenating the available auxiliary latents with any already-generated initial latents, left-padded with zeros when t < j . A binary padding mask indicating which positions are real versus padded is embedded through a learned linear layer and injected as mask side information, exactly as in the encoder (Appendix H.4). 
+
+Auxiliary Posterior qΦ(z−j+1:0 |z1: j ) The auxiliary posterior takes the encoder’s initial latent samples z1: j and produces a diagonal Gaussian over all j auxiliary latents jointly. Each latent 
+
+zt for t ∈ { 1, . . . , j } is linearly projected from RM to RHseq , forming an input sequence of shape (Hseq , j ) for a second, smaller Context Producer. This Context Producer uses the same residual-block architecture described in Appendix H.2, with temporal side information (absolute time embeddings and optional covariates for the first j steps) but no mask embeddings ( mask tot dim = 0), since the full sequence z1: j is always observed. The flattened output in RC×Hseq is passed to a Gaussian MLP head that outputs the mean μΦ ∈ RM ×j and diagonal log-variance log Σ Φ ∈ RM ×j for the j
+
+auxiliary latents. Sampling is performed via the reparameterization trick: 
+
+z−j+1:0 = μΦ(z1: j ) + exp   12 log Σ Φ(z1: j ) ⊙ ϵ, ϵ ∼ N (0, I).Diffusion SSM 32 
+
+## I. Implementation Details 
+
+I.1. Parameters 
+
+For clarity, we summarize the parameters being optimized in our model. The full parameter set consists of five groups: 1. Encoder parameters ϕ: all parameters of the encoder Context Producer, Future Summary module, and Gaussian MLP head (Appendix H.4). 2. Decoder parameters θ: all parameters of the decoder network (Appendix H.3). 3. Transition parameters ψ: all parameters of the transition Context Producer and Gaussian MLP head (Appendix H.5). 4. VHP conditional prior parameters η: all parameters of the conditional prior Context Pro-ducer and Gaussian MLP head used to model pη (zt|zt−j:t−1) for t ∈ { 1, . . . , j } (Appendix H.6). 5. VHP auxiliary posterior parameters Φ: all parameters of the auxiliary posterior Context Producer and Gaussian MLP head used to model qΦ(z−j+1:0 |z1: j ) (Appendix H.6). 
+
+I.2. Optimization Techniques 
+
+It is a well-known difficulty of VAEs that the optimization of the ELBO may be viewed as a multi-objective optimization problem, where the two competing objectives are the reconstruction of the data and the regularization of the latent space via the prior Higgins et al. (2017); Rezende and Viola (2018). For example, in the most-general VAE setting, the ELBO may be written as ELBO( ϕ, θ ) = −Eqϕ(z|x)[log p(t) 
+
+> θ
+
+(x|z)] + DKL (qϕ(z|x) ∥ p(z)) ,
+
+or in the distortion-rate form, ELBO( ϕ, θ ) = D(ϕ, θ ) + R(ϕ),
+
+where the distortion term D(ϕ, θ ) := −Eqϕ(z|x)[log pθ (x|z)] measures the reconstruction error, and the rate term R(ϕ) := DKL (qϕ(z|x) ∥ p(z)) measures the complexity of the latent representation. It is commonplace in the VAE literature and the Deep SSM literature to employ a weighting term 
+
+β on the rate term to balance the tradeoff between reconstruction and regularization Higgins et al. (2017); Krishnan et al. (2017), this is particularly important for DSSMs with learnable priors. To emphasize learning a good reconstruction before regularization, it is common to anneal β from 0 to 1 during training. To avoid confusing notation with the diffusion schedule, we denote this regularization term as λ instead of β.That is, we optimize the following objective: 
+
+LELBO (ϕ, η, θ, ψ, Φ; x1: T , u1: T ) = D(ϕ, θ ) + λR(ϕ, η, ψ, Φ) ,
+
+where the distortion term D includes the reconstruction loss, and the rate term R collects the pos-terior entropy, diffusion KL, any initialization likelihoods, and auxiliary posterior KL contributions. We utilize cosine annealing schedules for λ in our experiments. To find the optimal schedule, we use the hyperparameter λend to specify the ending value of λ, and use the hyperparameter λwarmup to specify the number of training iterations until λ reaches λend . Empirically, we find that choosing a good schedule is crucial for performance, hence we include these parameters in our hyperparameter sweep during training (see Section F.1.1). Diffusion SSM 33 
+
+I.3. Computing MC Estimates of ELBO Terms 
+
+It still remains to detail the computation of the other ELBO terms, and to deal with the expectations in each term. When any of the distributions involved are Gaussian, computing the KL divergences becomes straightforward as the Gaussian distribution admits closed-form expressions for likelihoods and KL divergences. In the case of non-Gaussian distributions, we must use a Monte Carlo estimates to compute the various expectations. To allow us to reduce the error of the Monte Carlo estimates, we draw several latent trajectory samples from our encoder during training. Let the S trajectories drawn from the encoder during training be denoted by z(s)1: T ∼ qϕ(z1: T | x1: T , u1: T ). We now detail the Monte-Carlo estimate for each term in the ELBO. 
+
+I.3.1. Initialization Loss 
+
+Following the decomposition in Eq. (44), we compute the initialization loss as the sum of the entropy term and the VHP loss. Using the sampled latent trajectories z(s)1: T , we first compute the entropy estimate: 
+
+Lentropy, MC init (ϕ; x1: T , u1: T ) = 1
+
+S
+
+> S
+
+X
+
+> s=1
+
+log qϕ(z(s)1: j |x1: T , u1: T ). (46) For the VHP loss, we sample auxiliary variables z(s) 
+
+> −j+1:0
+
+∼ qϕ(z−j+1:0 |z(s)1: j ) for each trajectory s.The KL divergence term is computed analytically, assuming Gaussian distributions. 
+
+LMC VHP (ϕ, η, Φ; x1: T , u1: T ) = 1
+
+S
+
+> S
+
+X
+
+> s=1
+
+"
+
+−
+
+> j
+
+X
+
+> t=1
+
+log pη (z(s) 
+
+> t
+
+|z(s)
+
+> t−j:t−1
+
+)+ DKL 
+
+
+
+qϕ(z−j+1:0 |z(s)1: j ) p(z−j+1:0 )
+
+ #
+
+, (47) where the history z(s) 
+
+> t−j:t−1
+
+in the reconstruction term draws from the auxiliary variables z(s)
+
+> −j+1:0
+
+when indices are non-positive. The total initialization loss is 
+
+LMC init = Lentropy, MC init + LMC VHP . (48) 
+
+I.3.2. Sequence Reconstruction Loss 
+
+For the reconstruction loss, we use the same sampled latent trajectories z(s)1: T ∼ qϕ(z1: T | x1: T , u1: T )as above. Our decoder is Gaussian, and given most generally by 
+
+p(t) 
+
+> θ
+
+(xt | zmax(1 ,t −j+1): t,umax(1 ,t −j+1): t) = 
+
+N (μθ (zmax(1 ,t −j+1): t, umax(1 ,t −j+1): t), Σθ (zmax(1 ,t −j+1): t, umax(1 ,t −j+1): t)) ,
+
+so the log-likelihood is available in closed form. For t ≤ j, the conditioning window zmax(1 ,t −j+1): t
+
+contains fewer than j entries; in practice, the decoder left-pads the history with zeros to maintain a fixed input size, consistent with the architecture described in Appendix H.3. For trajectory sample z(s)1: T , we denote the decoder mean and covariance as 
+
+μ(s) 
+
+> θ
+
+:= μθ (z(s)max(1 ,t −j+1): t, umax(1 ,t −j+1): t),
+
+Σ(s) 
+
+> θ
+
+:= Σ θ (z(s)max(1 ,t −j+1): t, umax(1 ,t −j+1): t).Diffusion SSM 34 
+
+Using that 
+
+− log N (xt; μθ , Σθ ) = 12
+
+h
+
+(xt − μθ )⊤Σ−1 
+
+> θ
+
+(xt − μθ ) + log det(2 πΣθ )
+
+i
+
+,
+
+if we have diagonal covariance Σ θ , this reduces to a weighted squared error plus a log variance term and then 
+
+− log N  xt; μθ , Σθ
+
+ = 12
+
+> D
+
+X
+
+> i=1
+
+"
+
+(xt,i − μθ,i )2
+
+σ2
+
+> θ,i
+
++ log(2 πσ 2
+
+> θ,i
+
+)
+
+#
+
+,
+
+Thus we have 
+
+Lrecon (ϕ, θ ; x1: T , u1: T ) = 
+
+> T
+
+X
+
+> t=1
+
+Eqϕ(z1: T |x1: T ,u1: T )
+
+h
+
+− log p(t)
+
+> θ
+
+ xt | zmax(1 ,t −j+1): t, umax(1 ,t −j+1): t
+
+i
+
+≈ 1
+
+S
+
+> S
+
+X
+
+> s=1
+> T
+
+X
+
+> t=1
+
+h
+
+− log N  xt; μ(s) 
+
+> θ
+
+, Σ(s)
+
+> θ
+
+i
+
+= 12S
+
+> S
+
+X
+
+> s=1
+> T
+
+X
+
+> t=1
+> D
+
+X
+
+> i=1
+
+" (xt,i − μ(s) 
+
+> θ,i
+
+)2
+
+σ(s)2 
+
+> θ,i
+
++ log(2 πσ (s)2  
+
+> θ,i
+
+)
+
+#
+
+:= LMC recon (ϕ, θ ; x1: T , u1: T ). (49) 
+
+I.3.3. Posterior Entropy 
+
+Next, we compute the Monte Carlo estimate of the posterior entropy term. 
+
+Lentropy (ϕ; x1: T , u1: T ) = 
+
+> T
+
+X
+
+> t=j+1
+
+Eqϕ(z1: T |x1: T ,u1: T )
+
+h
+
+log q(t)
+
+> ϕ
+
+ zt | xt:T , zt−j:t−1, ut−j:t
+
+i
+
+≈ 1
+
+S
+
+> S
+
+X
+
+> s=1
+> T
+
+X
+
+> t=j+1
+
+h
+
+log q(t)
+
+> ϕ
+
+ z(s) 
+
+> t
+
+| xt:T , z(s)
+
+> t−j:t−1
+
+, ut−j:t
+
+i
+
+:= LMC entropy (ϕ; x1: T , u1: T ). (50) Again, for a Gaussian inference model, this term may be computed in closed form. 
+
+I.3.4. Diffusion Loss 
+
+The diffusion loss is given by Eq. (28), and may be computed using the sampled latent trajectories 
+
+z(s)1: T ∼ qϕ(z1: T | x1: T , u1: T ) as above. We replace the expectation over the variational posterior with Diffusion SSM 35 
+
+a Monte Carlo estimate, 
+
+Lddiff (ϕ, ψ ; x1: T , u1: T ) = 
+
+> T
+
+X
+
+> t=j+1
+
+Eqϕ(z1: T |x1: T ,u1: T )
+
+h
+
+DKL 
+
+ q(zKt |z0 
+
+> t
+
+) p(zKt )
+
++ Eϵ∼N (0 ,I ),k ∼Unif {1,...,K }
+
+h
+
+K ˜wk|| Fψ (zkt , c(s) 
+
+> t
+
+, k ) − y(z0 
+
+> t
+
+, k )|| 22
+
+i i 
+
+≈ 1
+
+S
+
+> S
+
+X
+
+> s=1
+> T
+
+X
+
+> t=j+1
+
+h
+
+DKL 
+
+
+
+q(zKt |z0( s) 
+
+> t
+
+) p(zKt )
+
+
+
++ Eϵ∼N (0 ,I ),k ∼Unif {1,...,K }
+
+h
+
+K ˜wk|| Fψ (zk(s) 
+
+> t
+
+, c(s) 
+
+> t
+
+, k ) − y(z0( s) 
+
+> t
+
+, k )|| 22
+
+i i 
+
+,
+
+where c(s) 
+
+> t
+
+denotes the Markov history constructed from the sampled latent trajectory z(s)1: T . Note that for each of the sampled latent trajectories z(s)1: T , we must run the forward diffusion process to obtain the noisy latents zk(s) 
+
+> t
+
+for k = 1 , . . . , K . That is, for each time step t = j +1 , . . . , T and sample 
+
+s = 1 , . . . , S , we draw unique noise samples and diffusion steps and compute the corresponding noisy latents. To increase the amount of training signal to the diffusion model, we may draw multiple diffusion steps or noise samples per latent trajectory sample. During typical diffusion model training, the clean data is known, so over the course of training the diffusion model sees many noise samples per data point. Here, since the clean latent is itself sampled from a variational posterior, the diffusion model only sees one clean latent per data point per training iteration. To compensate, we may draw 
+
+Sk diffusion steps per latent trajectory sample z(s)1: T (with corresponding noise samples), increasing the training signal to the diffusion model per iteration. Additionally, we note that the first term in the diffusion loss is computed in closed form for Gaussian distributions. The resulting Monte Carlo estimate of the diffusion loss is finally 
+
+LMC  
+
+> ddiff
+
+(ϕ, ψ ; x1: T , u1: T ) = 1
+
+S
+
+> S
+
+X
+
+> s=1
+> T
+
+X
+
+> t=j+1
+
+h
+
+DKL 
+
+
+
+q(zKt |z0( s) 
+
+> t
+
+) p(zKt )
+
+
+
++ 1
+
+SkSkX
+
+> m=1
+
+Eϵ∼N (0 ,I ),k ∼Unif {1,...,K }
+
+h
+
+K ˜wk|| Fψ (zk(s,m ) 
+
+> t
+
+, c(s) 
+
+> t
+
+, k ) − y(z0( s) 
+
+> t
+
+, k )|| 22
+
+i i 
+
+,
+
+(51) where zk(s,m ) 
+
+> t
+
+denotes the noisy latent at diffusion step k for time step t, sample s, and diffusion sample m.
+
+I.3.5. Full ELBO Objective 
+
+Combining each of the above terms, we have the full ELBO objective 
+
+LMC ELBO (ϕ, η, θ, ψ, Φ; x1: T , u1: T ) = LMC init (ϕ, η, Φ; x1: T , u1: T ) + LMC recon (ϕ, θ ; x1: T , u1: T )+ LMC  
+
+> ddiff
+
+(ϕ, ψ ; x1: T , u1: T ) + LMC entropy (ϕ; x1: T , u1: T ). (52) 
+
+I.4. Training Algorithm 
+
+We consider the case of training with multiple i.i.d. time series of fixed length T . In this case we compute the ELBO over the full time series for each sequence in the minibatch, and average the ELBOs to get the minibatch ELBO. We describe the training procedure in Algorithm 1, and the sampling of latent trajectories in Algorithm 2. Diffusion SSM 36 
+
+Algorithm 1: Training for Diffusion State-Space Models 
+
+Input: Minibatch {(x(b)1: T , u(b)1: T )}Bb=1 ; untrained encoder qϕ (including Fϕ); initial prior pη ;auxiliary posterior qΦ; decoder p(t) 
+
+> θ
+
+; diffusion model p(t) 
+
+> ψ
+
+; number of latent paths S;number of diffusion samples per path Sk; Markov order j
+
+Output: Updated parameters ( θ, ϕ, ψ, η, Φ)  
+
+> 1
+
+for b ← 1 to B do  
+
+> 2
+
+{z(s,b )1: T }Ss=1 , {z(s,b )
+
+> −j+1:0
+
+}Ss=1 ← SampleLatentPaths (x(b)1: T , u(b)1: T , F ϕ, q ϕ, q Φ, S, j ) 
+
+> 3
+
+Compute initialization loss LMC ,(b)init using Eq. (48) with {z(s,b )1: j }Ss=1 and {z(s,b )
+
+> −j+1:0
+
+}Ss=1  
+
+> 4
+
+Compute reconstruction loss LMC ,(b)recon using Eq. (49) with {z(s,b )1: T }Ss=1  
+
+> 5
+
+Compute posterior entropy term LMC ,(b)entropy using Eq. (50) with {z(s,b )1: T }Ss=1  
+
+> 6
+
+Compute diffusion loss LMC ,(b) 
+
+> ddiff
+
+using Eq. (51) with {z(s,b )1: T }Ss=1 and Sk diffusion samples per path  
+
+> 7
+
+Compute λ from annealing schedule  
+
+> 8
+
+LMC ,(b)ELBO ← L MC ,(b)recon + λ
+
+
+
+LMC ,(b)init + LMC ,(b) 
+
+> ddiff
+
++ LMC ,(b)entropy 
+
+ 
+
+> 910
+
+end  
+
+> 11
+
+LMC ELBO ← 1
+
+> B
+
+PBb=1 LMC ,(b)ELBO  
+
+> 12
+
+Update ( θ, ϕ, ψ, η, Φ) with gradient descent on LMC ELBO 
+
+Algorithm 2: SampleLatentPaths : Sampling of S latent trajectories 
+
+Input: Observations x1: T , covariates u1: T , future summary network Fϕ, encoder qϕ, VHP auxiliary posterior qΦ, number of paths S, Markov order j
+
+Output: Latent trajectories {z(s)1: T }Ss=1 and auxiliary latents {z(s)
+
+> −j+1:0
+
+}Ss=1  
+
+> 1
+
+Compute future summaries ( hT , . . . , h1) ← Fϕ(x1: T , u1: T ) 
+
+> 2
+
+for s ← 1 to S do 
+
+// Step 1: Sample initial j latents  
+
+> 3
+
+for t ← 1 to j do  
+
+> 4
+
+k ← t − 1 // available history length  
+
+> 5
+
+m ← j − k // missing history slots  
+
+> 6
+
+Left-pad with zeros: z(s) 
+
+> t−j:t−k−1
+
+← 0 
+
+> 7
+
+Form length-j history z(s) 
+
+> t−j:t−1
+
+← (z(s)
+
+> t−j:t−k−1
+
+, z(s)
+
+> t−k:t−1
+
+) 
+
+> 8
+
+Sample z(s) 
+
+> t
+
+∼ q(t) 
+
+> ϕ
+
+(zt | z(s)
+
+> t−j:t−1
+
+, ht) 
+
+> 9
+
+Append z(s) 
+
+> t
+
+to path s 
+
+> 10
+
+end 
+
+// Step 2: Sample auxiliary latents via VHP  
+
+> 11
+
+Sample z(s) 
+
+> −j+1:0
+
+∼ qΦ(z−j+1:0 | z(s)1: j )
+
+// Step 3: Sample remaining latents autoregressively  
+
+> 12
+
+for t ← j + 1 to T do  
+
+> 13
+
+z(s) 
+
+> t−j:t−1
+
+← last j latents from path s 
+
+> 14
+
+Sample z(s) 
+
+> t
+
+∼ q(t) 
+
+> ϕ
+
+(zt | z(s)
+
+> t−j:t−1
+
+, ht) 
+
+> 15
+
+Append z(s) 
+
+> t
+
+to path s 
+
+> 16
+
+end  
+
+> 17
+
+end  
+
+> 18
+
+return {z(s)1: T }Ss=1 , {z(s)
+
+> −j+1:0
+
+}Ss=1 Diffusion SSM 37 
+
+We briefly describe the computational cost incurred by the diffusion model during training and sampling. Under Algorithm 1, we point out to the reader that the diffusion model receives an effective batch size of Beff = B × (T − j) × S × Sk, where B is the number of sequences in a batch, and T − j is the number of diffusion-parameterized transitions in each sequence. Thus for training only a single evaluation of the diffusion model is required, assuming there is sufficient memory to handle the T − j factor in the batch. As T scales, this factor increases necessitating an unavoidable cost in memory (unless gradient checkpointing (Chen et al., 2016) is used to trade off time for memory). However, the larger batch size provides a stronger per-batch training signal to the diffusion model during training, amortizing the cost of training the diffusion model across more transitions. The per-function-evaluation of the diffusion model depends on the size of the input tensor, which is Beff × M × j + 1. Therefore given enough memory, the diffusion-incurred time complexity for a forward pass of Algorithm 1 is O(g(M × j + 1)) where g is the time complexity of a pass through the diffusion model. It is only during sampling that we lose parallelism across time steps, in which case the total diffusion cost becomes O(K × T × g(M × j + 1)), for K diffusion steps. 
+
+## J. Extended Related Works 
+
+Deep state space models. Similarly to other Deep State Space Models (DSSMs) (Girin et al., 2022), our Diffusion-Driven State Space Model (DDSSM) parametrizes the transitions and emissions densities of a state space model with a neural network. However, our model replaces the parametric (typically Gaussian) transition distribution of a DSSM with a diffusion model. In particular, we extend the Deep Kalman Filter (DKF) of Krishnan et al. (2015, 2017) to have diffusion transitions. An immediate shortcoming of the usage of Gaussian transitions is the inability to model multi-modal transitions, which we verify in our simulation study in Section 4. Karl et al. (2016) observed the shortcoming of Gaussian transitions in the context of modeling physical systems, arguing that the regularization provided by Gaussian transitions harms reconstruction performance. Several lines of work have attempted to make the DKF more expressive. Karl et al. (2016) proposed learning a more flexible transition by learning a deterministic transition of a stochastic variable. That is, they learn zt = fψ (zt−1, ut, β t) where fψ is a neural network and βt is a stochastic parameter of the transition sampled from a simple distribution such as a Gaussian. This ensures that the latent states are sampled from the transition distribution, forcing the encoder to receive gradients directly from the transition model. A separate track of work attempting to make the DKF more expressive has been to add auxiliary variables. For example the Kalman VAE (KVAE) (Fraccaro et al., 2017) introduces parameters a1: T
+
+and propose the generative model p(x1: T , a1: T , z1: T |u1: T ) = p(x1: T |a1: T )p(a1: T |z1: T )p(z1: T |u1: T ), relying on linear Gaussian p(at|zt, ut) and p(zt|zt−1, ht, ut) distributions. Klushyn et al. (2021) extends this model to have nonlinear Gaussian transitions, proposing the Extended Kalman VAE (EKVAE). The primary advantage to their method is that inference about the parameters at use the filtering/smoothing equations of the extended Kalman filter (Ribeiro, 2004), to allow the training objective for the transition model to be sample-based instead of likelihood-based. It may be possible to extend the EKVAE and other deep SSMs to use diffusion transitions as well, but we leave this to future work: we emphasize that our contribution is not on the design of the generative model, but rather on the usage of diffusion models as flexible transition distributions. Lastly, we note that several works have extended deep SSMs using normalizing flows (NFs) (Pa-pamakarios et al., 2021). While these admit exact-likelihoods, they are heavily constrained by the requirement of invertible neural network architectures, limiting applicability across many domains. One recent example is from Chen and Li (2025), who propose learning a differentiable particle fil-ter (Le et al., 2017), allowing the transition and emission densities to be parameterized by NFs. We note that diffusion models would be unsuitable for this approach, as the particle filtering al-gorithm requires many samples through the transition for each time step. Another example is from De Bezenac et al. (2020), who assume linear transition dynamics and parameterize the emis-sion density with a NF. This enables efficient inference using Kalman-style filtering/smoothing, but Diffusion SSM 38 
+
+does not allow for flexible transition dynamics. We mention Ziegler and Rush (2019) as well, who consider a variety of NF-based approaches for modeling discrete sequences, but they do not consider the true posterior form of their proposed generative models. 
+
+Models for temporal data which apply diffusion directly in observation space. Several lines of work model temporal data by applying diffusion methods directly in observation space, rather than incorporating a latent dynamic process. The advantage to this approach is that it does not require learning a latent representation of the data, and does not require performing inference about the latent state. For example, Rasul et al. (2021) employs autoregressive forecasting using a diffusion model, by conditioning the diffusion model on a summary of all previous time steps of the series. To create a summary, an RNN is run over the history of the time series, providing a single conditioning variable as an input to their diffusion model. The RNN summary is similar in spirit to the latent state of our model; in our model the conditioning set ct fully summarizes the history of the time series up to the time t. The advantage of our approach is that we are able to operate the diffusion model fully in latent-space, which is by construction well-suited to modeling the dynamics of the time series. Additionally, the latent space can be designed to be low-dimensional, which can make training and sampling more efficient. Another advantage is that our latent representation may provide a more interpretable representation of the dynamics of the time series, whereas it is unclear how to interpret the RNN summary of Rasul et al. (2021). Another well known work is by Tashiro et al. (2021), who perform imputation using diffusion models by learning to denoise imputation targets while conditioning on observed data. Their method operates on fixed length windows of a time series, and handles forecasting by setting imputation targets to be future time steps through a conditioning mask. By changing the mask, their method can sample many timesteps into the future by conditioning on a fixed length history. One drawback of this approach is that the model cannot utilize past data beyond the fixed length window which is determined at training time. This is contrary to Rasul et al. (2021) or our method which attempt to infer the necessary parameters to accurately sample the next time step. More importantly, Tashiro et al. (2021) requires their diffusion model to jointly model the full conditional distribution of the entire future given the entire history in a fixed window, which is expensive to learn and sample from. We note that we have designed our diffusion model architecture to match Tashiro et al. (2021) closely, as their previously state-of-the-art performance suggests that their architecture is well-suited to modeling temporal data. We detail the differences between our architecture and theirs in Appendix H.1. 
+
+Latent diffusion models for static data. While diffusion models are already computationally expensive in the static setting—motivating latent diffusion models (Rombach et al., 2022)—the challenge is amplified for time series, where the model must capture both high-dimensional structure and temporal dynamics. Our work can be considered a temporal extension of the diffusion models of Vahdat et al. (2021) and Shmakov et al. (2023), who train a diffusion model end-to-end in the latent space of a VAE. Like Vahdat et al. (2021), we design the training objective of the diffusion model to account for the fact the model is being trained concurrently with the VAE. However, we employ preconditioning (Karras et al., 2022) of the denoising model to reduce the variance of the gradients across noise levels. This is important since the gradients of the diffusion model are used to train the VAE. Details of our approach to concurrent training are described in Appendix E. 
+
+Latent diffusion models for temporal data. (WIP) Qian et al. (2024) propose a latent diffusion model framework for unconditional time-series generation, which they call TimeLDM. They employ a VAE training objective, where the encoder accepts an entire time series as input, and then produces an entire latent time series as output, i.e z1: T = Encoder( x1: T ). However, there is no mechanism in their model to capture any temporal structure within z1: T . The decoder is responsible for reconstructing the entire time series from the latent time series, and the diffusion model is trained to model the distribution of time-series examples in latent space. We note that their method cannot perform forecasting, and they train in a two-stage manner where the VAE is trained separately from the diffusion model. In comparison, our method does capture temporal structure in the latent space, as the latent state at time t is conditioned on the latent state at time t − 1. Additionally, our model can perform any tasks available to a standard state-space model, including unconditional generation. Diffusion SSM 39 
+
+Suh et al. (2025) proposes a latent diffusion modeling framework to unify forecasting, imputa-tion, unconditional generation, and conditional generation of time series. Their autoencoder similar to Qian et al. (2024) outputs an entire latent time series given an entire time series as input. The decoder however aims to reconstruct a target subset of observations given the latent time series, a conditioning set from the observations, and a mask to indicate which inputs are targets/conditional. The diffusion model is then trained to model the distribution of the latent time series, conditioned on the conditioning set and mask. This is to say that the diffusion model does not operate inde-pendently of the data, contrary to our method where the diffusion model lives fully in the latent space, conditioning only on latent features. The strongest similarity which Suh et al. (2025) has to our method is that their method constructs a full ELBO training objective to maximize the log-likelihood of the data, where the loss of the diffusion model is a component of the ELBO. Of interest is the observation that end-to-end training was detrimental to their model, instead they prefer first training the autoencoder and then training the diffusion model separately. This claim however is not validated within their paper, and it is unclear how they attempted to train end-to-end. As an artifact of training in stages, their variational posterior is regularized towards a standard Gaussian distribution. If training jointly, their objective instead would regularize the variational posterior towards the distribution of the diffusion model. Liu et al. (2024) and Feng et al. (2024) give other approaches to time-series diffusion modeling in the latent space of a pre-trained autoencoder. We note that Feng et al. (2024) applies regularization of the latent space during the training of the autoencoder to a standard Gaussian distribution to avoid learning an unregularized space.
