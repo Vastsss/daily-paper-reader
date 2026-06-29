@@ -1,0 +1,755 @@
+Title: FlexMoE: One-for-All Nested Intra-Expert Pruning for MoE Language Models
+
+URL Source: https://arxiv.org/pdf/2606.27866v1
+
+Published Time: Mon, 29 Jun 2026 00:44:31 GMT
+
+Number of Pages: 20
+
+Markdown Content:
+# FlexMoE: One-for-All Nested Intra-Expert Pruning for MoE Language Models 
+
+Fan Mo 
+
+National University of Singapore 
+
+e1583153@u.nus.edu 
+
+Yuxuan Han 
+
+National University of Singapore 
+
+han_yuxuan@u.nus.edu 
+
+Geng Zhang 
+
+National University of Singapore 
+
+zhangg@comp.nus.edu.sg 
+
+Wangbo Zhao 
+
+National University of Singapore 
+
+wangbo.zhao96@gmail.com 
+
+Yang You ∗
+
+National University of Singapore 
+
+youy@comp.nus.edu.sg 
+
+## Abstract 
+
+Mixture-of-Experts (MoE) language models scale model ability with sparsely acti-vated experts, making this architecture a standard recipe for modern large models. However, sparse activation does not remove the deployment burden of storing and serving all experts, and the available deployment budget can vary substantially across devices, users, and workloads. Existing MoE compression methods are still largely fixed-budget, typically optimizing one compressed endpoint at each chosen target budget. We study a different setting: converting a large pretrained MoE LLM into a nested family of deployable subnetworks across budgets. Our method first ranks expert FFN channels by their importance, then lets each ex-pert learn a discrete action to prune its channels. By gradually increasing cost pressure, a single action-training run exports a series of action masks from high to low budgets, each of which identifies a reliable smaller subnetwork nested in the ranked base model. Moreover, we use a single recovery fine-tune at a mid pruning budget (40%) to recover degraded model quality and transfer the recovered model to other unseen budgets. Overall, our framework surpasses recent MoE compression baselines. Specifically, on Qwen2-57B-A14B, our method retains 
+
+∼ 99 .8% of base performance while pruning 50% of routed expert parameters even without fine-tuning. For deployment, our pruned subnetworks deliver real memory reduction and throughput gains, and further support realtime online budget switching with kernel-level co-design. 
+
+## 1 Introduction 
+
+Mixture-of-Experts (MoE) has become one of the most effective recipes for scaling large models: by increasing total parameter capacity while activating only a small subset of experts per token, MoE models can achieve strong quality with much lower active computation [Lepikhin et al., 2021, Fedus et al., 2022]. This design has already powered a broad range of successful systems, from top-tier large-scale research systems, to a range of compact yet powerful open-source models, indicating that sparse expert architectures are an increasingly standard way to scale modern foundation models. However, sparsely activated experts do not remove the deployment burden of storing and serving all experts. In deployment, one does not always need, or have the budget (We use the term budget here 
+
+> ∗Corresponding author.
+> arXiv:2606.27866v1 [cs.LG] 26 Jun 2026
+
+Figure 1: Comparison between existing fixed-budget MoE compression methods and FlexMoE. Existing methods typically optimize or instantiate a compressed endpoint for a specified target budget, including expert pruning/skipping methods such as NAEE [Lu et al., 2024], expert-weight decomposition methods such as MoE-SVD [Li et al., 2025] and TD-MoE [Xu et al., 2026]. In contrast, FlexMoE enables one-for-all structural pruning and multi-budget deployment without maintaining a separate compressed checkpoint for each deployment target. to denote the deployment-side resource envelope available to a model under a given serving setting, including device hardware capacity, memory footprint, latency/throughput targets, context-length demands, or service-level objectives (SLOs)) to use the largest available MoE model operating at its maximum capacity. In practice, such budgets vary across users, devices, platforms and workloads: one service may need long-context or multi-agent reasoning under a generous budget, while another may serve lightweight chatbot requests under much stricter latency and cost constraints [Fu et al., 2024, Gao et al., 2026, Ma et al., 2026]. This makes MoE compression not merely a model reduction problem, but also a deployment adaptation problem. Existing MoE compression methods, however, are still largely fixed-budget. Expert-pruning methods remove, skip or merge experts structurally, while compression methods such as low-rank decom-position or expert-internal pruning typically optimize one compressed endpoint at a chosen target budget [Lu et al., 2024, Bai et al., 2025, Yang et al., 2024b, Gu et al., 2025, Li et al., 2025, Xu et al., 2026]. This is useful when a deployment target is known in advance, but much less convenient when budgets vary across scenarios or change over time: moving to another operating point often requires rerunning the entire compression pipeline, reloading model or maintaining multiple models across separate budgets. Moreover, recent systems work highlights that realistic LLM serving must operate under non-stationary traffic and mixed request requirements, where online reconfiguration is often valuable but difficult to realize cleanly [Gao et al., 2026, Qian et al., 2026]. Motivated by these observations, we propose FlexMoE , a nested intra-expert pruning framework that converts one pretrained MoE model into a family of materializable subnetworks across budgets (We use the term budget here to indicate the ratio of pruned parameters over all parameters in routed experts). As illustrated in Figure 2, our pipeline first reranks expert FFN channels by estimated importance to enable top-retained channel slicing. We then let each expert learn a retention ratio from a predefined discrete ratio set continuously in a training loop with increasing pruning pressure, allowing a single training run to yield a family of action masks across multiple budgets, where each mask identifies a reliable pruned subnetwork nested in the ranked pretrained MoE model. Optionally, we further perform a single mid-budget fine-tuning stage to recover a shared set of weights from parameter pruning, enabling model reuse across the entire budget family. This results in a “train-once, deploy-many” pruning pipeline. In addition to achieve real throughput benefits for the real-time online budget adjustment scenario, we further explore and pair this budget-family with a deployment-oriented system co-design by kernel-level optimization. We conducted comprehensive experiments on Mixtral-8x7B, Phi-3.5-MoE, and Qwen2-57B-A14B. Across these backbones, FlexMoE surpasses strong MoE compression baselines while offering a substantially more flexible deployment. In particular, on Qwen2-57B-A14B, the pruned subnet retains about 99.8% of the base performance at 50% pruning budget and still preserves about 92.9% at 80% budget. We further show that the shared weights recovered from single mid-budget fine-tune strategy transfers well to unseen higher and lower budgets, and that the resulting subnet family delivers real throughput gains and more flexible interfaces in deployment, especially when coupled with our exploratory algorithm–system co-design for online budget switching. 2Figure 2: Overall visualization of FlexMoE pipeline. First it reranks each expert FFN projection channels by estimated importance to enable top-retained channel slicing. Then let each expert learn a retention ratio continuously in an optimization loop with increasing pruning pressure, allowing a single training run yields a family of action masks across multiple budgets, where each saved mask points out a pruned subnetwork nested in the reranked base MoE model. Then it followed with an optional single point fine-tuning stage at mid-budget (40%) to recover a shared set of weights from parameter pruning, enabling recovered weights reuse across the entire budget family. 
+
+## 2 Related Work 
+
+2.1 MoE Compression 
+
+As shown in Figure 1, MoE compression methods mainly operate in two directions. A substantial line of MoE param-pruning work reduces, skips, or merges experts at the expert level. NAEE shows that experts in pretrained MoE LLMs are not equally important and studies expert pruning and skipping to improve deployment efficiency [Lu et al., 2024]. DiEP pushes this direction further with differentiable expert pruning, learning which experts to retain under compression objectives rather than relying only on heuristic expert ranking [Bai et al., 2025]. On the expert-merging side, HC-SMoE clusters and merges functionally similar experts to reduce model size without retraining [Chen et al., 2024]. For skipping, MoNE replaces redundant expert outputs with lightweight novices instead of retaining full expert calculation, providing another way to reduce parameters and deployment cost [Zhang et al., 2025]. Another line compresses expert weights internally while largely preserving the original MoE structure. MoE-SVD and D 2-MoE are representative approaches for pretrained MoE LLMs, while TD-MoE further extends this direction to cross-expert joint tensor decomposition within each layer [Li et al., 2025, Gu et al., 2025, Xu et al., 2026]. MoE-I 2 is also related in that it combines inter-expert pruning with intra-expert decomposition [Yang et al., 2024b]. Our work is closest to this intra-expert compression family, but most of them are based on low-rank decomposition. However, our pruning method is training-based, fine-grained. We also impose a sliceable nested structure within each expert from the same pretrained MoE base model that shares same router allocation and expert topology, enabling more flexible deployment interfaces and budget switching. 
+
+2.2 Nested Subnetworks, Mask Learning, and Ranking 
+
+The broader train-once, deploy-many idea comes from elastic and nested subnetwork training. US-Nets introduced universally slimmable subnetworks, and later MatFormer, Flextron, and AmoebaLLM extended nested or many-in-one parameter sharing to transformers and large language models [Yu and Huang, 2019, Devvrit et al., 2024, Cai et al., 2024, Fu et al., 2024]. More recent MoE work has started to bring elasticity into MoE language models directly by learning coarse-to-fine expert ranking or slimmable expert widths [Wang et al., 2025, Tastan et al., 2026]. Our work is different: rather than introducing elasticity during MoE pre-training, we start from pretrained MoE LLMs and derive a family of nested subnetworks across budgets at post-training stage. Our method also draws on differentiable structure learning and gradient-based importance ranking. MaskLLM and Gumbel-Softmax provide standard tools for learning discrete structural decisions with gradient-based optimization [Fang et al., 2024, Jang et al., 2017], while RECAP and earlier Taylor criteria show that grouped first-order saliency is effective for structured pruning decisions [Ilhan et al., 2024, Molchanov et al., 2019]. We combine these ingredients in a new setting: learning per-expert channel prefix slicing action over importance-ordered expert channels. 33 Method 
+
+We consider a pretrained MoE LLM with L MoE layers and E experts per layer. For a hidden state h
+
+routed to expert e in layer l, we write the expert FFN as 
+
+FFN l,e (h) = W down l,e 
+
+
+
+ϕ(W gate  
+
+> l,e
+
+h) ⊙ W up  
+
+> l,e
+
+h
+
+
+
+, (1) where ϕ(·) is the activation function and the intermediate FFN width is dff .
+
+3.1 Intra-Expert Channel Ranking 
+
+Directly applying channel prefix slicing to pretrained experts is brittle. We therefore perform a one-time hidden-channel reordering step that converts each expert FFN into an importance-ordered layout, so that smaller prefixes preserve more important parameters under prefix-slice pruning. For expert (l, e ), we define a structured parameter group Θl,e,j for the j-th FFN hidden channel, consisting of the corresponding rows of W gate  
+
+> l,e
+
+and W up  
+
+> l,e
+
+together with the matching column of 
+
+W down l,e . In other words, Θl,e,j collects all parameters attached to hidden channel j in the FFN. The FFN hidden channels are permutation-invariant as long as the same permutation is applied consistently to the corresponding rows/columns in W gate  
+
+> l,e
+
+, W up  
+
+> l,e
+
+and W down l,e [Navon et al., 2023]. This allows us to reorder hidden channels by importance without changing the full expert function, while making prefix channel slicing action much more meaningful. We estimate a first-order Taylor saliency for each hidden-channel on a small ranking set Brank of calibration batches. For batch b ∈ B rank , the batch-wise and final group saliency are computed as 
+
+g(b) 
+
+> θ
+
+= ∂L(b)
+
+∂θ , s(b) 
+
+> l,e,j
+
+= X
+
+> θ∈Θl,e,j
+
+(θ g (b) 
+
+> θ
+
+)2, sl,e,j = 1
+
+|B rank |
+
+X
+
+> b∈B rank
+
+s(b) 
+
+> l,e,j
+
+. (2) Intuitively, sl,e,j estimates the extent of param-group Θl,e,j (channel j) affects to the loss L. This follows the grouped first-order Taylor view of structured saliency and is closely related to the ranking signal used in RECAP [Molchanov et al., 2019, Ilhan et al., 2024]. However, in our setting, we use it only once as a preprocessing step to sort expert FFN hidden channels before action learning rather than as part of an iterative prune–recover procedure. We then sort sl,e,j in descending order to obtain a permutation πl,e , or equivalently a permutation matrix Pl,e , which is applied consistently across the expert FFN hidden dimension: 
+
+fW gate  
+
+> l,e
+
+= Pl,e W gate  
+
+> l,e
+
+, fW up  
+
+> l,e
+
+= Pl,e W up  
+
+> l,e
+
+, fW down l,e = W down l,e P ⊤
+
+> l,e
+
+. (3) After reordering, a retention ratio r ∈ (0 , 1] corresponds to keeping only the top k = ⌈r d ff ⌉ channels in all ranked channels. Let m(r) ∈ { 0, 1}dff be a prefix mask whose first k entries are one and the remaining entries are zero. The corresponding sliced expert is 
+
+FFN (r) 
+
+> l,e
+
+(h) = fW down l,e 
+
+
+
+m(r) ⊙ ϕ(fW gate  
+
+> l,e
+
+h) ⊙ fW up  
+
+> l,e
+
+h
+
+
+
+, (4) where ϕ(·) denotes the gate activation (e.g., SiLU). During action training, all parameters are kept and we only use prefix mask m(r) to simulate pruned expert outputs, but during deployment, parameters masked by learned actions can be dropped or excluded from forward calculations to reduce cost. This importance-ordered FFN layout yields a shared nested expert weight space. This nesting property is crucial for learning a coherent family of budget-specific action masks, enabling one-for-all recovery fine-tuning across subnetworks and online budget switching. 
+
+3.2 Action Mask Learning Problem Formulation. Given the importance-ordered experts, we learn a token-independent discrete slice action for each expert. Let the action set be 
+
+A = {r1, . . . , r K }, (5) where each rk ∈ (0 , 1] is a predefined channel retention ratio, e.g., 0.1, 0.4, 0.7, or 1.0 (fully retained). For every expert (l, e ), we maintain trainable action logits αl,e ∈ RK . To sample subnetworks under 4one-hot operation while preserving gradients for action logits training, we use Straight-Through Gumbel-Softmax [Jang et al., 2017, Fang et al., 2024]. In detail, the relaxed action distribution zsoft 
+
+> l,e
+
+and the hard sampled action zhard  
+
+> l,e
+
+is 
+
+zsoft  
+
+> l,e
+
+= softmax 
+
+ αl,e + gl,e 
+
+τ
+
+
+
+, zhard  
+
+> l,e
+
+= one _hot 
+
+
+
+arg max  
+
+> k
+
+zsoft 
+
+> l,e,k
+
+
+
+. (6) where gl,e,k ∼ Gumbel(0 , 1) are added to the original action distribution, and introduce a linearly annealed τ to control the degree of impact of Gumbel noise and promote early stage action exploration and subnet sampling. The sampled expert subnet forward pass uses the straight-through estimator 
+
+˜zl,e = sg zhard  
+
+> l,e
+
+− zsoft 
+
+> l,e
+
+ + zsoft  
+
+> l,e
+
+, (7) where sg( .) means stop gradient. ˜zl,e ensures actions are discrete in the forward pass but differentiable in the backward pass. All straight-through estimators jointly defines a sampled action mask during training stage which can be applied to each expert and produce a nested subnet in full MoE model: 
+
+M = {˜zl,e }L,E l=1 ,e =1 . (8) We optimize these action logits on a calibration dataset with a quality–cost objective: 
+
+Laction = Lqual + λcost (t) C(p, q ) − β(t) H(p), (9) The first term, Lqual , is a teacher-guided quality-preservation term that keeps sampled subnetworks (student) close to the full model (teacher); in our implementation it consists of the LLM cross-entropy loss term on sampled student subnet plus a teacher–student KL distribution loss term. For cost objective, C(p, q ) is an expected load-sensitive computing cost for the sampled subnet, 
+
+C(p, q ) = 
+
+> L
+
+X
+
+> l=1
+> E
+
+X
+
+> e=1
+
+ql,e KX
+
+> k=1
+
+pl,e,k rk, (10) where pl,e = softmax( αl,e ) denotes the currently learned clean action distribution without Gumbel sampling noise and τ scaling. ql,e is the frequency of assigning tokens to expert (l, e ) in this MoE layer (expert load ratio). Introducing ql,e makes the optimization load-sensitive: assigning thicker actions to highly routed experts preserves task accuracy, but also brings more computation and incurs larger cost penalties, so actions must learn an expert-wise accuracy–efficiency trade-off. We further include an entropy regularizer H(p) computed from the clean action probabilities pl,e . It’s the mean action categorical entropy over all experts ( − P 
+
+> k
+
+pl,e,k log pl,e,k ), averaged across layers and experts. This term encourages exploration, prevents premature collapse to a single action, and helps the model discover more reliable MoE subnets. Entropy weight β(t) is also annealed linearly. Before starting action optimization and pruning, action logits are initialized to the thickest action (full model retained), and during optimization, we gradually increase λcost (t) so that actions under training will move from weaker to stronger channel pruning, and progressively pushes experts toward thinner. At any training checkpoint, the hardened action ˆzl,e induces the assigned action and channel retention ratio ˆrl,e for expert (l, e ),
+
+ˆzl,e = one _hot 
+
+
+
+arg max  
+
+> k
+
+pl,e,k 
+
+
+
+, ˆrl,e =
+
+> K
+
+X
+
+> k=1
+
+ˆzl,e,k rk, (11) which together define the currently trained global action mask and its corresponding prune budget 
+
+ˆM = {ˆrl,e }L,E l=1 ,e =1 , ˆρ = 1 − 1
+
+LE 
+
+> L
+
+X
+
+> l=1
+> E
+
+X
+
+> e=1
+
+ˆrl,e . (12) Here, ˆM specifies the selected retention ratio (action) of every expert, while ˆρ gives the overall prune budget (percentage of total pruned expert parameters) of the corresponding MoE subnet produced by ˆM. In practice, we may sample multiple subnet actions on the same batch and average Lqual to prevent data variance. Finally, since each action mask ˆM points out a materializable MoE subnet nested in full model, by saving only these action masks along the training trajectory, we can yield a sequence of budget-specific pruned MoE subnets from full model in a single action-learning run. 5Clip FFN Forward Kernel Co-Design. When deploying the nested pruned MoE models, we found that a naive Python implementation of online FFN channel prefix-slicing degrades throughput by two factors. First, learning one retention ratio per expert creates many expert FFNs with different effective widths at runtime, which violates GPU’s preference of handling large, shape-regular GEMMs. Practical MoE inference frameworks usually further improve utilization by batching multiple experts into one batched GEMM, but in our approach this execution pattern largely degenerates into per-expert single GEMMs. This also prompted us to use a discrete action set to reduce misaligned shapes rather than continuous retention ratios. Second, standard MoE experts store and compute gate and up projections as one connected gate-up weight matrix, but under this weights layout, to get required connected gate-up weight matrix, online inplace slicing requires 2 extra slice and 1 concatenate operations with working set of the entire gate-up weight matrix, while transmitting and applying action masks introduce additional host-side scheduling overhead. This bottleneck is a direct consequence of combining nested weights prefix slicing with online budget-conditioned inference, and does not arise when running static pruned subnet checkpoints. To relieve these introduced computational overhead, we implement a customized kernel to mitigate these bottlenecks and explore potentials of runtime online budget adjustment of our FlexMoE. We first bucket routed experts by retained width, align each width upward to a hardware-friendly size, and invoke cuBLAS batched GEMMs per bucket to reduce original per-expert fragmented small-shape execution. We further store gate-up weights in an interleaved layout, so 1 prefix slice operation over the interleaved gate-up tensor is able to get all required connected weights rather than 2 separate slices. The batched GEMM could then directly produce packed gate-up outputs, which are then consumed by a fused kernel that reads the interleaved gate-up activation and computes the gated outputs, reducing the concatenation working set from entire gate-up weights to its smaller activation. See Appendix C for more details. 
+
+3.3 Recovery Fine-Tuning 
+
+Pure parameter pruning can still degrade language modeling quality, so FlexMoE paired with an optional one-step fine-tuning stage. Instead of recovering each pruned MoE subnetwork separately, we choose one mid-budget action mask Mmid and fine-tune only that masked model. Concretely, we freeze the channel-ranked base weights W0 and attach LoRA adapters [Hu et al., 2022] to the expert FFNs enabled by action mask, training only the adapter parameters φ.Under a fixed mid-budget mask Mmid , we view the student model as the sum of a masked full model branch and a LoRA branch, 
+
+fstu (x; Mmid , W 0, φ ) = fbase (x; Mmid , W 0) + flora (x; Mmid , ∆W (φ)) , (13) We optimize the LoRA parameters with a task loss plus a teacher–student distillation term: 
+
+E(x,y )∼D rec 
+
+h
+
+λtask CE  fstu (x; Mmid , W 0, φ ), y +λkl KL  ftea (x; W0) ∥ fstu (x; Mmid , W 0, φ )i
+
+,
+
+(14) where the teacher ftea (x; W0) is the inplace base full model without masking and LoRA adapters, and the student is the M mid masked LoRA-augmented subnet. After training, we merge the learned adapters back into the ranked base weights, W , and reuse these recovered weights for every action mask M(b) with different budgets b ∈ B:
+
+f (b)(x) = f (x; M(b), W ), M(b) ∈ {M (1) , . . . , M(B)}. (15) This extends the train-once, deploy-many feature from action learning to fine-tuning recovery: one action-training run yields a series of nested subnetworks, and by leveraging the invariant nesting property of frozen router and expert topology, one mid-budget recovery yields one shared recovered full model that is adaptable to all masks across upstream and downstream budgets. 
+
+## 4 Experiments 
+
+4.1 Experimental Setup Implementation Details and Evaluation Tasks. We use three pretrained MoE LLMs: Mixtral-8x7B [Jiang et al., 2024] as the main model, and Phi-3.5-MoE [Abdin et al., 2024] and Qwen2-57B-A14B [Yang et al., 2024a] as cross-model validation with different MoE architectures and 6Pruned Ratio                                                                                                                                                                                                                 
+
+> Mixtral-8x7B Phi-3.5-MoE Qwen2-57B-A14B
+> Method ARC-c ARC-e HellaS OBQA PIQA WinoG MathQA Avg Method Avg Method Avg 0% Base model 57 84 65 36 82 76 43 63.29 Base model 62.00 Base model 58.71 20% NAEE 2024 47 76 58 32 79 72 40 57.71 NAEE 2024 N/A NAEE 2024 55.86 MoE-I 22024b 48 79 55 32 78 74 37 57.57 MoE-I 22024b N/A MoE-I 22024b N/A MoE-SVD(fine-tuned) 2025 55 80 61 33 81 73 38 60.14 MoE-SVD(fine-tuned) 2025 61.14 MoE-SVD 2025 56.57 TD-MoE 2026 53 83 64 33 82 77 40 61.71 TD-MoE 2026 61.00 TD-MoE 2026 58.29 FlexMoE (Ours) 54 82 64 35 81 77 40 61.86 FlexMoE (Ours) 63.29 FlexMoE (Ours) ∗58.43
+> 40% NAEE 2024 36 63 46 25 72 64 35 48.71 NAEE 2024 57.57 NAEE 2024 53.14 MoE-I 2(P+F) 2024b 38 71 43 26 69 66 31 49.14 MoE-I 22024b 45.29 MoE-I 22024b N/A MoE-SVD 2025 38 72 43 27 71 67 32 50.00 MoE-SVD 2025 55.86 MoE-SVD 2025 48.14 TD-MoE 2026 47 77 57 28 79 76 35 57.00 TD-MoE 2026 57.86 TD-MoE 2026 55.57 FlexMoE (Ours) 49 77 60 33 80 73 34 58.00 FlexMoE (Ours) 59.43 FlexMoE (Ours) ∗58.86
+> 60% NAEE 2024 23 42 33 17 62 55 26 36.86 NAEE 2024 N/A NAEE 2024 44.00 MoE-I 22024b 22 44 32 18 58 55 23 36.00 MoE-I 22024b N/A MoE-I 22024b N/A MoE-SVD 2025 23 45 33 19 62 55 25 37.43 MoE-SVD 2025 48.57 MoE-SVD 2025 46.86 TD-MoE 2026 28 55 38 21 65 62 24 41.86 TD-MoE 2026 49.86 TD-MoE 2026 51.57 FlexMoE (Ours) 35 65 51 23 74 71 28 49.57 FlexMoE (Ours) 53.00 FlexMoE (Ours) ∗58.57
+
+Table 1: Task accuracy results for FlexMoE across models. All applied action masks at these budgets were exported from the same action training run for the corresponding model. We apply single-point recovery fine-tuning at the 40% pruning budget, and 20% and 60% results are obtained by directly reusing the same recovered model without extra fine-tuning . For Qwen2-57B-A14B, ∗ denotes that we do not apply fine-tuning stage and evaluated by directly applying the learned action mask to the channel-ranked base model. Full results on Phi-3.5-MoE and Qwen2-57B-A14B are in Appendix Table 4. All numbers are zero-shot accuracy (%). increasing sparsity. We defined discrete action set as A = {0.1, 0.4, 0.7, 1}, and throughout this section, the pruning ratio (budget) is defined by the global prune budget ˆρ in Eq. (12) of an action mask applied to the ranked full MoE model. During action learning, we export one action mask whenever the ˆρ increases by roughly 1% . For recovery fine-tuning, we choose the 40% budget action mask as the recovery point. Channel importance ranking, action learning, and recovery fine-tuning stages use Zyda-2 [Tokpanov et al., 2024] as the calibration dataset. As pruning quality evalua-tion, we report zero-shot accuracy on seven widely used reasoning benchmarks implemented with 
+
+lm-eval-harness : ARC-Challenge, ARC-Easy, HellaSwag, OpenBookQA, PIQA, WinoGrande, and MathQA [Gao et al., 2021, Clark et al., 2018, Zellers et al., 2019, Mihaylov et al., 2018, Bisk et al., 2020, Sakaguchi et al., 2020, Amini et al., 2019]. Action learning and recovery fine-tuning were run on 2× NVIDIA H200 for convenience. Importance ranking and all other experiments are run on a single NVIDIA H200. 
+
+Baselines. We fix the baseline family throughout the main comparison. Our primary baselines are MoE-SVD and TD-MoE, since both are latest strong pretrained MoE compression methods that also preserve the router and expert topology [Li et al., 2025, Xu et al., 2026]. We additionally report NAEE and MoE-I 2 as broader references, representing expert-level pruning/skipping and mixed inter-/intra-expert compression, respectively [Lu et al., 2024, Yang et al., 2024b]. To avoid selective reporting, we use a shared comparison grid centered on 20%, 40%, and 60% prune budgets, and include each baseline whether the corresponding model–budget pair is publicly available, either in the original paper, its appendix, or its public OpenReview revision/author response. When a baseline is still unavailable for a given model–budget pair, we marked as N/A and left it absent. 
+
+4.2 Main Results and Analysis Task Accuracy Results Analysis. Across models, the main practical pattern is consistent: On Mixtral-8x7B, the recovered model at the 40% point achieves the best average score, while its recovered weights transferred still remain strongest again at 20% and 60%. On Phi-3.5-MoE, our recovered model still achieves the best average score in all budgets. On Qwen2-57B-A14B, it still outperforms all baselines even without fine-tuning recovery. Observing the excellent performance of Qwen2, in addition to comparing it with the baseline, we also tested the performance on Qwen2 at compression ratios of 50% and 80%. Surprisingly, without fine-tuning recovery, average scores show that it remains nearly lossless at a 50% parameter prune budget ( ∼ 99 .8% of base performance), even at an 80% prune budget, it still retains about 92 .9% of the base average score (results see appendix Table 4). These results demonstrate the effectiveness of FlexMoE in pruning quality preservation. 7Figure 3: Layer-wise action distributions learned by FlexMoE at 40% prune budget. Lighter cell color indicate the higher fraction of experts in that layer assigned to the corresponding action.                                                         
+
+> Mixtral-8x7B Phi-3.5-MoE Qwen2-57B-A14B
+> Pruned ratio ckpt size (GB) ↓Throughput (tok/s) ↑speedup ↑GB ↓tok/s ↑speedup ↑GB ↓tok/s ↑speedup ↑
+> 0% 87.0 7627.7 ×1.00 78.0 7376.7 ×1.00 107.0 1228.0 ×1.00 20% 70.1 9701.4 ×1.27 63.2 8473.5 ×1.15 88.2 3906.9 ×3.18 40% 53.4 11892.3 ×1.56 48.0 12518.3 ×1.70 69.0 5549.9 ×4.52 60% 37.0 13347.5 ×1.75 36.5 12780.7 ×1.73 51.7 5607.8 ×4.57
+
+Table 2: Offline clipping throughput results under SGLang. 
+
+Effectiveness of Action Learning. Figure 3 shows that the learned action distributions are clearly non-uniform across depth, indicating that FlexMoE does not merely recover a global prune ratio, but learns structured budget allocation. Moreover, the learned profiles are model-dependent: Mixtral-8x7B and Phi-3.5-MoE retain relatively thicker actions in earlier MoE layers, which is consistent with prior observations that MoE layers can differ substantially in compression sensitivity, with early MoE blocks often requiring more capacity or precision [Li et al., 2024, Bai et al., 2025]. While Qwen2-57B-A14B uses a finer-grained routed-expert design together with shared expert architecture, so preserving large routed-expert width in the earliest layers is less critical. This suggests that the action learner adapts to model-specific expert redundancy patterns. A second trend is that the layer-wise action distribution becomes more uniform on more strongly sparse MoE backbones with more experts, as reflected by the gradually weaker color on Phi, and more concentrated probability values on Qwen2. We interpret this as evidence that finer-grained expert architectures with less channels have stronger within-layer substitutability, so the quality gap between experts and actions is smaller and budget can be distributed more evenly. These interpretations are further supported by the structure-destruction ablation in Appendix B.2, where layer-wise/globally shuffled actions consistently yield worse results, confirming that our proposed expert-wise action learning captures meaningful architecture-dependent structure rather than random budget convergence and allocation. 
+
+Figure 4: average downstream accu-racy of different recovery strategies on Mixtral-8x7B across prune budgets 
+
+Comparison of Fine-Tuning Strategies. To support more flexible deployment across budgets, the recovered model should be robust under multiple pruning action masks. As detailed in Appendix B.3, our first attempt followed the AmoebaLLM-style cross-budget fine-tuning (CP-FT): apply sandwich sampling and a division factor to balance different distillation loss scale across budgets [Yu and Huang, 2019, Fu et al., 2024]. In practice, however, Table 4 shows that our single-point fine-tuning strategy (SP-FT and SP-XFER) already provides a strong shared recovered model across budgets better than CP-FT even with reduced training cost. To put it more intuitively, the blue curve in Figure 4 shows that CP-FT recovery approach underperforms both per-budget fine-tuning and our single-point fine-tuning over most budgets. By contrast, the red curve stays much closer to the green curve (coincide at 40% budget, as fine-tune applied here), showing that in our setting, a single mid-budget recovery point is already sufficient to produce a reusable shared recovered model, and its performance on transferred unseen budgets is still close to per-budget fine-tuning. This makes the middle budget a particularly effective compromise: it does not fully optimize any one endpoint, but it provides the best trade-off between quality and cross-budget reuse. In Appendix B.3, we provide more ablation experiment results and detailed analysis to support the advantages of our proposed one-step mid-budget fine-tuning strategy. 84.3 Deployment Performance and Analysis Experiment settings. We finally evaluated deployment performance of the pruned budget family under a serving-oriented runtime. We use the SGLang engine [Zheng et al., 2024] on a single H200 GPU under a synthetic workload with 4096 prompt requests, input length = 64 , output length = 256 
+
+> 2
+
+. Our primary metric is model throughput (tok/s), defined by summarizing the model prefill input and decoding output throughput. Results are averaged across multiple runs. 
+
+Figure 5: Qwen2-57B-A14B offline clip-ping throughput across batch sizes. 
+
+Offline Pruning Throughput. To evaluate the static deployment value of FlexMoE, we first test offline clip-ping , where the pruned subnet is exported as a standalone fixed-budget checkpoint and directly loaded by the serv-ing runtime. Table 2 shows clear end-to-end throughput gains across all three models with substantially reduced checkpoint size, confirming that the learned budget fam-ily yields both lower memory cost and real deployment speedup. We further analyze the impact of serving batch size on Qwen2 in Figure 5. Throughput gains become much more visible as batch size increases, suggesting that the benefit of reduced expert FFN computation is still mainly limited on scheduler-level concurrency, and are more effectively translated under higher GPU utilization. However, when throughput gains are modest at small batch sizes, the pruned smaller checkpoints still improve deployment feasibility and increasing the memory headroom available for caches or longer contexts.                    
+
+> pruned ratio 0% 20% 40% 60% w/ native Python 7780 7345 7087 6649 speedup 1.00 ×0.94 ×0.91 ×0.85
+> w/ custom kernel 7780 8694 9758 11437 speedup 1.00 ×1.12 ×1.25 ×1.47
+
+Table 3: Online clipping throughput 
+
+Toward Co-Designed Online Budget Scheduling. 
+
+With clip FFN kernel co-design, FlexMoE demonstrates the potential for online budget adjustment. We imple-mented and tested another deployment scenario– online clipping : the server still keeps the channel-ranked full base model in memory, and operator could adjust online infer-ence budget by specifying budget-specific action masks at runtime. This makes budget switching possible without unloading the current service or reloading another checkpoint. Table 3 shows the effectiveness of our co-designed kernel on Mixtral-8x7B under this scenario. Using customized kernel, Mixtral recovers real speedups compared to naive Python implementation, demonstrating that the benefits of parameter-reducing have begun to materialize and covered operation overheads for online parameter pruning. The kernel optimized path still remains slower than the corresponding offline mode, which is expected because online frequent budget-conditioned slicing and dispatch overhead for action masks cannot be entirely removed under this scenario. This is still a worthwhile trade-off—online clipping deployment sacrifices some peak efficiency, but gains the ability to switch budgets on the fly without service interruption or checkpoint reload. We take this result as an exploratory study for algorithm–system co-design of FlexMoE toward more fine-grained strategies for online realtime budget adjustment. 
+
+## 5 Conclusion 
+
+We presented FlexMoE, a post-training compression framework that converts a pretrained MoE LLM into a nested family of deployable subnetworks. By ranking expert FFN channels by estimated importance and learning per-expert one discrete retention action across budgets, our method obtains a series of reliable pruned subnetworks nested in large pretrained MoE from a single action-training run. We further showed that a one-step recovery fine-tune at a single mid-budget point is already sufficient to produce shared recovered model that transfer well to other unseen budgets. Experiments on various MoE models show that the proposed framework surpasses recent strong MoE compression baselines and becomes more effective on sparser MoE LLMs. Finally, offline pruned subnetworks deliver real throughput gains at their fixed budget, and a kernelized co-design makes runtime budget switching feasible. We hope this work provides a new perspective of MoE model structure search and a practical foundation for budget-adaptive MoE model deployment and inference. 
+
+> 2SGLang is a serving-oriented runtime which is designed for high-throughput structured LLM execution, and this setup is intended to approximate a realistic serving regime with substantial concurrent traffic, rather than a single-request latency test.
+
+9Limitations and Future Works. While our main focus is MoE structure search and static expert-parameter pruning, the multi-budget shared-weight family produced by FlexMoE opens a promising direction for future work on stronger system-level co-design and dynamic budget-adaptation strategies for deployment and online serving. 
+
+## References 
+
+Marah Abdin, Jyoti Aneja, Hany Awadalla, Ahmed Awadallah, Ammar Ahmad Awan, Nguyen Bach, Amit Bahree, Arash Bakhtiari, Jianmin Bao, Harkirat Behl, et al. Phi-3 technical report: A highly capable language model locally on your phone. arXiv preprint arXiv:2404.14219 , 2024. Aida Amini, Saadia Gabriel, Shanchuan Lin, Rik Koncel-Kedziorski, Yejin Choi, and Hannaneh Hajishirzi. MathQA: Towards interpretable math word problem solving with operation-based formalisms. In Proceedings of the 2019 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies, Volume 1 (Long and Short Papers) , pages 2357–2367, 2019. doi: 10.18653/v1/N19-1245. Sikai Bai, Haoxi Li, Jie Zhang, Zicong Hong, and Song Guo. DiEP: Adaptive mixture-of-experts compression through differentiable expert pruning. In Advances in Neural Information Processing Systems , 2025. Yonatan Bisk, Rowan Zellers, Ronan Le Bras, Jianfeng Gao, and Yejin Choi. PIQA: Reasoning about physical commonsense in natural language. In Proceedings of the AAAI Conference on Artificial Intelligence , volume 34, pages 7432–7439, 2020. Ruisi Cai, Saurav Muralidharan, Greg Heinrich, Hongxu Yin, Zhangyang Wang, Jan Kautz, and Pavlo Molchanov. Flextron: Many-in-one flexible large language model. In Proceedings of the 41st International Conference on Machine Learning , volume 235 of Proceedings of Machine Learning Research , pages 5298–5311, 2024. I-Chun Chen, Hsu-Shen Liu, Wei-Fang Sun, Chen-Hao Chao, Yen-Chang Hsu, and Chun-Yi Lee. Retraining-free merging of sparse mixture-of-experts via hierarchical clustering. arXiv preprint arXiv:2410.08589 , 2024. Peter Clark, Isaac Cowhey, Oren Etzioni, Tushar Khot, Ashish Sabharwal, Carissa Schoenick, and Oyvind Tafjord. Think you have solved question answering? try ARC, the AI2 reasoning challenge. 
+
+arXiv preprint arXiv:1803.05457 , 2018. Devvrit, Sneha Kudugunta, Aditya Kusupati, Tim Dettmers, Kaifeng Chen, Inderjit Dhillon, Yulia Tsvetkov, Hannaneh Hajishirzi, Sham Kakade, Ali Farhadi, and Prateek Jain. Matformer: Nested transformer for elastic inference. In Advances in Neural Information Processing Systems , 2024. doi: 10.5555/3737916.3742377. Gongfan Fang, Hongxu Yin, Saurav Muralidharan, Greg Heinrich, Jeff Pool, Jan Kautz, Pavlo Molchanov, and Xinchao Wang. Maskllm: Learnable semi-structured sparsity for large language models. In Advances in Neural Information Processing Systems , 2024. William Fedus, Barret Zoph, and Noam Shazeer. Switch transformers: Scaling to trillion parameter models with simple and efficient sparsity. Journal of Machine Learning Research , 23(120):1–39, 2022. Yonggan Fu, Zhongzhi Yu, Junwei Li, Jiayi Qian, Yongan Zhang, Xiangchi Yuan, Dachuan Shi, Roman Yakunin, and Yingyan Celine Lin. Amoeballm: Constructing any-shape large language models for efficient and instant deployment. In Advances in Neural Information Processing Systems , 2024. Leo Gao, Jonathan Tow, Stella Biderman, Sid Black, Anthony DiPofi, Charles Foster, Laurence Golding, Jeffrey Hsu, Kyle McDonell, Niklas Muennighoff, Jason Phang, Laria Reynolds, Eric Tang, Anish Thite, Ben Wang, Kevin Wang, and Andy Zou. A framework for few-shot language model evaluation. Zenodo, September 2021. Shouwei Gao, Junqi Yin, Feiyi Wang, and Wenqian Dong. Flying serving: On-the-fly parallelism switching for large language model serving. arXiv preprint arXiv:2602.22593 , 2026. 10 Hao Gu, Wei Li, Lujun Li, Qiyuan Zhu, Mark G. Lee, Shengjie Sun, Wei Xue, and Yike Guo. Delta decompression for MoE-based LLMs compression. In International Conference on Machine Learning , 2025. Edward J. Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean Wang, Lu Wang, and Weizhu Chen. Lora: Low-rank adaptation of large language models. In International Conference on Learning Representations , 2022. Fatih Ilhan, Gong Su, Selim Furkan Tekin, Tiansheng Huang, Sihao Hu, and Ling Liu. Resource-efficient transformer pruning for finetuning of large models. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 16206–16215, 2024. Eric Jang, Shixiang Gu, and Ben Poole. Categorical reparameterization with gumbel-softmax. In 
+
+International Conference on Learning Representations , 2017. Albert Q. Jiang, Alexandre Sablayrolles, Antoine Roux, Arthur Mensch, Blanche Savary, Chris Bamford, Devendra Singh Chaplot, Diego de las Casas, Emma Bou Hanna, Florian Bressand, et al. Mixtral of experts. arXiv preprint arXiv:2401.04088 , 2024. Dmitry Lepikhin, HyoukJoong Lee, Yuanzhong Xu, Dehao Chen, Orhan Firat, Yanping Huang, Maxim Krikun, Noam Shazeer, and Zhifeng Chen. Gshard: Scaling giant models with conditional computation and automatic sharding. In International Conference on Learning Representations ,2021. Pingzhi Li, Xiaolong Jin, Yu Cheng, and Tianlong Chen. Examining post-training quantization for mixture-of-experts: A benchmark. arXiv preprint arXiv:2406.08155 , 2024. Wei Li, Lujun Li, Hao Gu, You-Liang Huang, Mark G. Lee, Shengjie Sun, Wei Xue, and Yike Guo. MoE-SVD: Structured mixture-of-experts LLMs compression via singular value decomposition. In International Conference on Machine Learning , 2025. Xudong Lu, Qi Liu, Yuhui Xu, Aojun Zhou, Siyuan Huang, Bo Zhang, Junchi Yan, and Hongsheng Li. Not all experts are equal: Efficient expert pruning and skipping for mixture-of-experts large language models. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pages 6159–6172, 2024. doi: 10.18653/v1/2024.acl-long. 334. Xinyue Ma, Heelim Hong, Taegeon Um, Jongseop Lee, Seoyeong Choy, Woo-Yeon Lee, and Myeongjae Jeon. Orbitflow: Slo-aware long-context llm serving with fine-grained kv cache reconfiguration. arXiv preprint arXiv:2601.10729 , 2026. Todor Mihaylov, Peter Clark, Tushar Khot, and Ashish Sabharwal. Can a suit of armor conduct electricity? a new dataset for open book question answering. In Proceedings of the 2018 Conference on Empirical Methods in Natural Language Processing , pages 2381–2391, 2018. doi: 10.18653/ v1/D18-1260. Pavlo Molchanov, Arun Mallya, Stephen Tyree, Iuri Frosio, and Jan Kautz. Importance estimation for neural network pruning. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , pages 11264–11272, 2019. Aviv Navon, Aviv Shamsian, Idan Achituve, Ethan Fetaya, Gal Chechik, and Haggai Maron. Equiv-ariant architectures for learning in deep weight spaces. In International Conference on Machine Learning (ICML) , 2023. Shangshu Qian, Kipling Liu, P. C. Sruthi, Lin Tan, and Yongle Zhang. Towards resiliency in large language model serving with kevlarflow. arXiv preprint arXiv:2601.22438 , 2026. Keisuke Sakaguchi, Ronan Le Bras, Chandra Bhagavatula, and Yejin Choi. WinoGrande: An adversarial winograd schema challenge at scale. In Proceedings of the AAAI Conference on Artificial Intelligence , volume 34, pages 8732–8740, 2020. Nurbek Tastan, Stefanos Laskaridis, Karthik Nandakumar, and Samuel Horvath. Mose: Mixture of slimmable experts for efficient and adaptive language models. arXiv preprint arXiv:2602.06154 ,2026. 11 Yury Tokpanov, Paolo Glorioso, Quentin Anthony, and Beren Millidge. Zyda-2: a 5 trillion token high-quality dataset. arXiv preprint arXiv:2411.06068 , 2024. Yaoxiang Wang, Qingguo Hu, Yucheng Ding, Ruizhe Wang, Yeyun Gong, Jian Jiao, Yelong Shen, Peng Cheng, and Jinsong Su. Training matryoshka mixture-of-experts for elastic inference-time expert utilization. arXiv preprint arXiv:2509.26520 , 2025. Yuebin Xu, Yanhong Wang, Xuemei Peng, Hui Zang, Minghao Chen, Pengfei Xia, and Zeyi Wen. TD-MoE: Tensor decomposition for MoE models. In International Conference on Learning Representations , 2026. URL https://openreview.net/forum?id=D9cnZNZfxX .An Yang, Baosong Yang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Zhou, Chengpeng Li, Chengyuan Li, Dayiheng Liu, Fei Huang, et al. Qwen2 technical report. arXiv preprint arXiv:2407.10671 , 2024a. Cheng Yang, Yang Sui, Jinqi Xiao, Lingyi Huang, Yu Gong, Yuanlin Duan, Wenqi Jia, Miao Yin, Yu Cheng, and Bo Yuan. MoE-I 2: Compressing mixture of experts models through inter-expert pruning and intra-expert low-rank decomposition. In Findings of the Association for Computational Linguistics: EMNLP 2024 , pages 10456–10466, 2024b. doi: 10.18653/v1/2024.findings-emnlp. 612. Jiahui Yu and Thomas S. Huang. Universally slimmable networks and improved training techniques. In Proceedings of the IEEE/CVF International Conference on Computer Vision , pages 1803–1811, 2019. Rowan Zellers, Ari Holtzman, Yonatan Bisk, Ali Farhadi, and Yejin Choi. HellaSwag: Can a machine really finish your sentence? In Proceedings of the 57th Annual Meeting of the Association for Computational Linguistics , pages 4791–4800, 2019. doi: 10.18653/v1/P19-1472. Geng Zhang, Yuxuan Han, Yuxuan Lou, Wangbo Zhao, Yiqi Zhang, and Yang You. Mone: Replac-ing redundant experts with lightweight novices for structured pruning of moe. arXiv preprint arXiv:2507.00390 , 2025. Lianmin Zheng, Liangsheng Yin, Zhiqiang Xie, Chuyue Sun, Jeff Huang, Cody Hao Yu, Shiyi Cao, Christos Kozyrakis, Ion Stoica, Joseph E. Gonzalez, Clark Barrett, and Ying Sheng. Sglang: Efficient execution of structured language model programs. arXiv preprint arXiv:2312.07104 ,2024. 12 A Additional Experimental Details and Analysis 
+
+A.1 Full Result Tables 
+
+Table 4: Full cross-model results with all reported per-task accuracies. All numbers are zero-shot accuracy (%). 
+
+Ratio Method ARC-c ARC-e HellaS OBQA PIQA WinoG MathQA Avg 
+
+Mixtral-8x7B (8 experts per layer, top-2 activated per token) 0% Base model 57 84 65 36 82 76 43 63.29 20% NAEE 47 76 58 32 79 72 40 57.71 20% MoE-I 2 48 79 55 32 78 74 37 57.57 20% MoE-SVD(fine-tuned) 55 80 61 33 81 73 38 60.14 20% TD-MoE 53 83 64 33 82 77 40 61.71 20% Ours (CP-FT) 53 81 62 33 81 76 37 60.43 20% Ours (SP-XFER) 54 82 64 35 81 77 40 61.86 25% Ours (CP-FT) 48 79 61 33 80 75 36 58.86 25% Ours (SP-XFER) 53 81 63 34 80 75 38 60.57 40% NAEE 36 63 46 25 72 64 35 48.71 40% MoE-I 2 (P+F) 38 71 43 26 69 66 31 49.14 40% MoE-SVD 38 72 43 27 71 67 32 50.00 40% TD-MoE 47 77 57 28 79 76 35 57.00 40% Ours (CP-FT) 44 75 57 31 79 68 31 55.00 40% Ours (SP-FT) 49 77 60 33 80 73 34 58.00 45% Ours (CP-FT) 43 74 56 30 78 72 28 54.43 45% Ours (SP-XFER) 44 76 58 31 78 72 31 55.71 50% MoE-SVD(fine-tuned) 37 67 50 25 73 64 28 49.14 50% Ours (CP-FT) 43 73 56 27 78 67 27 53.00 50% Ours (SP-XFER) 39 71 56 30 78 71 29 53.43 55% Ours (CP-FT) 35 66 48 28 75 63 26 48.71 55% Ours (SP-XFER) 36 69 54 28 77 69 28 51.57 60% NAEE 23 42 33 17 62 55 26 36.86 60% MoE-I 2 22 44 32 18 58 55 23 36.00 60% MoE-SVD 23 45 33 19 62 55 25 37.43 60% TD-MoE 28 55 38 21 65 62 24 41.86 60% Ours (CP-FT) 33 64 46 28 73 62 27 47.57 60% Ours (SP-XFER) 35 65 51 23 74 71 28 49.57 
+
+Phi-3.5-MoE (16 experts per layer, top-2 activated per token) 0% Base model 56 77 68 40 79 76 38 62.00 20% MoE-SVD(fine-tuned) 54 81 65 39 79 74 36 61.14 20% TD-MoE 55 77 65 39 79 74 38 61.00 20% Ours (SP-XFER) 57 83 65 39 79 81 39 63.29 40% NAEE 48 73 61 35 76 73 37 57.57 40% MoE-I 2 40 59 27 29 70 67 25 45.29 40% MoE-SVD 48 72 58 35 75 72 31 55.86 40% TD-MoE 50 75 61 35 78 73 33 57.86 40% Ours 49 74 58 35 76 65 28 55.00 40% Ours (SP-FT) 53 80 59 38 78 71 37 59.43 60% MoE-SVD 40 60 46 30 71 68 25 48.57 60% TD-MoE 41 70 46 28 73 68 23 49.86 60% Ours (SP-XFER) 46 74 51 32 75 65 28 53.00 
+
+Qwen2-57B-A14B (8 share + 64 routed experts per layer, 8 + top-8 activated per token) – Base model 47 75 63 33 80 74 39 58.71 20% NAEE 42 72 59 31 79 72 36 55.86 20% MoE-SVD 45 74 61 30 78 73 35 56.57 20% TD-MoE 49 79 59 31 80 73 37 58.29 20% Ours 46 74 63 33 81 74 38 58.43 40% NAEE 39 72 54 28 76 71 32 53.14 40% MoE-SVD 33 63 45 29 71 65 31 48.14 40% TD-MoE 45 77 54 29 78 71 35 55.57 40% Ours 48 77 62 33 80 73 39 58.86 50% Ours 47 76 61 33 80 73 40 58.57 60% NAEE 29 58 44 21 69 61 26 44.00 60% MoE-SVD 32 62 44 27 69 64 30 46.86 60% TD-MoE 41 73 46 28 74 68 31 51.57 60% Ours 48 79 59 31 80 74 39 58.57 80% Ours 44 73 54 29 77 73 32 54.57 
+
+13 We report the complete per-task results here for clarity. Table 4 preserves the full task breakdown for all evaluated model–budget pairs. We use 3 short tags for our implementation variants: SP-FT denotes the shared recovered model is fine-tuned exactly at this budget (Single-Point Fine-Tuning); SP-X FER denotes the shared recovered model reused at this unseen budget (Single-Point fine-tuning transFER); and CP-FT denotes the recovered model is jointly fine-tuned over multiple budget action masks as ablation (Cross-Point Fine-Tuning, see Appendix B.3). If there’s no tag attached, it denotes directly applying the trained action mask to the channel-ranked base model without recovery fine-tuning. Compared with the main-text tables, we additionally include several intermediate budget points on Mixtral-8x7B (25%, 45%, 50%, and 55%), which show that a single action-training run remains stable along the traversed budget path rather than only at the three shared comparison points 20%, 40%, and 60%. For Qwen2-57B-A14B, we also report two additional stress-test points at 50% and 80% pruning to further probe the limit of the learned subnet family on a highly sparse MoE backbone. 
+
+A.2 Additional Discussion on Cross-Budget Transfer and Cross-Model Trends Cross-Budget Transfer. The full tables make two empirical patterns particularly clear. The first is cross-budget transfer. On Mixtral, SP-XFER is already competitive at low compression, but its relative advantage over strong baselines becomes more visible as pruning becomes stronger. This is not surprising. First, at low compression ratios, the feasible pruning space is itself small: only a limited fraction of expert parameters is removed, so many methods can still find similarly good solutions and the headroom for separation is correspondingly narrow. In this regime, the main practical gain of our pipeline is not a dramatic accuracy gap, but the fact that one recovery point already provides a reusable weight set for several deployment budgets. The second reason is structural and is tied directly to how single-point recovery fine-tune works in our framework. The shared recovery point is trained on a middle-budget subnet, so the learned LoRA parameters mainly cover the prefix channels that are active at that budget. Those channels are exactly the ones reused by all tighter descendant masks, which explains why transfer remains strong at higher compression. By contrast, looser budgets expose more tail channels that not covered by adapter parameters during recovery and therefore receive no updates when merged into base model. This creates a trade-off: compared with independently per-budget fine-tuning, single-point recovery sacrificed only a limited amount of accuracy at some high budgets due to not updated tail channels, but removes the need to train, store, and maintain separate recovered models under different budget points. 
+
+Cross model trends. Another pattern is that FlexMoE becomes increasingly effective on more strongly sparse MoE backbones. The progression from Mixtral to Phi to Qwen2 is visible both in the tables and in our action-training dynamics. Mixtral-8x7B has only 8 routed experts per layer with top-2 routing, so each active expert accounts for a relatively large fraction of the routed computation. As a result, pruning inside one expert is more sensitive and the quality preservation term in action learning remains harder to suppress under increasing cost pressure. Phi-3.5-MoE is moderately more sparse and already shows stronger transfer. Qwen2-57B-A14B combines a much larger routed-expert pool with shared experts, so each routed expert contributes a smaller fraction of the total effective computation and there is substantially more room for structured expert-internal compression before quality degrades sharply. Our training-time observations are consistent with this interpretation. Under comparable settings, action learning on Mixtral takes about 48 hours to drive the retained parameter ratio from full capacity to the target region, compared with about 30 hours on Phi-3.5-MoE and only about 7 hours on Qwen2. Intuitively, in the more strongly sparse models, removing capacity from one routed expert perturbs the full teacher–student gap less, so the cost term can push the policy toward thinner actions more easily. We do not attribute this trend to expert count alone, since routing design, shared experts, and other architectural factors also matter. Still, taken together, the full results and the training dynamics strongly suggest that stronger sparsity makes the quality–cost trade-off optimized by FlexMoE easier to satisfy and more favorable in practice. 14 B More Ablation Study 
+
+B.1 Effect of Importance-Aware Channel Reordering 
+
+We ablate the importance-aware reordering stage on Mixtral-8x7B. The goal is to test whether prefix slicing remains effective without first sorting expert FFN channels by importance. We compare three variants: base model , which directly applies our action-learning pipeline on the original unranked model; 100 ranked , where channels are ranked using 100 calibration samples; and 5k ranked , where the same reordering procedure uses 5,000 calibration samples. A subtle but important point is that, at the same target prune ratio, the action masks are not shared across these variants. Instead, each model variant runs its own action-learning process and uses the exported mask from that run. This is the fairest comparison: different channel orderings change the meaning of prefix slicing itself, so forcing the same mask across different orderings would confound the effect of reordering with an incompatible pruning pattern. In contrast, our current setup keeps the overall training pipeline identical to each model and only changes the ranking stage to obtain model variants. For each model variant, the action masks at different prune ratios are all exported from a single action-training run. There’s no recovery fine-tuning applied. Table 5: Ablation on importance-aware reordering for prefix slicing on Mixtral-8x7B. All numbers are zero-shot accuracy (%). “100 ranked” and “5k ranked” denote that the channel ordering is estimated using 100 and 5,000 calibration samples, respectively.                                                                
+
+> Ratio Method ARC-c ARC-e HellaS OBQA PIQA WinoG MathQA Avg 20% base model 50 79 59 24 79 56 34 54.43 20% 100 ranked 51 79 62 34 81 75 36 59.71 20% 5k ranked 53 81 62 33 81 73 37 60.00
+> 40% base model 44 71 51 21 75 52 28 48.86 40% 100 ranked 41 72 55 29 76 71 30 53.43 40% 5k ranked 39 70 56 30 78 72 32 53.86
+
+Table 5 shows that importance-aware reordering is crucial for making prefix slicing effective. Without reordering, the unreordered base model reaches only 54.43 average accuracy at the 20% prune ratio and 48.86 at 40%. In contrast, the ranked variants substantially improve performance, reaching 59.71/60.00 at 20% and 53.43/53.86 at 40%. The improvement is especially clear at the tighter 40% budget, where preserving a more informative prefix matters more. This supports our core motivation: prefix channel retention action is only meaningful when the channel layout has first been transformed into an importance-ordered space. Once a modest number of calibration samples (steps) is available, the learned order converges and already becomes stable enough to support effective action learning, and further increasing the ranking set yields only marginal gains. This suggests that the ranking stage is not only effective but also practically sample-efficient: the importance estimates converge quickly, and the resulting channel-ranked layout is robust enough to support top-retained channel prefix slicing actions. 
+
+B.2 Effect of Expert-Wise Action Learning Uniform and Random Action-Mask Ablation. The learned action mask in Figure 6 suggests that the structure captured by FlexMoE is not only layer-wise but also expert-wise: the distribution of actions across layers is different, and within the same layer, different experts are often assigned different retention actions rather than sharing one uniform budget. This motivates our structure-destruction ablation. Starting from a learned action mask at a target budget, we construct two controls while keeping the overall action histogram and pruning budget unchanged: global shuffle , which randomly permutes all expert actions across the whole model and therefore destroys both inter-layer and expert-wise structure; and in-layer shuffle , which randomly permutes expert actions only within each layer, preserving the layer-wise action counts but removing expert-wise specialization inside that layer. We then apply these shuffled masks back to the same ranked model and evaluate accuracy under the same seven downstream datasets used in the main experiments, reporting only the averaged score. We also include a uniform ablation, where all experts are assigned the same retention ratio under the target budget while still keeping the same global pruning ratio. 15 Figure 6: An example of learned action mask at the 40% budget on Mixtral-8x7B, each cell records the action chosen by one expert maps to a predefined weight-retention ratio.                  
+
+> Ratio Action mask Mixtral Avg Qwen2 Avg 20% Uniform 60.14 58.14 Global shuffle 59.14 55.71 In-layer shuffle 60.43 58.29 Learned 61.86 58.43
+> 60% Uniform 45.14 57.43 Global shuffle 44.14 56.14 In-layer shuffle 46.00 58.43 Learned 49.57 58.57
+
+Table 6: Uniform and shuffled action-mask ablation. All numbers are average zero-shot accuracy (%) over the same seven evaluation datasets used in the main experiments. Table 6 shows that destroying the learned structure consistently hurts performance. For both Mixtral-8x7B and Qwen2-57B-A14B, the learned mask yields the strongest average accuracy, while both shuffled controls degrade the result to different degrees. The gap becomes larger at the tighter pruning budget, indicating that structured action learning matters more when the model has less room to absorb poor budget allocation. Moreover, global shuffle is consistently worse than in-layer shuffle, which shows that the learned policy captures not only meaningful at layer-wise allocation across depth, but also expert-wise specialization within a layer. Another notable trend is that Qwen2 is less sensitive than Mixtral to the in-layer shuffle, remaining much closer to the learned mask. This is consistent with our broader cross-model observation that more strongly sparse MoE backbones exhibit stronger expert and action substitutability. Overall, these results reinforce that FlexMoE is not merely learning a global prune ratio, but a structured action pattern across both layers and experts. 
+
+B.3 Advantages of Single Point Fine-Tuning (SP-FT) Recovery Cross-budget Fine-Tuning (CP-FT) Ablation Details. To obtain one recovered model that can serve multiple action masks, we first implemented a cross-point fine-tuning strategy (CP-FT) inspired by the sandwich rule in universally slimmable networks (US-Nets) and the many-subnet distillation idea of AmoebaLLM Yu and Huang [2019], Fu et al. [2024]. In each micro-step, we load a pool of trained action masks across budgets. We attached LoRA to full expert FFN projections and activate it for both the full teacher and subnet forwards. The full subnet is constrained with standard language-model CE loss to prevent full model degradation and affecting the inplace distillation objectives of subnets. While each sampled subnet is trained by soft distillation against the full-subnet teacher. Following the AmoebaLLM-style balancing factor used in our implementation, each subnet distillation loss is reweighted by the ratio between the magnitude of the full-subnet CE loss and that of the subnet distillation loss, so that no low budget subnets dominates optimization because of higher distillation loss. Concretely, with full-subnet loss Lfull and sampled subnet losses {L (i)sub }Ki=1 , we optimize 
+
+LCP -FT = Lfull +
+
+> K
+
+X
+
+> i=1
+
+|L full |
+
+L(i)sub + ϵ
+
+L(i)sub , (16) where Lfull is the full-subnet CE loss and each L(i)sub is the distillation loss from a sampled action mask. For each optimization step, the sampled masks (subnets) follow a US-Nets sandwich pattern consisting of the minimum-ratio mask and several random intermediate masks from the action pool, while the full model is always included as teacher. 
+
+Why Single Point Fine Tuning (SP-FT) is More Effective in Practice. According to Figure 4, we found that this CP-FT strategy underperforms both per-budget fine-tuning and our current single-point alternative over most budgets, whereas SP-FT followed by direct transfer already stays much 16 Target mask SP-FT at 20% SP-FT at 40% SP-FT at 60% 20% 60.86 61.86 60.71 40% 54.57 58.00 57.14 60% 42.86 49.57 50.29    
+
+> Avg over targets 52.76 56.48 56.05
+
+Table 7: Single-point recovery-point ablation on Mixtral-8x7B. Each row is a target mask, and each column indicates the recovered model trained on that fixed budget point. All numbers are average zero-shot accuracy (%) over the same seven evaluation datasets used in the main experiments. 
+
+Figure 7: Recovery-point generalization curve. The x-axis is the prune budget and the y-axis is average downstream accuracy. Curves correspond to single-point recovery performed at budget 20%, 40%, and 60%, respectively. closer to the per-budget fine-tuning results. We believe the reason is structural. CP-FT jointly optimizes many masks with substantially different active channel prefixes, so the shared LoRA update must satisfy several incompatible subnet configurations at once. In practice this might still weakens specialization and blurs the recovery signal at any one budget. By contrast, leveraging the invariant nesting property of frozen route and expert topology, SP-FT concentrates all recovery capacity on one concrete subnet and then reuses the merged weights across nearby masks. Although this sacrifices a small amount of accuracy relative to independently fine-tuning every budget, it removes the need to train, store, and maintain one recovered model per budget point. 
+
+Why the Middle Budget Generalizes Best. We further tested single-point recovery (SP-FT) at three different budgets and then transferred the recovered weights to all three target masks. Table 7 and Figure 7 show a clear asymmetry. Fine-tuning at the high-budget point (20%) generalizes poorly when transferred downward: performance degrades monotonically as pruning becomes stronger, which is consistent with the intuition that high-budget recovery still spends its capacity on tail channels that are later removed by tighter masks. Interestingly, it is also not the best even on the 20% target itself, where the mid-budget recovery point (40%) performs better. A plausible explanation is that moderate masking might acts as a useful regularizer: compared with 20%-FT, 40%-FT is forced to recover only the more reusable prefix channels, which improves robustness even at slightly looser budgets. On the other side, low-budget recovery (60%) behaves as expected: it is strongest or nearly strongest near its own fine-tuned budget, but its upward transfer remains weaker because the recovered update only covers a relatively small active prefix and therefore cannot adequately restore the additional channels exposed at looser masks. Overall, the 40% recovery point provides the best global trade-off between coverage and specialization: it does not fully optimize any endpoint, but it yields the strongest one-step generalization across the whole budget family. 
+
+## C Kernel Co-Design Implementation Details 
+
+C.1 Naive Python Online Clipped FFN 
+
+Our first online clipping approach directly implemented based on HuggingFace-style original model forward path and applies budget-conditioned weights clipping inside the expert FFN forward at runtime. In the current Mixtral implementation, this path first identifies all routed experts in the current batch, and then iterates over them. In the original full-path (without weights pruning) implementation, the gate and up projections are stored contiguously as a gate–up weight tensor, so one expert forward can be executed with a single larger GEMM to enable larger GPU utilization, followed by a chunk into gate and up projection outputs. By contrast, online clipping breaks this fast path: once a runtime mask requests a retained width ke < I , the implementation must first slice gate rows and up rows separately, concatenates into a clipped contiguous gate–up weight tensor, slice the down projection to the same width, and then launch the matrix multiplication and chunk. Since this happens inside a Python-side per-expert loop, the runtime pays both dispatch overhead and extra tensor-manipulation overhead before the actual GEMM. 17 Algorithm 1: Naive Python Online Clipped FFN 
+
+Input :hidden states X, routed expert assignments, router weights, per-expert retained widths {ke}, dense expert weights {W gu e , W down e }
+
+Output :final routed experts FFN output Y 
+
+> 1
+
+Initialize Y ← 0 
+
+> 2
+
+Find all active experts in the current batch  
+
+> 3
+
+foreach active expert e do  
+
+> 4
+
+Gather routed token states Xe and router weights for expert e 
+
+> 5
+
+Read retained width ke 
+
+> 6
+
+if ke = I then 
+
+// Original full path: use full contiguous gate-up weight  
+
+> 7
+
+Zgu e ← Xe(W gu e )⊤ 
+
+> 8
+
+(Ge, U e) ← chunk( Zgu e , 2)  
+
+> 9
+
+He ← SiLU( Ge) ⊙ Ue 
+
+> 10
+
+Oe ← He(W down e )⊤ 
+
+> 11
+
+else 
+
+// Online clipped path: extra slicing and reconstruction  
+
+> 12
+
+W gate e ← W gu e [0 : ke, :] 
+
+// extra slice  
+
+> 13
+
+W up e ← W gu e [I : I + ke, :] 
+
+// extra slice  
+
+> 14
+
+cW down e ← W down e [: , 0 : ke] // extra slice  
+
+> 15
+
+cW gu e ← cat( W gate e , W up e ) // hotspot  
+
+> 16
+
+bZgu e ← Xe(cW gu e )⊤ 
+
+> 17
+
+( bGe, bUe) ← chunk( bZgu e , 2)  
+
+> 18
+
+bHe ← SiLU( bGe) ⊙ bUe 
+
+> 19
+
+Oe ← bHe(cW down e )⊤ 
+
+> 20
+
+Weight Oe by router scores and scatter-add into Y 
+
+> 21
+
+return Y
+
+This implementation is simple but inefficient for two reasons. First, once the learned action mask assigns different retained widths to different experts, the runtime can no longer naturally batch expert FFNs into one regular MoE matrix multiplication; it instead degrades toward many small expert-wise GEMMs plus Python-side scheduling. Second, compared with the dense full path, clipped execution inserts extra slice and cat operations on the weight tensors before every clipped expert forward. Especially for tensor concatenation step, where PyTorch’s internal implementation involves additional empty memory allocation and tensor data copying. These overheads are specific to our nested prefix-slicing setting: they arise because the scenario is asked to materialize budget-specific clipped subnetworks on the fly from one shared MoE checkpoint across all budget family. 
+
+C.2 Online-Reordered Shared Weight Layout 
+
+To reduce the online clipping overhead, we first arrange the cross-budget shared model weights into a layout that is more convenient for runtime prefix slicing actions. In the original expert, the connected gate-up projection weight is stored as 
+
+W gu  
+
+> orig
+
+= [ g0, . . . , g I−1, u 0, . . . , u I−1],
+
+so to obtain W gu  
+
+> clip
+
+with only top k channels requires two separate row slices followed by one concatenation: 
+
+W gate  
+
+> [: k]
+
+, W up 
+
+> [: k]
+
+, W gu  
+
+> clip
+
+= cat( W gate  
+
+> [: k]
+
+, W up 
+
+> [: k]
+
+)
+
+Meanwhile, the original down projection is stored as W down  
+
+> orig
+
+∈ RH×I , so clipping also requires a larger overhead column slice. Our export path rewrites the shared weights into this new weights layout: 
+
+W gu  
+
+> reord
+
+= [ g0, u 0, g 1, u 1, . . . , g I−1, u I−1], W down  
+
+> reord
+
+= ( W down  
+
+> orig
+
+)⊤ ∈ RI×H .
+
+18 Algorithm 2: Kernelized Online Clipped FFN Co-Design 
+
+Input :hidden states X, routed expert ids eid , router weights α, reordered weights 
+
+{fW gu e , fW down e }, retained widths {ke}
+
+Output :routed experts FFN output Y 
+
+> 1
+
+Y ← 0 
+
+> 2
+
+B ← BucketByRetI( {ke}) // group active experts by retained width  
+
+> 3
+
+foreach (k, Ek) ∈ B do  
+
+> 4
+
+keff ← AlignUp( k, k align ) // aligned working width to hardware  
+
+> 5
+
+(Xk, eid k, α k) ← GatherRoutedToken( X, eid , α, Ek) 
+
+> 6
+
+(π, eid k) ← Sort(eid k) 
+
+> 7
+
+Xk ← Xk[π], αk ← αk[π] // group token segment contiguous to expert  
+
+> 8
+
+S ← [ ] , Wgu ← [ ] , Wdown ← [ ] ; 
+
+> 9
+
+foreach token segment (start, end, e ) in eid k do  
+
+> 10
+
+S. append( Xk[start : end, :])  
+
+> 11
+
+Wgu . append 
+
+fW gu e [0 : 2 keff , :] 
+
+ 
+
+> 12
+
+Wdown . append 
+
+fW down e [0 : keff , :] 
+
+
+
+// build grouped-GEMM operand views  
+
+> 13
+
+Zgu ← cublasGroupedGemm( S, W⊤
+
+> gu
+
+) 
+
+> 14
+
+G ← Zgu [: , 0 :: 2]  
+
+> 15
+
+U ← Zgu [: , 1 :: 2] // read interleaved activations  
+
+> 16
+
+H ← SiLU( G) ⊙ U 
+
+> 17
+
+H[: , k : keff ] ← 0 // delete up-aligned activations  
+
+> 18
+
+; 
+
+> 19
+
+Zdown ← cublasGroupedGemm( H, Wdown ) 
+
+> 20
+
+Zdown ← Zdown ⊙ αk 
+
+> 21
+
+Y ← ScatterAdd( Y, Z down , π ) // add outputs to its original position  
+
+> 22
+
+return Y
+
+Under this layout, clipping to W gu  
+
+> clip
+
+with top k channels becomes one prefix slice on the interleaved gate-up tensor and one row slice on the transposed down tensor: 
+
+W gu  
+
+> clip
+
+= W gu 
+
+> reord
+
+[0 : 2 k, :] , W down  
+
+> clip
+
+= W down  
+
+> reord
+
+[0 : k, :] .
+
+In the original online path, the runtime must rebuild a W gu  
+
+> clip
+
+before every clipped expert forward. In the reordered layout, we can obtain all requested weights by performing only 1 direct prefix slicing. This reduces the online scheduling cost from repeated tensor assembly. 
+
+C.3 Kernelized Clipped FFN Forward 
+
+On top of the reordered shared weights, we implement a customized CUDA path for online clipped FFN execution. The key idea is to avoid treating every active expert as a fully irregular independent GEMM. Instead, the discrete action set enabled us to bucket active experts by their retained width, align each bucket width upward to a hardware-friendly effective width keff , and then process all routed tokens in that bucket with grouped GEMMs rather than isolated expert-wise GEMMs. Within one bucket, routed tokens are first sorted by expert id. This step does not change the computation, but it makes tokens belonging to the same expert in a contiguous group, so the implementation can form per-expert tensor views rather than materializing scattered copies. These views include: (i) the routed token segment contiguously grouped by expert, (ii) the up-aligned prefix-sliced interleaved gate–up weight fW gu e [0 : 2 keff , :] and (iii) the up-aligned prefix-sliced transposed down weight fW down e [0 : keff , :] . The resulting view lists are then passed directly to cuBLAS grouped GEMM function. In this sense, the weight reordering and the kernel-level weights bucketing are tightly coupled: the former reduce costs for necessary parameter-slicing actions, and the latter converts many irregular expert calls back into a grouped matrix-multiplication workload. After the first grouped GEMM using interleaved fW gu e , the output activations are still in interleaved form. Instead of reconstructing connected gate-up tensors explicitly in weight space, it reads 19 interleaved gate/up outputs directly from this grouped-GEMM output, applies gate, SiLU and writes the compact hidden activation H[: , j ]. Then it zero-masks padded channels in [ke, k eff ) introduced by alignment. Importantly, this reconstruction is now performed on the activation tensor of shape roughly [routed tokens , 2keff ], usually (depends on concurrency) much smaller than original gate-up weight tensor. Therefore, the reconstruction cost for slicing gate-up projection is paid on a much smaller working set. After that, a second grouped GEMM then applies the down projection. Overall, this co-design relieves the scheduling hotspots of online budget-switching and turns the theoretical parameter and computation reduction of nested subnetworks into real throughput gains. 20
