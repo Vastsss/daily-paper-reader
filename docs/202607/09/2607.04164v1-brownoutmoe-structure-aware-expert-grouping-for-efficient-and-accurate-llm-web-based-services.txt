@@ -1,0 +1,416 @@
+Title: BrownoutMoE: Structure-Aware Expert Grouping for Efficient and Accurate LLM Web-based Services
+
+URL Source: https://arxiv.org/pdf/2607.04164v1
+
+Published Time: Tue, 07 Jul 2026 02:39:26 GMT
+
+Number of Pages: 15
+
+Markdown Content:
+# BrownoutMoE: Structure-Aware Expert Grouping for Efficient and Accurate LLM Web-based Services 
+
+Yi Ding 1,2, Minxian Xu 1,( ), Zhengxin Fang 3, Kejiang Ye 1, and Chengzhong Xu 4 
+
+> 1
+
+Shenzhen Institutes of Advanced Technology, Chinese Academy of Sciences, Shenzhen, China 
+
+{yi.ding2,mx.xu}@siat.ac.cn, zhengxin.fang@ecs.vuw.ac.nz, kj.ye@siat.ac.cn, czxu@um.edu.mo  
+
+> 2
+
+University of Chinese Academy of Sciences, Beijing, China  
+
+> 3
+
+Victoria University of Wellington, Wellington, New Zealand  
+
+> 4
+
+State Key Lab of IoTSC, University of Macau, Macau, China 
+
+Abstract. Mixture-of-Experts (MoE) large language models (LLMs) are increasingly deployed in Web-facing services, where inference must be both accurate and responsive under bursty demand. Although MoE models improve parameter efficiency through sparse expert activation, efficient MoE inference remains challenging in practice. A major rea-son is the highly imbalanced expert access pattern during inference: a few hot experts process most routed tokens, while many cold experts are rarely activated, leaving GPU parallelism underutilized. Existing systems mainly optimize runtime execution, such as scheduling, communication overlap, and kernel fusion, but usually preserve the original expert orga-nization and therefore do not address the structural inefficiency caused by fragmented expert usage. In this paper, we present BrownoutMoE , a structure-aware optimization framework for efficient and accurate MoE inference services. Inspired by the brownout paradigm in service com-puting, BrownoutMoE reorganizes experts into groups to improve uti-lization and system efficiency while maintaining service quality. Specifi-cally, we formulate layer-wise expert grouping as a learning problem and employ reinforcement learning to discover grouping strategies that min-imize accuracy degradation. We further introduce a grouping-consistent distillation process to produce deployable models that are compatible with standard inference pipelines. Experimental results demonstrate that BrownoutMoE reduces accuracy degradation by up to 71.4% and im-proves throughput by up to 2.24 × over baselines. 
+
+Keywords: LLM Web-Based Applications · MoE Inference Serving ·
+
+Expert Grouping · GRPO · Knowledge Distillation 
+
+# 1 Introduction 
+
+Large language models (LLMs) are increasingly used in Web-based services such as search, recommendation, question answering, fact checking, and interactive  
+
+> arXiv:2607.04164v1 [cs.DC] 5 Jul 2026 2Y. Ding et al.
+
+Web agents, while cloud-native and distributed systems have become central to scalable LLM deployment [14]. In these LLM Web-based applications, in-ference is no longer an offline batch task but part of the online request path. User-facing services must handle bursty arrivals, heterogeneous prompt and re-sponse lengths, and session-level interactions while maintaining response-time and answer-quality expectations. These Web service characteristics create a demanding serving problem. The runtime must jointly balance throughput, tail latency, and accuracy under dy-namic workloads. Mixture-of-Experts (MoE) architectures [8,10] are attractive because they scale model capacity through sparse expert activation. However, Web-facing workloads can amplify skewed expert access: a few experts receive most routed tokens, while many others are rarely activated. This imbalance cre-ates hot-expert bottlenecks and poor GPU utilization for cold experts. Existing MoE serving systems mainly improve execution efficiency through expert parallelism [3], scheduling [15], and fused kernels [4]. However, these meth-ods usually preserve the original expert organization, leaving the structural in-efficiency of fragmented expert usage unchanged. BrownoutServe [7] introduced united experts to reduce expert access frequency, but its grouping strategy is still based on fixed heuristics. In this work, we argue that expert grouping itself should be optimized. We propose BrownoutMoE , a structure-aware expert grouping framework for MoE inference services. For each MoE layer, BrownoutMoE learns how to assign orig-inal experts into a limited number of united groups, rather than following index-order grouping. Since grouping decisions are discrete and their quality can only be measured after distillation, we formulate grouping as a policy optimization problem and optimize it with Group Relative Policy Optimization (GRPO). The reward is defined by the true post-distillation mean squared error (MSE) after short-horizon united-expert distillation, making the search objective directly re-flect compressibility and behavior preservation. BrownoutMoE separates structure optimization from parameter optimiza-tion: GRPO searches for better grouping maps, while united-expert distillation learns grouping-consistent parameters under the final grouping. In this way, the grouped model can better preserve original expert behavior than heuristic base-lines. Our results show that BrownoutMoE provides a more favorable trade-off between quality and efficiency for MoE inference services on downstream ques-tion answering benchmarks. The key contributions of this paper are as follows: 
+
+– We formulate the expert grouping problem in MoE-based LLMs as a dis-crete policy optimization task and solve it with GRPO, using the true post-distillation MSE as the reward signal to directly optimize compression qual-ity. 
+
+– We propose a two-phase training pipeline: GRPO-based grouping search followed by grouping-consistent united-expert distillation, with hierarchical clustering warm-start and early stopping mechanisms. BrownoutMoE: Structure-Aware Expert Grouping for MoE Inference 3
+
+– We design BrownoutMoE as a structure-aware MoE inference serving frame-work that combines expert grouping, united-expert distillation, and SLO-aware brownout control, and evaluate it on downstream question answer-ing benchmarks, demonstrating improved accuracy over sequential grouping baselines. 
+
+# 2 Background and Motivation 
+
+In this section, we briefly introduce MoE-based LLMs and the united expert mechanism. We then analyze the accuracy degradation problem caused by sub-optimal expert grouping, which motivates our approach. 
+
+2.1 Mixture-of-Experts Inference Services 
+
+MoE-based LLMs [3,8] replace the feed-forward networks (FFNs) in standard Transformers with a gating function and multiple small FFNs (experts), en-abling sparse activation. Each incoming token is routed by the gating function to a subset of experts, reducing per-token computation and memory footprint. Specifically, for an MoE layer with E experts and top-K routing, the output for token xt is ht = PKi=1 gi(xt) · FFN i(xt), where gi is the gating score. MoE inference proceeds in two stages: the prefill stage generates initial tokens in par-allel, followed by the decoding stage that produces tokens one at a time. While MoE improves computational efficiency in principle, practical deployment faces challenges from imbalanced expert access patterns and load distribution. 
+
+2.2 United Expert Model and Brownout Approach 
+
+To address the MoE inference bottleneck, BrownoutServe [7] introduced united experts and the brownout approach , inspired by the brownout paradigm for adap-tive resource management in cloud computing [13]. The key idea is to group mul-tiple original experts into a single united expert via knowledge distillation [6], thereby reducing the number of experts loaded during inference. The brownout approach provides three operating modes: zero-brownout keeps all experts active; 
+
+full-brownout routes all tokens through united experts for maximum speedup; and partial-brownout delegates only cold expert tokens to united experts based on a configurable threshold. 
+
+Features and Limitations. While the united expert mechanism reduces memory and communication overhead with flexible latency control, Brownout-Serve assigns experts to groups by index order, ignoring behavioral relation-ships. In Fig. 1(a), non-structure-aware denotes BrownoutServe’s index-order grouping, whereas structure-aware denotes BrownoutMoE’s behavior-aware re-grouping. Given six original experts (E0–E5) partitioned into three groups of two, BrownoutServe groups them sequentially as {E0, E1 }, {E2, E3 }, {E4, E5 },where dissimilar experts such as E0 and E1 are forced into the same united ex-pert despite low output correlation. In contrast, BrownoutMoE reassigns experts 4 Y. Ding et al. 
+
+based on behavioral similarity, producing groups such as {E0, E3 }, {E1, E4 },
+
+{E2, E5 } where each united expert only needs to approximate homogeneous out-puts. The cosine similarity bars on the right show that BrownoutMoE achieves higher within-group similarity, leading to lower distillation error. This mismatch in sequential grouping causes accuracy degradation that worsens as k increases, motivating a structure-aware grouping strategy. 
+
+2.3 Challenges: Accuracy Degradation in Expert Grouping 
+
+Although the brownout approach reduces inference latency, critical challenges remain: expert load imbalance and accuracy degradation caused by suboptimal expert grouping .
+
+C1: Expert Load Imbalance. Token distribution across experts exhibits a pronounced long-tail pattern: a small portion of experts handle most tokens while the majority are underutilized. This load imbalance is a well-known challenge in LLM serving [5]. On Qwen1.5-MoE-A2.7B, the top-10 experts handle over 40% of all routed tokens across 24 MoE layers, while the bottom-20 collectively process less than 10%. This skewness means that grouping quality disproportionately affects hot experts: placing two frequently activated experts in the same group forces their united expert to handle high traffic, while grouping cold experts together wastes distillation capacity on rarely used combinations. 
+
+C2: Accuracy Loss from Sequential Grouping. As discussed in Sec-tion 2.2, BrownoutServe [7] adopts sequential grouping that ignores expert be-havioral similarity, leading to high distillation MSE. We empirically validate this by computing the 60 × 60 pairwise cosine similarity matrix of expert outputs on Qwen1.5-MoE-A2.7B and applying hierarchical clustering. The clustering-based grouping reduces distillation MSE by 17.9%–48.8% across MoE layers compared to sequential grouping, confirming that grouping quality significantly impacts united expert quality. Moreover, the gap widens as the grouping factor k increases: under 8-way grouping, the dissimilarity within sequentially formed groups becomes more se-vere, leading to larger accuracy drops on downstream tasks. We further quantify this on the C-Eval benchmark: the accuracy loss from zero brownout to full brownout grows from 11.1% under 2-way grouping to 20.4% under 8-way group-ing, as shown in Fig. 1(b). This monotonic trend confirms that as more experts are merged into each group, the grouping strategy becomes increasingly critical for preserving model accuracy. 
+
+2.4 Motivation 
+
+The analysis above reveals two key insights. First, the quality of expert group-ing has a direct and measurable impact on distillation accuracy: grouping be-haviorally similar experts yields significantly lower MSE than naive sequential grouping, as confirmed by the 17.9% to 48.8% MSE reduction observed through hierarchical clustering on Qwen1.5-MoE-A2.7B. Second, the grouping problem is inherently combinatorial: with 60 experts partitioned into G groups, the search BrownoutMoE: Structure-Aware Expert Grouping for MoE Inference 5  
+
+> (a) (b)
+> Fig. 1. (a) Comparison of expert grouping strategies between BrownoutServe and BrownoutMoE. (b) C-Eval accuracy loss under sequential grouping with different grouping configurations.
+
+space grows factorially, making exhaustive enumeration infeasible even for mod-erate grouping factors. These observations motivate a learning-based approach. Rather than relying on fixed heuristics, we formulate expert grouping as a discrete policy optimiza-tion problem where a learned policy assigns experts to groups. The grouping quality is measured by the true post-distillation MSE after short-horizon united-expert distillation, which serves as the reward signal and directly reflects the deployment objective of preserving original model behavior. We adopt GRPO [11] for this task. GRPO generates candidate groupings by perturbing a base grouping via expert-pair swaps and computes advantages within each perturbation group, yielding lower-variance gradient estimates than batch-level normalization. To improve search efficiency, we initialize the policy using hierarchical clustering on expert output similarities, providing a warm-start that already captures behavioral similarity. This leads to BrownoutMoE, a structure-aware MoE inference serving framework with a two-phase pipeline: GRPO-based grouping search followed by grouping-consistent united-expert dis-tillation. 
+
+# 3 Related Work 
+
+We organize related work along three levels of granularity: architecture-level system optimization for MoE inference serving, layer-level routing and load bal-ancing mechanisms, and expert-level compression and merging techniques. 
+
+Architecture-Level MoE Inference Optimization. MoE inference op-timization at this level focuses on efficient expert parallelism, memory manage-ment, and system scheduling. Megablocks [4] designs GPU-efficient sparse kernels for block-sparse MoE operations. MoELightning [1] implements CPU-GPU-I/O pipeline scheduling for memory-constrained GPUs. DistServe [15] disaggregates prefill and decoding stages onto separate GPUs for goodput-optimized serving. DeepSeek-V3 [10] proposes a hybrid architecture with shared and routed experts, while Mixtral [8] demonstrates strong performance with sparse expert activation. 6 Y. Ding et al. 
+
+Despite these advances, architecture-level optimizations primarily address exe-cution efficiency, leaving the structural inefficiency caused by fragmented expert usage unexplored. 
+
+Layer-Level Routing and Load Balancing. At the layer level, research focuses on routing mechanisms and load balancing. Switch Transformer [3] sim-plified routing by activating one expert per token. DeepSeek-V3 [10] introduces an auxiliary-loss-free load balancing strategy using a bias term adjusted by a complementary frequency counter. These studies demonstrate that expert acti-vation patterns are highly heterogeneous and that routing quality directly im-pacts performance. However, they optimize token-to-expert routing rather than expert grouping for compression. 
+
+Expert-Level Compression and Merging. Compression techniques at this level aim to reduce the number or size of experts. Expert pruning drops rarely-activated experts entirely, while expert averaging merges weights by com-puting parameter-wise means, which is cheap but introduces output drift when experts are functionally dissimilar. Knowledge distillation provides a more flex-ible merging paradigm: the united expert approach in BrownoutServe trains a single distilled expert to approximate the routing-weighted behavior of member experts. However, the quality of distillation-based merging is fundamentally con-strained by the grouping assignment: grouping dissimilar experts forces the stu-dent to approximate heterogeneous output distributions. Existing work predom-inantly relies on heuristic grouping such as sequential index-order assignment. BrownoutMoE addresses this gap by using a structure-aware learning approach to directly optimize the grouping structure. To summarize, existing MoE serving systems preserve the original expert organization or rely on fixed heuristic grouping, leaving the grouping problem unaddressed. BrownoutMoE formulates expert grouping as a learning problem optimized with GRPO to reduce distillation error and accuracy degradation. 
+
+# 4 BrownoutMoE System Design 
+
+4.1 System Overview 
+
+BrownoutMoE is an end-to-end structure-aware MoE inference serving frame-work for efficient and accurate LLM Web-based services, as illustrated in Fig. 2. It treats expert grouping as a system-level decision and coordinates online serv-ing with offline structure optimization through the control plane and data plane. The BrownoutMoE control plane contains a Scheduler, a Service Level Ob-jective (SLO) Analyzer, an Experts Loader, and a Structure-Aware Grouping Module. The data plane is an optimized LLM inference engine with an adaptive BrownoutMoE execution path, a pluggable fused MoE operator, FlashAtten-tion [2], PagedAttention [9], and continuous batching. 
+
+Control Plane. Scheduler uses First-Come-First-Served (FCFS) scheduling with streaming support. SLO Analyzer monitors Time-To-First-Token (TTFT) and Time-Per-Output-Token (TPOT), then adjusts brownout thresholds via BrownoutMoE: Structure-Aware Expert Grouping for MoE Inference 7 
+
+> Fig. 2. Overview of the BrownoutMoE system design.
+
+SLO-aware latency control (SALC). Experts Loader loads united experts and updates routing maps. Structure-Aware Grouping Module collects calibration activations, computes expert similarity matrices, applies hierarchical clustering for warm-start, and uses GRPO to search for expert groupings. 
+
+Data Plane. The LLM inference engine is built on PyTorch with Page-dAttention and FlashAttention implemented in Triton. Compared with vLLM, BrownoutMoE moves the block table to GPU and implements block-table oper-ations as GPU kernels. Its execution path uses learned grouping maps, instead of sequential groups, for threshold-controlled united-expert routing. The Structure-Aware Grouping Module is BrownoutMoE’s offline optimizer for expert grouping. It uses calibration activations to partition experts for distillation-based merging, then passes the grouping map to the Experts Loader. This design optimizes grouping offline while the SLO Analyzer adapts online thresholds un-der changing latency pressure. 
+
+4.2 Problem Formulation 
+
+For each MoE layer containing E = 60 routed experts, under a k-way grouping scheme, the number of groups is: 
+
+G =
+
+ Ek
+
+
+
+. (1) 8 Y. Ding et al. 
+
+A grouping is a mapping: 
+
+g : E → { 1, 2, . . . , G }, (2) where Gk = {e ∈ E : g(e) = k} denotes the set of experts assigned to group k
+
+by grouping g. The goal is to find an optimal grouping g∗ that minimizes the per-layer approximation error on representative calibration inputs: 
+
+g∗ = arg min  
+
+> g
+
+MSE total (g) = arg min 
+
+> gG
+
+X
+
+> r=1
+
+βr · MSE r (g), (3) where MSE r (g) is the distillation error of the r-th united expert trained under grouping g, and βr = P 
+
+> e∈Gr
+
+we is the routing-frequency weight, with we de-noting how often expert e is selected by the gating function on the calibration dataset. This weighting ensures that the total MSE reflects the inference-time impact of each group: groups containing frequently activated experts contribute more to the overall approximation error. This problem presents several challenges: g is discrete and non-differentiable, 
+
+MSE k(g) can only be evaluated by training the united expert, and the search space is combinatorially large. Moreover, expert specialization differs across layers, necessitating per-layer optimization. These properties motivate a rein-forcement learning approach. We apply policy optimization to expert grouping and solve it with GRPO, using the negative total MSE as the reward signal: 
+
+R(g) = −MSE total (g).
+
+4.3 GRPO-Based Expert Grouping Search  
+
+> Fig. 3. GRPO-based expert grouping search process.
+
+As illustrated in Fig. 3, the grouping search follows an iterative loop. In each iter-ation, the current policy samples base groupings, which are perturbed by swap-ping expert pairs across groups to generate candidate variants. All candidates BrownoutMoE: Structure-Aware Expert Grouping for MoE Inference 9
+
+are evaluated through short-horizon distillation, where a lightweight student ap-proximates the routing-weighted output of member experts and the resulting MSE serves as the quality metric. The group-relative advantage compares each candidate against its perturbation group, providing a variance-reduced gradient signal. The policy is then updated via clipped surrogate optimization, steering toward lower distillation error. This repeats until convergence or early stopping. In this work, we employ GRPO to solve the expert grouping problem. The grouping policy is parameterized by a learnable logit matrix Θ ∈ RE×G, where 
+
+Θe,g encodes the affinity of expert e for group g. Assignments are drawn se-quentially from expert 0 to E−1. At each step, the policy outputs a categorical distribution over available groups with capacity constraints: 
+
+πΘ (ge = j | e) = exp( Θe,j )
+
+P 
+
+> j′∈A e
+
+exp( Θe,j ′ ) , (4) where Ae is the set of groups whose current member count has not yet reached the capacity cap = ⌈E/G ⌉. The probability of a complete grouping is the product of per-expert assignment probabilities: πΘ (g) = Q 
+
+> e
+
+πΘ (ge | e).The reward is defined as the negative total post-distillation MSE after short-horizon distillation. For each group k in a sampled grouping g, the distillation target is the routing-weighted average of member expert outputs: 
+
+αe = we
+
+P 
+
+> e′∈Gk
+
+we′
+
+, tk(x) = X
+
+> e∈Gk
+
+αe fe(x), (5) where we is the routing frequency of expert e from calibration data. The united expert is initialized as the parameter average of member experts and optimized for T steps with AdamW. The layer-level total MSE is: 
+
+βr = X
+
+> e∈Gr
+
+we, MSE total (g) = 
+
+> G
+
+X
+
+> r=1
+
+βr MSE r , (6) and the reward is R(g) = −MSE total (g).The key idea of GRPO is to compute advantages within groups of related samples rather than across the entire batch. At each training step, we sample B
+
+base groupings from the current policy, and for each base generate Gp perturba-tions by swapping expert pairs across groups. Each base with its perturbations forms a GRPO group of size Gp+1 . Since perturbed groupings share most ex-pert assignments and differ only in swapped pairs, computing advantages within such correlated groups reduces gradient variance compared to batch-level nor-malization. The group-relative advantage for the j-th member of the b-th group is: 
+
+ˆAb,j = R(gb,j ) − μb
+
+σb + ϵ , μb = 1
+
+Gp+1 
+
+> Gp
+
+X
+
+> j=0
+
+R(gb,j ), σb = std  {R(gb,j )}Gp
+
+> j=0
+
+, (7) where μb and σb are computed within the b-th group only, ensuring each base is compared against its own perturbations. 10 Y. Ding et al. 
+
+Following GRPO, we use a PPO-style clipped surrogate objective for stable updates over discrete grouping actions. The loss combines PPO-style clipped policy updates with an entropy bonus and a KL (Kullback-Leibler) divergence penalty against the reference policy πref :
+
+LGRPO = − 1
+
+B(Gp+1) 
+
+> B
+
+X
+
+> b=1
+> Gp
+
+X
+
+> j=0
+
+Lclip  
+
+> b,j
+
+− cent ¯H + ckl DKL , (8) where Lclip  
+
+> b,j
+
+= min  rb,j ˆAb,j , clip( rb,j , 1−ϵ, 1+ ϵ) ˆAb,j 
+
+, rb,j = πΘ (gb,j )/π Θold (gb,j )
+
+is the importance ratio, ¯H is the mean entropy, and DKL is the mean KL di-vergence to πref . The policy is updated for K epochs per step with gradient clipping. In practice, we initialize Θ using hierarchical clustering on the pairwise cosine similarity matrix of expert outputs from calibration data. This warm-start cap-tures expert behavioral similarity, reducing the number of GRPO steps needed to converge. The clustering-derived assignment sets higher logit values for expert-group pairs placed together by clustering, with remaining logits initialized to zero. We further employ early stopping: if Rbest does not improve for a config-urable number of consecutive steps, the search terminates early. The complete search procedure is described in Algorithm 1, which consists of four phases: sampling and perturbation (lines 4–9), reward evaluation through short-horizon distillation (lines 10–15), group-relative advantage computation (lines 16–19), and PPO clipped surrogate update (lines 20–23). Several imple-mentation choices are made to connect the search objective with practical serv-ing. Capacity-constrained sampling guarantees that every candidate grouping can be deployed without changing the expert-parallel layout. Swap-based pertur-bation creates local alternatives around the same base grouping, so the relative advantage compares candidates under similar structural contexts rather than un-related partitions. The routing-weighted reward further prevents rarely activated experts from dominating the search objective. After the offline search finishes, only the selected grouping map and the distilled united expert weights are loaded by the serving engine, so GRPO introduces no additional request-time computa-tion. BrownoutMoE therefore treats GRPO as an offline calibration component rather than a request-path optimizer. The calibration run records both routing frequencies and expert outputs for each layer, and the final grouping is stored as a model-version artifact together with the distilled united-expert weights. When the workload changes, this artifact can be regenerated without modifying the online scheduler. During serving, the original gate still determines the active ex-perts for each token; BrownoutMoE only replaces eligible cold-expert calls with their corresponding united expert according to the saved map. This separation keeps the online SLO controller simple: it adjusts the brownout threshold, while the structure-aware map determines the lower-cost substitute selected at that threshold. BrownoutMoE: Structure-Aware Expert Grouping for MoE Inference 11 
+
+Algorithm 1 GRPO-Based Expert Grouping Search 
+
+Require: Policy logits Θ ∈ RE×G; calibration data D; routing weights w; expert weights {We}; GRPO steps N ; batch size B; perturbations per base Gp; swap count nswap ; distill steps T ; PPO epochs K; clip ϵ
+
+Ensure: Optimal expert grouping g∗
+
+1: Θref ← Θ; Rbest ← −∞ 
+
+2: for step = 1 to N do 
+
+3: Θold ← Θ
+
+4: // Phase 1: Sample & Perturb 
+
+5: for b = 1 to B do 
+
+6: Sample base grouping gb, 0 ∼ πΘold with capacity constraints (Eq. 4) 7: for j = 1 to Gp do 
+
+8: gb,j ← SwapRandomPairs( gb, 0, n swap )
+
+9: end for 
+
+10: end for 
+
+11: // Phase 2: Reward Evaluation 
+
+12: for each gb,j , b ∈ [1 , B ], j ∈ [0 , G p] do 
+
+13: Run T -step distillation → MSE total (gb,j ) via Eq. (6) 14: R(gb,j ) ← − MSE total (gb,j ); store log πΘold (gb,j )
+
+15: if R(gb,j ) > R best then 
+
+16: Rbest ← R(gb,j ); g∗ ← gb,j 
+
+17: end if 
+
+18: end for 
+
+19: // Phase 3: Group-Relative Advantage 
+
+20: for b = 1 to B do 
+
+21: μb ← 1
+
+> Gp+1
+
+PGp 
+
+> j=0
+
+R(gb,j ); σb ← std( {R(gb,j )}Gp
+
+> j=0
+
+)
+
+22: ˆAb,j ← (R(gb,j ) − μb)/(σb + ϵ) for j = 0 , . . . , G p
+
+23: end for 
+
+24: // Phase 4: PPO Clipped Surrogate Update 
+
+25: for epoch = 1 to K do 
+
+26: rb,j ← πΘ (gb,j )/π Θold (gb,j ); LGRPO via Eq. (8) 27: Update Θ via Adam; clip ∥∇ Θ∥ ≤ 1.0
+
+28: end for 
+
+29: end for 
+
+30: ggreedy ← arg max g πΘ (g); if R(ggreedy ) > R best then g∗ ← ggreedy 
+
+31: return g∗
+
+Complexity Analysis. The overall time complexity is dominated by Phase 2 (reward evaluation), requiring O(N · B(Gp+1) · T ) forward passes over N
+
+GRPO steps, where Phase 2 accounts for over 95% of wall-clock time, making the distillation budget T the primary efficiency knob. 
+
+4.4 Grouping-Consistent United Expert Distillation 
+
+After GRPO search finds the optimal grouping g∗ for each layer, we perform full distillation to train the united expert parameters: 
+
+min  
+
+> W(k)
+
+Ex∼D 
+
+h
+
+∥fuk (x; W (k)) − tk(x)∥22
+
+i
+
+, (9) 12 Y. Ding et al. 
+
+where D is the calibration dataset and tk(x) is defined in Eq. (5). The united expert is initialized as the parameter average of member experts and trained with AdamW (learning rate = 10 −4, max steps = 2000 ) with early stopping (patience = 300 , min-delta = 10 −7). The united expert weights and the grouping map are saved and loaded by the inference engine at runtime. The grouping map {g∗(e) : e ∈ E} determines which united expert handles tokens originally routed to each cold expert, replacing the fixed sequential grouping. 
+
+4.5 SLO-Aware Latency Control 
+
+BrownoutMoE uses an SLO-aware latency controller to decide how aggressively the runtime applies united experts. The grouping map determines which united expert serves each cold expert, while threshold adjustment determines when to use that path. The core idea is to keep latency slightly below the SLO level: maximize 1
+
+n
+
+> n
+
+X
+
+> i=1
+
+Accuracy i(threshold , k ) (10) subject to Latency ij (threshold , k ) ≤ SLO , ∀i, j. (11) When recent P90 latency exceeds the SLO, the threshold is multiplicatively reduced to lower latency. When latency falls below a warning line, the threshold is linearly increased to improve accuracy. This co-optimization of latency and resource efficiency aligns with SLO-targeted resource control in cloud-native mi-croservice architectures [12], where dynamic parameter adjustment maintains service quality under variable workloads. 
+
+# 5 Performance Evaluations 
+
+In this section, we evaluate BrownoutMoE on accuracy, throughput, and system scalability. 
+
+Experimental Setup. We evaluate on Qwen1.5-MoE-A2.7B-Chat (14.3B total parameters, 60 routed experts per layer, top-4 routing) using 8 NVIDIA A100-80GB GPUs, with 24 MoE layers trained in parallel. 
+
+Datasets. We use four reasoning and QA benchmarks for accuracy eval-uation: PIQA, COPA, C-Eval (validation set, few-shot), and OpenBookQA (5-shot). For throughput evaluation, we use ShareGPT and Alpaca following vLLM [9]. 
+
+Baselines. BrownoutServe (Sequential Grouping) [7] is the original system with sequential expert grouping, where experts are assigned to groups by index order (experts 0, . . . , k −1 form group 0, etc.). United experts are trained via knowledge distillation under this fixed grouping, and partial brownout is applied with configurable thresholds. Zero Brownout (threshold = 1 .0, no merging) and Full Brownout (threshold = 0 , all cold tokens to united experts) serve as accuracy upper and lower bounds. Accuracy (% correct) and Throughput (tokens/s) are used as evaluation metrics. BrownoutMoE: Structure-Aware Expert Grouping for MoE Inference 13 
+
+Accuracy Comparison. Fig. 4 shows the downstream task accuracy under 2-way, 4-way, and 8-way grouping configurations on four benchmarks.        
+
+> BrownoutMoE BrownoutServe Full Brownout Zero Brownout
+> (a) (b) (c) (d)
+> Fig. 4. Accuracy under different grouping strategies and brownout thresholds on PIQA, COPA, C-Eval, and OBQA.
+
+As shown in Fig. 4, GRPO-optimized grouping consistently outperforms se-quential grouping. Under 8-way grouping at threshold 0.4, it reduces accuracy degradation by 45.3% on C-Eval, 71.4% on PIQA, and 50.0% on COPA; on OBQA, it improves absolute accuracy by up to 7.2%. Under 4-way grouping, C-Eval degradation is reduced by 46.1%. The gain is smaller under 2-way group-ing because each united expert approximates only two experts. As grouping be-comes more aggressive, BrownoutMoE remains closer to the zero-brownout upper bound by selecting behaviorally compatible experts before distillation. Overall, structure-aware grouping controls accuracy loss more effectively as more experts are merged, and its offline GRPO search adds no runtime overhead. 
+
+Throughput Comparison. We further evaluate inference throughput un-der different brownout configurations, with results shown in Fig. 5. 14 Y. Ding et al.        
+
+> vLLM 2-way 4-way 8-way
+> (a) ShareGPT (b) Alpaca (c) ShareGPT (d) Alpaca
+> Fig. 5. Throughput comparison under different brownout configurations, without and with fused MoE.
+
+As shown in Fig. 5, more aggressive brownout improves throughput by reduc-ing active experts per request. Under unfused MoE, 8-way grouping reaches 475 tokens/s on ShareGPT and 460 tokens/s on Alpaca, improving over the base-line by 2.1 × and 2.24 ×. With fused MoE, all configurations converge to similar peak throughput ( ∼1750–1800 tokens/s), because kernel fusion dominates the marginal benefit of stronger brownout. 
+
+Scalability and Latency Comparison. Fig. 6 evaluates scalability under different GPU counts with tensor parallelism in unfused MoE mode.       
+
+> 2-GPU 4-GPU 8-GPU
+> (a) ShareGPT (b) Alpaca (c) ShareGPT (d) Alpaca
+> Fig. 6. System scalability and latency evaluation on ShareGPT and Alpaca.
+
+As shown in Fig. 6(a) and Fig. 6(b), throughput increases with request rate until saturation. On ShareGPT, 4-GPU reaches about 1.9 × the 2-GPU peak, and 8-GPU further delivers 1.65 × over 4-GPU. Fig. 6(c) and Fig. 6(d) show gradual latency growth under 8 GPUs, indicating stable service behavior under increasing request rates. 
+
+Generalizability Discussion. BrownoutMoE uses routing statistics and post-distillation error rather than model-specific modifications, making the group-ing pipeline applicable to other sparse MoE models. 
+
+# 6 Conclusions 
+
+In this paper, we present BrownoutMoE, a structure-aware expert grouping framework for efficient and accurate MoE inference services. It uses GRPO to place behaviorally similar experts together, reducing accuracy degradation by up to 71.4% and improving throughput by up to 2.24 ×. BrownoutMoE is applica-ble to LLM Web-based applications that require efficient and accurate responses under dynamic workloads. BrownoutMoE: Structure-Aware Expert Grouping for MoE Inference 15 
+
+# References 
+
+1. Cao, S., Liu, S., Griggs, T., et al.: MoE-Lightning: High-throughput MoE inference on memory-constrained GPUs. In: Proceedings of the 30th ACM International Conference on Architectural Support for Programming Languages and Operating Systems. pp. 715–730 (2025) 2. Dao, T., Fu, D., Ermon, S., et al.: FlashAttention: Fast and memory-efficient exact attention with IO-awareness. Advances in neural information processing systems 
+
+35 , 16344–16359 (2022) 3. Fedus, W., Zoph, B., Shazeer, N.: Switch transformers: Scaling to trillion parameter models with simple and efficient sparsity. Journal of Machine Learning Research 
+
+23 (120), 1–39 (2022) 4. Gale, T., Narayanan, D., Young, C., Zaharia, M.: MegaBlocks: Efficient sparse training with mixture-of-experts. Proceedings of Machine Learning and Systems 
+
+5, 288–304 (2023) 5. He, Y., Xu, M., Wu, J., Hu, J., Ma, C., Shen, M., Chen, L., Xu, C., Qu, L., Ye, K.: BanaServe: Unified KV cache and dynamic module migration for balancing disaggregated LLM serving in AI infrastructure. Software: Practice and Experience (2026) 6. Hinton, G., Vinyals, O., Dean, J.: Distilling the knowledge in a neural network. arXiv preprint arXiv:1503.02531 (2015) 7. Hu, J., Xu, M., Ye, K., Xu, C.: BrownoutServe: SLO-aware inference serving under bursty workloads for MoE-based LLMs. IEEE Transactions on Computers 75 (4), 1636–1649 (2026) 8. Jiang, A.Q., Sablayrolles, A., Roux, A., et al.: Mixtral of experts. arXiv preprint arXiv:2401.04088 (2024) 9. Kwon, W., Li, Z., Zhuang, S., et al.: Efficient memory management for large lan-guage model serving with PagedAttention. In: Proceedings of the 29th Symposium on Operating Systems Principles. pp. 611–626 (2023) 10. Liu, A., Feng, B., Xue, B., et al.: DeepSeek-V3 technical report. arXiv preprint arXiv:2412.19437 (2024) 11. Shao, Z., Wang, P., Zhu, Q., et al.: DeepSeekMath: Pushing the limits of mathemat-ical reasoning in open language models. arXiv preprint arXiv:2402.03300 (2024) 12. Wang, Z., Li, P., Liang, C.J.M., Wu, F., Yan, F.Y.: Autothrottle: A practical Bi-Level approach to resource management for SLO-Targeted microservices. In: 21st USENIX Symposium on Networked Systems Design and Implementation (NSDI 24). pp. 149–165 (2024) 13. Xu, M., Toosi, A.N., Buyya, R.: A self-adaptive approach for managing appli-cations and harnessing renewable energy for sustainable cloud computing. IEEE Transactions on Sustainable Computing 6(4), 544–558 (Oct-Dec 2021) 14. Xu, M., Wu, J., Song, S., Srirama, S.N., Javad, B., Ranjan, R., Jha, D.N., Wang, S., Tian, W., Xu, H., Li, L., Mo, Z., Ren, S., Kunz, T., Kochovski, P., Stankovski, V., Ye, K., Xu, C., Buyya, R.: Cloud-native and distributed systems for effi-cient and scalable large language models – a research agenda. arXiv preprint arXiv:2604.17227 (2026) 15. Zhong, Y., Liu, S., Chen, J., et al.: DistServe: Disaggregating prefill and decoding for goodput-optimized large language model serving. In: 18th USENIX Symposium on Operating Systems Design and Implementation. pp. 193–210 (2024)

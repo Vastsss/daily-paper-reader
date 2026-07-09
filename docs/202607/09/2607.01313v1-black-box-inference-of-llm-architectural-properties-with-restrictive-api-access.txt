@@ -1,0 +1,1245 @@
+Title: Black-Box Inference of LLM Architectural Properties with Restrictive API Access
+
+URL Source: https://arxiv.org/pdf/2607.01313v1
+
+Published Time: Fri, 03 Jul 2026 00:06:51 GMT
+
+Number of Pages: 31
+
+Markdown Content:
+# Black-Box Inference of LLM Architectural Properties with Restrictive API Access 
+
+Christopher Ellis ∗
+
+Carnegie Mellon University Pittsburgh, PA 15213 
+
+crellis@andrew.cmu.edu 
+
+Shreyas Chaudhari ∗
+
+Carnegie Mellon University Pittsburgh, PA 15213 
+
+shreyasc@andrew.cmu.edu 
+
+Mei-Yu Wang ∗
+
+Pittsburgh Supercomputing Center Pittsburgh, PA 15213 
+
+mwang7@psc.edu 
+
+Leighton Barnes 
+
+Carnegie Mellon University Pittsburgh, PA 15213 
+
+leightonb@cmu.edu 
+
+Giulia Fanti 
+
+Carnegie Mellon University Pittsburgh, PA 15213 
+
+gfanti@andrew.cmu.edu 
+
+José M. F. Moura 
+
+Carnegie Mellon University Pittsburgh, PA 15213 
+
+moura@andrew.cmu.edu 
+
+## Abstract 
+
+In practice, most commercial LLM providers do not publicly release details of underlying LLM architectures. However, prior work has shown that given limited API access to an LLM (namely, top-k logits and/or a logit bias function), one can recover certain architectural details of an LLM, such as the hidden dimension of the feed-forward network. Perhaps in response to these results, most commercial LLM providers have restricted their APIs to expose only the single logit for each decoded token, and they no longer give users the ability to bias logits. We show that even under current restrictive APIs, several architectural parameters are still recoverable. We present NightVision, an attack that uses restrictive black-box API access to estimate the hidden dimension, depth, and parameter count of an LLM. Algorithmically, NightVision relies on a novel common set prompting technique in which multiple prompts expose log probabilities for the same set of output tokens; a spectral analysis of these results is used to infer hidden dimension. NightVision additionally uses end-to-end time to first token (TTFT) measurements and the estimated hidden dimension to estimate depth and parameter count. We empirically evaluate NightVision on 32 open-source LLMs, recovering hidden dimension to within 23% average relative error across all models ( 9% on MoE models), and depth and parameter count to within 53% for models exceeding three billion parameters. We run extensive ablations to demonstrate how these accuracies scale with token budget and model properties. Overall, our results suggest that current LLM APIs are not sufficiently restricted to fully obfuscate the architectural details of their underlying models. 
+
+## 1 Introduction 
+
+Can attackers infer architectural properties of a large language model, e.g., its hidden dimension, depth, or total parameter count, from API access alone? This question is of great interest to both LLM 
+
+> ∗Equal contribution Preprint.
+> arXiv:2607.01313v1 [cs.LG] 1 Jul 2026
+
+developers and servers, who may seek to keep their hyperparameters and associated model intellectual property secret [Tramèr et al., 2016]. It is also relevant to security researchers and digital forensics experts, who may need to characterize unknown LLM APIs encountered in the wild. The feasibility of black-box architectural inference thus has direct implications for both API design [Hartenstein, 2025, Liu et al., 2026] and model auditing [Amirizaniani et al., 2024, Mökander et al., 2024, Rastogi et al., 2023]. Recent black-box attacks [Zhao et al., 2025] have shown that hidden dimension and final-layer weights (up to orthogonal transformation) can be recovered via spectral analysis of output logits [Carlini et al., 2024, Finlayson et al., 2024]. These attacks critically depend on either full log probabilities or a logit-bias parameter that allows the attacker to reconstruct full logit vectors from top-k probabilities. In response, as modern language model APIs continue to evolve [Chauvin et al., 2025], providers have started to restrict access to both top-k logits and logit bias [Carlini et al., 2024], rendering these attacks inapplicable on such APIs. A natural question is whether architectural inference remains feasible under a more restrictive API that models those of current frontier models. We answer affirmatively. Assuming only the log probability of a single decoded token at each step (the minimal probabilistic information consistent with modern LLM APIs) together with end-to-end response timing, which cannot easily be hidden, we recover not only the hidden dimension but also depth and total parameter count, within a margin of error. 
+
+Contributions. Our contributions are threefold and summarized below. Overall, our results demon-strate that meaningful inference of sensitive architectural properties remains possible even under restrictive API access, and that closing this channel will require defending against timing side channels in addition to logit access. 
+
+(1) Algorithmic: We introduce NightVision, a two-pronged inference algorithm that uses black-box API access to jointly recover the hidden dimension, depth, and parameter count of transformer-based LLM architectures. The first prong of NightVision introduces common-set prompting , a novel method that recovers the hidden dimension under single-logit API access, requiring neither logit bias nor top-k access. Second, we develop a timing-based recovery procedure for depth and parameter count that exploits the distinctive scaling of prefill-dominated transformer inference with depth, sequence length, and hidden dimension; this stage uses our hidden-dimension estimate as a building block. 
+
+(2) Theoretical: We analytically bound in Section 4.1.2 the number of API calls needed to successfully recover the requisite “common set” used in NightVision. Via a concentration argument on the size of the intersection of randomly-sampled token sets across multiple prompts, we derive a sample-complexity result that quantifies how many samples per prompt are required to form a common set of a target size, or equivalently, the largest hidden dimension recoverable with high probability under a fixed sample budget. 
+
+(3) Experimental: We evaluate NightVision on 32 open-source LLMs, showing that it recovers the hidden dimension within 23% mean relative error (exact recovery in 4 of 32 cases, and within 10% 
+
+in 12 of 32). Conditioned on an accurate hidden dimension, NightVision recovers depth and total parameter count within ∼53% mean relative error on ≥ 3B-parameter models. The accuracy of our estimates depends in part on the budget of tokens given to NightVision. We also provide a fine-grained characterization of how estimation accuracy scales with budget and architecture properties. 
+
+## 2 Technical Preliminaries 
+
+Architectural Parameters of LLMs. Most LLMs can be modeled as stacks of L transformer decoder layers [Vaswani et al., 2017]. In these architectures, each transformer block operates on hidden representations of a fixed dimension d. We refer to L as the depth , d as the hidden dimension ,and P as the parameter count totaled over the entire architecture; together they determine inference cost, memory footprint, and capability, and are commonly held proprietary by LLM providers. The hidden dimension d admits a particularly clean recovery target: the next-token logits are produced as z = Wh , where h ∈ Rd is the last-layer hidden state and W ∈ R|V|× d is the output embedding matrix over a vocabulary V. Since |V| ≫ d in practice, the matrix of logits collected across many 2prompts has rank at most d. This softmax bottleneck is the structural fact exploited by prior attacks [Carlini et al., 2024, Finlayson et al., 2024] and by our spectral method in Section 4.1.1. 
+
+Threat Model. Consider a target model ϕ that consists of stacked transformer blocks, each with the same hidden dimension d and depth L, as is common in modern LLM architectures. Given API access to ϕ, our goal is to estimate d, L, and parameter count P . Given an in-put sequence S = ( x1, . . . , x t−1), an LLM produces a next-token logit vector zS ∈ R|V| with entries z(i) 
+
+> S
+
+. Many APIs expose a temperature parameter τ > 0 that rescales the logits prior to the softmax, yielding a probability vector pS (τ ) = softmax( zS /τ ) ∈ ∆|V|− 1 with entries 
+
+p(i) 
+
+> S
+
+(τ ) = exp( z(i) 
+
+> S
+
+/τ )/ P 
+
+> j
+
+exp( z(j) 
+
+> S
+
+/τ ) = P(xt = vi | x1, . . . , x t−1) and a corresponding log-probability vector yS (τ ) with entries y(i) 
+
+> S
+
+(τ ) = log p(i) 
+
+> S
+
+(τ ); larger τ flattens the distribution toward uniform, and τ = 1 recovers the unscaled distribution pS ≜ pS (1) . We use vi for i ∈ [|V| ] to denote the ith token label. We operate in a restricted black-box setting in which none of zS , zS (τ ), pS , or 
+
+pS (τ ) is observed. Once the model decodes a next token vi0 by sampling under pS (τ ), only the realized log-probability y(i0) 
+
+> S
+
+(τ ) is revealed. When prompts are indexed as Sq (as in our common-set construction in Section 4.1), we abbreviate z(i) 
+
+> q
+
+≜ z(i) 
+
+> Sq
+
+, p(i) 
+
+> q
+
+≜ p(i) 
+
+> Sq
+
+, and y(i) 
+
+> q
+
+≜ y(i) 
+
+> Sq
+
+. Hence, our threat models are strictly weaker (give less information to the attacker) than those of Carlini et al. [2024] and Finlayson et al. [2024], which additionally grant top-k entries of pS (τ ) or logit-bias control prior to the final softmax. Our common-set prompting method (Section 4.1) benefits from flatter distributions, so we use τ = 2 (the cap on most current APIs) 
+
+## 3 Related Work 
+
+Carlini et al. [2024] and Finlayson et al. [2024] concurrently showed that an LLM’s hidden dimension can be recovered from API access by exploiting the softmax bottleneck: the matrix of output logits across many prompts has rank equal to the hidden dimension, which can be readily determined via singular value decomposition. Carlini et al. [2024] further recover the final output layer up to orthogonal transformations. Crucially, both methods depend on a logit-bias parameter to reconstruct full logit vectors from the API’s top-k log-probability outputs (with k ≥ 1) [Morris et al., 2023], and both are rendered ineffective once this functionality is removed. We provide a detailed algorithmic comparison between our method and that of Carlini et al. [2024] in Section 4.1. Table 1: Prior work on black-box recovery of architectural properties from production LLM APIs. The left block shows the access the attack requires ; the right block shows what it recovers . All prior attacks that recover hidden dimension require a logit-bias parameter (used to reconstruct full logit vectors from a single decoded log-probability, which is why “Full logits” is not checked), a feature that has been removed or restricted by major providers in response.                     
+
+> Required access Recovered Work Text only Full logits Logit bias Single logprob Inference timing Hidden Depth #Params Carlini et al. [2024] ✓✓✓
+> Finlayson et al. [2024] ✓✓✓
+> Li [2026] ✓✓
+> NightVision (basic common-set) ✓✓
+> NightVision (with timing) ✓✓✓✓✓
+
+More recently, Li [2026] take an alternative approach, in which rather than probing the model’s internals, they attempt to probe what it has learned. Their method, Incompressible Knowledge Probes 
+
+(IKPs), tests a model on obscure factual questions whose answers cannot be inferred from general reasoning and must instead be memorized in the model’s weights. Since storing more facts requires more parameters, a model’s accuracy on these probes serves as a proxy for its size, once calibrated against open-weight models of known size. Table 1 positions our work against these methods by threat model, namely, the API access each attack requires, and which architectural properties it recovers. Our method requires the strictly weakest probabilistic API access of any approach that recovers the hidden dimension, and it is the only method that jointly recovers depth, hidden dimension, and parameter count. Due to space constraints, we discuss additional related work in Appendix A. 34 NightVision: Algorithm and Analysis 
+
+Figure 1: NightVision overview 
+
+We first give an overview of NightVision, as illustrated in Figure 1, followed by a detailed explanation of its components. NightVision proceeds in two phases. The first phase, which we call the common-set prompting attack , is used to recover the hidden dimension d (Sec-tion 4.1). The second phase, which we refer to as the 
+
+timing attack recovers the parameter count and depth, given an estimate for hidden dimension ˆd obtained in phase 1 (Section 4.2). Given a total budget of B tokens for the attack (we find that B > 2 × 10 11 
+
+tokens are required in practice for LLMs with billions of parameters), we allocate the first 10 million tokens to the timing attack, and the rest to the common-set prompting attack. 
+
+4.1 Phase 1: NightVision Common-Set Prompting Attack 
+
+We first review the attack of Carlini et al. [2024] under top-1 logit access and explain why it is infeasible under modern APIs. We then present our common-set prompting attack (Section 4.1.1) and analyze its sample complexity (Section 4.1.2).   
+
+> Carlini et al. [2024]: Top-1binary logit-bias attack NightVision Phase 1: Common-set prompting attack Require:
+
+1: Top-1 logprob API with binary bias b ∈ {− 1, 0}
+
+2: Prompts D = {Sq }nq=1 with n > d 
+
+> Require:
+
+1: Single sampled logprob API (no logit bias) 
+
+2: High-entropy prompts D = {Sq }Dq=1 , number of samples N ,temperature τ
+
+> Stage 1: Collect Outputs
+
+3: for q = 1 , . . . , n do 
+
+4: Query unbiased ; record top token r and its logprob ytop 
+
+5: for each t ∈ V \ { r} do 
+
+6: Query biased ; record logprob y′
+
+> top
+
+7: Recover prob. : p(t)       
+
+> q= exp( ytop −y′
+> top )−11/e −1
+
+8: Convert to logit : z(t)    
+
+> q= log p(t)
+> q−ytop
+
+9: end for 
+
+10: end for 
+
+3: for q = 1 , . . . , D do 
+
+4: for k = 1 , . . . , N do 
+
+5: Sample at temperature τ ; record  
+
+> 
+> vik, y (i)
+> q
+> 
+
+6: end for 
+
+7: Tq ← { unique tokens observed }
+
+8: end for 
+
+> Stage 2: Form Matrix
+
+9: Build Q ∈ Rn×|V| with Qq,t = z(t) 
+
+> q
+
+9: Common set C and common prompts D′ formed via greedy pruning of sparse D×|V| matrix (Section 4.1.1) 
+
+10: Build Y ∈ RD′×|C| with Yq,i = y(vi)     
+
+> qfor vi∈ C
+> Stage 3: Estimate dvia spectrum
+
+11: Compute SVD of Q; extract σ1 ≥ σ2 ≥ · · · 
+
+12: return ˆd at the largest gap in {σi}
+
+11: Eigendecompose G = YY ⊤; extract λ1 ≥ λ2 ≥ · · · 
+
+12: return ˆd via saddle-then-peak inflection on ai =arctan( λi) (saddle at ai ≤ arctan( π), peak at ai ≤
+
+> arctan( π/ 2) ; Section 4.1.1)
+
+Figure 2: Comparison of our common-set prompting attack to Top-1 binary logit-bias attack of Carlini et al. [2024]. 
+
+The attack of Carlini et al. [2024] The attack of Carlini et al. [2024] follows a three-stage procedure, illustrated in Figure 2 (left): (1) collect outputs from prompts, (2) assemble a logit matrix, and (3) estimate ˆd from its singular values. In stage (1), they query the target LLM ϕ with a set D of 
+
+n > d distinct prompts. For each prompt q, they record the top token r and its log-probability ytop .Then, for each non-top token t, they submit a query with a logit bias of −1 on t, which suppresses 
+
+t and yields a new top log-probability y′ 
+
+> top
+
+for r. The shift ytop − y′ 
+
+> top
+
+depends on the original probability of t, and inverting it in closed form gives p(t) 
+
+> q
+
+= (exp( ytop − y′
+
+> top
+
+) − 1) /(1 /e − 1) , the probability of t under prompt q. In stage (2), these probabilities are converted to logits and collected into an n × |V| matrix Q, with one row per prompt and one column per token in V. In stage (3), the singular values of Q recover the hidden dimension: the rank shows up as a pronounced drop in the ordered singular values (Section B.1.3), at an index that typically matches the true d. This attack is infeasible in our threat model, where logit bias is unavailable: without it, individual token probabilities cannot be recovered and Q cannot be constructed. 44.1.1 Common-Set Prompting 
+
+Our common-set prompting attack follows the same three high-level stages as Carlini et al. [2024]: (1) output collection, (2) matrix formation, and (3) spectral estimation. Each stage is instantiated differently, as shown in Figure 2. 
+
+(1) Output Collection: Common-Set Prompting Our goal is to construct a matrix Y analogous to Q from Carlini et al. [2024], in which each row corresponds to a prompt from a set D′, each column corresponds to a token from a set C ⊆ V , and entries are log-probabilities of tokens c ∈ C 
+
+under prompts S ∈ D ′. Without logit bias, a token’s log-probability is only visible when the model decodes it. We pick D′ and C jointly so that, under repeated sampling of ϕ, every token in C appears at least once for every prompt in D′. Spectral recovery requires |C| > d , so we seek high-entropy input prompts likely to produce a large vocabulary of output tokens. Specifically, we start with a set D = {Sq }Dq=1 of D prompts chosen to induce high-entropy distribu-tions over the next token (details below). For each prompt Sq ∈ D , we draw N independent samples from ϕ(Sq ) at temperature τ (concrete values for D, N , and τ are listed in Section B.2). Each call k ∈ [N ] returns a single decoded token vik sampled from the temperature-scaled distribution 
+
+p(τ ), together with its log-probability y(ik ) 
+
+> q
+
+under that distribution. No other entries of the output distribution are revealed. Let Tq ⊆ V denote the set of unique tokens decoded under prompt Sq across its N samples, 
+
+Tq ≜ ∪k∈[N ]{vik }. We define the common set as C ≜ ∩q∈[D]Tq , i.e., the set of tokens decoded at least once under every prompt. The number of samples N required to form a common set of a given size depends on the next-token distributions. Increasing temperature τ alone is typically insufficient to drive |C| above d, so prompt selection becomes the dominant lever for vocabulary coverage (Section B.1.1). We find that out-of-distribution token sequences (inputs the model has likely not seen during training) reliably produce diffuse predictions. Our automated prompt search (Section B.1.1) draws candidates from character groups including Latin, CJK, emoji, Arabic, Hebrew, Braille, and mathematical symbols. 
+
+(2) Sampling and Common Token Matrix Construction We populate a sparse log-probability matrix ˆYfull ∈ RD×|V| with [ ˆYfull ]q,i = y(i) 
+
+> q
+
+for vi ∈ T q and NaN elsewhere. Different prompts cover different parts of the vocabulary, so ˆYfull contains many missing entries and cannot be fed to the spectral step directly. We apply greedy NaN-pruning (Section B.1.2) to extract a dense submatrix: the surviving columns form the common set C, and the surviving rows define a subset of prompts 
+
+D′ ⊆ D retained for spectral analysis. Let D′ = |D ′| denote the post-pruning prompt count; the resulting dense submatrix Y ∈ RD′×|C| feeds the spectral step. 
+
+(3) Spectral Hidden-Dimension Estimation We recover d from Y via spectral analysis, following Carlini et al. [2024]. The singular values of Y are noisy, so we work instead with the Gram matrix 
+
+G = YY ⊤ (or Y⊤Y when D′ > |C| ) to amplify the signal. Its eigendecomposition G = U Λ U ⊤
+
+yields ordered eigenvalues λ1 ≥ λ2 ≥ · · · ≥ λmin( D′,|C| ) ≥ 0. The leading eigenvalues span several orders of magnitude while the tail is comparatively flat, so the elbow rule of Carlini et al. [2024] does not isolate a clean inflection. We use a custom change-point detector (Section B.1.3): a transform of the spectrum exposes the head-to-tail transition, two geometric landmarks bracket ˆd from above and below, and the point of maximum curvature within that bracket is taken as ˆd. The detector exposes a few hyperparameters (slope half-window, smoothing window, prominence fraction); the values used throughout the evaluation are listed in Section B.2. Finally, we snap ˆd to a grid spacing g = 128 ,since hidden dimensions of deployed models are almost always multiples of powers of two. 
+
+4.1.2 Theoretical Analysis: Sample Complexity of the Common-Set Attack 
+
+We bound the number of samples per prompt sufficient to construct a common-set matrix large enough for spectral recovery of the hidden dimension. The spectral method (Section 4.1.1) operates 5on a matrix Y ∈ RD′×|C| whose rank reflects the hidden dimension d, so recovery requires both 
+
+D′ ≥ d and |C| ≥ d. The first condition is controlled by the attacker via the size D ≥ D′ of the prompt collection; the second is a probabilistic event determined by how many samples are drawn per prompt. We hence study the sample size N required to ensure |C| ≥ d with high probability. 
+
+Theorem 1. [Sample complexity for spectral recovery] Let V be a finite vocabulary of size |V| , and let T1, . . . , TD be D independent random subsets of V, each formed by drawing N tokens uniformly at random with replacement from V. Let C ≜ T1 ∩ · · · ∩ T D denote their common intersection, and 
+
+d ≤ D be a target threshold. If 
+
+N ≥
+
+ln 
+
+"
+
+1 −
+
+ d+√2d ln(1 /δ )+2 ln(1 /δ )
+
+> |V|
+
+1/D #
+
+ln(1 − 1/|V| ) (1) 
+
+then |C| ≥ d with probability at least 1 − δ.
+
+(Proof in Section F) Expanding (1) (also in Section F) shows that the total sufficient query budget roughly scales as DN = O(|V| D ln D). Theorem 1 assumes uniformity, an idealization of the high-entropy prompts produced by our search (Section 4.1). Corollary 1 in Section F generalizes the bound to non-uniform distributions over a sub-vocabulary V′ ⊆ V . The same form holds with |V| and 
+
+1/|V| in the numerator and denominator respectively replaced by |V ′| and t in the appropriate places. We empirically validate the predicted scaling against measured common-set sizes in Section 5.2. 
+
+4.2 Phase 2: NightVision Timing Attack 
+
+In Phase 2, NightVision uses end-to-end inference time, from API call to token return, as a comple-mentary side-channel signal to infer depth and parameter count. The timing attack (full pseudocode in Figure 11) has three sub-phases: (1) timing collection, (2) depth estimation, and (3) parameter count inference. Our attack assumes access to a collection of K
+
+models F = {ϕi}Ki=1 , which could be obtained from open-source models. These are used to learn a timing scaling relation, which is applied to our target model ϕ.
+
+(1) Timing Collection Transformer-based LLM inference comprises two stages: prefill , in which the model processes the input prompt to build hidden states and populate the per-layer key-value (KV) cache, and decode , in which tokens are generated autoregressively, reusing cached keys and values to avoid recomputing the full context. The prefill stage tends to be more predictable computationally due to optimizations once the KV cache is filled, such as Grouped-Query Attention (GQA) [Ainslie et al., 2023]. Hence, we design prompts with long input sequences and minimal generation length so that end-to-end latency is dominated by prefill. To make prefill dominate, we create a set of N ′ diverse input sequence lengths L = {ℓj }N ′ 
+
+> j=1
+
+(distinct from the prompt set D in Section 4.1.1). For each input length ℓj (j ∈ [N ′]) and each training model 
+
+ϕi, we collect an end-to-end timing signal Ti,j .
+
+(2) Depth L Estimation To estimate L, we model the prefill-dominated runtime Ti,j for model ϕi
+
+on input length ℓj as: 
+
+Ti,j ≈ β L i ℓ2 
+
+> j
+
+di + α, (2) where Li is the layer count, di the true hidden dimension, and β, α are empirical fitting parameters. The Li ℓ2 
+
+> j
+
+di term reflects the per-layer O(ℓ2d) attention cost [Vaswani et al., 2017, Dao et al., 2022], which dominates the O(ℓ d 2) projection and FFN terms in the long-context regime [Kaplan et al., 2020]. We show that this is a good model for timing measurements empirically in Section 5.3. The coefficient β reflects a combination of system-level factors (kernel efficiency, e.g., FlashAtten-tion [Dao et al., 2022]; hardware bandwidth; numerical precision; parallelism) and architectural choices (multi-head versus grouped-query attention (GQA) [Ainslie et al., 2023]; two-matrix GELU versus three-matrix SwiGLU FFN). Despite these sources of variation, we find that a single global 
+
+β provides a good approximation for models exceeding approximately 3B parameters that employ LLaMA-style transformer blocks, the predominant architectural choice in modern large language models. 6Our basic estimator for L for a target model ϕ learns a global β and α from our training set F
+
+via linear regression, using the variety of prompt lengths in the prompting set. Next, we plug α,
+
+β, and the hidden dimension estimate ˆd from the common-set token attack into (2) to solve for L.We intentionally retain a single linear term in the fitting relation and ignore system-level variations stemming from diverse inference engine configurations and accelerator types, which would otherwise confound multi-term fits. We discuss the effect of model architecture (including MoE models) in Section B.3.2 and extend this algorithm to a setting where the training set is run on different hardware than the target model in Section B.3.3. 
+
+(3) Total Parameter Count P Estimation Given our estimated hidden dimension ˆd, estimated layer count ˆL, and an upper bound on vocabulary size ˆV , we estimate the total parameter count assuming a LLaMA-style decoder-only transformer with GQA, SwiGLU feed-forward layers, and untied input/output embeddings. Although this architecture is quite different from many LLMs, we find that this model is sufficiently close in practice to predict parameter counts to reasonable accuracy (at least within an order of magnitude). 
+
+ˆP = 2 ˆV ˆd + ˆL
+
+
+
+2 + 2 nkv 
+
+nheads 
+
++ 3 dffn 
+
+ˆd
+
+
+
+ˆd 2 + (2 ˆL + 1) ˆd, (3) where nkv /n heads is the key-value head ratio and dffn / ˆd is the feed-forward expansion ratio. The first term accounts for the input embedding and output projection matrices (untied, as in LLaMA). The second term captures the per-layer parameter budget: query and output projections contribute 2 ˆd2,key-value projections contribute 2( nkv /n heads ) ˆd2, and the three SwiGLU weight matrices ( Wgate ,
+
+Wup , Wdown ) contribute 3( dffn / ˆd) ˆd2. The third term accounts for RMSNorm parameters: two per layer (pre-attention and pre-FFN) plus one final norm, each with ˆd learnable scale parameters. 2
+
+## 5 Results 
+
+Section 5.1 establishes overall efficacy; Section 5.2 isolates the factors governing hidden-dimension estimation via common-set prompting; Section 5.3 examines parameter-count and depth estimation. 
+
+Models We evaluate NightVision across 32 LLMs (full list in Section C). Our suite spans two architectural classes, dense and mixture-of-experts (MoE) transformers, drawn from the Qwen, IBM Granite, Llama, OLMo, and HuggingFace model families. Together they cover 135M–30B parameters, hidden dimensions d ∈ [576 , 4096] , and depths L ∈ [16 , 48] .
+
+Test bench Log-probability matrices and timing measurements are collected with HuggingFace 
+
+transformers and spot-checked against vLLM (v0.16.0). For the timing measurements used in the scaling-relation analysis, we serve models via vLLM and measure end-to-end inference latency through its API. The NightVision hyperparameters used throughout this section (number of prompts, samples per prompt, temperature, change-point detector windows, grid spacing, and precision) are fixed across all models and listed in Section B.2; further details on our timing measurements and experimental setup are in Section D. 
+
+Metrics We report cost in two units, token consumption and number of LLM calls, Token Consumption = ( System Prompt Length + Input Tokens + Output Tokens ) · (# Samples )
+
+that conservatively assumes no system-prompt caching. Plots showing error vs. token budget use the average system-prompt length across the 39 models, ¯ℓsys ≈ 31 tokens. We also report relative error :for parameter θ with estimate ˆθ, we define R(ˆθ; θ) = |θ − ˆθ|/θ .            
+
+> 2In practice this term is negligible, e.g., for ˆd= 4096 and ˆL= 32 it constitutes ∼0.3M out of ∼8B total parame-ters. Architecture-specific ratios are retrieved from a per-model registry when available; otherwise, we default to values representative of LLaMA-3 8B ( nkv /n heads = 1 /4,dffn /ˆd= 3 .5).
+
+75.1 Overall Results 
+
+We measure the accuracy of NightVision in estimating hidden dimension, parameter count, and depth as a function of total budget, measured in tokens. Figure 3 shows this tradeoff for all dense transformers in our dataset with parameter counts of at least 2B parameters; results are averaged across models with one run per model. For these curves, we use the estimate ˆd of hidden dimension as an input to the estimate of depth and parameter count, which causes error to propagate to ˆL and ˆP .On average, NightVision estimates hidden dimension, depth, and parameter count on average to within ∼ 40% , 25% , and 65% relative error, respectively , using a total budget of ∼ 800B tokens for model sizes ranging from 4B dense to 30B MoE. While there is significant variability across models (shown as lighter curves in Figure 3), we find that most of the models generally improve in relative error as budget increases, as expected. 
+
+Figure 3: Relative error vs. token budget. Errors for d,
+
+L, and P are shown as a function of total token budget, with bold curves denoting averages across target models and faint curves denoting individual models. Larger budgets generally reduce error, with L improving fastest and P remaining harder to estimate. Results include 
+
+≥3B-parameter dense models and MoE models. 
+
+NightVision works better on large mod-els. Figure 13 shows how relative error for estimating depth, parameter count, and hidden dimension, respectively depends on model size for a collection of model archi-tectures. We see that while the common-set prompting attack works well at all model sizes, depth and parameter count are more sensitive to model size. In particular, on larger models ( ≥ 3B parameters), NightVi-sion achieves low relative error (often be-low 30%) for depth and parameter count estimation. However, for models below 3B parameters, the estimation error is of-ten over 100% for both parameters. This is likely because in smaller models, the dominant computational cost is no longer prefill, because the asymptotics have not yet kicked in. For larger models, which are more common in production, TTFT is dominated by prefill costs, so our model is more accurate. 
+
+5.2 Hidden-Dimension Recovery via the Common-Set Prompting Attack 
+
+We evaluate the spectral hidden-dimension estimator on a held-out validation set of 32 models. Figure 4 summarizes the per-model rounded relative error, averaged across runs, as a function of total prompt-token budget; the right-most point of each curve corresponds to the maximum sample budget of N =10 6 per prompt ( ∼800 B prompt tokens). Each line averages models within a group; each x-axis tick is the mean tokens consumed over a batch of 50k samples. We separate models by size ( small ≤ 2B parameters, mid ≈2–4B, and large ≥ 7B) and architecture (dense vs. MoE). 
+
+Figure 4: Mean relative error of the spectral hidden-dimension estimate ˆd on the validation set vs. total prompt-token budget. Each curve averages over the n validation models in the corresponding size and architecture group. Figure 4 highlights three points: (1) Average relative error drops mono-tonically with budget for all model classes. (2) Smaller models converge faster on average. This is expected, as small models tend to have smaller values of d, which in turn requires a smaller common set for recovery, and a lower token budget. (3) MoE mod-els tend to converge noticeably faster than dense ones. We hypothesize that this is because the expert routing struc-ture in MoE models sends each token through a small subset of experts, so 8the effective next-token distribution depends on fewer parameters and this helps saturate the eigenspace quicker than dense models. Overall, the most challenging instances for the methodology incur errors between 49-64% on dense architectures from the Llama, Granite, and Qwen families. One possible explanation is that our token budget for these models was not high enough to saturate the eigenspectrum, in which case the estimator can only lower-bound the true rank and additional sampling is required to detect the true elbow. Figure 15 illustrates this for Llama-3.1-8B ( d∗=4 ,096 ): at our maximum budget, the saddle and peak landmarks that bracket the change-point detector’s area of interest both fall well below d∗,so the spectrum has not saturated enough for the detector to reliably latch onto the true rank. 
+
+NightVision incurs ≈12 − 190 × the cost of Carlini et al. [2024] The baseline of Carlini et al. [2024] assumes access to top-k logits and a logit bias function. Figure 5 shows what that extra access buys. For each of the 23 configurations that reach relative error ≤ 30% , we used D = 20 , 000 
+
+prompts and grew the per-prompt sample budget until NightVision’s ˆd reached that threshold, and we plot the cost ratio of our attack at that point divided by the cost of the top-1 logit-bias attack in Carlini et al. [2024]. Their cost is d |V| (¯ℓsys +2) tokens, counting one input plus one output token per logit-bias query on top of the average system prompt ¯ℓsys ; NightVision’s cost is the realized prompt-token total. 
+
+Figure 5: Cost overhead ratio as a function of hidden dimension. Cost overhead ratio = (Our cost)/(Cost of Carlini et al. [2024]). We report the cost to reach relative error ≤ 30% . Marker color encodes the number of samples used to reach that error at each point. Overall, the cost ratio varies with hidden dimen-sion d but NightVision spends about 1 to 2.3 orders of magnitude (median ∼1.7) more to-kens than the logit-bias attack to reach the same accuracy on hidden dimension. The overhead is substantial; these numbers partially reflect the inherent cost of working under the weaker single-decoded-logprob threat model, which still applies on production APIs that have removed top-k and logit-bias access. However, they may also reflect inefficiencies in NightVision. For example, there may be more efficient prompt-ing methods, or more efficient attacks altogether, that we have yet to identify. The overhead shrinks to ∼33 × on OLMo-2-7B and OLMo-3-7B at d=4 ,096 . This matches the analysis: our per-prompt sample requirement scales sub-linearly in d, while Carlini’s query count scales as d |V| .10 1 10 2 10 3         
+
+> Common token-set size d
+> 10 2
+> 10 3
+> 10 4
+> 10 5
+> Required samples per prompt  N
+> D = 5, 000
+> 10 110 210 3
+> Common token-set size d
+> D = 10, 000
+> 10 110 210 3
+> Common token-set size d
+> D = 20, 000
+> Theory: expected N Theory: 95% upper bound Empirical: 95% N (mean + 1.6 SD)
+
+Figure 6: Required samples per prompt N to reach a common token set of size d, for D ∈{5000 , 10000 , 20000 } prompts. Token distributions are from the smallest HuggingFace SmolLM model ( 135 M parameters; vocabulary V = 49 ,152 , temperature T = 1 ). The two theory lines, expected N (blue) and the 95% upper bound (orange, Corollary 1), analyze the strict requirement that a token appear in all D prompts. The empirical 95% N (green) is Common Set Prompting, which greedily prunes prompts. 
+
+Theory predicts the empirical sample complexity. Figure 6 reports the samples per prompt N
+
+needed to obtain a common token set of size d, as a function of d, for D ∈ { 5000 , 10000 , 20000 }
+
+9prompts on output distributions from the smallest SmolLM model. We draw N tokens from each prompt and call a token present in a prompt if it is drawn at least once. The quantity plotted is always 
+
+N for a target of d shared tokens. The curves differ in which tokens count as shared. The theory analyzes the strict common set, i.e., the tokens present in all D prompts. Common Set Prompting instead produces a pruned common set as it greedily discards the prompts that are hardest to satisfy and keeps the tokens shared across the remaining subset, so a token need not appear in every prompt to be counted. For the strict common set we report two theoretical quantities: the expected N , obtained by inverting the expected intersection size μ(N ) = P
+
+> i
+
+QDq=1 (1 − (1 − p(i) 
+
+> q
+
+)N ) at μ(N ) = d, and the 95% upper bound from Corollary 1, the smallest N that guarantees size at least d with probability 
+
+1 − δ = 0 .95 . For the pruned common set we report the empirical 95% N as the per-run mean plus 
+
+1.645 standard deviations over 40 runs of the algorithm. Since pruning requires agreement across only a subset rather than all D prompts, the empirical cost lies below the theoretical upper bound and within a small constant factor of it. The theory, though it analyzes the stricter strict-intersection problem, reliably predicts the sample complexity of Common Set Prompting. 
+
+5.3 Depth and Total Parameter Count Estimation via the Timing Attack 
+
+We first validate the assumptions made in Section 4.2, particularly the scaling relation in (2) . To this end, Figure 8 shows the end-to-end TTFT as a function of our desired scaling, which we model as being linear in Lℓ 2d. Notice first that for most LLMs, a linear timing model is reasonable, if not perfect , with the same slope β and offset α across models. However, the Qwen 3.5 family (shown in red, pink, and purple) requires a different linear fit for prediction. This suggests that timing attacks could benefit from an initial phase to estimate the model family, possibly via model fingerprinting techniques. We leave this question to future work. 
+
+Figure 7: Mean relative error of the number of layers and total model parameter count estimates on the validation set vs. total prompt-token bud-get for timing method. Here we assume perfect knowledge of hidden dimension. Each curve averages over the n validation models in the cor-responding size and architecture group. 
+
+> Lℓ 2d
+
+Figure 8: Measured runtime versus L ℓ 2 d rela-tion for several models considered in this work. The Qwen3.5 family (points in red, pink, dark purple, and light purple) shows a different slope than others, which fall into LLaMA-style with SwiGLU type of blocks. Figure 7 (and Figure 13 in Section E.2) presents the relative error for the layer count and total parameter count. Layer count estimates are obtained by combining the spectral hidden-dimension estimate with the timing scaling relation of Eq. (2) . For total parameter estimation, we use Eq. (3) and further assume that the vocabulary size is known exactly; this is a modeling simplification whose effect is small, typically contributing less than 2% to the overall estimate. While the average relative error 10 for layer count and total parameters is approximately 50% for models ≥ 3B parameter counts, several individual models yield substantially more accurate estimates: Qwen2.5-7B-Instruct (∼16% for 
+
+L, ∼14% for N ), OLMo-3-7B-Instruct (∼20% , ∼18% ), and Qwen3-8B (∼35% , ∼30% ). The notable exceptions are granite-3.0-3B-A800M and granite-3.0-8B , whose limited context windows prevent processing sufficiently long inputs to reach the prefill-dominated regime required by our scaling relation. 
+
+Performance does not improve significantly with budget. Figure 16 shows that for larger models (≥ 3B parameters), the accuracy of our method does not significantly improve with token budget. Recall that our method requires conducting linear regression on timing measurements for input prompts of different lengths; the slope is used to estimate hidden dimension and parameter count. It appears that we can accurately estimate the slope with relatively few samples at each sequence length. Hence, our estimation is not very sensitive to token budget for large models, at budgets that are orders of magnitude smaller than the requirements for the common-set prompting attack. This explains why we set the token budget to a flat 10M tokens in Figure 1. 
+
+## 6 Conclusion, Limitations, and Future Work 
+
+We present NightVision, an attack that recovers certain hyperparameters of transformer-based archi-tectures based only on black-box API access to a target model. Unlike prior attacks, NightVision does not make use of top-k logits or a logit-bias function. We show that even with the very limited information available in modern APIs, we can reconstruct the hidden dimension, depth, and parameter count of many LLMs, up to an accuracy threshold. This work has several limitations and directions for future research. First, NightVision can incur nontrivial estimation error at high cost: reducing relative error requires token budgets around 10 11 to 
+
+10 12 per target (median ∼4×10 11 ), which is 12 to 190 times more expensive than Carlini et al. [2024], reflecting the cost of using the weaker single-decoded-logprob threat model. Second, our evaluation focuses on standard dense and MoE transformers from a few model families, and we have not yet studied how spectral signals behave in other architectures, such as state-space or hybrid models. Finally, the timing-based estimates of depth and parameter count depend on a prefill-dominated regime and a calibrated serving stack. These estimates are less reliable for small models where prefill is not the main bottleneck, and they have not been tested on MoE deployments or in varied serving environments. 
+
+## Acknowledgments 
+
+This effort was sponsored in whole or in part by the United States Government (USG). The U.S. Government is authorized to reproduce and distribute original submissions for publication for Governmental purposes notwithstanding any copyright notation thereon. The views and conclusions contained herein are those of the authors and should not be interpreted as necessarily representing the official policies or endorsements, either expressed or implied, of the United States Government (USG). The authors also thank Srinivasa Pranav for helpful discussions. 
+
+## References 
+
+Joshua Ainslie, James Lee-Thorp, Michiel de Jong, Yury Zemlyanskiy, Federico Lebron, and Sumit Sanghai. GQA: Training generalized multi-query transformer models from multi-head checkpoints. In The 2023 Conference on Empirical Methods in Natural Language Processing , 2023. URL 
+
+https://openreview.net/forum?id=hmOwOZWzYE .Saeif Alhazbi, Ahmed Hussain, Gabriele Oligeri, and Panos Papadimitratos. LLMs have rhythm: Fingerprinting large language models using inter-token times and network traffic analysis. IEEE Open Journal of the Communications Society , 2025. Maryam Amirizaniani, Elias Martin, Tanya Roosta, Aman Chadha, and Chirag Shah. Auditllm: A tool for auditing large language models using multiprobe approach. In Proceedings of the 33rd ACM International Conference on Information and Knowledge Management , pages 5174–5179, 2024. 11 Nicholas Carlini, Daniel Paleka, Krishnamurthy Dj Dvijotham, Thomas Steinke, Jonathan Hayase, A Feder Cooper, Katherine Lee, Matthew Jagielski, Milad Nasr, Arthur Conmy, et al. Stealing part of a production language model. arXiv preprint arXiv:2403.06634 , 2024. Timothée Chauvin, Erwan Le Merrer, François Taïani, and Gilles Tredan. Log probability tracking of llm apis. arXiv preprint arXiv:2512.03816 , 2025. Tri Dao, Daniel Y Fu, Stefano Ermon, Atri Rudra, and Christopher Re. Flashattention: Fast and memory-efficient exact attention with IO-awareness. In Alice H. Oh, Alekh Agarwal, Danielle Belgrave, and Kyunghyun Cho, editors, Advances in Neural Information Processing Systems , 2022. URL https://openreview.net/forum?id=H4DqfPSibmx .Devdatt P Dubhashi and Desh Ranjan. Balls and bins: A study in negative dependence. BRICS Report Series , 3(25), 1996. Vasisht Duddu, Debasis Samanta, D Vijay Rao, and Valentina E Balas. Stealing neural networks via timing side channels. arXiv preprint arXiv:1812.11720 , 2018. Matthew Finlayson, Xiang Ren, and Swabha Swayamdipta. Logits of API-protected LLMs leak proprietary information. In Conference on Language Modeling (COLM) , 2024. URL https: //openreview.net/forum?id=oRcYFm8vyB .Martin Gubri, Dennis Ulmer, Hwaran Lee, Sangdoo Yun, and Seong Joon Oh. Trap: Targeted random adversarial prompt honeypot for black-box identification. In Findings of the Association for Computational Linguistics: ACL 2024 , pages 11496–11517, 2024. Sandro Hartenstein. Bridging the security gap: An empirical analysis of llm-api integration vulnera-bilities and mitigation strategies. In Proceedings of the 2025 14th International Conference on Software and Computer Applications , pages 90–95, 2025. Xing Hu, Ling Liang, Shuangchen Li, Lei Deng, Pengfei Zuo, Yu Ji, Xinfeng Xie, Yufei Ding, Chang Liu, Timothy Sherwood, et al. Deepsniffer: A DNN model extraction framework based on learning architectural hints. In Proceedings of the Twenty-Fifth International Conference on Architectural Support for Programming Languages and Operating Systems , pages 385–399, 2020. Kumar Joag-Dev and Frank Proschan. Negative association of random variables with applications. 
+
+The Annals of Statistics , 11(1):286–295, 1983. ISSN 00905364, 21688966. URL http://www. jstor.org/stable/2240482 .Jared Kaplan, Sam McCandlish, Tom Henighan, Tom B. Brown, Benjamin Chess, Rewon Child, Scott Gray, Alec Radford, Jeffrey Wu, and Dario Amodei. Scaling laws for neural language models, 2020. URL https://arxiv.org/abs/2001.08361 .Bojie Li. Incompressible knowledge probes: Estimating black-box LLM parameter counts via factual capacity. arXiv preprint arXiv:2604.24827 , 2026. Jinhao Li, Jiaming Xu, Shan Huang, Yonghua Chen, Wen Li, Jun Liu, Yaoxiu Lian, Jiayi Pan, Li Ding, Hao Zhou, et al. Large language model inference acceleration: A comprehensive hardware perspective. arXiv preprint arXiv:2410.04466 , 2024. Zhihuang Liu, Ling Hu, Yonghao Tang, Tongqing Zhou, Fang Liu, and Zhiping Cai. Exploring and exploiting security vulnerabilities in self-hosted llm services. In Proceedings of the ACM Web Conference 2026 , pages 2535–2546, 2026. Jakob Mökander, Jonas Schuett, Hannah Rose Kirk, and Luciano Floridi. Auditing large language models: a three-layered approach. AI and Ethics , 4(4):1085–1115, 2024. John X Morris, Wenting Zhao, Justin T Chiu, Vitaly Shmatikov, and Alexander M Rush. Language model inversion. arXiv preprint arXiv:2311.13647 , 2023. James Pan and Guoliang Li. A survey of LLM inference systems. arXiv preprint arXiv:2506.21901 ,2025. 12 Dario Pasquini, Evgenios M Kornaropoulos, and Giuseppe Ateniese. {LLMmap }: Fingerprinting for large language models. In 34th USENIX Security Symposium (USENIX Security 25) , pages 299–318, 2025. Charvi Rastogi, Marco Tulio Ribeiro, Nicholas King, Harsha Nori, and Saleema Amershi. Supporting human-ai collaboration in auditing llms with llms. In Proceedings of the 2023 AAAI/ACM Conference on AI, Ethics, and Society , pages 913–926, 2023. Shuo Shao, Yiming Li, Yu He, Hongwei Yao, Wenyuan Yang, Dacheng Tao, and Zhan Qin. Sok: Large language model copyright auditing via fingerprinting. arXiv preprint arXiv:2508.19843 ,2025a. Shuo Shao, Yiming Li, Hongwei Yao, Yifei Chen, Yuchen Yang, and Zhan Qin. Reading between the lines: Towards reliable black-box LLM fingerprinting via zeroth-order gradient estimation. arXiv preprint arXiv:2510.06605 , 2025b. Noam Shazeer. Glu variants improve transformer, 2020. URL https://arxiv.org/abs/2002. 05202 .Florian Tramèr, Fan Zhang, Ari Juels, Michael K Reiter, and Thomas Ristenpart. Stealing machine learning models via prediction {APIs }. In 25th USENIX security symposium (USENIX Security 16) , pages 601–618, 2016. Shashanka Ubaru, Yousef Saad, and Abd-Krim Seghouane. Fast estimation of approximate matrix ranks using spectral densities. arXiv preprint arXiv:1608.05754 , 2016. Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz Kaiser, and Illia Polosukhin. Attention is all you need. Advances in Neural Information Processing Systems , 30, 2017. Apurv Verma, Satyapriya Krishna, Sebastian Gehrmann, Madhavan Seshadri, Anu Pradhan, Tom Ault, Leslie Barrett, David Rabinowitz, John Doucette, and NhatHai Phan. Operationalizing a threat model for red-teaming large language models (LLMs). arXiv preprint arXiv:2407.14937 ,2024. Ulrike von Luxburg. A tutorial on spectral clustering. Statistics and Computing , 17(4):395–416, 2007. Jiashu Xu, Fei Wang, Mingyu Ma, Pang Wei Koh, Chaowei Xiao, and Muhao Chen. Instructional fingerprinting of large language models. In Proceedings of the 2024 Conference of the North Amer-ican Chapter of the Association for Computational Linguistics: Human Language Technologies (Volume 1: Long Papers) , pages 3277–3306, 2024. Songlin Yang, Jan Kautz, and Ali Hatamizadeh. Gated delta networks: Improving mamba2 with delta rule. In The Thirteenth International Conference on Learning Representations , 2025. URL 
+
+https://openreview.net/forum?id=r8H7xhYPwz .Boyi Zeng, Lizheng Wang, Yuncong Hu, Yi Xu, Chenghu Zhou, Xinbing Wang, Yu Yu, and Zhouhan Lin. Huref: Human-readable fingerprint for large language models. Advances in Neural Information Processing Systems , 37:126332–126362, 2024. Jie Zhang, Dongrui Liu, Chen Qian, Linfeng Zhang, Yong Liu, Yu Qiao, and Jing Shao. Reef: Representation encoding fingerprints for large language models. arXiv preprint arXiv:2410.14273 ,2024. Kaixiang Zhao, Lincan Li, Kaize Ding, Neil Zhenqiang Gong, Yue Zhao, and Yushun Dong. A survey on model extraction attacks and defenses for large language models. In Proceedings of the 31st ACM SIGKDD Conference on Knowledge Discovery and Data Mining V. 2 , pages 6227–6236, 2025. Xinyao Zheng, Husheng Han, Shangyi Shi, Qiyan Fang, Zidong Du, Xing Hu, and Qi Guo. In-putsnatch: Stealing input in LLM services via timing side-channel attacks. arXiv preprint arXiv:2411.18191 , 2024. Mu Zhu and Ali Ghodsi. Automatic dimensionality selection from the scree plot via the use of profile likelihood. Computational Statistics & Data Analysis , 51(2):918–930, 2006. 13 Appendix 
+
+A Additional Related Work 15 B Algorithmic Details 16 
+
+B.1 Common-Set Attack Details . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 16 B.1.1 Finding High-Entropy Prompts . . . . . . . . . . . . . . . . . . . . . . . . 16 B.1.2 Greedy NaN Pruning . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 17 B.1.3 Inflection-Point Detection . . . . . . . . . . . . . . . . . . . . . . . . . . 17 B.2 Hidden Dimension Attack . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 19 B.3 Timing Attack Details . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 20 B.3.1 Overall Algorithm . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 20 B.3.2 Effect of model architecture on accuracy . . . . . . . . . . . . . . . . . . 20 B.3.3 Inferring Depth L under Hardware Mismatch . . . . . . . . . . . . . . . . 21 
+
+C Model List 24 D Experimental Setup Details 26 E Additional Results 27 
+
+E.1 Spectral Shape and Eigenspectrum Saturation . . . . . . . . . . . . . . . . . . . . 27 E.2 Timing . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 28 
+
+F Proofs 29 
+
+14 A Additional Related Work 
+
+In addition to the related work from Section 3, a separate and growing body of work on LLM 
+
+fingerprinting [Alhazbi et al., 2025, Pasquini et al., 2025, Zhang et al., 2024, Zeng et al., 2024, Gubri et al., 2024, Shao et al., 2025b, Xu et al., 2024] aims to identify which model from a known set is being served, rather than to recover architectural parameters of a previously-unseen model; closely related is the application of such fingerprints to copyright auditing [Shao et al., 2025a]. These methods rely on per-target calibration data and are therefore not directly comparable to ours. The threat-model landscape for black-box LLM attacks more broadly is taxonomized in Verma et al. [2024]. Methodologically, our use of inference timing as an auxiliary signal for architecture inference draws on a longer tradition outside the LLM setting. Duddu et al. [2018] combine end-to-end runtime with architecture search and distillation to recover substitute DNN models, and Hu et al. [2020] use learning-based methods on similar signals. Surveys of modern LLM inference systems [Pan and Li, 2025, Li et al., 2024] provide the hardware and software context that makes timing a useful signal in our setting. While recent timing-based attacks on LLM APIs have demonstrated input recovery from cache effects [Zheng et al., 2024] rather than architecture extraction, they reflect the same broader trend of treating runtime as exploitable auxiliary information. 15 B Algorithmic Details 
+
+B.1 Common-Set Attack Details B.1.1 Finding High-Entropy Prompts 
+
+Our common-set prompting method seeks prompts whose output distributions are as flat as possible. As discussed in Section 2, increasing the temperature parameter τ pushes the distribution over tokens toward uniform. Empirically, we find that temperature alone is not enough. When the unscaled distribution is highly peaked, even large τ leaves substantial probability mass on the top tokens, as illustrated in Figure 9. For a prompt inducing high entropy over the tokens (top row), the unscaled top-100 tokens hold 68% of the probability mass; temperature scaling spreads this further, dropping the top-100 mass to just 14% and yielding a near-uniform distribution. For a low-entropy prompt (bottom row), the unscaled top-100 tokens hold 95% of the mass, and even after scaling they retain 
+
+34% , which is still far from uniform. Prompt selection is hence the dominant lever for vocabulary coverage. We find that out-of-distribution token sequences, i.e., inputs the model has likely not seen during training, reliably produce diffuse predictions, since the model lacks a strong prior over what token should come next. The next subsection describes how we identify such prompts. 
+
+Figure 9: Next-token distributions for a high-entropy prompt (top) and a low-entropy prompt (bottom), shown without (left) and with (right) temperature scaling. High-entropy prompts yield substantially flatter distributions, enabling broader vocabulary coverage per sample. 
+
+Automated High-Entropy Prompt Search High-entropy prompts can be specific to each model, so it is desirable for us to have an automated way of finding enough of them for the common-set method given a new black-box model. In our experiments, our main method of finding these prompts is to sample random prompts from various Unicode character groups. Concretely, we consider character groups like Latin, CJK, emoji, Arabic, Hebrew, Braille, mathematical symbols, etc., and form candidate prompts by randomly sampling characters from these groups. Our search runs for a fixed number of iterations and combines exploration with greedy search over a best candidate prompt. The first few rounds draw fresh batches of random prompts across all character groups and record the prompt whose argmax token has the lowest probability seen so far. From the second round onwards, half of each batch consists of single-character variants of the current best prompt, so promising candidates are exploited while new groups can still surface; this exploration phase ends early once any prompt drives the argmax probability below a small threshold. The remaining iterations switch to pure refinement: every candidate is a one-character mutation of the current best, distributed evenly across character groups, and the best prompt is updated greedily after each batch. 16 All candidates are deduplicated against previously-evaluated prompts to ensure each string is evaluated only once. After the final iteration, we sort every evaluated prompt by argmax probability and keep the D
+
+lowest-probability prompts as the prompt set D passed to the common-set construction. In practice, a larger D is preferable: more prompts yield broader vocabulary coverage in the common set. 
+
+B.1.2 Greedy NaN Pruning 
+
+We prune ˆYfull to a large NaN-free submatrix using a greedy heuristic: At each step, find the surviving row or column with the highest fraction of NaNs and drop it, then update the per-row and per-column NaN counts. The loop terminates when no NaNs remain. The surviving rows index the 
+
+D′ ≤ D prompts kept for the spectral method, the surviving columns form the common set C, and the submatrix itself is the common-set log-probability matrix Y ∈ RD′×|C| .
+
+B.1.3 Inflection-Point Detection 
+
+Under the standard transformer output head, the logit for token vi given prompt Sq is z(i) 
+
+> q
+
+= h⊤ 
+
+> q
+
+wi
+
+with hq , wi ∈ Rd, so the logit matrix Z has rank at most d. The log-probability matrix Y (with entries y(i) 
+
+> q
+
+) differs from Z only by a row-wise log-partition term log P 
+
+> j
+
+exp( z(j) 
+
+> q
+
+), which is identical across all columns within a given row; temperature scaling preserves this structure. The rank-d signal in Z is therefore recoverable from Y up to a row-wise additive constant. Deployed models run inference in reduced-precision formats such as bfloat16 (8-bit exponent, 7-bit mantissa, ≈ 3 decimal digits of precision). The logits z(i) 
+
+> q
+
+are therefore quantized, and the returned log-probabilities carry rounding noise. As Carlini et al. [2024] observe, this means Y is essentially always full rank and we must recover its practical numerical rank . We model this as Y = Y⋆ + η,with a low-rank head Y⋆ of rank at most d+1 holding the signal from Z, and a full-rank floating-point 
+
+noise tail η, and recovering d amounts to separating the two. To do this, we take the Gram matrix 
+
+G = YY ⊤ when D′ ≤ |C| , and G = Y⊤Y otherwise. Its eigendecomposition G = U Λ U ⊤
+
+produces ordered eigenvalues λ1 ≥ λ2 ≥ · · · ≥ λmin( D′,|C| ) ≥ 0.Formally, this is a numerical rank estimation problem [Ubaru et al., 2016]: we fix a threshold ε ≥ 0
+
+and report the ε-rank |{ i : λi > ε }| , the index that divides the signal eigenvalues of Y⋆ from the noise tail of η. The standard recipes for choosing ε assume structure our spectrum lacks: a dominant eigengap or a low-density valley in the spectral density separating signal from noise [von Luxburg, 2007, Ubaru et al., 2016], or signal and noise eigenvalues that each concentrate around a level [Zhu and Ghodsi, 2006]. Our goal is to identify the inflection point in this sequence, as illustrated in Figure 10. The contrast with prior work motivates the design of our detector. The logit-bias attack of Carlini et al. [2024] reconstructs nearly all entries of the dense logit matrix, so the spectrum exhibits a sharp drop of several orders of magnitude precisely at index d (Figure 10a), and a simple elbow rule suffices. In our restricted-API setting we observe only sampled log-probabilities over the common set C, and the resulting spectrum decays smoothly: the head merges into the noise tail through a gradual transition rather than a visible drop-off (Figure 10b), so d must be recovered from the curvature of the transition rather than from a discontinuity in magnitude. We first apply the element-wise transform 
+
+ai = arctan( λi), i = 1 , . . . , min( D′, |C| ), (4) which compresses the signal eigenvalues toward a plateau bounded above by π 
+
+> 2
+
+and leaves the noise tail as a smooth decay to a final linear drop off at extremely small ai (Figure 10c). This transform exposes the transition region between the head and its decay to slope-based detection when its head is sufficiently saturated. Let n = min( D′, |C| ). We compute the windowed least-squares slope ∂iai over [i − w, i + w]
+
+with w = max(20 , ⌊n/ 50 ⌋), then smooth it with a centered moving average ˜si = MA ws (∂iai) of half-window ws = max(20 , ⌊n/ 100 ⌋). As shown in Figure 10d, ˜s exhibits a shallow local minimum near the head-to-tail transition followed by a recovery toward zero before the deep negative excursion of the noise floor. We exploit this structure to localize d between two landmarks of ˜s, which together delimit the area of interest (AOI) shaded in Figure 10d: 17 0 500 1000 1500 2000 2500 3000     
+
+> Sorted Singular Values
+> 10 4
+> 10 3
+> 10 2
+> 10 1
+> 10 0
+> 10 1
+> 10 2
+> 10 3
+> Magnitude
+> 1024 queries
+> 1536 queries
+> 2048 queries
+> 2560 queries
+> 3072 queries
+
+(a) Logit-bias attack of Carlini et al. [2024]. (b) Our common-set spectrum (OLMo-3 7B). 
+
+(c) Arctan-transformed spectrum. (d) Windowed slope ∂iai with detected saddle, peak, and AOI. 
+
+Figure 10: Spectra used to recover the hidden dimension d. (a) Under the logit-bias attack of Carlini et al. [2024], the singular-value spectrum drops sharply at index d (dashed line) once the number of queries exceeds d, and a simple elbow rule recovers d. (b) In our restricted-API common-set setting (OLMo-3 7B, true d⋆ = 4096 ), the eigenvalue spectrum decays smoothly across several orders of magnitude with no clean elbow. (c) Applying the element-wise transform ai = arctan( λi)
+
+compresses the head toward the plateau at π/ 2 and exposes the head-to-tail transition to slope-based detection. (d) The windowed slope ∂iai exhibits a saddle (local minimum) and a subsequent peak (first non-increase) that bracket the area of interest (AOI) containing d; within this AOI the algorithm returns the index of maximum negative second difference as ˆd, which closely tracks the true d⋆ = 4096 .• Saddle: isad is the first local minimum of ˜s with prominence at least p · (max ˜ s − min ˜ s),where ai ≤ arctan( π). This marks the lower edge of the AOI (Figure 10d, dotted line at 
+
+isad = 3585 for OLMo-3 7B). • Peak: ipeak is the first non-increase of ˜s after isad , with aipeak ≤ arctan( π/ 2) (near the noise floor). This marks the upper edge of the AOI (Figure 10d, dotted line at ipeak = 4730 ). Within this bracket we recover the geometric inflection of the head-saturated arctan curve via the maximum negative second difference, 
+
+ˆd = arg max   
+
+> k∈[isad , i peak ]
+
+ −∆2ak
+
+. (5) For the OLMo-3 7B example in Figure 10, the AOI [3585 , 4730] tightly brackets the true hidden dimension d⋆ = 4096 , and the second-difference maximum within the AOI recovers ˆd to within a handful of indices. 18 B.2 Hidden Dimension Attack Algorithm 1 NightVision: common-set construction via greedy NaN-pruning 
+
+Require: Black-box model f with sampled-token + log-prob API only; high-entropy prompt set 
+
+D = {Sq }Dq=1 ; samples per prompt N ; temperature τ .
+
+Ensure: Pruned log-probability matrix Y ∈ RD′×|C| over the common set C. 
+
+> 1:
+
+for q = 1 , . . . , D do  
+
+> 2:
+
+Draw N samples from f (Sq ) at temperature τ , recording each (vk, y (k) 
+
+> q
+
+). 
+
+> 3:
+
+Set Tq ← { unique tokens observed under Sq }. 
+
+> 4:
+
+end for  
+
+> 5:
+
+Assemble sparse ˆYfull ∈ RD×|V| with [ ˆYfull ]q,i = y(i) 
+
+> q
+
+for vi ∈ T q , NaN otherwise.  
+
+> 6:
+
+Greedy NaN-prune ˆYfull : repeatedly drop the surviving row or column with the highest NaN fraction until no NaNs remain. Surviving columns form the common set C; surviving rows index the prompts retained for spectral analysis (Section 4.1.1).  
+
+> 7:
+
+Set Y ∈ RD′×|C| to the pruned submatrix.  
+
+> 8:
+
+return pruned matrix Y and common set C.
+
+Algorithm 2 NightVision: hidden-dimension estimation from the pruned spectrum 
+
+Require: Pruned log-probability matrix Y ∈ RD′×|C| from Algorithm 1; slope half-window w;smoothing window ws; prominence fraction p; grid g.
+
+Ensure: Estimated hidden dimension ˆd. 
+
+> 1:
+
+Form the smaller-side Gram matrix G ← YY ⊤ if D′ ≤ |C| , else G ← Y⊤Y. 
+
+> 2:
+
+Eigendecompose: G = U Λ U ⊤, take λ1 ≥ · · · ≥ λmin( D′,|C| ). 
+
+> 3:
+
+Transform: ai ← arctan( λi). 
+
+> 4:
+
+Compute the smoothed first derivative ˜si ← MA ws
+
+ ∂iai
+
+, where ∂iai is the least-squares slope of a on [i − w, i + w] with w = max(20 , ⌊n/ 50 ⌋) and MA ws is a centered moving average with 
+
+ws = max(20 , ⌊n/ 100 ⌋). 
+
+> 5:
+
+Find saddle: isad ← first local min of ˜s with prominence ≥ p · (max ˜ s − min ˜ s), where 
+
+ai = arctan( λi) ≤ arctan( π). 
+
+> 6:
+
+Find Peak: ipeak ← first non-increase of ˜s after isad , with aipeak ≤ arctan( π/ 2) (near the noise floor).  
+
+> 7:
+
+ˆd ← arg max k ∈ [isad , i peak ]
+
+  − ∆2ak
+
+, the geometric inflection of the head-saturated arctan 
+
+curve via second differences.  
+
+> 8:
+
+return ˆdrnd = g ⌈ ˆd/g ⌉ ▷ ceiling-snap to the grid 
+
+NightVision hyperparameters The hyperparameters in Algorithms 1 and 2 are fixed across all models in our evaluation, with values chosen on the development set (Section C): • Number of prompts D: D = 20 ,000 high-entropy prompts produced by the search procedure of Section B.1.1. • Samples per prompt N : swept up to N = 10 6 in the budget curves (Figure 3); per-model results in Table 2 use the maximum budget. • Sampling temperature τ : τ = 2 .0, applied at the API to flatten the next-token distribution. • Prompt length : 5 Unicode characters per prompt, sampled from the character groups described in Section B.1.1 (not 5 tokens; tokenized length varies by model). • Slope half-window w: w = max(20 , ⌊n/ 50 ⌋), where n = min( D′, |C| ) is the spectrum length after pruning. • Smoothing window ws: ws = max(20 , ⌊n/ 100 ⌋) for the centered moving average applied to the slope. • Prominence fraction p: p = 0 .54 , used to gate saddle detection on ˜s.• Grid spacing g: g = 128 , the ceiling-snap applied to ˆd (chosen to match the alignment of hidden dimensions in mainstream transformer configurations). • Model precision : bfloat16 for all log-probability collection, matching the precision used for serving. 19 B.3 Timing Attack Details B.3.1 Overall Algorithm 
+
+The end-to-end algorithm for our timing attack can be found in Figure 11. 
+
+> NightVision Phase 2: Timing-based architecture inference Require:
+
+1: Reference models F = {ϕi}Ki=1 with known di, Li
+
+2: Target model ϕg with unknown Lg ; spectral estimate ˆdg (Section 4.1.1) 
+
+3: Sequence lengths L = {ℓj }N ′
+
+> j=1
+
+4: Platform flag: S AME or C ROSS     
+
+> Ensure: Inferred layer count ˆLgand total parameters ˆPg
+> Stage 1: Collect prefill-dominated runtimes
+
+1: for each model ϕi ∈ F ∪ { ϕg } do 
+
+2: for j = 1 , . . . , N ′ do 
+
+3: Query ϕi with input length ℓj (long context, minimal generation) 
+
+4: Record runtime Ti,j 
+
+5: end for 
+
+6: end for  
+
+> Stage 2: Infer ˆLg
+
+7: Fit L-known over Fref             
+
+> g:Tref
+> i,j ≈βref
+> gLiℓ2
+> jdi+αref ▷Eq. (2)
+
+8: Fit L-unknown over Fref            
+
+> g:Tref
+> i,j ≈γref ,d gℓ2
+> jdi+ζref ▷Eq. (6)
+
+9: Fit L-unknown over Ftgt             
+
+> g:Ttgt
+> i,j ≈γtgt ,ˆdgℓ2
+> jˆdi+ζ′tgt ▷Eq. (7)
+
+10: Compute transfer factor : k ← γtgt , ˆdg / γ ref ,d g ▷ Eq. (8) 
+
+11: Fit per-model for fg with ˆdg : T tgt         
+
+> g,j ≈γtgt
+> gℓ2
+> jˆdg+ζtgt
+> g▷Eq. (9)
+
+12: ˆLg ← γtgt         
+
+> g/(k·βref
+> g)▷Eq. (10)
+> Stage 3: Estimate parameters ˆPg
+
+15: Assume LLaMA-style decoder-only transformer with GQA and SwiGLU 
+
+16: ˆPg ← 2 ˆV ˆdg + ˆLg           
+
+> 
+> 2 + 2 nkv
+> nheads + 3 dffn ˆdg
+> 
+> ˆd2
+> g, where nkv
+> nheads = 1/4, dffn ˆdg = 3.5 ▷Eq. (3)
+
+17: return ˆdg , ˆLg , ˆPg
+
+Figure 11: Timing-based architecture inference pipeline. The procedure fits prefill-dominated scaling relations to infer layer count ˆLg and total parameters ˆPg from end-to-end runtime measurements, with optional cross-platform calibration. 
+
+B.3.2 Effect of model architecture on accuracy 
+
+In practice, models largely obey the same scaling relation within each of three architectural categories: 
+
+(A) GPT-style with GELU and a two-matrix FFN, (B) LLaMA-style with SwiGLU and a three-matrix gated FFN, and (C) Variants, such as Qwen3.5, for which it contains a hybrid combining LLaMA-style transformer blocks with DeltaNet linear-attention layers [Yang et al., 2025]. Most modern LLMs fall into category (B), which dominates our evaluation. Qwen3.5 requires separate treatment (e.g., see Fig 8) because its DeltaNet layers replace quadratic O(ℓ2) attention with a linear-complexity recurrence. Consequently, only a subset of its layers exhibit the ℓ2-dependent cost assumed by Eq. (2) , reducing the effective layer count below the total architectural depth and necessitating category-specific coefficients. As shown in Fig 12, category (A) exhibits noticeably poorer adherence to the scaling relation than category (B). We attribute this to the structural difference in their FFN blocks: GPT-style models use a two-matrix FFN with GELU, whereas SwiGLU-based models use a three-matrix gated FFN [Shazeer, 2020], resulting in 50% more general matrix–matrix multiplications (GEMMs) per layer. This higher GEMM fraction means compute-bound operations dominate a larger share of prefill wall-clock time in category (B), making the quadratic scaling ansatz in Eq. (2) a tighter fit. In category (A), the smaller GEMM share allows non-scaling overhead to perturb the relation more substantially. 20 Figure 12: Measured runtime versus predicted runtime with scaling relation as function of number of layers, hidden dimension, and input sequence length. 
+
+B.3.3 Inferring Depth L under Hardware Mismatch 
+
+In practice, the target model is rarely benchmarked on the same platform and configuration used to establish the reference scaling relation. We therefore introduce a cross-platform calibration procedure that transfers the reference relation to a new target platform via a single global scale factor. The same framework also applies to same-platform settings, accounting for residual system-level variations such as inference configuration and runtime conditions. Concretely, we establish fitted global scaling relations Eq. (2) on a reference platform using a set of reference models Fref = {ϕref  
+
+> i
+
+}Ki=1 with known dr and Lr :
+
+Tr,j ≈ βref Lr ℓ2 
+
+> j
+
+dr + αref ≈ γref ℓ2 
+
+> j
+
+dr + ζref , (6) On the target platform, we assume a set of models available Ftgt = {ϕtgt  
+
+> i
+
+}K′
+
+> i=1
+
+.Let f tgt  
+
+> g
+
+denote the target model, we fit a global relation using spectral estimates ˆd (Section 4.1.1): 
+
+T tgt  
+
+> i,j
+
+≈ γtgt ℓ2 
+
+> j
+
+ˆdi + ζtgt . (7) Assuming ˆd ≈ d, we compute the platform transfer factor 
+
+k = γtgt /γ ref , (8) which captures the aggregate throughput ratio between the two platforms. Applying k to the layer-aware reference relation yields the cross-platform approximation 
+
+T tgt  
+
+> i,j
+
+≈ k β ref Li ℓ2 
+
+> j
+
+di + αref , (9) from which the inferred layer count is recovered as: 
+
+ˆLg = γtgt 
+
+> g
+
+k · βref = γtgt  
+
+> g
+
+· γref 
+
+γtgt · βref , (10) where γtgt  
+
+> g
+
+is the held-out target model fitting parameter, obtained by solving (7) for γtgt .This formulation assumes that the relative scaling behavior across layers is preserved across platforms, i.e., that platform differences manifest primarily as a multiplicative constant rather than altering the functional form of the relation. Figure 14 presents cross-platform estimation results between NVIDIA H200 and A100 GPUs, showing the inferred layer count (top panel) and total parameter count (bottom panel). Compared with the same-platform setting of Figure 13 (reference and target models both on NVIDIA H200), the cross-platform results exhibit a similar range of relative errors and comparable trends across models, with an average relative error of approximately 50% and the same model-size dependency observed in the same-platform case (larger models tend to yield lower error). These results demonstrate that our cross-platform calibration procedure (Section B.3.3) effectively compensates for hardware-specific throughput differences without degrading inference accuracy. 21 Figure 13: Relative error for the estimate of the number of layers (top panel), total number of parameters (middle panel), and hidden dimension (bottom panel) for various models. Here we assume the reference and target platform are the same (both with NVIDIA H200 GPU). Dark bars show the raw estimate; light bars show the estimate after rounding to the nearest integer. Some of the largest errors are driven by small models with < 3B parameters. For the layer-count and total-parameter estimates, the large errors for granite-3.0-3b-a800m and granite-3.0-8b arise from their small context window of 4096 tokens, which is insufficient to effectively probe the prefill stage. 
+
+22 Figure 14: Cross-platform relative error for the estimated layer count (top) and total parameter count (bottom) across models, where the platform transfer is between NVIDIA H200 and A100 GPUs. Dark bars denote H200 as the reference platform and A100 as the target; light bars denote the reverse configuration. 
+
+23 C Model List 
+
+Table 2 summarizes the architectural details of all language models evaluated in this work. We report the configurations published on the Hugging Face Hub. All values are extracted from each model’s 
+
+config.json .The 39 models span eight families: Alibaba’s Qwen 2.5, Qwen 3, and Qwen 3.5 series; IBM’s Granite 3.0 through 3.3 and the Granite 4.0 dense models; Meta’s Llama 3.1 and 3.2 instruction models; AI2’s OLMo 2, OLMoE, and OLMo 3; and Hugging Face’s SmolLM2 and SmolLM3. Together they cover more than two orders of magnitude of total parameters (135M to 30B) and span various architectures in current use: standard dense transformers (Qwen 2.5/3, Llama, OLMo 2, SmolLM, Granite 3.x and 4.0 dense), sparse mixture-of-experts (Qwen 3 30B-A3B, Granite 3.x MoE, OLMoE), dense transformers with interleaved sliding-window and full softmax-attention layers (OLMo 3), and dense transformers with interleaved Gated DeltaNet linear-attention and full softmax-attention layers (Qwen 3.5). The table reports the number of decoder layers L, the hidden dimension d, and the feed-forward intermediate dimension dffn , which corresponds to the size of a single expert’s MLP for mixture-of-experts (MoE) models and to the dense MLP otherwise. Attention head counts are given as hq /h kv ,where equal values indicate standard multi-head attention and hkv < h q indicates grouped-query attention. The vocabulary size is denoted by |V| and the “Tied” column indicates whether the input embedding matrix is shared with the output projection. The “Type” column reports the type of attention if full softmax-attention is not used in all layers (full softmax-attention interleaved with sliding-window attention iSWA) or interleaved with Gated DeltaNet (iGDN) linear-attention (GDN)), and the type of feed-forward network (Dense or MoE). For MoE models we additionally list the total and active expert counts per layer, Etot /E act , where Eact is the top-k routing parameter. For MoE models we further report active parameters per token, computed analytically from the configuration as |V| · d + L · (Pattn + Eact · Pexpert + Prouter ), where Pattn is the per-layer attention parameter count, Pexpert = 3 d · dffn is the per-expert SwiGLU MLP parameter count, and Prouter = d · Etot is the per-layer router parameter count. 
+
+Development models. The following seven model configurations were used during method devel-opment (hyperparameter selection, algorithmic choices, and prompt design) and are held out from the validation set reported in Section 5: • HuggingFaceTB/SmolLM2-360M-Instruct 
+
+• HuggingFaceTB/SmolLM2-1.7B-Instruct 
+
+• HuggingFaceTB/SmolLM3-3B 
+
+• Qwen/Qwen3.5-9B 
+
+• Qwen/Qwen3-0.6B 
+
+• ibm-granite/granite-3.1-1b-a400m-instruct 
+
+• ibm-granite/granite-3.1-2b-instruct 
+
+Together with the 32 validation models, these account for the 39 model configurations referenced throughout the paper. 
+
+Reasoning mode. For Qwen models that support a toggleable reasoning (“thinking”) mode ( e.g. ,the Qwen 3 and Qwen 3.5 series), we disable reasoning mode for all experiments by passing 
+
+enable_thinking=False to the chat template. This ensures that output tokens are sampled directly from the model’s next-token distribution rather than from a post-reasoning distribution, keeping the log-probability and timing measurements consistent with the non-reasoning models in our suite. 24 Table 2: Architectural details of the language models evaluated in experiments. 
+
+Model L d dffn hq /h kv |V| Tied Type Etot /E act Params (B) 
+
+Qwen 2.5 ( Qwen/Qwen2.5-*-Instruct )
+
+0.5B 24 896 4,864 14/2 151,936 ✓ dense – 0.49 1.5B 28 1,536 8,960 12/2 151,936 ✓ dense – 1.54 3B 36 2,048 11,008 16/2 151,936 ✓ dense – 3.09 7B 28 3,584 18,944 28/4 152,064 – dense – 7.62 
+
+Qwen 3 ( Qwen/Qwen3-* )
+
+0.6B 28 1,024 3,072 16/8 151,936 ✓ dense – 0.60 1.7B 28 2,048 6,144 16/8 151,936 ✓ dense – 1.72 4B 36 2,560 9,728 32/8 151,936 ✓ dense – 4.02 8B 36 4,096 12,288 32/8 151,936 – dense – 8.19 30B-A3B 48 2,048 768 32/4 151,936 – MoE 128/8 30.5 / 3.4 30B-A3B-Inst. 48 2,048 768 32/4 151,936 – MoE 128/8 30.5 / 3.4 
+
+Qwen 3.5 ( Qwen/Qwen3.5-* ;
+
+0.8B 24 1,024 3,584 8/2 248,320 ✓ dense + GDN – 0.87 2B 24 2,048 6,144 8/2 248,320 ✓ dense + GDN – 2.27 4B 32 2,560 9,216 16/4 248,320 ✓ dense + GDN – 4.66 9B 32 4,096 12,288 16/4 248,320 – dense + GDN – 9.65 
+
+IBM Granite 3.0–3.3 ( ibm-granite/granite-3.x-*-instruct )
+
+3.0-1B-A400M 24 1,024 512 16/8 49,155 ✓ MoE 32/8 1.33 / 0.43 3.0-3B-A800M 32 1,536 512 24/8 49,155 ✓ MoE 40/8 3.37 / 0.88 3.0-2B 40 2,048 8,192 32/8 49,155 ✓ dense – 2.63 3.0-8B 40 4,096 12,800 32/8 49,155 ✓ dense – 8.17 3.1-1B-A400M 24 1,024 512 16/8 49,155 ✓ MoE 32/8 1.33 / 0.43 3.1-3B-A800M 32 1,536 512 24/8 49,155 ✓ MoE 40/8 3.30 / 0.88 3.1-2B 40 2,048 8,192 32/8 49,155 ✓ dense – 2.53 3.1-8B 40 4,096 12,800 32/8 49,155 ✓ dense – 8.17 3.2-2B 40 2,048 8,192 32/8 49,155 ✓ dense – 2.53 3.2-8B 40 4,096 12,800 32/8 49,155 ✓ dense – 8.17 3.3-2B 40 2,048 8,192 32/8 49,159 ✓ dense – 2.53 3.3-8B 40 4,096 12,800 32/8 49,159 ✓ dense – 8.17 
+
+IBM Granite 4.0 ( ibm-granite/granite-4.0-* ;
+
+350M 28 1,024 2,048 16/4 100,352 ✓ hybrid – 0.35 Micro 40 2,560 8,192 40/8 100,352 ✓ hybrid – 3.40 
+
+Meta Llama 3.x ( meta-llama/Llama-3.x-*-Instruct )
+
+3.2-1B 16 2,048 8,192 32/8 128,256 ✓ dense – 1.24 3.2-3B 28 3,072 8,192 24/8 128,256 ✓ dense – 3.21 3.1-8B 32 4,096 14,336 32/8 128,256 – dense – 8.03 
+
+AI2 OLMo ( allenai/OLMo*-*-Instruct )
+
+OLMo-2-1B (0425) 16 2,048 8,192 16/16 100,352 – dense – 1.48 OLMo-2-7B (1124) 32 4,096 11,008 32/32 100,352 – dense – 7.30 OLMoE-1B-7B (0924) 16 2,048 1,024 16/16 50,304 – MoE 64/8 6.92 / 1.28 OLMo-3-7B 32 4,096 11,008 32/32 100,278 – dense + SWA – 7.30 
+
+HuggingFace SmolLM ( HuggingFaceTB/SmolLM*-* )
+
+SmolLM2-135M 30 576 1,536 9/3 49,152 ✓ dense – 0.13 SmolLM2-360M 32 960 2,560 15/5 49,152 ✓ dense – 0.36 SmolLM2-1.7B 24 2,048 8,192 32/32 49,152 ✓ dense – 1.71 SmolLM3-3B 36 2,048 11,008 16/4 128,256 ✓ dense – 3.08 
+
+25 D Experimental Setup Details 
+
+Hardware Each model runs on a single NVIDIA H100 (RHEL 8 / glibc 2.28; CUDA 12.6; PyTorch with CUDA 12.6; Python 3.12). Timing measurements are additionally repeated on H200 and A100 GPUs to test cross-platform calibration. 
+
+Timing protocol. For each model, we build synthetic prompts of ℓ tokens by repeating a fixed passage. After three warmup requests, we issue 100 batch-size-one chat requests generating one output token, measuring client-side latency via time.time() and subtracting an ℓ=1 baseline to isolate the prefill cost. At each ℓ we report the 10% -trimmed mean over N =100 trials, weighting regressions by σT = std /pNkept . We sweep n = 24 lengths spanning the projection-dominated (O(Lℓd 2)) to attention-dominated ( O(Lℓ 2d)) transition, with crossover ℓ⋆ = ⌊(d + dkv + 32 dffn )r⌋,where dkv = nkv (d/n heads ) and r ≈ 0.6 is the empirical attention-to-MLP throughput ratio; points span [0 .5ℓ⋆, min(3 ℓ⋆, ℓ cap )] with ℓcap = min(max(2 ℓ⋆, 4d), p max − 200) , and we discard 12 points to restrict the fit to the attention-dominated regime. 
+
+Sequence-length sweep We sweep input lengths L = {ℓj }N ′ 
+
+> j=1
+
+chosen to span the transition between the projection-dominated ( O(L ℓ d 2)) and attention-dominated ( O(L ℓ 2 d)) regimes. We estimate the crossover as 
+
+ℓ⋆ =   d + dkv + 32 dffn 
+
+ · r , (11) where dkv = nkv · (d/n heads ) with nheads attention heads and nkv KV heads, dffn is the feed-forward intermediate dimension, and r ≈ 0.6 reflects the empirical attention-to-MLP throughput ratio. We sweep n = 24 uniformly spaced points from ℓlo = 0 .5 ℓ⋆ to ℓhi = min(3 ℓ⋆, ℓ cap ), where 
+
+ℓcap = min(max(2 ℓ⋆, 4d), p max − 200) keeps sequences within the positional encoding limit pmax ,and additionally include ℓ⋆ when it falls inside the sweep. When fitting the scaling relation, we discard 12 points to restrict the fit to the attention-dominated regime, excluding sequences too short for prefill cost to dominate as well as outliers. 26 E Additional Results 
+
+E.1 Spectral Shape and Eigenspectrum Saturation 
+
+Figure 15: Windowed slope d arctan( λ)/di of the ordered eigenvalues for Llama-3.1-8B at the maximum sample budget ( N =10 6 per prompt). The true hidden dimension d∗=4 ,096 is marked with a vertical line. The change-point detector (Section B.1.3) localizes the elbow inside the area of interest (AOI) bracketed by the saddle (1655) and peak (3077). Both bracket landmarks fall well below the true d∗, so the estimate ˆd underestimates the rank: at this budget the eigenspectrum has not yet saturated, and the elbow associated with the true rank is not yet pronounced enough for the detector to recover it. Larger sample budgets are needed to push the AOI up to d∗.27 E.2 Timing 
+
+Figure 16: Relative error in estimating the number of layers and total number of parameters as a function of API query budget (measured in number of tokens). Some of the largest errors are driven by small models with ≤
+
+4B parameters. 
+
+Figure 17: Estimation relative error versus number of API calls (left panel) and estimated cost in USD (right panel). Relative errors for d, L, and N are shown as a function of total token budget, with bold curves denoting averages across target models and faint curves denoting individual models. Larger budgets generally reduce error, with L improving fastest and N remaining harder to estimate. Results include ≥3B-parameter dense models and MoE models. 
+
+28 F Proofs 
+
+Here we prove Theorem 1 in Section 4.1.2 and provide a generalization to the non-uniform case. Throughout, we let V be a finite vocabulary of size |V| , with tokens v1, . . . , v |V| . We draw D random subsets T1, T2, . . . , TD ⊆ V as follows: for each q ∈ [D] we sample N tokens from V independently and with replacement, and let Tq be the set of distinct tokens obtained. The q-th subset is in general drawn according to its own probability distribution over V,
+
+pq =
+
+
+
+p(1)  
+
+> q
+
+, p (2)  
+
+> q
+
+, . . . , p (|V| )
+
+> q
+
+
+
+,
+
+> |V|
+
+X
+
+> i=1
+
+p(i) 
+
+> q
+
+= 1 . (12) The subscript q indexes the subset (which of the D distributions is in force) while the parenthesized superscript indexes the token; hence p(i) 
+
+> q
+
+is the probability of drawing token vi when forming Tq .The uniform case of Theorem 1 is recovered by taking every distribution to be uniform over V,i.e. p(i) 
+
+> q
+
+= 1 /|V| for every token vi, i ∈ [|V| ], and every subset q ∈ [D]. We drop the subscript q
+
+whenever the distribution does not depend on q, writing p = ( p(1) , . . . , p (|V| )). Finally, we denote by 
+
+C ≜ T 
+
+> q∈[D]
+
+Tq the common intersection of the D subsets, i.e., the tokens that appear in every subset. 
+
+Lemma 1 (Negative association of intersection indicators) . Let Xi ≜ 1(vi ∈ C ) ∈ { 0, 1} be the indicator random variable for the event that token vi is in the common token set C. Then X1, . . . , X V
+
+are negatively associated. Proof. A collection of random variables (X1, . . . , X m) is negatively associated (NA) if for every pair of disjoint index sets I, J ⊆ [m] and every pair of functions f, g that are both non-decreasing (or both non-increasing), 
+
+E [f (Xi, i ∈ I) g(Xj , j ∈ J)] ≤ E [f (Xi, i ∈ I)] E [g(Xj , j ∈ J)] .
+
+NA captures the idea that the variables compete: when one subset of them takes on larger values, any disjoint subset tends to take on smaller values, so they cannot all be large simultaneously. NA is stronger than negative correlation. Correlation tracks how variables move in pairs, whereas NA says that any group of them competes with any disjoint group. So NA variables are always negatively correlated, but variables can be negatively correlated in pairs without exhibiting this fuller competition. We refer the reader to Dubhashi and Ranjan [1996] for additional background. In our setting, we perform N draws in each of the D subsets, thus N D draws in total. For each 
+
+q ∈ [D] and k ∈ [N ], let wq,k ∈ { 0, 1}|V| be the one-hot encoding of the k-th token drawn in subset 
+
+q. Its coordinate w(i) 
+
+> q,k
+
+indicates whether token vi was the one drawn on the k-th draw of subset q.By construction P|V|  
+
+> i=1
+
+w(i) 
+
+> q,k
+
+= 1 with each w(i) 
+
+> q,k
+
+∈ { 0, 1}, so by Lemma 8 of Dubhashi and Ranjan [1996] the entries of wq,k are NA. Next, we show that NA of wq,k implies NA of the indicators (X1, . . . , X |V| ), where Xi ≜ 1(vi ∈ C )
+
+records whether token vi is drawn at least once in every one of the D subsets. The indicators can be expressed in terms of the one-hot encodings as 
+
+Xi =
+
+> D
+
+Y
+
+> q=1
+
+max   
+
+> k∈[N]
+
+w(i)
+
+> q,k
+
+, (13) since max k∈[N ] w(i) 
+
+> q,k
+
+= 1 exactly when vi ∈ T q , and the product over q is 1 exactly when vi ∈ T q
+
+for all q, i.e. vi ∈ C .Each wq,k is a deterministic function of a single draw, and the N D draws are mutually independent, so the vectors {wq,k } are mutually independent. Combining the within-draw NA of each wq,k with this independence, the union of independent sets of NA random variables is again NA by property 7 of Joag-Dev and Proschan [1983], so the full collection {w(i)
+
+> q,k
+
+}i,q,k is NA. Each indicator Xi depends only on the coordinates {w(i) 
+
+> q,k
+
+: q ∈ [D], k ∈ [N ]} indexed by token vi, and these subsets are disjoint across distinct i. Since max and products of {0, 1}-valued terms are non-decreasing, each Xi is a non-decreasing function defined over disjoint subsets of NA random variables, and hence the indicators are NA by property 6 of Joag-Dev and Proschan [1983]. 29 Theorem 1. [Sample complexity for spectral recovery] Let V be a finite vocabulary of size |V| , and let T1, . . . , TD be D independent random subsets of V, each formed by drawing N tokens uniformly at random with replacement from V. Let C ≜ T1 ∩ · · · ∩ T D denote their common intersection, and 
+
+d ≤ D be a target threshold. If 
+
+N ≥
+
+ln 
+
+"
+
+1 −
+
+ d+√2d ln(1 /δ )+2 ln(1 /δ )
+
+> |V|
+
+1/D #
+
+ln(1 − 1/|V| ) (1) 
+
+then |C| ≥ d with probability at least 1 − δ.Proof. The intersection size can be expressed as C ≜ |C| = P|V|  
+
+> i=1
+
+Xi, where Xi = 1(vi ∈ C ) as in Lemma 1. 
+
+Step 1: Expected intersection size. By independence across the D subsets, 
+
+μ ≜ E[C] = 
+
+> |V|
+
+X
+
+> i=1
+
+E[Xi] = 
+
+> |V|
+
+X
+
+> i=1
+> D
+
+Y
+
+> q=1
+
+P(vi ∈ T q ). (14) Since each draw within Tq samples token vi uniformly with probability 1/|V| , the probability that vi
+
+never appears in N draws is (1 − 1/|V| )N , so P(vi ∈ T q ) = 1 − (1 − 1/|V| )N . Substituting gives 
+
+μ = |V|  1 − (1 − 1/|V| )N D . (15) 
+
+Step 2: Concentration via a Chernoff bound for NA variables. By Lemma 1, C is a sum of the NA indicators X1, . . . , X |V| ∈ { 0, 1}. The multiplicative Chernoff lower-tail bound holds exactly as in the independent case [Dubhashi and Ranjan, 1996]. Thus for any ε ∈ (0 , 1) ,
+
+P C ≤ (1 − ε)μ ≤ exp 
+
+
+
+− ε2μ
+
+2
+
+
+
+. (16) Setting the right-hand side equal to δ gives ε = p2 ln(1 /δ )/μ , so with probability at least 1 − δ,
+
+C ≥ μ − p2μ ln(1 /δ ). (17) 
+
+Step 3: Sufficient condition on μ. It therefore suffices to ensure μ − p2μ ln(1 /δ ) ≥ d. Writing 
+
+u = √μ and a = p2 ln(1 /δ ), this is the quadratic inequality u2 − au − d ≥ 0, whose positive root gives u ≥ 12 (a + √a2 + 4 d). Squaring and using √a2 + 4 d ≤ a + 2 √d,
+
+μ ≥ d + p2d ln(1 /δ ) + 2 ln(1 /δ ). (18) 
+
+Step 4: Solving for N . Combining (15) and (18), it suffices that 
+
+|V|  1 − (1 − 1/|V| )N D ≥ d + p2d ln(1 /δ ) + 2 ln(1 /δ ). (19) Solving for N ,
+
+N ≥
+
+ln 
+
+1 − d + p2d ln(1 /δ ) + 2 ln(1 /δ )
+
+|V| 
+
+!1/D 
+
+ln(1 − 1/|V| ) . (20) 
+
+Interpretation of the bound. Here we interpret sample complexity provided by the bound in Theo-rem 1. Let m be the required value of the required value of μ from (18), namely 
+
+m ≜ d + p2d ln(1 /δ ) + 2 ln(1 /δ ),
+
+30 so that the sufficient condition is N ≥ N ⋆ with 
+
+N ⋆ ≜ − ln 1 − (m/ |V| )1/D 
+
+− ln(1 − 1/|V| ) .
+
+We proceed bound the numerator and denominator. The denominator satisfies − ln(1 − 1/|V| ) ≥
+
+1/|V| , so its reciprocal is at most |V| . For the numerator, let (m/ |V| )1/D = e−t with t ≜ 1 
+
+> D
+
+ln |V|  
+
+> m
+
+.The inequality 1 − e−t ≥ t 
+
+> 1+ t
+
+gives − ln(1 − e−t) ≤ ln(1 + 1 /t ), and in the regime m ≤ |V| /e we have t ≥ 1/D , hence 1/t ≤ D. Combining, 
+
+N ⋆ ≤ |V| ln(1 + D) = O(|V| ln D),
+
+so it suffices to take N = O(|V| ln D) samples per subset, for a total query budget DN =
+
+O(|V| D ln D).Theorem 1 assumes the output distribution over tokens is exactly uniform. In practice, the proposed common-set prompting search method finds prompts whose resulting output distributions are approx-imately, but not perfectly, uniform in the high temperature. We subsequently generalize the theorem by introducing a notion of t-flatness, which captures the degree to which an output distribution is spread across a sub-vocabulary of interest. 
+
+Definition 1. [t-flat distribution] A probability distribution p = ( p(1) , . . . , p (|V| )) over a vocabulary 
+
+V is t-flat over V′ ⊆ V if p(i) ≥ t for all vi ∈ V ′.
+
+Equipped with this definition, we generalize Theorem 1 to the non-uniform setting where each of the 
+
+D subsets may be drawn from its own pq , provided they share a common floor t on the sub-vocabulary 
+
+V′ of interest. 
+
+Corollary 1. [Sample complexity under t-flat distributions] Let T1, . . . , TD be D independent random subsets of V, each formed by drawing N tokens with replacement from its own distribution 
+
+pq , where every pq is t-flat over a common sub-vocabulary V′ ⊆ V . If 
+
+N ≥
+
+ln 
+
+"
+
+1 −
+
+ d+√2d ln(1 /δ )+2 ln(1 /δ )
+
+> |V ′|
+
+1/D #
+
+ln(1 − t) (21) 
+
+then |C| ≥ d with probability at least 1 − δ.Proof. Let C′ ≜ P 
+
+> vi∈V ′
+
+Xi be the intersection size restricted to V′, with Xi = 1(vi ∈ C ) as in Lemma 1. Since V′ ⊆ V , C′ ≤ |C| , so it suffices to guarantee C′ ≥ d. The indicators 
+
+{Xi : vi ∈ V ′} are a subcollection of the NA family of Lemma 1 and any subset of an NA family is NA. Steps 2 and 3 of the proof of Theorem 1 therefore apply to C′ verbatim and it is sufficient that 
+
+μ′ ≜ E[C′] ≥ d + p2d ln(1 /δ ) + 2 ln(1 /δ ). By independence across the D subsets and t-flatness, 
+
+p(i) 
+
+> q
+
+≥ t for every q ∈ [D] and vi ∈ V ′, so 
+
+μ′ = X
+
+> vi∈V ′
+> D
+
+Y
+
+> q=1
+
+ 1 − (1 − p(i) 
+
+> q
+
+)N  ≥ |V ′| 1 − (1 − t)N D . (22) Ensuring the right-hand side is at least d + p2d ln(1 /δ ) + 2 ln(1 /δ ) and solving for N (as in Step 4 of Theorem 1, using ln(1 − t) < 0) gives the stated bound. 31

@@ -1,0 +1,939 @@
+Title: ZO-Act: Efficient Zeroth-Order Fine-Tuning via One-Shot Activation-Informed Low-Rank Subspaces
+
+URL Source: https://arxiv.org/pdf/2607.01125v1
+
+Published Time: Thu, 02 Jul 2026 01:18:23 GMT
+
+Number of Pages: 13
+
+Markdown Content:
+# ZO-Act: Efficient Zeroth-Order Fine-Tuning via One-Shot Activation-Informed Low-Rank Subspaces 
+
+Xun Dong 1 Yibo Xu 1 Naigang Wang 2 Xin Li 1 Penghang Yin 1 Zi Yang 1,†
+
+> 1
+
+University at Albany, SUNY 2IBM T. J. Watson Research Center 
+
+{xdong5, yxu25, xli48, pyin, zyang8}@albany.edu nwang@us.ibm.com 
+
+Abstract 
+
+Zeroth-order (ZO) optimization enables fine-tuning large language models when backpropa-gation is unavailable or memory-prohibitive, but existing methods often perturb full model weights or randomly constructed low-dimensional subspaces, yielding high-variance estimates and limited performance. We propose ZO-Act, an activation-informed ZO fine-tuning method that restricts perturbations to a fixed low-rank subspace derived from input activa-tions. For each linear layer, ZO-Act computes a small activation basis once at initialization and optimizes only lightweight coefficient ma-trices using forward-only loss evaluations. This reduces the effective perturbation dimension, exposes explicit trainable variables compati-ble with momentum-based optimizers such as Adam, and naturally supports quantized LLM fine-tuning by keeping low-bit weights frozen. We analyze ZO-Act as zeroth-order optimiza-tion over a restricted coefficient space and show that perturbing the low-dimensional co-efficients reduces both the variance-dependent convergence term and the finite-difference error of the ZO estimator, at the cost of a controlled subspace approximation bias that is mitigated by the low-rank structure of LLM activations and gradients. Experiments on Llama-3-8B, OPT-13B, and INT4 Llama-3-8B show consis-tent gains over strong ZO fine-tuning baselines across language understanding, question an-swering, and commonsense reasoning. 
+
+1 Introduction 
+
+Fine-tuning large language models (LLMs) (Houlsby et al., 2019; Hu et al., 2021; Gurses et al., 2025; Dettmers et al., 2023) has become a stan-dard technique for adapting pretrained models to downstream tasks. However, as LLMs scale to billions of parameters, conventional first-order fine-tuning becomes increasingly memory-intensive due  
+
+> †Corresponding author
+
+to backpropagation, activation storage, and opti-mizer states. Zeroth-order (ZO) optimization pro-vides a promising forward-only alternative, esti-mating update directions using only loss evalua-tions and avoiding backpropagation (Malladi et al., 2023). Despite its memory advantage, ZO fine-tuning suffers from high gradient-estimation vari-ance when perturbations are sampled in the full parameter space. MeZO (Malladi et al., 2023) showed that in-place ZO-SGD can fine-tune very large models with inference-level memory, but later studies identified slow convergence and instability as major limitations. While ZO optimization offers an appealing al-ternative, matching FO optimization in terms of convergence and accuracy is still challenging. The core issue is that gradients estimated from func-tion queries often have high variance, and this variance worsens in higher-dimensional problems (Duchi et al., 2015; Nesterov and Spokoiny, 2017; Liu et al., 2018). Subsequent work has improved ZO fine-tuning through better optimizers and more structured perturbations, including ZO-Adam and momentum variants (Zhang et al., 2024b), ZO-Muon (Lang et al., 2026), curvature-aware pre-conditioning (Zhao et al., 2025), low-rank pertur-bations (Yu et al., 2024; Chen et al., 2025; Lin et al., 2026), and sparse perturbations (Liu et al., 2026). A particularly effective direction is low-rank or subspace-based ZO perturbation, which reduces the perturbation dimension to improve es-timator stability. LOZO (Chen et al., 2025) and SubZero (Yu et al., 2024) restrict perturbations to low-rank matrices to reduce variance. AGZO (Lin et al., 2026) further incorporates activation informa-tion into low-rank ZO perturbations, showing that activation-aware directions can provide stronger update signals. ZO-Act uses activation informa-tion in a different way. Instead of only guiding the construction of perturbation directions, it uses acti-vations to define a fixed low-dimensional parame-1
+
+> arXiv:2607.01125v1 [cs.LG] 1 Jul 2026
+
+terization. Specifically, each adapted weight update is represented by a frozen activation-informed basis and a small trainable coefficient matrix. This turns ZO fine-tuning into explicit subspace optimization, reducing the perturbation dimension, enabling stan-dard momentum-based optimizers such as Adam, avoiding full-weight perturbation materialization, and naturally supporting quantized backbones by keeping the original weights frozen. We therefore propose ZO-Act, a one-shot activation-informed ZO fine-tuning method. For each adapted linear layer, ZO-Act computes a low-rank basis from input activations using a calibra-tion batch, freezes this basis throughout fine-tuning, and optimizes only the corresponding coefficient matrix. This one-shot fixed-parameterization de-sign provides a simple forward-only alternative to perturbation-based low-rank ZO methods while preserving the memory advantages needed for large and quantized LLM adaptation. • We propose ZO-Act, a one-shot activation-informed ZO fine-tuning method that uses input activations to define a fixed low-dimensional subspace. ZO-Act freezes the ac-tivation basis and optimizes only lightweight coefficient matrices, turning full-weight per-turbation into explicit coefficient-space opti-mization. This reduces the effective perturba-tion dimension, exposes explicit trainable vari-ables compatible with standard momentum-based optimizers such as Adam, and naturally supports quantized LLM fine-tuning by keep-ing the low-bit weights frozen. • We analyze ZO-Act as zeroth-order optimiza-tion over a restricted coefficient space and show that, by perturbing the k-dimensional coefficients instead of the d-dimensional weights, it reduces both the variance-dependent convergence term and the finite-difference error of the ZO estimator. The anal-ysis also makes the resulting trade-off explicit: ZO-Act obtains lower-variance estimation at the cost of a controlled subspace approxima-tion bias, which is mitigated by the low-rank structures of LLM activations and gradients. • We demonstrate that ZO-Act consistently im-proves over strong ZO baselines on Llama-3-8B, OPT-13B, and INT4 Llama-3-8B across language understanding, question answering, and commonsense reasoning tasks, showing its effectiveness for both full-precision and quantized forward-only fine-tuning. 
+
+2 Related Work 
+
+Zeroth-order fine-tuning. MeZO (Malladi et al., 2023) adapts simultaneous perturbation stochas-tic approximation to language model fine-tuning by estimating an update direction from two for-ward losses evaluated under opposite random per-turbations. Its in-place implementation avoids stor-ing explicit perturbation vectors and therefore sub-stantially reduces training memory. Nevertheless, MeZO samples perturbations in the full parameter space, so the resulting estimator remains highly noisy in billion-dimensional models. A number of recent works improve this basic ZO fine-tuning pipeline through optimizer design, curvature information, and structured parameter selection. Zhang et al. (Zhang et al., 2024b) pro-vide a systematic study of ZO variants for LLM adaptation, including momentum, Adam-style up-dates, conservative updates, block-wise descent, and hybrid ZO-FO training. HiZOO (Zhao et al., 2025) estimates diagonal Hessian information and uses it to precondition ZO updates, addressing the heterogeneous curvature of LLM loss landscapes. ZO-Muon (Lang et al., 2026) combines matrix-structured ZO updates with Muon-style optimiza-tion to improve the stability and effectiveness of LLM fine-tuning. These methods demonstrate that reducing estimator noise and improving update ge-ometry are crucial for making ZO fine-tuning com-petitive. 
+
+Structured ZO perturbations. Another closely related line of work reduces the perturbation di-mension by imposing structured perturbations. S-MeZO (Liu et al., 2026) reduces the update dimen-sion by selecting a sparse set of sensitive parame-ters. LOZO (Chen et al., 2025) and SubZero (Yu et al., 2024) perform ZO optimization in randomly generated low-dimensional subspaces. ZO-Muon (Lang et al., 2026) further exploits low-rank struc-ture by combining subspace gradient orthogonal-ization with Muon-style matrix updates, improving the stability and effectiveness of ZO fine-tuning. AGZO (Lin et al., 2026) incorporates activation information into the construction of low-rank ZO perturbations, showing that activation-aware direc-tions can provide more informative update signals than purely random perturbations. ZO-Act is most closely related to this subspace-based line of work, 2but differs in how the subspace is used. Existing methods primarily use low-dimensional subspaces to construct more effective perturbation directions, whereas ZO-Act uses input activations to define a fixed update parameterization. The activation-informed basis is computed once and kept frozen, and fine-tuning is performed by optimizing only the lightweight coefficient matrices. 
+
+3 Methodology 
+
+Motivation. Consider a standard linear layer with input dimension m and output dimension n, Y =
+
+XW , where X ∈ Rb×m, W ∈ Rm×n, and Y ∈
+
+Rb×n. Let gY ∈ Rb×n denote the gradient of the final loss with respect to the layer output Y. Then the gradient with respect to the weight matrix W
+
+is gW = X⊤gY. Let X = UDV ⊤ be the thin SVD of X, where the diagonal entries of D are the singular values in descending order. Denote the top-r components by 
+
+Ur := U:,:r, Vr := V:,:r, Dr := D:r, :r.
+
+The weight gradient can be written as 
+
+gW = VDU ⊤gY.
+
+If the singular values of X decay rapidly, then gW
+
+can be well approximated by its rank-r truncation: 
+
+gW ≈ VrDrU⊤ 
+
+> r
+
+gY.
+
+This suggests that the dominant components of the weight gradient lie in the subspace spanned by the top right singular vectors of the input activation matrix, namely Vr.The same intuition can also be understood from the perspective of weight perturbation. Suppose we perturb the weight matrix along the activation-informed subspace: ∆W = VrR, R ∼N (0 , I ). Then the induced perturbation on the layer output is 
+
+∆Y = X∆W = UDV ⊤VrR = UrDrR.
+
+Thus, perturbing W within the span of Vr directly targets the dominant activation directions of the layer. In contrast, perturbations outside this sub-space are largely suppressed by the small singular values of X and have limited effect on the layer output. Therefore, restricting zeroth-order pertur-bations to the Vr subspace preserves the most ef-fective perturbation directions while substantially reducing the perturbation dimension. 
+
+ZO-Act. Motivated by the above observation, we restrict zeroth-order perturbations to the dominant right singular subspace of the input activations. For each linear layer, we first compute a fixed activation-informed basis from a calibration batch, and then perform zeroth-order optimization only over a low-dimensional coefficient matrix. Consider a linear layer with pretrained weight 
+
+W ∈ Rm×n. Let Vr ∈ Rm×r be the top-r right singular vectors of the input activation matrix X.We parameterize the weight update as 
+
+∆W = VrB,
+
+where B ∈ Rr×n is the only trainable parameter for this layer. The effective weight is therefore 
+
+Weff = W + VrB.
+
+The pretrained weight W and the activation basis 
+
+Vr are both frozen throughout training, while B is initialized as zero. At each training step, we sample a random per-turbation in the low-dimensional coefficient space: 
+
+Z ∼ N (0 , I ), Z ∈ Rr×n.
+
+The corresponding weight-space perturbation is 
+
+∆WZO = VrZ.
+
+Given a perturbation magnitude μ > 0, the forward-perturbed effective weight is 
+
+W+eff = W + Vr(B + μZ).
+
+For an input activation X, the perturbed forward pass can be written as 
+
+Y+ = XW + ( XV r)( B + μZ).
+
+Let L+ denote the loss from the forward-perturbed model and let L denote the unper-turbed loss on the same mini-batch. The forward-difference zeroth-order estimator for B is 
+
+bgB = L+ − L 
+
+μ Z.
+
+With q independent perturbation directions, we av-erage the estimates: 
+
+bgB = 1
+
+q
+
+> q
+
+X
+
+> j=1
+
+L(j, +) − L 
+
+μ Z(j).
+
+We then update B using a first-order optimizer such as Adam with the estimated gradient bgB. Since the perturbation is sampled in Rr×n rather than 
+
+Rm×n, the effective perturbation dimension is re-duced from mn to rn , where r ≪ m. The whole ZO-Act algorithm is summarized in Algorithm 1 and Algorithm 2. 3Algorithm 1 Subspace Initialization 
+
+Require: Pretrained model, calibration batch Bcal , rank r
+
+1: Run one forward pass on Bcal and collect input activations 
+
+Xℓ for each linear layer ℓ.2: for each linear layer ℓ with weight Wℓ ∈ Rmℓ×nℓ do 
+
+3: Compute the top-r right singular vectors of Xℓ:
+
+Xℓ ≈ Uℓ,r Dℓ,r V⊤ 
+
+> ℓ,r
+
+.
+
+4: Freeze the pretrained weight Wℓ and the basis Vℓ,r .5: end for 
+
+6: return Frozen bases Vℓ,r .
+
+Algorithm 2 ZO-Act 
+
+Require: Data D, pretrained weights {Wℓ}ℓ, rank r, pertur-bation scale μ, learning rate η, queries q, steps T
+
+1: Sample calibration batch Bcal ⊂ D .2: Obtain frozen subspaces {Vℓ,r }ℓ using Algorithm 1 with 
+
+Bcal and rank r.3: Initialize the trainable matrix Bℓ ← 0 ∈ Rr×nℓ for all ℓ.4: for t = 1 , . . . , T do 
+
+5: Sample mini-batch Bt ⊂ D .6: Evaluate L with Wℓ, eff = Wℓ + Vℓ,r Bℓ.7: Initialize bgBℓ ← 0 for all ℓ.8: for j = 1 , . . . , q do 
+
+9: Sample Z(j) 
+
+> ℓ
+
+∼ N (0 , I ) for all ℓ.10: Evaluate L(j, +) with W(j, +)  
+
+> ℓ, eff
+
+= Wℓ + Vℓ,r (Bℓ
+
++μZ(j) 
+
+> ℓ
+
+).11: a(j) ← (L(j, +) − L )/μ .12: bgBℓ ← bgBℓ + a(j)Z(j) 
+
+> ℓ
+
+for all ℓ.13: end for 
+
+14: bgBℓ ← bgBℓ /q for all ℓ.15: Update each Bℓ with an optimizer using bgBℓ .16: end for 
+
+17: return Fine-tuned model with Wℓ, eff = Wℓ + Vℓ,r Bℓ.
+
+4 Theoretical Analysis 
+
+We analyze ZO-Act as zeroth-order optimization over a restricted coefficient space. Let F (θ) denote the fine-tuning objective, where θ ∈ Rd collects the weight parameters of all adapted linear lay-ers. As described in Section 3, ZO-Act freezes the pretrained weights and the activation-informed bases, and optimizes only the coefficient matrices 
+
+{Bℓ}Lℓ=1 . Let β ∈ Rk collect all trainable coeffi-cient matrices, where k = PLℓ=1 rn ℓ. Equivalently, there exists a fixed activation-informed embedding 
+
+U such that θ(β) = θ0 + U β , where θ0 denotes the frozen pretrained weights. Thus, ZO-Act optimizes the restricted objective ϕ(β) = F (θ0 + U β ), rather than the full objective F (θ) over all weight entries. This restricted formulation creates a variance– bias trade-off. Because ZO-Act samples perturba-tions only in the k-dimensional coefficient space, the variance-dependent term in the ZO estimator is governed by k, rather than the full weight dimen-sion d. At the same time, restricting updates to the range of U introduces a subspace approximation bias: ZO-Act can only reduce the component of the gradient captured by the activation-informed update subspace. We first examine the variance of the estimated gradient in the coefficient space. Let gt = ∇ϕ(βt).For a single Gaussian direction zt ∼ N (0 , I k), the one-sided estimator is 
+
+bgt = ϕ(βt + μz t) − ϕ(βt)
+
+μ zt.
+
+For small μ, the leading term is at = ⟨gt, z t⟩zt.
+
+This term is unbiased, since E[at] = gt. Its second moment is 
+
+E∥at∥2 = E[⟨gt, z t⟩2∥zt∥2] = ( k + 2) ∥gt∥2.
+
+Therefore, 
+
+E∥at − gt∥2 = E∥at∥2 − ∥ gt∥2 = ( k + 1) ∥gt∥2.
+
+With q independent perturbation directions, define 
+
+¯at = q−1 Pqj=1 a(j) 
+
+> t
+
+. Then 
+
+E[¯ at] = gt, E∥¯at − gt∥2 = k + 1 
+
+q ∥gt∥2.
+
+Thus, the leading variance of the ZO gradient esti-mator scales linearly with the perturbation dimen-sion and decreases as 1/q with multi-query averag-ing. We now analyze the convergence of ZO-Act on the objective ϕ(β) = F (θ0 + U β ). The analysis follows the standard analysis framework for gradi-ent descent with a zeroth-order gradient estimator. 
+
+Theorem 1 (Informal convergence of ZO-Act) . Let 
+
+ϕ(β) = F (θ0 + U β ) be the objective optimized by ZO-Act, where β ∈ Rk collects all trainable coefficient matrices. Assume that F is LF -smooth and ϕ is lower bounded by ϕinf  
+
+> k
+
+. When ZO-Act applies gradient descent using a q-query one-sided Gaussian zeroth-order estimator with perturbation scale μ in the coefficient space, the iterates satisfy 
+
+1
+
+T 
+
+> T−1
+
+X
+
+> t=0
+
+E∥∇ ϕ(βt)∥2 ≤ O
+
+ LF
+
+
+
+1 + kq
+
+  ϕ(β0) − ϕinf 
+
+> k
+
+
+
+T
+
+
+
++ O  L2 
+
+> F
+
+μ2k3 .
+
+The proof is shown in Appendix A.1. Theorem 1 highlights the main optimization benefit of ZO-Act. Full-weight ZO corresponds to the special case 
+
+k = d, where d = PLℓ=1 mℓnℓ is the full adapted weight dimension. ZO-Act instead perturbs only 4the coefficient matrices, giving k = PLℓ=1 rn ℓ.Since r ≪ mℓ, we have k ≪ d, so the variance-dependent term that governs the convergence of ϕ
+
+is substantially reduced, yielding a lower-variance and more stable ZO estimator. The second term is the finite-difference error in-duced by the one-sided estimator with nonzero per-turbation scale μ. Under smoothness-only assump-tions, this term scales as O(L2 
+
+> F
+
+μ2k3). For full-weight ZO, the same term scales as O(L2 
+
+> F
+
+μ2d3).Since ZO-Act uses the much smaller coefficient dimension k ≪ d, it can dramatically reduce this finite-difference noise. Thus, the low-dimensional activation-informed parameterization reduces both the leading variance term and the higher-order finite-difference error, making the ZO estimator substantially more stable. This improvement comes with a subspace ap-proximation bias. ZO-Act optimizes the restricted objective ϕ(β) = F (θ0 + U β ), rather than directly optimizing F (θ) over the full adapted weight space. Therefore, ZO-Act can only reduce the compo-nent of the full gradient that lies in the activation-informed update subspace. Let PU = U U ⊤
+
+be the projector onto this subspace. The the-orem controls the projected component through 
+
+∇ϕ(βt) = U ⊤∇F (θt), while the residual term 
+
+∥(I − PU )∇F (θt)∥2 measures the bias introduced by restricting updates to the activation-informed subspace. Thus, ZO-Act trades a controlled sub-space bias for a much lower-variance zeroth-order estimator. In large language model fine-tuning, this subspace bias is often mitigated by the low-rank structure of adaptation. Effective task-specific updates are known to be highly structured (Zhao et al., 2024) and are often well captured by low-dimensional parameterizations such as LoRA (Hu et al., 2021; Gurses et al., 2025). ZO-Act leverages this phenomenon in a data-informed way by choos-ing the subspace from dominant input activation directions, where layerwise gradients are expected to concentrate; we verify this gradient concentra-tion empirically in Section 5.3. The method can thus preserve important update directions while greatly reducing ZO estimation noise. To further understand the subspace bias, con-sider a least-squares layerwise approximation. Let 
+
+R = Y − XW 0 be the residual target. The full update problem minimizes ∥X∆W − R∥2 
+
+> F
+
+, while ZO-Act restricts the update to ∆W = VB and minimizes ∥XVB − R∥2 
+
+> F
+
+. If PX and PXV denote the projectors onto col( X) and col( XV ), respec-tively, then the restricted optimality gap is 
+
+ϕ⋆V − f ⋆ = ∥(PX − PXV )R∥2 
+
+> F
+
+.
+
+If X = P 
+
+> i
+
+σiuiv⊤ 
+
+> i
+
+and V = Vr contains the top 
+
+r right singular vectors of X, then col( XV r) = span {u1, . . . , u r}. Therefore, 
+
+ϕ⋆V − f ⋆ = X
+
+> i>r
+
+∥u⊤ 
+
+> i
+
+R∥22.
+
+Thus, the approximation bias is small when the residual target R has little energy along the dis-carded left singular directions of the activation ma-trix. When the activation spectrum is concentrated, the dominant left singular directions often capture the most influential output variations induced by in-put activations, making this residual energy small in practice. This supports the use of activation-informed low-rank subspaces: a small rank can pre-serve the main update directions while substantially reducing the variance of zeroth-order perturbations. 
+
+5 Experiments 
+
+We evaluate ZO-Act on forward-only fine-tuning tasks for large language models. Our experiments cover three settings: language understanding and question answering, commonsense reasoning, and quantized LLM fine-tuning. For full-precision mod-els, we consider Llama-3-8B (Grattafiori et al., 2024) and OPT-13B (Zhang et al., 2022). For quan-tized fine-tuning, we evaluate an INT4 quantized Llama-3-8B model, denoted as Llama-3-8B-w4, which is quantized by MagR (Zhang et al., 2024a). To ensure a fair comparison with existing ZO baselines, we match or slightly reduce the total number of forward passes used by ZO-Act com-pared with the corresponding baseline methods whenever possible. Unless otherwise specified, ZO-Act uses Gaussian perturbations with q = 8 pertur-bation directions per update step and perturbation magnitude μ = 10 −3. We use rank r = 1 for full-precision models and rank r = 32 for the INT4 quantized model. The rank-one subspace is suf-ficient for full-precision fine-tuning and gives the lowest perturbation dimension, while the quantized model benefits from a moderately larger subspace to compensate for the reduced capacity. We use the forward-difference estimator and optimize the low-rank coefficient matrices with Adam. Full details are shown in Appendix B. 5Method Llama-3-8B OPT-13B SST-2 RTE CB BoolQ WiC SQuAD SST-2 RTE CB BoolQ WiC SQuAD • Adam 96.0 92.0 92.0 86.6 72.6 90.4 95.3 80.9 94.6 83.5 66.3 89.5 • LoRA 95.0 80.9 73.2 86.4 70.7 89.4 94.8 78.3 69.6 80.2 64.3 88.0 MeZO 92.7 74.4 69.6 76.7 57.8 86.7 91.4 66.1 66.0 66.1 59.4 81.8 S-MeZO 92.1 69.7 69.6 80.5 56.9 87.5 90.4 63.5 69.6 66.4 58.8 80.8 HiZOO 93.5 75.1 69.6 80.0 59.7 87.3 92.1 69.3 69.6 67.6 59.4 82.1 LOZO 92.5 66.8 69.6 79.4 55.8 89.0 91.7 70.4 69.6 71.9 60.2 84.9 SubZero 92.1 71.4 67.9 82.0 58.8 88.3 92.1 71.8 71.4 70.8 60.8 84.5 Subspace-MeZO 92.3 68.6 69.6 80.0 62.9 84.5 91.7 70.7 71.4 68.1 61.7 83.5 AGZO 93.4 82.7 71.4 84.5 62.4 90.3 89.8 67.5 66.1 68.1 56.0 85.4                                                 
+
+> ZO-Muon 94.3 81.2 69.6 82.9 65.2 88.2 92.5 72.9 71.4 72.4 61.7 84.5 ZO-Act Full Adam 94.6 87.0 89.3 85.1 69.1 89.1 94.0 74.0 75.0 73.1 59.4 85.1 ZO-Act Full SGD 94.0 83.8 91.1 83.8 64.7 90.7 92.4 64.6 71.4 70.0 58.2 83.9 ZO-Act INT4 Adam 93.5 83.8 82.1 83.8 60.7 88.2 ––––––
+
+Table 1: Language understanding and question answering results of various ZO fine-tuning methods. 
+
+5.1 Language Understanding Models and Datasets. Following the setting of Lang et al. (2026), ZO-Act is evaluated on standard language understanding and question answering tasks. The evaluation includes six benchmarks: SST-2, RTE, CB, BoolQ, WiC, and SQuAD in Su-perGLUE (Wang et al., 2019). F1 score is reported for SQuAD, and accuracy is reported for the re-maining tasks. Experiments are conducted on two full-precision LLMs, Llama-3-8B and OPT-13B, as well as an INT4 quantized Llama-3-8B model. 
+
+Baselines. We compare ZO-Act with represen-tative zeroth-order fine-tuning methods, including MeZO (Malladi et al., 2023), S-MeZO (Liu et al., 2026), HiZOO (Zhao et al., 2025), LOZO (Chen et al., 2025), SubZero (Yu et al., 2024), Subspace-MeZO (Lang et al., 2026), AGZO (Lin et al., 2026), and ZO-Muon (Lang et al., 2026). The baseline results, except for AGZO, are taken from the ZO-Muon paper. The AGZO results are obtained using our implementation. 
+
+Results. Table 1 reports the language understand-ing and question answering results. ZO-Act with Adam achieves strong performance across both model families. On Llama-3-8B, ZO-Act obtains the best full-precision ZO result on SST-2, RTE, BoolQ, and WiC, and achieves especially large gains on RTE and CB compared with prior ZO base-lines. For example, compared with ZO-Muon, ZO-Act improves RTE from 81.2 to 87.0 and CB from 69.6 to 89.3. On OPT-13B, ZO-Act also achieves the best full-precision ZO result on SST-2, RTE, CB, and BoolQ, and remains competitive on WiC and SQuAD. These results show that the activation-informed space provides effective update directions and leads to robust forward-only fine-tuning perfor-mance across different model architectures. ZO-Act also remains effective when applied to the INT4 quantized Llama-3-8B model. Although the INT4 results are generally lower than the full-precision ZO-Act results, the performance remains comparable to or stronger than many full-precision ZO baselines. These results suggest that ZO-Act can preserve strong task adaptation ability even when the pretrained model is quantized, supporting its suitability for memory-constrained fine-tuning. Finally, comparing ZO-Act with Adam and SGD highlights the importance of optimizing the explicit coefficient matrices with a momentum-based opti-mizer. Replacing Adam with SGD leads to notice-ably worse performance on most tasks, especially on OPT-13B. This confirms one practical advan-tage of the ZO-Act parameterization: by exposing lightweight trainable coefficient matrices, it allows standard optimizers such as Adam to be directly applied to ZO gradient estimates. 
+
+5.2 Commonsense Reasoning Models and Datasets. We further evaluate ZO-Act on full-data commonsense reasoning tasks. The benchmark consists of eight tasks: ARC-Challenge, ARC-Easy (Clark et al., 2018), BoolQ (Clark et al., 2019), HellaSwag (Zellers et al., 2019), OpenBookQA (Mihaylov et al., 2018), PIQA (Bisk et al., 2020), SIQA (Sap et al., 2019), and WinoGrande (Sakaguchi et al., 2021). We fine-tune Llama-3-8B on the combined training data and report accuracy on each evaluation task individu-ally, as well as the average accuracy. All tasks are evaluated under an open-ended generation protocol 6Method ARC-c ARC-e BoolQ HellaS OBQA PIQA SIQA WinoG Average Zero-shot 10.0 12.5 61.9 12.3 23.4 47.4 2.2 0.0 21.2 LOZO 51.9 69.6 62.6 48.3 53.0 70.2 54.5 50.6 57.6 AGZO 65.0 83.3 64.5 70.7 60.8 79.9 63.5 57.7 68.2 SubZero 60.2 78.3 62.5 68.0 53.6 76.7 59.2 52.6 63.9 HiZOO 60.3 79.6 63.6 65.6 58.2 73.1 58.6 53.5 64.1 ZO-Muon 61.4 78.0 63.0 63.6 50.8 76.7 57.3 53.6 63.1 ZO-Act 68.7 85.9 64.7 76.4 65.6 79.6 67.3 58.4 70.8          
+
+> ZO-Act INT4 60.5 80.3 62.2 69.9 60.2 77.0 61.8 53.5 65.7
+
+Table 2: Commonsense reasoning results on Llama-3-8B. 
+
+with answer-match scoring. 
+
+Baselines. We compare ZO-Act with representa-tive ZO baselines, including LOZO, AGZO, Sub-Zero, HiZOO, and ZO-Muon. ZO-Act and ZO-Muon are trained for 20k steps using forward dif-ferences with q = 8 , corresponding to 9 forward passes per step, including one unperturbed forward pass and eight perturbed forward passes. The re-maining baselines are trained for 100k steps with 2 forward passes per step. Thus, ZO-Act uses no more total forward evaluations than these baselines. 
+
+Results. Table 2 reports the commonsense rea-soning results on Llama-3-8B. ZO-Act achieves the best average performance among all evaluated ZO methods and obtains the top result on nearly all sub-tasks. Compared with prior baselines, ZO-Act shows consistent improvements across the bench-mark, indicating that the activation-informed coef-ficient space provides effective update directions beyond the tasks considered in Table 1. When ZO-Act is applied to the INT4 quantized model, it remains competitive with strong full-precision ZO baselines, despite some degradation relative to the full-precision ZO-Act model. This suggests that the same ZO-Act algorithm can be effectively used on quantized models while retaining strong adaptation performance. 
+
+5.3 Stability and Gradient Alignment of Activation Subspaces 
+
+ZO-Act computes the activation-informed basis once at initialization and keeps it fixed during fine-tuning. To validate this design choice, we perform a diagnostic study using a separate full first-order fine-tuning run of Llama-3-8B on RTE for three epochs. We inspect the query projection layers at depths 0, 15, and 31. For each layer ℓ, let Vℓ, 0 ∈ Rmℓ×r denote the top-r right singular vectors of the input activation matrix at initialization, and let Vℓ,t denote the cor-
+
+Figure 1: Stability and gradient alignment of activation-informed subspaces at epoch 3 of Llama-3-8B RTE full fine-tuning. We show the q-projection layers at decoders 0, 15, and 31. 
+
+responding activation basis recomputed at check-point t. We measure the stability of the activation subspace by ∥V⊤ 
+
+> ℓ,t Vℓ, 0∥2
+> F
+> r
+
+. We also measure the frac-tion of full-gradient energy captured by the fixed initialization subspace: ∥VTℓ, 0Gℓ,t ∥2
+
+> F
+> ∥Gℓ,t ∥2
+> F
+
+, where Gℓ,t is the full weight gradient of layer ℓ at checkpoint t.Figure 1 (a) shows the results at the final check-point. The activation subspace remains stable across all inspected q-projection layers. For r = 1 ,the overlap is close to one at all three depths, indicating that the dominant activation direction changes little during fine-tuning. For r = 32 , the overlap is slightly lower but still remains high. The fixed activation subspace also captures meaningful gradient energy. The results are shown in Figure 1 (b). Even with r = 1 , the initializa-tion subspace captures a clear portion of the full-gradient energy, showing that the dominant acti-vation direction is already gradient-aligned. This 7Rank Llama-3-8B OPT-13B 1 87.0 74.0       
+
+> 32 83.0 68.2 128 84.5 71.6 256 80.9 72.6
+> Table 3: Effect of subspace rank on RTE test accuracy.
+
+is important for ZO-Act, since the rank-one set-ting uses the smallest perturbation dimension and therefore benefits most from variance reduction. When the rank is increased to r = 32 , the captured gradient energy further increases, indicating that additional activation directions provide broader gra-dient coverage. Together, these results demonstrate that a very small activation subspace can already identify useful update directions. 
+
+5.4 Effect of Subspace Rank 
+
+We further study the effect of the activation sub-space rank on RTE. Table 3 reports the test accu-racy of ZO-Act with different ranks on Llama-3-8B and OPT-13B. Interestingly, the rank-one subspace achieves the best performance on both models. In-creasing the rank does not necessarily improve the final test accuracy. These results suggest that the dominant activation direction already captures a highly effective update subspace for ZO fine-tuning. The effect of rank is governed by two opposing forces: larger ranks improve subspace coverage and expressiveness, but also increase the coefficient-space perturbation dimension and hence the vari-ance and difficulty of zeroth-order optimization. This explains why the accuracy is non-monotonic in the rank rather than uniformly decreasing: very small ranks may underfit the update subspace, inter-mediate ranks can be variance-dominated, and the adaptive scaling of Adam partially compensates for the added variance at larger ranks. The rank-one subspace nonetheless attains the best accuracy on both models while using the smallest perturbation dimension. In our main experiments, we there-fore use a small activation-informed rank, which provides strong performance while preserving the variance-reduction advantage of ZO-Act. 
+
+5.5 Efficiency Comparison. 
+
+We compare the practical efficiency of ZO-Act with representative ZO fine-tuning baselines in Table 4. The comparison is conducted on the RTE task using Llama-3-8B, and all methods are evaluated under the same total forward-query budget of 4500 for-ward passes. ZO-Act achieves the fastest runtime among the               
+
+> Method Runtime (min) Memory (GB) LOZO 44.5 16.1
+> SubZero 45.5 16.1
+> AGZO 47.4 16.1
+> ZO-Muon 42.6 19.0 HiZOO 94.0 30.0 ZO-Act 42.0 16.1
+> Table 4: Runtime and memory on Llama-3-8B.
+
+evaluated methods while matching the lowest mem-ory usage. Its memory is the same as LOZO, Sub-Zero, and AGZO, and lower than ZO-Muon and HiZOO. The one-shot subspace initialization adds negligible overhead, taking only 1.5 seconds be-fore fine-tuning. This indicates that the activation-informed coefficient-space design introduces little practical overhead while retaining the memory ef-ficiency of forward-only fine-tuning. Moreover, when ZO-Act is applied to the INT4 quantized model, the memory usage is further reduced to 
+
+5.8GB , demonstrating its advantage for low-bit fine-tuning. 
+
+6 Conclusion 
+
+We proposed ZO-Act, a one-shot activation-informed zeroth-order fine-tuning method for large language models. ZO-Act uses input activations to construct a fixed low-dimensional subspace and op-timizes only lightweight coefficient matrices within this subspace. By reducing the perturbation dimen-sion, this design lowers the variance of ZO gradi-ent estimation, enables standard momentum-based optimizers, improves convergence, and naturally supports quantized LLM fine-tuning. Our theoretical analysis shows that ZO-Act im-proves the stability of zeroth-order optimization by reducing the variance-dependent convergence term and the finite-difference error. It also clarifies the main trade-off introduced by the activation-informed subspace: ZO-Act gains more stable coefficient-space optimization while relying on the selected subspace to capture useful update direc-tions. Empirically, ZO-Act achieves strong per-formance on Llama-3-8B, OPT-13B, and INT4 Llama-3-8B across language understanding, ques-tion answering, and commonsense reasoning tasks, consistently improving over strong ZO fine-tuning baselines. These results suggest that activation-informed coefficient-space optimization is an effec-tive and practical approach for forward-only fine-tuning of both full-precision and quantized LLMs. 87 Limitations 
+
+Although ZO-Act substantially improves over ex-isting ZO fine-tuning baselines, it still does not fully close the gap to first-order fine-tuning. In particular, first-order methods can often achieve stronger final performance because they use exact backpropagation gradients rather than noisy zeroth-order estimates. ZO-Act reduces the variance of ZO estimation by restricting perturbations to an activation-informed coefficient space, but the up-dates are still based only on forward loss evalua-tions and therefore remain less informative than full gradients. ZO-Act also remains slower than standard first-order fine-tuning in terms of wall-clock training time. Each ZO update requires multiple forward evaluations to estimate a gradient direction, while first-order methods obtain gradients through a sin-gle forward-backward pass. As a result, ZO-Act is most useful in settings where backpropagation is memory-prohibitive, unavailable, or difficult to support, such as inference-oriented or quantized deployment environments. Improving the runtime efficiency and further narrowing the final perfor-mance gap between ZO and FO fine-tuning remain important directions for future work. 
+
+8 Ethical Considerations 
+
+This work focuses on improving the optimization efficiency of zeroth-order fine-tuning for large lan-guage models and does not introduce new ethical risks beyond those already associated with fine-tuning pretrained LLMs. All experiments are con-ducted on publicly available models (Llama-3-8B, OPT-13B) and standard public benchmarks (Super-GLUE and commonsense reasoning datasets), used in accordance with their respective licenses and intended research use. We do not collect any new data or involve human subjects. ZO-Act is a general-purpose fine-tuning method and inherits the limitations and potential harms of its underlying pretrained models, including possi-ble biases, factual errors, and harmful generations. Because ZO-Act adapts models using only forward loss evaluations, it does not mitigate or amplify these issues by design; practitioners should apply standard safety and bias evaluations before deploy-ing any adapted model. By lowering the memory cost of fine-tuning and supporting quantized back-bones, ZO-Act may broaden access to LLM adap-tation on resource-constrained hardware. We view this increased accessibility as largely beneficial, but note that, as with any fine-tuning technique, it could in principle be used to adapt models toward harmful ends. 
+
+References                       
+
+> Yonatan Bisk, Rowan Zellers, Jianfeng Gao, Yejin Choi, and 1 others. 2020. Piqa: Reasoning about physical commonsense in natural language. In Proceedings of the AAAI conference on artificial intelligence , vol-ume 34, pages 7432–7439. Yiming Chen, Yuan Zhang, Liyuan Cao, Kun Yuan, and Zaiwen Wen. 2025. Enhancing zeroth-order fine-tuning for language models with low-rank structures. In International Conference on Learning Representa-tions , volume 2025, pages 62581–62607. Christopher Clark, Kenton Lee, Ming-Wei Chang, Tom Kwiatkowski, Michael Collins, and Kristina Toutanova. 2019. Boolq: Exploring the surprising difficulty of natural yes/no questions. In Proceedings of the 2019 conference of the north American chap-ter of the association for computational linguistics: Human language technologies, volume 1 (long and short papers) , pages 2924–2936. Peter Clark, Isaac Cowhey, Oren Etzioni, Tushar Khot, Ashish Sabharwal, Carissa Schoenick, and Oyvind Tafjord. 2018. Think you have solved question an-swering? try arc, the ai2 reasoning challenge. arXiv preprint arXiv:1803.05457 .Tim Dettmers, Artidoro Pagnoni, Ari Holtzman, and Luke Zettlemoyer. 2023. Qlora: Efficient finetuning of quantized llms. Advances in neural information processing systems , 36:10088–10115. John C Duchi, Michael I Jordan, Martin J Wainwright, and Andre Wibisono. 2015. Optimal rates for zero-order convex optimization: The power of two func-tion evaluations. IEEE Transactions on Information Theory , 61(5):2788–2806. Aaron Grattafiori, Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Alex Vaughan, and 1 others. 2024. The llama 3 herd of models. arXiv preprint arXiv:2407.21783 .Selcuk Gurses, Aozhong Zhang, Yanxia Deng, Xun Dong, Xin Li, Naigang Wang, Penghang Yin, and Zi Yang. 2025. Diablo: Diagonal blocks are sufficient for finetuning. arXiv preprint arXiv:2506.03230 .Neil Houlsby, Andrei Giurgiu, Stanislaw Jastrzebski, Bruna Morrone, Quentin De Laroussilhe, Andrea Gesmundo, Mona Attariyan, and Sylvain Gelly. 2019. Parameter-efficient transfer learning for nlp. In In-ternational conference on machine learning , pages 2790–2799. PMLR.
+
+9J. Edward Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean Wang, and Weizhu Chen. 2021. Lora: Low-rank adaptation of large language models. arXiv preprint arXiv:2106.09685 .Yicheng Lang, Changsheng Wang, Yihua Zhang, Mingyi Hong, Zheng Zhang, Wotao Yin, and Sijia Liu. 2026. Powering up zeroth-order training via subspace gradient orthogonalization. arXiv preprint arXiv:2602.17155 .Wei Lin, Yining Jiang, Qingyu Song, Qiao Xiang, and Hong Xu. 2026. Agzo: Activation-guided zeroth-order optimization for llm fine-tuning. arXiv preprint arXiv:2601.17261 .Sijia Liu, Jie Chen, Pin-Yu Chen, and Alfred Hero. 2018. Zeroth-order online alternating direction method of multipliers: Convergence analysis and applications. In International Conference on Artificial Intelligence and Statistics , pages 288–297. PMLR. Yong Liu, Zirui Zhu, Chaoyu Gong, Minhao Cheng, Cho-Jui Hsieh, and Yang You. 2026. Sparse mezo: Less parameters for better performance in zeroth-order llm fine-tuning. Advances in Neural Informa-tion Processing Systems , 38:21139–21169. Sadhika Malladi, Tianyu Gao, Eshaan Nichani, Alex Damian, Jason D Lee, Danqi Chen, and Sanjeev Arora. 2023. Fine-tuning language models with just forward passes. Advances in Neural Information Processing Systems , 36:53038–53075. Todor Mihaylov, Peter Clark, Tushar Khot, and Ashish Sabharwal. 2018. Can a suit of armor conduct elec-tricity? a new dataset for open book question an-swering. In Proceedings of the 2018 conference on empirical methods in natural language processing ,pages 2381–2391. Yurii Nesterov and Vladimir Spokoiny. 2017. Ran-dom gradient-free minimization of convex func-tions. Foundations of Computational Mathematics ,17(2):527–566. Keisuke Sakaguchi, Ronan Le Bras, Chandra Bhagavat-ula, and Yejin Choi. 2021. Winogrande: An adver-sarial winograd schema challenge at scale. Commu-nications of the ACM , 64(9):99–106. Maarten Sap, Hannah Rashkin, Derek Chen, Ronan Le Bras, and Yejin Choi. 2019. Social iqa: Com-monsense reasoning about social interactions. In 
+
+Proceedings of the 2019 conference on empirical methods in natural language processing and the 9th international joint conference on natural language processing (EMNLP-IJCNLP) , pages 4463–4473. Alex Wang, Yada Pruksachatkun, Nikita Nangia, Aman-preet Singh, Julian Michael, Felix Hill, Omer Levy, and Samuel Bowman. 2019. Superglue: A stick-ier benchmark for general-purpose language under-standing systems. Advances in neural information processing systems , 32. Ziming Yu, Pan Zhou, Sike Wang, Jia Li, and Hua Huang. 2024. Subzero: Random subspace zeroth-order optimization for memory-efficient llm fine-tuning. Rowan Zellers, Ari Holtzman, Yonatan Bisk, Ali Farhadi, and Yejin Choi. 2019. Hellaswag: Can a machine really finish your sentence? In Proceed-ings of the 57th annual meeting of the association for computational linguistics , pages 4791–4800. Aozhong Zhang, Naigang Wang, Yanxia Deng, Xin Li, Zi Yang, and Penghang Yin. 2024a. Magr: Weight magnitude reduction for enhancing post-training quantization. Advances in neural information pro-cessing systems , 37:85109–85130. Susan Zhang, Stephen Roller, Naman Goyal, Mikel Artetxe, Moya Chen, Shuohui Chen, Christopher De-wan, Mona Diab, Xian Li, Xi Victoria Lin, and 1 others. 2022. Opt: Open pre-trained transformer language models. arXiv preprint arXiv:2205.01068 .Yihua Zhang, Pingzhi Li, Junyuan Hong, Jiaxiang Li, Yimeng Zhang, Wenqing Zheng, Pin-Yu Chen, Ja-son D Lee, Wotao Yin, Mingyi Hong, and 1 oth-ers. 2024b. Revisiting zeroth-order optimization for memory-efficient llm fine-tuning: A benchmark. 
+
+arXiv preprint arXiv:2402.11592 .Jiawei Zhao, Zhenyu Zhang, Beidi Chen, Zhangyang Wang, Anima Anandkumar, and Yuandong Tian. 2024. Galore: Memory-efficient llm training by gradient low-rank projection. arXiv preprint arXiv:2403.03507 .Yanjun Zhao, Sizhe Dang, Haishan Ye, Guang Dai, Yi Qian, and Ivor Tsang. 2025. Second-order fine-tuning without pain for llms: A hessian informed zeroth-order optimizer. In International Conference on Learning Representations , volume 2025, pages 43496–43520. 
+
+A Proofs and Analysis 
+
+A.1 Formal Statement and Proof of Theorem 1Theorem 2 (Convergence of ZO-Act) . Let ϕ(β) = 
+
+F (θ0 + U β ), where β ∈ Rk collects all trainable coefficient matrices. Assume that F is LF -smooth, 
+
+U ⊤U = I, and ϕ is lower bounded by ϕinf  
+
+> k
+
+. At it-eration t, ZO-Act samples q independent Gaussian directions z(j) 
+
+> t
+
+∼ N (0 , I k) and uses the one-sided estimator 
+
+bgt = 1
+
+q
+
+> q
+
+X
+
+> j=1
+
+ϕ(βt + μz (j) 
+
+> t
+
+) − ϕ(βt)
+
+μ z(j) 
+
+> t
+
+.
+
+Suppose the update is βt+1 = βt − ηbgt. If 
+
+0 < η ≤ 18LF
+
+
+
+1 + k+1 
+
+> q
+
+ ,
+
+10 then 
+
+1
+
+T 
+
+> T−1
+
+X
+
+> t=0
+
+E∥∇ ϕ(βt)∥2 ≤ 4  ϕ(β0) − ϕinf 
+
+> k
+
+
+
+ηT 
+
++ 58 L2 
+
+> F
+
+μ2k(k + 2)( k + 4) .
+
+In particular, choosing η = 18LF  
+
+> 
+> 1+ k+1
+> q
+> 
+
+gives          
+
+> 1
+> T
+> T−1X
+> t=0
+> E∥∇ ϕ(βt)∥2≤
+> 32 LF
+> 
+> 1 + k+1
+> q
+>   ϕ(β0)−ϕinf
+> k
+> 
+> T
+> + 58L2
+> Fμ2k(k+ 2)( k+ 4) .
+
+Proof. Since F is LF -smooth and U ⊤U = I, the restricted objective ϕ(β) = F (θ0 + U β ) is also 
+
+LF -smooth. Indeed, ∇ϕ(β) = U ⊤∇F (θ0 + U β ),and hence 
+
+∥∇ ϕ(β) − ∇ ϕ(β′)∥ ≤ LF ∥β − β′∥.
+
+Let gt = ∇ϕ(βt). For each Gaussian direction z(j) 
+
+> t
+
+,define 
+
+bg(j) 
+
+> t
+
+= ϕ(βt + μz (j) 
+
+> t
+
+) − ϕ(βt)
+
+μ z(j) 
+
+> t
+
+,
+
+bgt = 1
+
+q
+
+> q
+
+X
+
+> j=1
+
+bg(j) 
+
+> t
+
+.
+
+By LF -smoothness of ϕ, for any z,
+
+ϕ(βt + μz ) = ϕ(βt) + μ⟨gt, z ⟩ + Rt(z),
+
+|Rt(z)| ≤ LF μ2
+
+2 ∥z∥2.
+
+We write bg(j) 
+
+> t
+
+= a(j) 
+
+> t
+
++ b(j) 
+
+> t
+
+where, a(j) 
+
+> t
+
+=
+
+⟨gt, z (j) 
+
+> t
+
+⟩z(j) 
+
+> t
+
+, and b(j) 
+
+> t
+
+= Rt(z(j)  
+
+> t)
+> μ
+
+z(j) 
+
+> t
+
+.
+
+The remainder term satisfies ∥b(j) 
+
+> t
+
+∥ ≤
+
+(LF μ/ 2) ∥z(j) 
+
+> t
+
+∥3. Let ¯at = q−1 Pqj=1 a(j) 
+
+> t
+
+and 
+
+¯bt = q−1 Pqj=1 b(j) 
+
+> t
+
+, so that bgt = ¯ at + ¯bt.We first lower bound the expected descent direc-tion. Since z(j) 
+
+> t
+
+∼ N (0 , I k), we have E[a(j) 
+
+> t
+
+] = gt,and hence E[¯ at] = gt. Moreover, 
+
+E∥¯bt∥ ≤ 1
+
+q
+
+> q
+
+X
+
+> j=1
+
+E∥b(j) 
+
+> t
+
+∥ ≤ LF μ
+
+2 E∥z∥3.
+
+It holds E∥z∥3 ≤ (E∥z∥6)1/2 and E∥z∥6 = k(k +2)( k + 4) . We define Mk = k(k + 2)( k + 4) , Then 
+
+E∥¯bt∥ ≤ (LF μ/ 2) √Mk. Thus, 
+
+E⟨gt, bgt⟩ = E⟨gt, ¯at⟩ + E⟨gt, ¯bt⟩≥ ∥ gt∥2 − ∥ gt∥E∥¯bt∥≥ ∥ gt∥2 −
+
+ 12 ∥gt∥2 + 12 (E∥¯bt∥)2
+
+
+
+= 12 ∥gt∥2 − L2 
+
+> F
+
+μ2
+
+8 Mk.
+
+Next, we upper bound the second moment of bgt.For the leading Gaussian term, 
+
+E∥a(j) 
+
+> t
+
+∥2 = E[⟨gt, z ⟩2∥z∥2] = ( k + 2) ∥gt∥2.
+
+Therefore, since the a(j) 
+
+> t
+
+’s are independent and each has mean gt,
+
+E∥¯at∥2 = ∥E¯at∥2 + E∥¯at − E¯at∥2
+
+= ∥gt∥2 + 1
+
+q E∥a(j) 
+
+> t
+
+− gt∥2
+
+=
+
+
+
+1 + k + 1 
+
+q
+
+
+
+∥gt∥2.
+
+For the finite-difference remainder, Jensen’s in-equality gives 
+
+E∥¯bt∥2 ≤ 1
+
+q
+
+> q
+
+X
+
+> j=1
+
+E∥b(j) 
+
+> t
+
+∥2 ≤ L2 
+
+> F
+
+μ2
+
+4 Mk.
+
+Using ∥¯at + ¯bt∥2 ≤ 2∥¯at∥2 + 2 ∥¯bt∥2, we obtain 
+
+E∥bgt∥2 ≤ 2
+
+
+
+1 + k + 1 
+
+q
+
+
+
+∥gt∥2 + L2 
+
+> F
+
+μ2
+
+2 Mk.
+
+Let Ak = 1 + ( k + 1) /q , then we have 
+
+E∥bgt∥2 ≤ 2Ak∥gt∥2 + L2 
+
+> F
+
+μ2
+
+2 Mk.
+
+By smoothness of ϕ, the update βt+1 = βt − ηbgt
+
+satisfies 
+
+ϕ(βt+1 ) ≤ ϕ(βt) − η⟨gt, bgt⟩ + LF η2
+
+2 ∥bgt∥2.
+
+Taking conditional expectation and substituting the two bounds above gives 
+
+Et[ϕ(βt+1 )] ≤ ϕ(βt) − η
+
+ 12 ∥gt∥2 − L2 
+
+> F
+
+μ2
+
+8 Mk
+
+
+
++ LF η2
+
+2
+
+
+
+2Ak∥gt∥2 + L2 
+
+> F
+
+μ2
+
+2 Mk
+
+
+
+.
+
+Rearranging, 
+
+Et[ϕ(βt+1 )] ≤ ϕ(βt) −
+
+ η
+
+2 − LF η2Ak
+
+
+
+∥gt∥2
+
++ ηL 2 
+
+> F
+
+μ2
+
+8 Mk + L3 
+
+> F
+
+η2μ2
+
+4 Mk.
+
+11 If 0 < η ≤ 18LF Ak , then η/ 2 − LF η2Ak ≥ η/ 4.Also, since Ak ≥ 1, we have LF η ≤ 1/8, and hence L3 
+
+> F
+
+η2μ2
+
+4 Mk ≤ ηL 2 
+
+> F
+
+μ2
+
+32 Mk.
+
+Therefore, 
+
+Et[ϕ(βt+1 )] ≤ ϕ(βt) − η
+
+4 ∥gt∥2 + 5ηL 2 
+
+> F
+
+μ2
+
+32 Mk.
+
+Taking total expectation and summing from t = 0 
+
+to T − 1, we get 
+
+η
+
+4 
+
+> T−1
+
+X
+
+> t=0
+
+E∥gt∥2 ≤ ϕ(β0)−E[ϕ(βT )]+ 5ηL 2 
+
+> F
+
+μ2
+
+32 MkT. 
+
+Since ϕ(βT ) ≥ ϕinf  
+
+> k
+
+, dividing by ηT / 4 yields 
+
+1
+
+T 
+
+> T−1
+
+X
+
+> t=0
+
+E∥∇ ϕ(βt)∥2 ≤ 4( ϕ(β0) − ϕinf  
+
+> k
+
+)
+
+ηT + 58 L2 
+
+> F
+
+μ2Mk.
+
+This proves the theorem. 
+
+B Experiment Setups 
+
+In all experiments, ZO-Act is applied to all lin-ear layers except the embedding layers and task-specific linear heads. 
+
+Language understanding and question answer-ing. Following the setting of Lang et al. (2026), ZO-Act is evaluated on six standard language un-derstanding and question answering benchmarks: SST-2, RTE, CB, BoolQ, WiC, and SQuAD in SuperGLUE (Wang et al., 2019). F1 score is re-ported for SQuAD, while accuracy is reported for all other tasks. Experiments are conducted on two full-precision LLMs, Llama-3-8B and OPT-13B, as well as an INT4 quantized Llama-3-8B model. Fol-lowing prior ZO fine-tuning work (Malladi et al., 2023), we randomly sample 1,000 training exam-ples and 1,000 test examples for each task, and use the same prompts as MeZO (Malladi et al., 2023). 
+
+Commonsense reasoning. The commonsense reasoning benchmark consists of eight tasks: ARC-Challenge, ARC-Easy (Clark et al., 2018), BoolQ (Clark et al., 2019), HellaSwag (Zellers et al., 2019), OpenBookQA (Mihaylov et al., 2018), PIQA (Bisk et al., 2020), SocialIQA (Sap et al., 2019), and WinoGrande (Sakaguchi et al., 2021). ZO-Act is fine-tuned on the combined training data using Llama-3-8B, and performance is reported as accuracy on each individual task as well as the average accuracy across all tasks. The hyperparameters are reported in Table 5, Table 6, and Table 7. 12 CB RTE WiC SST-2 BoolQ SQuAD Commonsense Rank 1
+
+Optimizer Adam / SGD Adam LR (Adam) 5 × 10 −5 5 × 10 −5 4 × 10 −5 3 × 10 −5 5 × 10 −5 2.5 × 10 −5 2 × 10 −5
+
+LR (SGD) 3 × 10 −6 3 × 10 −6 3 × 10 −6 3 × 10 −6 3 × 10 −6 5 × 10 −6 –Scheduler constant with warmup Weight decay 0
+
+μ 10 −3
+
+Table 5: Hyperparameters for ZO-Act on Llama-3-8B. 
+
+CB RTE WiC SST-2 BoolQ SQuAD Commonsense Rank 32 
+
+Optimizer Adam LR (Adam) 6 × 10 −5 5 × 10 −5 5 × 10 −5 3 × 10 −5 3 × 10 −5 3 × 10 −5 2 × 10 −5
+
+Scheduler constant with warmup Weight decay 0
+
+μ 10 −3
+
+Table 6: Hyperparameters for ZO-Act on INT4 quantized Llama-3-8B. 
+
+CB RTE WiC SST-2 BoolQ SQuAD Rank 1
+
+Optimizer Adam / SGD LR (Adam) 4 × 10 −5 2.5 × 10 −5 2 × 10 −5 2.5 × 10 −5 2 × 10 −5 2.5 × 10 −5
+
+LR (SGD) 7 × 10 −7 1 × 10 −6 1 × 10 −6 1 × 10 −6 1 × 10 −6 1 × 10 −6
+
+Scheduler constant with warmup Weight decay 0
+
+μ 10 −3
+
+Table 7: Hyperparameters for ZO-Act on OPT-13B. 
+
+13
